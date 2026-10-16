@@ -1,0 +1,58 @@
+# ==========================================
+# 1. Bảo mật & Biến môi trường
+# ==========================================
+.env
+.env*.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
+*.key
+
+# Ngoại lệ: Luôn giữ lại file mẫu môi trường để người khác clone về biết cách cấu hình
+!.env.example
+
+# ==========================================
+# 2. Dependencies & Package Managers
+# ==========================================
+node_modules/
+.pnp
+.pnp.js
+
+# ==========================================
+# 3. Build & Output Artifacts
+# ==========================================
+dist/
+build/
+out/
+.next/
+.turbo/
+.cache/
+coverage/
+
+# ==========================================
+# 4. Logs & Ghi nhận lỗi
+# ==========================================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ==========================================
+# 5. File hệ điều hành & Editor cá nhân
+# ==========================================
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# ==========================================
+# 6. Claude Code & AI Agent Specifics
+# ==========================================
+.claude/
+*.session

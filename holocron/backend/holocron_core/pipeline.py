@@ -223,6 +223,34 @@ def produce_twin(
             continue
         ok, err, tried, hist = _run_with_rerolls(template, base_seed, limits)
         if ok is not None:
+            try:
+                twin = build_twin(
+                    template,
+                    ok,
+                    blueprint_id=blueprint_id,
+                    slot_index=slot.slot_index,
+                    fmt=slot.format,
+                    citation=citation,
+                    llm_attempts=attempt,
+                    seed_rerolls=tried - 1,
+                    review_status=ReviewStatus.AUTO_PASS,
+                )
+            except ValueError as exc:
+                # Sandbox chạy được nhưng đầu ra vi phạm hợp đồng TwinQuestion (vd. misconception_code
+                # không khai báo trong template): lỗi của CODE -> trừ 1 lượt LLM, gửi feedback để sửa.
+                feedback = [f"TWIN_ASSEMBLY_FAILED: {exc}"]
+                attempts.append(
+                    AttemptLog(
+                        attempt=attempt,
+                        provenance=template.provenance,
+                        template_sha256=template.source_sha256,
+                        outcome="twin_assembly_failed",
+                        seeds_tried=tried,
+                        assertion_histogram=dict(hist),
+                        feedback_sent=feedback,
+                    )
+                )
+                continue
             attempts.append(
                 AttemptLog(
                     attempt=attempt,
@@ -232,17 +260,6 @@ def produce_twin(
                     seeds_tried=tried,
                     assertion_histogram=dict(hist),
                 )
-            )
-            twin = build_twin(
-                template,
-                ok,
-                blueprint_id=blueprint_id,
-                slot_index=slot.slot_index,
-                fmt=slot.format,
-                citation=citation,
-                llm_attempts=attempt,
-                seed_rerolls=tried - 1,
-                review_status=ReviewStatus.AUTO_PASS,
             )
             return ProductionOutcome(twin=twin, attempts=attempts)
         feedback = _feedback_from_error(err) if err is not None else _feedback_ill_posed(hist, tried)
@@ -261,29 +278,41 @@ def produce_twin(
     fallback = registry.get_verified(slot.topic_key)
     if fallback is not None:
         ok, err, tried, hist = _run_with_rerolls(fallback, base_seed, limits)
+        twin_or_error: TwinQuestion | str | None = None
+        if ok is not None:
+            try:
+                twin_or_error = build_twin(
+                    fallback,
+                    ok,
+                    blueprint_id=blueprint_id,
+                    slot_index=slot.slot_index,
+                    fmt=slot.format,
+                    citation=citation,
+                    llm_attempts=LLM_ATTEMPT_BUDGET,
+                    seed_rerolls=tried - 1,
+                    review_status=ReviewStatus.AUTO_FALLBACK,
+                )
+            except ValueError as exc:
+                twin_or_error = f"TWIN_ASSEMBLY_FAILED: {exc}"
+        if isinstance(twin_or_error, TwinQuestion):
+            outcome = "ok"
+        elif isinstance(twin_or_error, str):
+            outcome = "twin_assembly_failed"
+        else:
+            outcome = err.status.value if err is not None else "ill_posed"
         attempts.append(
             AttemptLog(
                 attempt=LLM_ATTEMPT_BUDGET + 1,
                 provenance=fallback.provenance,
                 template_sha256=fallback.source_sha256,
-                outcome="ok" if ok is not None else (err.status.value if err is not None else "ill_posed"),
+                outcome=outcome,
                 seeds_tried=tried,
                 assertion_histogram=dict(hist),
+                feedback_sent=[twin_or_error] if isinstance(twin_or_error, str) else [],
             )
         )
-        if ok is not None:
-            twin = build_twin(
-                fallback,
-                ok,
-                blueprint_id=blueprint_id,
-                slot_index=slot.slot_index,
-                fmt=slot.format,
-                citation=citation,
-                llm_attempts=LLM_ATTEMPT_BUDGET,
-                seed_rerolls=tried - 1,
-                review_status=ReviewStatus.AUTO_FALLBACK,
-            )
-            return ProductionOutcome(twin=twin, attempts=attempts)
+        if isinstance(twin_or_error, TwinQuestion):
+            return ProductionOutcome(twin=twin_or_error, attempts=attempts)
 
     return ProductionOutcome(
         ticket=ReviewTicket(

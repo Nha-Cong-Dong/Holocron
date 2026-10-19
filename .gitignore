@@ -63,3 +63,10 @@ desktop.ini
 *.session
 # App desktop Claude ghi output vào repo
 Claude outputs/
+
+# Cache và báo cáo coverage của công cụ kiểm tra
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+coverage.xml

@@ -1,0 +1,73 @@
+minimum_pre_commit_version: "4.0.0"
+default_install_hook_types: [pre-commit, commit-msg, pre-push]
+default_stages: [pre-commit]
+exclude: ^(holocron/backend/examples/|holocron/frontend/package-lock\.json$|.*\.egg-info/)
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - {id: trailing-whitespace, exclude_types: [markdown]}
+      - id: end-of-file-fixer
+      - {id: mixed-line-ending, args: [--fix=lf]}
+      - id: check-yaml
+      - {id: check-json, exclude: \.jsonc$}
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - {id: check-added-large-files, args: [--maxkb=500]}
+      - id: detect-private-key
+      - {id: no-commit-to-branch, args: [--branch, main, --branch, develop]}
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.1
+    hooks:
+      - {id: ruff-check, files: ^(holocron/backend|scripts)/}
+      - {id: ruff-format, files: ^(holocron/backend|scripts)/}
+  - repo: local
+    hooks:
+      - id: mypy-strict
+        name: mypy --strict (holocron_core)
+        language: python
+        additional_dependencies: ["mypy==2.4.0", "pydantic>=2.7", "fastapi>=0.110", "python-multipart>=0.0.9"]
+        entry: mypy --strict holocron/backend/holocron_core
+        pass_filenames: false
+        files: ^holocron/backend/holocron_core/
+        types: [python]
+      - id: biome
+        name: biome check
+        language: system
+        entry: npm --prefix holocron/frontend run lint
+        pass_filenames: false
+        files: ^holocron/frontend/
+        types_or: [ts, tsx, javascript, json, css]
+        exclude: package-lock\.json$
+      - id: tsc
+        name: tsc --noEmit
+        language: system
+        entry: npm --prefix holocron/frontend run typecheck
+        pass_filenames: false
+        files: ^holocron/frontend/.*\.(ts|tsx|json)$
+      - id: commit-msg-conventional
+        name: Conventional Commits
+        language: python
+        entry: python scripts/check_commit_msg.py
+        stages: [commit-msg]
+      - id: versions-consistent
+        name: version nhất quán
+        language: python
+        entry: python scripts/check_versions.py
+        pass_filenames: false
+        files: ^(CHANGELOG\.md|holocron/frontend/package\.json|holocron/backend/pyproject\.toml|holocron/backend/holocron_core/routers/api\.py|scripts/check_versions\.py)$
+      - id: pytest
+        name: pytest
+        language: system
+        entry: python -m pytest holocron/backend/tests -q
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+      - id: next-build
+        name: next build
+        language: system
+        entry: npm --prefix holocron/frontend run build
+        pass_filenames: false
+        files: ^holocron/frontend/
+        stages: [pre-push]

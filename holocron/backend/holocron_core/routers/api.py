@@ -8,7 +8,7 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from ..domain.schemas import CPUSchedulingProblem, OptionKey, SelfSolveResult, SolverInputs
+from ..domain.schemas import MAX_PROCESSES, CPUSchedulingProblem, OptionKey, SelfSolveResult, SolverInputs
 from ..infrastructure.template_library import InMemoryTemplateRegistry
 from ..services.extraction import (
     DocumentExtractor,
@@ -18,6 +18,8 @@ from ..services.extraction import (
     sniff_media_type,
 )
 from ..services.ingestion_gate import (
+    TABLE_SCHEMAS,
+    TOPIC_ALGORITHMS,
     CellPatch,
     ExtractedTable,
     GateIssue,
@@ -34,8 +36,9 @@ from ..services.ingestion_gate import (
 )
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_FILENAME_LENGTH = 255  # khớp `UploadedDocument.filename`
 
-app = FastAPI(title="Holocron Ingestion Gate", version="0.3.0")
+app = FastAPI(title="Holocron Ingestion Gate", version="0.1.0a0")
 REGISTRY = InMemoryTemplateRegistry()
 
 
@@ -122,10 +125,31 @@ def _recompute(item: IngestionItem) -> IngestionItem:
     solver = REGISTRY.get_verified(item.topic_key)
     pre_issues: list[GateIssue] = []
     item.problem = None
-    if solver is not None:
+    if solver is None:
+        # Phòng thủ chiều sâu (I5): topic chưa có template đã kiểm chứng thì không thể tự giải ⇒ không được AUTO_PASS.
+        item.self_solve = None
+        pre_issues.append(
+            GateIssue(
+                code="SELF_SOLVE_MISMATCH",
+                severity=Severity.BLOCKING,
+                message_vi=f"Chưa có template đã kiểm chứng cho topic {item.topic_key}, không thể tự giải để đối chiếu.",
+            )
+        )
+    elif item.table_primary.n_rows > MAX_PROCESSES:
+        # Không tự giải được; check_table đã báo OUT_OF_RANGE nên không thêm issue (tránh gắn nhầm NOT_A_NUMBER).
+        item.self_solve = SelfSolveResult(status="SKIPPED", solver_confidence=0.0)
+    else:
         try:
             item.problem = table_to_problem(item.topic_key, item.table_primary, item.solver_inputs.quantum)
             item.self_solve = rerun_self_solve(solver, item.problem.to_template_params(), item.options)
+            if item.self_solve.status == "SKIPPED":
+                pre_issues.append(
+                    GateIssue(
+                        code="SELF_SOLVE_MISMATCH",
+                        severity=Severity.BLOCKING,
+                        message_vi="Sandbox không tính được đáp án để đối chiếu (SKIPPED: lỗi, quá thời gian hoặc sai hợp đồng).",
+                    )
+                )
         except ValueError as exc:
             item.problem = None
             item.self_solve = SelfSolveResult(status="SKIPPED", solver_confidence=0.0)
@@ -171,6 +195,9 @@ async def upload_document(
         raise HTTPException(status_code=413, detail=f"file vượt {MAX_UPLOAD_BYTES} bytes")
     if not content:
         raise HTTPException(status_code=400, detail="file rỗng")
+    filename = file.filename or "upload"
+    if len(filename) > MAX_FILENAME_LENGTH:
+        raise HTTPException(status_code=422, detail=f"tên file dài quá {MAX_FILENAME_LENGTH} ký tự")
     media_type = sniff_media_type(content)
     if media_type is None:
         raise HTTPException(status_code=415, detail="chỉ nhận PNG, JPEG, WebP hoặc PDF")
@@ -180,9 +207,7 @@ async def upload_document(
             status_code=415, detail=f"Content-Type khai báo {declared} không khớp nội dung thực {media_type}"
         )
 
-    document = store.save_document(
-        UploadedDocument.from_content(content, filename=file.filename or "upload", media_type=media_type)
-    )
+    document = store.save_document(UploadedDocument.from_content(content, filename=filename, media_type=media_type))
     try:
         extraction = extractor.extract(document, content, topic_key)
     except UnsupportedTopicError as exc:
@@ -209,6 +234,8 @@ async def upload_document(
 
 @app.post("/v1/ingestion/items", response_model=IngestionItem, status_code=201)
 def create_item(store: StoreDep, body: IngestionItemCreate) -> IngestionItem:
+    if body.topic_key not in TOPIC_ALGORITHMS or body.topic_key not in TABLE_SCHEMAS:
+        raise HTTPException(status_code=422, detail=f"chưa hỗ trợ topic {body.topic_key}")
     return _create(store, body)
 
 

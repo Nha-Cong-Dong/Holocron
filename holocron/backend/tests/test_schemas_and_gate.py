@@ -17,21 +17,33 @@ def _table(rows, misread=None, conf=0.97):
                 cells.append({"row": r, "col": c, "text": misread[1], "confidence": 0.61})
             else:
                 cells.append({"row": r, "col": c, "text": text, "confidence": conf})
-    return {"table_id": "tbl_p2_q7", "page_number": 2,
-            "headers": ["Tiến trình", "Thời điểm đến", "Burst time"], "cells": cells}
+    return {
+        "table_id": "tbl_p2_q7",
+        "page_number": 2,
+        "headers": ["Tiến trình", "Thời điểm đến", "Burst time"],
+        "cells": cells,
+    }
 
 
 def test_chunk_rejects_quote_not_in_text():
     with pytest.raises(ValidationError):
-        KnowledgeChunk(doc_id="doc_x", subject_code="IT3070", chapter_code="ch5", page_number=1,
-                       raw_text="Round Robin dùng lượng tử thời gian q.", verbatim_quote="câu này không có trong text",
-                       category="THEORY", token_count=10)
+        KnowledgeChunk(
+            doc_id="doc_x",
+            subject_code="IT3070",
+            chapter_code="ch5",
+            page_number=1,
+            raw_text="Round Robin dùng lượng tử thời gian q.",
+            verbatim_quote="câu này không có trong text",
+            category="THEORY",
+            token_count=10,
+        )
 
 
 def test_gate_blocks_misread_then_user_fix_unblocks():
     client = TestClient(app)
     body = {
-        "source_doc_id": "doc_os_midterm_2025_de2_photo", "page_number": 2,
+        "source_doc_id": "doc_os_midterm_2025_de2_photo",
+        "page_number": 2,
         "topic_key": "os.cpu_sched.rr.avg_waiting_time",
         "stem_latex": "Round Robin với $q = 4$ ms. Tính $\\overline{WT}$.",
         "options": {"A": "6.00", "B": "4.20", "C": "2.60", "D": "10.40"},
@@ -45,16 +57,26 @@ def test_gate_blocks_misread_then_user_fix_unblocks():
     assert {"DUAL_PASS_MISMATCH", "LOW_CONFIDENCE", "SELF_SOLVE_MISMATCH"} <= codes
     assert client.post(f"/v1/ingestion/items/{created['item_id']}/approve").status_code == 409
 
-    fixed = client.patch(f"/v1/ingestion/items/{created['item_id']}/table", json={
-        "editor_id": "u_tuan", "expected_version": 1, "patches": [{"row": 1, "col": 2, "new_text": "9"}],
-    }).json()
+    fixed = client.patch(
+        f"/v1/ingestion/items/{created['item_id']}/table",
+        json={
+            "editor_id": "u_tuan",
+            "expected_version": 1,
+            "patches": [{"row": 1, "col": 2, "new_text": "9"}],
+        },
+    ).json()
     assert fixed["report"]["status"] == "AUTO_PASS", fixed["report"]["issues"]
     assert fixed["self_solve"]["matched_option_key"] == "A"
     assert fixed["audits"][0]["changes"] == [{"row": 1, "col": 2, "old": "8", "new": "9"}]
 
-    stale = client.patch(f"/v1/ingestion/items/{created['item_id']}/table", json={
-        "editor_id": "u_khac", "expected_version": 1, "patches": [{"row": 0, "col": 2, "new_text": "3"}],
-    })
+    stale = client.patch(
+        f"/v1/ingestion/items/{created['item_id']}/table",
+        json={
+            "editor_id": "u_khac",
+            "expected_version": 1,
+            "patches": [{"row": 0, "col": 2, "new_text": "3"}],
+        },
+    )
     assert stale.status_code == 409
     assert client.post(f"/v1/ingestion/items/{created['item_id']}/approve").json()["approved"] is True
 

@@ -29,6 +29,8 @@ out/
 .turbo/
 .cache/
 coverage/
+__pycache__/
+*.egg-info/
 
 # ==========================================
 # 4. Logs & Ghi nhận lỗi
@@ -54,5 +56,6 @@ desktop.ini
 # ==========================================
 # 6. Claude Code & AI Agent Specifics
 # ==========================================
-.claude/
+.claude/*
+!.claude/CLAUDE.md
 *.session

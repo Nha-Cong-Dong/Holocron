@@ -7,7 +7,9 @@ Sinh ra: examples/twin_question_rr_mcq.json, examples/twin_question_rr_numerical
 
 from __future__ import annotations
 
+import io
 import json
+import sys
 from pathlib import Path
 
 from holocron_core.pipeline import produce_twin
@@ -24,7 +26,10 @@ from holocron_core.schemas import (
     SelfSolveResult,
     TemplateProvenance,
 )
-from holocron_core.template_library import InMemoryTemplateRegistry, rr_avg_waiting_template
+from holocron_core.template_library import (
+    InMemoryTemplateRegistry,
+    rr_avg_waiting_template,
+)
 
 OUT = Path(__file__).resolve().parents[1] / "examples"
 
@@ -56,17 +61,36 @@ SLOT = BlueprintSlot(
     cognitive_level=CognitiveLevel.APPLY,
     is_computational=True,
     distractor_archetypes=[
-        DistractorArchetype(misconception_code="RR_TREATED_AS_FCFS", description="Phương án B = kết quả FCFS",
-                            observed_option_key=OptionKey.B, observed_option_text="5.25", reproduction_confidence=0.93),
-        DistractorArchetype(misconception_code="WAIT_EQUALS_FIRST_RESPONSE", description="Phương án C = response time",
-                            observed_option_key=OptionKey.C, observed_option_text="3.00", reproduction_confidence=0.88),
-        DistractorArchetype(misconception_code="WAIT_CONFUSED_WITH_TURNAROUND",
-                            description="Phương án D = turnaround trung bình", observed_option_key=OptionKey.D,
-                            observed_option_text="11.50", reproduction_confidence=0.91),
+        DistractorArchetype(
+            misconception_code="RR_TREATED_AS_FCFS",
+            description="Phương án B = kết quả FCFS",
+            observed_option_key=OptionKey.B,
+            observed_option_text="5.25",
+            reproduction_confidence=0.93,
+        ),
+        DistractorArchetype(
+            misconception_code="WAIT_EQUALS_FIRST_RESPONSE",
+            description="Phương án C = response time",
+            observed_option_key=OptionKey.C,
+            observed_option_text="3.00",
+            reproduction_confidence=0.88,
+        ),
+        DistractorArchetype(
+            misconception_code="WAIT_CONFUSED_WITH_TURNAROUND",
+            description="Phương án D = turnaround trung bình",
+            observed_option_key=OptionKey.D,
+            observed_option_text="11.50",
+            reproduction_confidence=0.91,
+        ),
     ],
-    self_solve=SelfSolveResult(status="MATCHED", solved_answer_display="6.75 ms", matched_option_key=OptionKey.A,
-                               solver_confidence=1.0, supporting_citations=[THEORY_CHUNK.to_citation()],
-                               solver_template_id="tpl_os_rr_avg_wait_v1"),
+    self_solve=SelfSolveResult(
+        status="MATCHED",
+        solved_answer_display="6.75 ms",
+        matched_option_key=OptionKey.A,
+        solver_confidence=1.0,
+        supporting_citations=[THEORY_CHUNK.to_citation()],
+        solver_template_id="tpl_os_rr_avg_wait_v1",
+    ),
     mapping_confidence=0.91,
     review_status="AUTO_PASS",
 )
@@ -81,12 +105,16 @@ BLUEPRINT = ExamBlueprint(
 )
 
 BROKEN_SOURCES = [
-    "import os\n\ndef generate_params(seed):\n    return {}\n\ndef validate(p):\n    assert True\n\n"
-    "def solve(p):\n    return os.listdir('.')\n\ndef make_distractors(p, s):\n    return []\n\n"
-    "def render_stem(p):\n    return ''\n",
-    "def generate_params(seed):\n    return {'x': 1}\n\ndef validate(p):\n    assert p['x'] == 1\n\n"
-    "def solve(p):\n    return {'value': p['y']}\n\ndef make_distractors(p, s):\n    return []\n\n"
-    "def render_stem(p):\n    return 'stem'\n",
+    (
+        "import os\n\ndef generate_params(seed):\n    return {}\n\ndef validate(p):\n    assert True\n\n"
+        "def solve(p):\n    return os.listdir('.')\n\ndef make_distractors(p, s):\n    return []\n\n"
+        "def render_stem(p):\n    return ''\n"
+    ),
+    (
+        "def generate_params(seed):\n    return {'x': 1}\n\ndef validate(p):\n    assert p['x'] == 1\n\n"
+        "def solve(p):\n    return {'value': p['y']}\n\ndef make_distractors(p, s):\n    return []\n\n"
+        "def render_stem(p):\n    return 'stem'\n"
+    ),
 ]
 
 
@@ -106,31 +134,52 @@ class ScriptedAuthor:
 
 
 def main() -> None:
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(encoding="utf-8")  # console Windows mặc định cp1252, không in được tiếng Việt
     OUT.mkdir(parents=True, exist_ok=True)
     citation: Citation = THEORY_CHUNK.to_citation()
     registry = InMemoryTemplateRegistry()
 
-    happy = produce_twin(SLOT, blueprint_id=BLUEPRINT.blueprint_id, citation=citation,
-                         author=ScriptedAuthor([]), registry=registry, base_seed=20260419)
+    happy = produce_twin(
+        SLOT,
+        blueprint_id=BLUEPRINT.blueprint_id,
+        citation=citation,
+        author=ScriptedAuthor([]),
+        registry=registry,
+        base_seed=20260419,
+    )
     assert happy.twin is not None
     (OUT / "twin_question_rr_mcq.json").write_text(happy.twin.model_dump_json(indent=2), encoding="utf-8")
 
     numerical_slot = SLOT.model_copy(update={"format": QuestionFormat.NUMERICAL, "distractor_archetypes": []})
-    numerical = produce_twin(numerical_slot, blueprint_id=BLUEPRINT.blueprint_id, citation=citation,
-                             author=ScriptedAuthor([]), registry=registry, base_seed=20260419)
+    numerical = produce_twin(
+        numerical_slot,
+        blueprint_id=BLUEPRINT.blueprint_id,
+        citation=citation,
+        author=ScriptedAuthor([]),
+        registry=registry,
+        base_seed=20260419,
+    )
     assert numerical.twin is not None
     (OUT / "twin_question_rr_numerical.json").write_text(numerical.twin.model_dump_json(indent=2), encoding="utf-8")
 
     author = ScriptedAuthor(BROKEN_SOURCES)
-    retried = produce_twin(SLOT, blueprint_id=BLUEPRINT.blueprint_id, citation=citation,
-                           author=author, registry=registry, base_seed=20260419)
+    retried = produce_twin(
+        SLOT,
+        blueprint_id=BLUEPRINT.blueprint_id,
+        citation=citation,
+        author=author,
+        registry=registry,
+        base_seed=20260419,
+    )
     trace = {
         "final_review_status": retried.twin.review_status if retried.twin else None,
         "attempts": [a.model_dump() for a in retried.attempts],
         "feedback_seen_by_llm": author.feedback_received,
     }
-    (OUT / "retry_trace_rr.json").write_text(json.dumps(trace, ensure_ascii=False, indent=2, default=str),
-                                             encoding="utf-8")
+    (OUT / "retry_trace_rr.json").write_text(
+        json.dumps(trace, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+    )
     (OUT / "exam_blueprint_sample.json").write_text(BLUEPRINT.model_dump_json(indent=2), encoding="utf-8")
 
     print(happy.twin.model_dump_json(indent=2))

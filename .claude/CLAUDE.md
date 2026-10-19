@@ -89,7 +89,7 @@ Tách hai cấp để giữ tốc độ khi chạy auto mode:
 Làm xanh kết quả bằng cách che lỗi là không được chấp nhận. Cụ thể, TUYỆT ĐỐI KHÔNG:
 
 - Dùng `# type: ignore`, `# noqa`, hoặc `cast(Any, ...)` để qua mặt mypy/ruff.
-- Thêm rule ignore/exclude/override nới lỏng vào `pyproject.toml` (`[tool.ruff] ignore`/`per-file-ignores`/`exclude`, `[tool.mypy]` `ignore_errors`/`disable_error_code`/`overrides` hạ mức nghiêm ngặt…). Ngoại lệ duy nhất đã được người dùng cho phép: tắt `RUF001`–`RUF003` (xem mục 7).
+- Thêm rule ignore/exclude/override nới lỏng vào `pyproject.toml` (`[tool.ruff] ignore`/`per-file-ignores`/`exclude`, `[tool.mypy]` `ignore_errors`/`disable_error_code`/`overrides` hạ mức nghiêm ngặt…). Ngoại lệ đã được người dùng cho phép: tắt `RUF001`–`RUF003` (xem mục 7) và đúng một `# noqa: S102` tại dòng `exec` trong `_sandbox_child.py` (chủ đích kiến trúc của sandbox). Mọi ngoại lệ khác cần được người dùng đồng ý riêng.
 - Sửa, xoá, `skip`/`xfail` test sẵn có trong `tests/` chỉ để kết quả xanh. Test fail nghĩa là code sai (hoặc spec đổi — khi đó nêu rõ với người dùng và được họ đồng ý trước). Chỉ được thêm test mới, hoặc đổi định dạng thuần tuý (do `ruff format`) mà không đổi AST.
 
 Gặp lỗi lint/type: sửa kiểu dữ liệu/logic thực chất. Nếu thực sự không thể sửa mà không vi phạm các quy tắc trên, **dừng lại, báo rõ lỗi còn lại và lý do**, để người dùng quyết định — đừng im lặng lách.

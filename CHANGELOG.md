@@ -6,6 +6,7 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 ## [Unreleased]
 
 ### 🚀 Tính năng mới
+- `GanttSegment` và `TwinQuestion.gantt` (validator: không rỗng với topic CPU Scheduling, sắp theo `start`, không chồng lấn); `solve()` của template RR trả `gantt` đúng dạng `{"process", "start", "end"}` của spec §8.1; sandbox kiểm kiểu `gantt`; `types/holocron.ts` bổ sung `GanttSegment`.
 
 ### 🛠️ Cải tiến & Tối ưu
 

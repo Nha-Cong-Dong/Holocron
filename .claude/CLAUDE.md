@@ -13,8 +13,14 @@
 ```text
 Holocron/
 ├── .claude/CLAUDE.md                 # file này
+├── .github/                          # workflows CI/release, PR và issue template, dependabot
+├── .pre-commit-config.yaml           # cổng cục bộ (pre-commit, commit-msg, pre-push)
+├── CHANGELOG.md                      # Keep a Changelog, 5 nhóm cố định
 ├── SPECIFICATION.md                  # spec + API/data contracts (chốt Tuần 2)
-├── docs/adr/                         # Architecture Decision Records
+├── docs/
+│   ├── adr/                          # Architecture Decision Records (0000-template, 001–004)
+│   └── releases/                     # quy trình phát hành, checklist, mẫu release notes
+├── scripts/                          # check_commit_msg, check_versions, extract_release_notes, release_bench
 └── holocron/
     ├── backend/                      # FastAPI + Pydantic v2, Python >= 3.12
     │   ├── pyproject.toml
@@ -29,9 +35,10 @@ Holocron/
     │   │   └── routers/api.py                # FastAPI endpoints, IngestionStore qua Depends
     │   ├── scripts/run_walkthrough.py        # sinh examples/*.json tất định
     │   ├── examples/
-    │   └── tests/
+    │   └── tests/                            # gồm test_architecture.py (cưỡng chế phân tầng)
     └── frontend/                     # Next.js 15 App Router, TypeScript strict
         ├── next.config.ts                    # rewrite /api/holocron/* → FastAPI
+        ├── biome.jsonc, vitest.config.ts     # lint/format và test logic thuần
         └── src/
             ├── app/                          # page.tsx (upload), ingestion/[itemId]/page.tsx
             ├── components/ingestion/         # UploadForm, TableAuditor (+ .module.css)
@@ -82,6 +89,7 @@ Quy tắc cứng:
 python -m pip install -e ".[dev]"
 $env:PYTHONIOENCODING = "utf-8"          # console mặc định cp1252 không in được tiếng Việt
 python -m pytest
+python -m pytest --cov                    # coverage có nhánh, fail_under ở pyproject.toml
 python -m pytest tests/test_upload.py -x
 python -m ruff check .
 python -m ruff format --check .           # tự sửa: python -m ruff format .
@@ -114,10 +122,20 @@ Ghi chú nền tảng:
 npm install
 npm run dev          # http://localhost:3000, cần backend chạy ở 127.0.0.1:8000
 npm run typecheck    # tsc --noEmit
+npm run lint         # biome check . (lint:fix và format để tự sửa phần thuần định dạng)
+npm test             # vitest run
 npm run build        # next build — kiểm tra type + build production
 ```
 
 Đổi địa chỉ backend bằng biến `HOLOCRON_API_URL` (PowerShell: `$env:HOLOCRON_API_URL = "http://127.0.0.1:8001"`).
+
+### 3.3 Cổng tự động
+
+Cài một lần: `pip install pre-commit && pre-commit install` (cài cả hook `commit-msg` và `pre-push`). Hook chạy khi commit: định dạng/EOL, `ruff`, `mypy --strict`, `biome`, `tsc`, kiểm version và Conventional Commits; hook `pytest` và `next build` chạy khi push. Mọi cổng chạy lại trên CI (`.github/workflows/`) cho cả Linux và Windows.
+
+KHÔNG ĐƯỢC `--no-verify`, `SKIP=`, `continue-on-error: true`, hạ `fail_under` trong `pyproject.toml` hay hạ ngưỡng trong `scripts/release_bench.py` để làm xanh kết quả.
+
+Công cụ ở gốc repo (Python stdlib, chạy trên Windows và Linux): `python scripts/check_versions.py [tag]`, `python scripts/check_commit_msg.py --self-test`, `python scripts/release_bench.py`.
 
 ## 4. Code conventions
 
@@ -128,7 +146,7 @@ npm run build        # next build — kiểm tra type + build production
 - Bảo mật sandbox: KHÔNG ĐƯỢC nới whitelist import/builtins hoặc giới hạn OS khi chưa có test bảo mật tương ứng trong `tests/test_sandbox_security.py`.
 
 ### 4.2 TypeScript / React
-- `strict` + `noUncheckedIndexedAccess` bật; KHÔNG ĐƯỢC dùng `any`, `// @ts-ignore`, `// @ts-expect-error`, `as unknown as`, `eslint-disable`. Ép kiểu `as T` chỉ được phép ở đúng một chỗ: parse JSON response trong `lib/api.ts`.
+- `strict` + `noUncheckedIndexedAccess` bật; KHÔNG ĐƯỢC dùng `any`, `// @ts-ignore`, `// @ts-expect-error`, `as unknown as`, `eslint-disable`, `biome-ignore`. Ép kiểu `as T` chỉ được phép ở đúng một chỗ: parse JSON response trong `lib/api.ts`.
 - Component có state/tương tác đánh dấu `"use client"`; logic thuần (gom issue, điều kiện approve) đặt ở `lib/` để dùng lại và dễ test.
 - Mọi lời gọi backend đi qua `lib/api.ts`; component không gọi `fetch` trực tiếp.
 - Style bằng CSS Modules + biến màu ở `app/globals.css` (có dark mode); tôn trọng `prefers-reduced-motion`.
@@ -145,18 +163,19 @@ npm run build        # next build — kiểm tra type + build production
 - Đọc nội dung hiện tại trước khi ghi đè file có sẵn; không xoá nội dung người dùng khi chưa được yêu cầu.
 
 **Cấp 2 — khi hoàn thành task (bắt buộc, báo kết quả thật kèm output khi có lỗi):**
-1. `pytest` (toàn bộ)
+1. `pytest --cov` (toàn bộ, đạt `fail_under`)
 2. `ruff check .` và `ruff format --check .`
 3. `mypy --strict holocron_core`
-4. Nếu chạm `frontend/`: `npm run typecheck` và `npm run build`
+4. Nếu chạm `frontend/`: `npm run lint`, `npm run typecheck`, `npm test` và `npm run build`
 5. Nếu đổi đầu ra pipeline/schema/template: `python -m scripts.run_walkthrough` rồi xem `git diff examples/` — chỉ được đổi khi thay đổi là chủ đích (walkthrough đã đóng băng id, thời gian, `sandbox_duration_ms`).
 
 ## 6. Git
 
-- **Conventional Commits:** `type(scope): mô tả ngắn` — `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `perf`, `ci`, `style`. Scope gợi ý: `core`, `api`, `sandbox`, `pipeline`, `gate`, `frontend`, `spec`, `config`.
+- **Conventional Commits:** `type(scope): mô tả ngắn` — `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `perf`, `ci`, `style`, `revert`. Scope gợi ý: `core`, `api`, `sandbox`, `pipeline`, `gate`, `frontend`, `spec`, `config`. Dòng đầu ≤ 100 ký tự, không kết thúc bằng dấu chấm. Tiêu đề PR cũng theo dạng này (kiểm bởi `scripts/check_commit_msg.py` ở hook và CI).
 - **Gitflow:**
-  - Tách nhánh từ `develop`: `feat/<tên>` cho tính năng, `fix/<tên>` cho sửa lỗi. Không ghi cứng tên nhánh trong tài liệu hay script.
-  - Mọi Pull Request nhắm vào `develop`. Chỉ merge `develop` → `main` khi chốt milestone.
+  - `main`: bản phát hành, chỉ nhận từ `develop` khi chốt milestone. `develop`: tích hợp.
+  - Tách nhánh từ `develop`: `feat/<scope>-<tên>` cho tính năng, `fix/<tên>` cho sửa lỗi. Không ghi cứng tên nhánh cụ thể trong tài liệu hay script.
+  - Mọi Pull Request nhắm vào `develop`; mỗi PR cập nhật mục `[Unreleased]` của `CHANGELOG.md` đúng nhóm (🚀 🛠️ 🐛 🔒 ⚠️).
   - KHÔNG ĐƯỢC push thẳng hay sửa lịch sử `develop`/`main`. Không tự merge PR.
   - Chỉ commit / push / tạo PR khi người dùng yêu cầu.
 - **Không bulk add:** KHÔNG ĐƯỢC `git add .`, `git add -A` không chọn lọc, `git commit -a`. Stage theo file/hunk và chia commit theo đơn vị logic. Kiểm tra `git status` trước khi commit để chắc không có file đã stage sẵn (ví dụ do `git mv`) lẫn vào commit khác.
@@ -166,7 +185,7 @@ npm run build        # next build — kiểm tra type + build production
 
 Làm xanh kết quả bằng cách che lỗi là không được chấp nhận. TUYỆT ĐỐI KHÔNG:
 
-- Dùng `# type: ignore`, `# noqa`, `cast(Any, …)` trong Python; `any`, `@ts-ignore`, `@ts-expect-error`, `as unknown as`, `eslint-disable` trong TypeScript.
+- Dùng `# type: ignore`, `# noqa`, `cast(Any, …)` trong Python; `any`, `@ts-ignore`, `@ts-expect-error`, `as unknown as`, `eslint-disable`, `biome-ignore` trong TypeScript.
 - Hạ mức kiểm tra trong `pyproject.toml` hay `tsconfig.json`: thêm `ignore`/`per-file-ignores`/`exclude` cho ruff, `ignore_errors`/`disable_error_code`/`overrides` nới lỏng cho mypy, tắt `strict` của TypeScript.
 - Sửa, xoá, `skip`/`xfail` test sẵn có chỉ để kết quả xanh. Test fail nghĩa là code sai, hoặc spec đổi — khi đó nêu rõ và được người dùng đồng ý trước. Chỉ được thêm test mới, hoặc đổi định dạng thuần tuý (do `ruff format`) mà không đổi AST.
 - Viết code tắt: placeholder, hàm rỗng, `pass`/`...` thay cho logic, `# TODO` mới (TODO hiện có duy nhất là optimistic locking Tuần 4 trong `routers/api.py`, đã được duyệt).
@@ -176,3 +195,35 @@ Làm xanh kết quả bằng cách che lỗi là không được chấp nhận. 
 - Tắt `RUF001`–`RUF003` nếu cần cho ký tự Tiếng Việt.
 
 Mọi ngoại lệ khác cần người dùng đồng ý riêng. Gặp lỗi lint/type không sửa được mà không vi phạm các quy tắc trên: **dừng lại, báo rõ lỗi còn lại và lý do**, để người dùng quyết định.
+
+## 8. Phát hành
+
+- Version theo SemVer 2.0.0; tag `vX.Y.Z[-alpha|beta|rc[.n]]`. Python dùng PEP 440 tương ứng (`0.1.0-alpha` ↔ `0.1.0a0`). Chạy `python scripts/check_versions.py` (kèm tag khi phát hành) để chắc `package.json`, `pyproject.toml`, `FastAPI(version=...)` và `CHANGELOG.md` khớp nhau.
+- Pre-release tag trên `develop`; bản ổn định chỉ tag trên commit là tổ tiên của `main`.
+- KHÔNG ĐƯỢC tự tạo tag hay release; việc này do người dùng thực hiện theo `docs/releases/README.md`.
+- Hoàn tất `docs/releases/RELEASE_CHECKLIST.md` (10/10) trước `v1.0.0-rc`.
+
+## 9. Giao thức đổi bất biến I1–I5
+
+Thay đổi chạm một bất biến PHẢI giữ các test cưỡng chế dưới đây xanh, và thêm test mới chứng minh bất biến vẫn đúng. Đổi chính bất biến cần ADR trong `docs/adr/` và người dùng đồng ý.
+
+| Bất biến | Test cưỡng chế |
+|---|---|
+| I1 | `tests/test_pipeline_twin_assembly.py`, `tests/test_pipeline_fallback.py`, `tests/test_sandbox_security.py`, `tests/test_sandbox_limits.py` |
+| I2 | `tests/test_pipeline_twin_assembly.py` (misconception lạ), `tests/test_domain_validators.py` |
+| I3 | `test_chunk_rejects_quote_not_in_text` trong `tests/test_schemas_and_gate.py` |
+| I4 | `tests/test_rr_template.py` + `python -m scripts.run_walkthrough` rồi `git diff --exit-code -- holocron/backend/examples` |
+| I5 | `tests/test_schemas_and_gate.py`, `tests/test_api_item_state.py`, `tests/test_i5_enforcement.py` (topic lạ, self-solve `SKIPPED`), `tests/test_input_limits.py`; phía frontend `src/lib/gate.test.ts` (`canApprove`) |
+| Phân tầng package (§2.2) | `tests/test_architecture.py` |
+
+## 10. Sổ nợ kỹ thuật
+
+Chi tiết và cách xử lý ở `docs/adr/004-engineering-discipline.md`. Không thêm nợ mới mà không ghi vào đây.
+
+| Mã | Nợ |
+|---|---|
+| FE-001 | 7 cảnh báo Biome ở `TableAuditor.tsx` (`noAutofocus`, `useSemanticElements`, `noArrayIndexKey`); hạn trước `v0.2.0-beta`. Sửa đổi hành vi UI nên cần test trước. |
+| BE-001 | `tests/` và `scripts/` chưa gõ kiểu: 29 lỗi `mypy --strict`. |
+| BE-002 | Ruleset ruff mở rộng (`E,F,W,I,B,UP,S,RUF,C4,SIM,PT`, bỏ `S101`): 27 vi phạm ở core + scripts, 45 nếu tính cả tests; xử lý ở PR riêng. |
+| BE-003 | Optimistic locking nguyên tử (Tuần 4); `# TODO` đã duyệt trong `routers/api.py`. |
+| BE-004 | Sandbox spawn một tiến trình cho mỗi lần chạy; cần pool tiến trình dựng sẵn và chạy song song seed. |

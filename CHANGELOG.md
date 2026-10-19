@@ -21,6 +21,7 @@ Tuần 2 Ngày 2 (nhánh `feat/week2-contracts-upload-frontend`, 4 commit tính 
 - Backend: coverage có nhánh (`pytest-cov`, `fail_under = 94`); `run_walkthrough` ghi file với `\n` để I4 giống từng byte trên Linux và Windows.
 - Frontend: Biome 2.5.15 (`npm run lint`) và vitest (`npm test`); áp định dạng thuần cho 3 file.
 - Version thống nhất `0.1.0-alpha` (npm) / `0.1.0a0` (Python, FastAPI).
+- Tài liệu: điền nội dung ADR 001–003, thêm ADR 004 (kỷ luật kỹ thuật) và `0000-template`; thêm `docs/releases/` (quy trình, checklist 10 mục, mẫu release notes); `.claude/CLAUDE.md` bổ sung cổng tự động, phát hành, giao thức đổi bất biến và sổ nợ.
 
 ### 🐛 Sửa lỗi
 - I5: `POST /v1/ingestion/items` với topic chưa hỗ trợ trả 422; item không có solver không thể AUTO_PASS.

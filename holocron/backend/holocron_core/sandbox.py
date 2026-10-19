@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import time
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -29,17 +31,51 @@ ALLOWED_IMPORTS: frozenset[str] = frozenset(
 )
 FORBIDDEN_CALL_NAMES: frozenset[str] = frozenset(
     {
-        "eval", "exec", "compile", "open", "__import__", "globals", "locals", "vars", "dir",
-        "getattr", "setattr", "delattr", "hasattr", "input", "breakpoint", "help", "exit",
-        "quit", "memoryview", "bytearray", "type", "object", "super", "classmethod",
-        "staticmethod", "property", "id", "hash", "print",
+        "eval",
+        "exec",
+        "compile",
+        "open",
+        "__import__",
+        "globals",
+        "locals",
+        "vars",
+        "dir",
+        "getattr",
+        "setattr",
+        "delattr",
+        "hasattr",
+        "input",
+        "breakpoint",
+        "help",
+        "exit",
+        "quit",
+        "memoryview",
+        "bytearray",
+        "type",
+        "object",
+        "super",
+        "classmethod",
+        "staticmethod",
+        "property",
+        "id",
+        "hash",
+        "print",
     }
 )
 FORBIDDEN_ATTR_NAMES: frozenset[str] = frozenset({"format", "format_map", "mro"})
 FORBIDDEN_ATTR_PREFIXES: tuple[str, ...] = ("_", "gi_", "cr_", "ag_", "f_", "tb_", "co_")
 FORBIDDEN_NODE_TYPES: tuple[type[ast.AST], ...] = (
-    ast.ClassDef, ast.AsyncFunctionDef, ast.AsyncFor, ast.AsyncWith, ast.Await,
-    ast.Global, ast.With, ast.Try, ast.TryStar, ast.Raise, ast.Delete,
+    ast.ClassDef,
+    ast.AsyncFunctionDef,
+    ast.AsyncFor,
+    ast.AsyncWith,
+    ast.Await,
+    ast.Global,
+    ast.With,
+    ast.Try,
+    ast.TryStar,
+    ast.Raise,
+    ast.Delete,
 )
 MAX_SOURCE_BYTES = 20_000
 MAX_AST_NODES = 6_000
@@ -72,9 +108,9 @@ class SandboxResult(BaseModel):
     message: str | None = None
     line: int | None = None
     violations: list[str] = Field(default_factory=list)
-    params: dict | None = None
-    solution: dict | None = None
-    distractors: list[dict] | None = None
+    params: dict[str, Any] | None = None
+    solution: dict[str, Any] | None = None
+    distractors: list[dict[str, Any]] | None = None
     stem: str | None = None
 
     @property
@@ -154,11 +190,18 @@ class ASTGuard(ast.NodeVisitor):
         return guard.violations
 
 
+def _child_env() -> dict[str, str]:
+    env = {"PYTHONHASHSEED": "0", "PYTHONIOENCODING": "utf-8"}
+    if sys.platform == "win32":
+        env["SYSTEMROOT"] = os.environ.get("SYSTEMROOT", r"C:\Windows")  # Windows không khởi động được Python nếu thiếu
+    return env
+
+
 def run_template(
     source: str,
     seed: int,
     limits: SandboxLimits | None = None,
-    params_override: dict | None = None,
+    params_override: dict[str, Any] | None = None,
 ) -> SandboxResult:
     """Chạy đủ hợp đồng (generate→validate→solve→distractors→stem).
 
@@ -191,20 +234,24 @@ def run_template(
                 input=request,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                check=False,
                 timeout=limits.wall_timeout_s,
                 cwd=workdir,
-                env={"PYTHONHASHSEED": "0", "PYTHONIOENCODING": "utf-8"},
+                env=_child_env(),
                 close_fds=True,
             )
         except subprocess.TimeoutExpired:
             return SandboxResult(
-                status=SandboxStatus.TIMEOUT, seed=seed, duration_ms=elapsed(),
+                status=SandboxStatus.TIMEOUT,
+                seed=seed,
+                duration_ms=elapsed(),
                 message=f"vượt {limits.wall_timeout_s}s wall-clock",
             )
 
     for raw in reversed(proc.stdout.splitlines()):
         if raw.startswith(RESULT_PREFIX):
-            payload = json.loads(raw[len(RESULT_PREFIX):])
+            payload = json.loads(raw[len(RESULT_PREFIX) :])
             status = SandboxStatus(payload.pop("status"))
             return SandboxResult(status=status, seed=seed, duration_ms=elapsed(), **payload)
 

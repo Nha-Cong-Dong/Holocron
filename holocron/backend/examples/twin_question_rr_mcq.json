@@ -1,5 +1,5 @@
 {
-  "twin_id": "twin_6ea846497aec491d",
+  "twin_id": "twin_0000000000004000",
   "blueprint_id": "bp_os_midterm_2025_de2",
   "slot_index": 7,
   "template_id": "tpl_os_rr_avg_wait_v1",
@@ -8,28 +8,28 @@
   "format": "MCQ4",
   "stem": "Cho các tiến trình sau được lập lịch trên một CPU bằng thuật toán **Round Robin** với lượng tử thời gian $q = 3$ ms. Bỏ qua chi phí chuyển ngữ cảnh.\n\n| Tiến trình | Thời điểm đến (ms) | Burst time (ms) |\n|---|---|---|\n| P1 | 0 | 4 |\n| P2 | 2 | 7 |\n| P3 | 4 | 3 |\n| P4 | 5 | 6 |\n\nThời gian chờ trung bình $\\overline{WT} = \\frac{1}{n}\\sum_{i}(CT_i - AT_i - BT_i)$ là bao nhiêu?",
   "options": {
-    "A": "11.25 ms",
+    "A": "4.50 ms",
     "B": "6.25 ms",
-    "C": "2.25 ms",
-    "D": "4.50 ms"
+    "C": "11.25 ms",
+    "D": "2.25 ms"
   },
   "correct_key": "B",
   "numerical_answer": null,
   "distractor_to_misconception_map": {
     "A": {
+      "misconception_code": "RR_TREATED_AS_FCFS",
+      "label_vi": "Coi Round Robin như FCFS",
+      "rationale_vi": "Bỏ qua time quantum, cho mỗi tiến trình chạy hết burst theo thứ tự đến (FCFS): tổng chờ = 18."
+    },
+    "C": {
       "misconception_code": "WAIT_CONFUSED_WITH_TURNAROUND",
       "label_vi": "Nhầm waiting time với turnaround time",
       "rationale_vi": "Lấy completion − arrival (turnaround) mà quên trừ burst time: tổng = 45."
     },
-    "C": {
+    "D": {
       "misconception_code": "WAIT_EQUALS_FIRST_RESPONSE",
       "label_vi": "Nhầm waiting time với response time",
       "rationale_vi": "Chỉ tính thời gian chờ đến lần đầu được cấp CPU (response time), bỏ qua các lần chờ lại sau khi bị ngắt: tổng = 9."
-    },
-    "D": {
-      "misconception_code": "RR_TREATED_AS_FCFS",
-      "label_vi": "Coi Round Robin như FCFS",
-      "rationale_vi": "Bỏ qua time quantum, cho mỗi tiến trình chạy hết burst theo thứ tự đến (FCFS): tổng chờ = 18."
     }
   },
   "solution_explanation_vi": "Gantt: P1[0-3] | P2[3-6] | P1[6-7] | P3[7-10] | P4[10-13] | P2[13-16] | P4[16-19] | P2[19-20]. P1: CT=7, TAT=7, WT=3; P2: CT=20, TAT=18, WT=11; P3: CT=10, TAT=6, WT=3; P4: CT=19, TAT=14, WT=8. WT trung bình = 25/4 = 6.25 ms.",
@@ -40,12 +40,12 @@
     "chunk_id": "chk_os05_rr_definition"
   },
   "trace": {
-    "sandbox_duration_ms": 140,
+    "sandbox_duration_ms": 42,
     "llm_attempts": 1,
     "seed_rerolls": 1,
-    "template_sha256": "8aa7f5880d862382f9180329dfb2fe95fed424e640f95a40be3184ef7cb85208",
+    "template_sha256": "3c96f92760e5566feea98a2e7608ab09335b2e40d75fc051ca5ea456d14b47a9",
     "provenance": "llm_generated"
   },
   "review_status": "AUTO_PASS",
-  "generated_at": "2026-10-19T01:26:20.020483Z"
+  "generated_at": "2026-01-01T00:00:00Z"
 }

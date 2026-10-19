@@ -17,8 +17,16 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .sandbox import SandboxStatus, run_template
-from .schemas import OptionKey, QuestionTemplate, SelfSolveResult
+from ..domain.schemas import (
+    MAX_PROCESSES,
+    CPUSchedulingProblem,
+    OptionKey,
+    ProcessItem,
+    QuestionTemplate,
+    SchedulingAlgorithm,
+    SelfSolveResult,
+)
+from ..sandbox.sandbox import SandboxStatus, run_template
 
 CELL_CONFIDENCE_MIN = 0.85
 
@@ -207,6 +215,16 @@ def check_table(
                     )
                 )
 
+    if schema is not None and primary.n_rows > MAX_PROCESSES:
+        issues.append(
+            GateIssue(
+                code="OUT_OF_RANGE",
+                severity=Severity.BLOCKING,
+                row=MAX_PROCESSES,
+                message_vi=f"Bảng có {primary.n_rows} dòng, tối đa {MAX_PROCESSES} tiến trình.",
+            )
+        )
+
     labels_seen: dict[str, int] = {}
     for row in range(primary.n_rows):
         for col in range(len(primary.headers)):
@@ -350,23 +368,33 @@ def apply_patches(table: ExtractedTable, patches: list[CellPatch], editor_id: st
 # --------------------------------------------------------------------------- #
 
 
+TOPIC_ALGORITHMS: dict[str, SchedulingAlgorithm] = {
+    "os.cpu_sched.rr.avg_waiting_time": SchedulingAlgorithm.RR,
+}
+
+
+def table_to_problem(topic_key: str, table: ExtractedTable, quantum: int | None) -> CPUSchedulingProblem:
+    """Chuyển bảng đã qua gate thành `CPUSchedulingProblem`. Ném ValueError nếu bảng hoặc tham số còn lỗi."""
+    algorithm = TOPIC_ALGORITHMS.get(topic_key)
+    if algorithm is None:
+        raise ValueError(f"chưa có bộ chuyển đổi bảng cho topic {topic_key}")
+    processes: list[ProcessItem] = []
+    for row in range(table.n_rows):
+        name_cell, at_cell, bt_cell = (table.cell(row, c) for c in range(3))
+        if name_cell is None or at_cell is None or bt_cell is None:
+            raise ValueError(f"dòng {row} thiếu ô")
+        at, bt = _parse_int(at_cell.text), _parse_int(bt_cell.text)
+        if at is None or bt is None:
+            raise ValueError(f"dòng {row} có ô không phải số")
+        processes.append(ProcessItem(name=name_cell.text, arrival_time=at, burst_time=bt))
+    return CPUSchedulingProblem(algorithm=algorithm, processes=processes, quantum=quantum)
+
+
 def table_to_params(topic_key: str, table: ExtractedTable, extra: dict[str, Any]) -> dict[str, Any]:
     """Chuyển bảng đã qua gate thành params cho solve(). Ném ValueError nếu bảng còn lỗi."""
-    if topic_key == "os.cpu_sched.rr.avg_waiting_time":
-        names, arrivals, bursts = [], [], []
-        for row in range(table.n_rows):
-            name_cell, at_cell, bt_cell = (table.cell(row, c) for c in range(3))
-            if name_cell is None or at_cell is None or bt_cell is None:
-                raise ValueError(f"dòng {row} thiếu ô")
-            at, bt = _parse_int(at_cell.text), _parse_int(bt_cell.text)
-            if at is None or bt is None:
-                raise ValueError(f"dòng {row} có ô không phải số")
-            names.append(name_cell.text.strip())
-            arrivals.append(at)
-            bursts.append(bt)
-        quantum = int(extra["quantum"])
-        return {"names": names, "arrivals": arrivals, "bursts": bursts, "quantum": quantum}
-    raise ValueError(f"chưa có bộ chuyển đổi bảng cho topic {topic_key}")
+    quantum = extra.get("quantum")
+    problem = table_to_problem(topic_key, table, int(quantum) if quantum is not None else None)
+    return dict(problem.to_template_params())
 
 
 def _first_number(text: str) -> float | None:

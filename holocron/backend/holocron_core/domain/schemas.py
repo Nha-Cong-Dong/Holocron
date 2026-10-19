@@ -212,6 +212,71 @@ class DistractorArchetype(StrictModel):
     reproduction_confidence: float = Field(ge=0.0, le=1.0)
 
 
+class SolverInputs(BaseModel):
+    """Tham số đề bài nằm ngoài bảng (vd. time quantum của Round Robin).
+
+    Field được phép vắng mặt (gate sẽ báo BLOCKING "chưa thể tự giải"), nhưng nếu client gửi
+    tường minh thì phải đúng kiểu — `null` bị từ chối ngay ở tầng validate (HTTP 422).
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    quantum: int | None = Field(default=None, gt=0)
+
+    @field_validator("quantum", mode="before")
+    @classmethod
+    def _reject_explicit_null(cls, v: object) -> object:
+        if v is None:
+            raise ValueError("quantum không được là null; bỏ trống field nếu chưa có giá trị")
+        return v
+
+
+class SchedulingAlgorithm(str, Enum):
+    RR = "RR"
+    SJF = "SJF"
+
+
+MAX_PROCESSES = 10
+
+
+class ProcessItem(StrictModel):
+    """Một dòng của bảng tiến trình sau khi đã qua Ingestion Gate."""
+
+    name: str = Field(min_length=1, max_length=32)
+    arrival_time: int = Field(ge=0, le=200)
+    burst_time: int = Field(ge=1, le=100)
+
+
+class CPUSchedulingProblem(StrictModel):
+    """Đề CPU Scheduling đã chuẩn hoá — đầu vào duy nhất mà sandbox `solve()` nhận cho nhóm topic này."""
+
+    algorithm: SchedulingAlgorithm
+    processes: list[ProcessItem] = Field(min_length=1, max_length=MAX_PROCESSES)
+    quantum: int | None = Field(default=None, ge=1, le=20)
+
+    @model_validator(mode="after")
+    def _rules(self) -> CPUSchedulingProblem:
+        if self.algorithm is SchedulingAlgorithm.RR and self.quantum is None:
+            raise ValueError("Round Robin bắt buộc có quantum")
+        if self.algorithm is SchedulingAlgorithm.SJF and self.quantum is not None:
+            raise ValueError("SJF không dùng quantum")
+        names = [_collapse_ws(p.name).lower() for p in self.processes]
+        if len(names) != len(set(names)):
+            raise ValueError("tên tiến trình bị trùng")
+        return self
+
+    def to_template_params(self) -> dict[str, list[str] | list[int] | int]:
+        """Dạng params mà Executable Template của nhóm CPU Scheduling nhận (xem SPECIFICATION §8)."""
+        params: dict[str, list[str] | list[int] | int] = {
+            "names": [p.name for p in self.processes],
+            "arrivals": [p.arrival_time for p in self.processes],
+            "bursts": [p.burst_time for p in self.processes],
+        }
+        if self.quantum is not None:
+            params["quantum"] = self.quantum
+        return params
+
+
 class SelfSolveResult(StrictModel):
     status: Literal["MATCHED", "NO_MATCH", "AMBIGUOUS", "SKIPPED"]
     solved_answer_display: str | None = None

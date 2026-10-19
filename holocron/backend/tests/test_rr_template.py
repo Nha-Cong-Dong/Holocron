@@ -1,7 +1,7 @@
 from fractions import Fraction
 
-from holocron_core.sandbox import SandboxStatus, run_template
-from holocron_core.template_library import load_template_source
+from holocron_core.infrastructure.template_library import load_template_source
+from holocron_core.sandbox.sandbox import SandboxStatus, run_template
 
 SRC = load_template_source("os_rr_avg_waiting.py")
 

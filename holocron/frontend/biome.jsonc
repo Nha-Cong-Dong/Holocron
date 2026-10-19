@@ -1,0 +1,26 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true, "root": "../.." },
+  "files": {
+    "includes": ["src/**", "*.ts", "*.json", "*.jsonc", "!package-lock.json", "!tsconfig.tsbuildinfo", "!next-env.d.ts"]
+  },
+  "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2, "lineWidth": 120, "lineEnding": "lf" },
+  "javascript": { "formatter": { "quoteStyle": "double", "semicolons": "always", "trailingCommas": "all" } },
+  "assist": { "actions": { "source": { "organizeImports": "on" } } },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "suspicious": {
+        "noExplicitAny": "error",
+        "noTsIgnore": "error",
+        "noConsole": "error",
+        "noArrayIndexKey": "warn"
+      },
+      "style": { "noNonNullAssertion": "error", "useImportType": "error" },
+      "correctness": { "noUnusedImports": "error", "noUnusedVariables": "error", "useExhaustiveDependencies": "error" },
+      // NỢ FE-001 (7 chỗ trong TableAuditor.tsx), để warn tới khi sửa, hạn trước v0.2.0-beta. Cấm thêm rule vào danh sách này nếu chưa có ADR.
+      "a11y": { "noAutofocus": "warn", "useSemanticElements": "warn" }
+    }
+  }
+}

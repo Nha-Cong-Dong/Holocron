@@ -6,6 +6,7 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 ## [Unreleased]
 
 ### 🚀 Tính năng mới
+- `POST /v1/blueprints/{id}/twins`: sinh `TwinBatch` (`count` 1–10, `base_seed` mặc định từ sha256 của `blueprint_id`, `Idempotency-Key` 24 h, 404/409/422; slot không sinh được vào `review_tickets`, không trả 5xx); `services/twin_batch.py`, kho blueprint trong `IngestionStore`, kiểm lại I5 theo item gắn với blueprint; `types/holocron.ts` bổ sung `TwinBatch`, `TwinBatchRequest`, `ReviewTicket`, `AttemptLog`. `POST /v1/blueprints` chưa triển khai (xem spec §6.3).
 - `GanttSegment` và `TwinQuestion.gantt` (validator: không rỗng với topic CPU Scheduling, sắp theo `start`, không chồng lấn); `solve()` của template RR trả `gantt` đúng dạng `{"process", "start", "end"}` của spec §8.1; sandbox kiểm kiểu `gantt`; `types/holocron.ts` bổ sung `GanttSegment`.
 
 ### 🛠️ Cải tiến & Tối ưu

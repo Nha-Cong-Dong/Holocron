@@ -328,7 +328,7 @@ class TwinQuestion(StrictModel):
 
 Quy tắc MCQ4: `correct_key ∉ distractor_to_misconception_map` và map phủ đúng 3 phương án còn lại (I2). NUMERICAL: không có `options`/`correct_key`, bắt buộc `numerical_answer.tolerance_abs`.
 
-### 5.6 Bổ sung chốt cho Tuần 2 Ngày 3 (`GanttSegment` và `TwinQuestion.gantt` đã có trong code; các model còn lại chưa)
+### 5.6 Bổ sung chốt cho Tuần 2 Ngày 3 (`GanttSegment`, `TwinQuestion.gantt`, `TwinBatchRequest` và `TwinBatch` đã có trong code; `BlueprintCreate` chưa)
 
 ```python
 class GanttSegment(StrictModel):
@@ -486,6 +486,14 @@ Kích hoạt sandbox sinh bộ Twin Questions cho mọi slot của blueprint.
 ```
 
 **Lỗi:** 404 blueprint; 409 blueprint chứa item mất trạng thái duyệt; 422 body sai. Lỗi template/sandbox KHÔNG trả 5xx — chúng đi vào `review_tickets`.
+
+**Trạng thái triển khai (`routers/api.py`, `services/twin_batch.py`):**
+- `POST /v1/blueprints/{id}/twins` đã triển khai theo đúng các điểm trên. `POST /v1/blueprints` CHƯA: `ExamBlueprint`/`BlueprintSlot` có field bắt buộc (`subject_code`, `chapter_code`, `cognitive_level`, `mapping_confidence`, `distractor_archetypes`) mà `IngestionItem` không có nguồn, và spec chưa định nghĩa nguồn đó. Hiện blueprint chỉ nạp được qua `IngestionStore.save_blueprint(blueprint, item_ids)` (dùng trong test).
+- 409 kiểm mọi item gắn với blueprint (`item_ids` lưu ở store): thiếu, chưa `approved` hoặc `non_cloneable` đều là 409 (I5).
+- `Idempotency-Key` có phạm vi theo `blueprint_id`; cùng key và cùng body (so sánh sau khi áp giá trị mặc định) trong 24 h trả lại đúng batch cũ, không chạy lại sandbox. Cùng key nhưng khác body được coi là request mới và không ghi đè bản ghi cũ (spec chưa định nghĩa trường hợp này).
+- `format` của request ghi đè `format` của slot cho cả batch (spec chưa nói rõ).
+- Mỗi slot không sinh được cho ra tối đa một `ReviewTicket`. Phụ thuộc ngoài đi qua `Protocol`: `CitationProvider` (mặc định `NoCitationProvider`, chưa có Knowledge Vault ⇒ mọi slot vào `review_tickets` với lý do thiếu nguồn trích dẫn) và `TemplateAuthor` (mặc định `UnconfiguredTemplateAuthor`, chưa có adapter LLM ⇒ pipeline rơi về template pre-computed, twin `AUTO_FALLBACK`).
+- **Vấn đề đã biết:** bước giữa các twin (`k·7919`) trùng bước re-roll seed (`7919`, §10), nên các twin trong cùng batch thường trùng seed và trùng đề (đo trên 30 batch × 3 twin của template RR: 27 batch có seed trùng, 46/90 twin bị nhân đôi). Xem R6 ở §17.
 
 ### 6.4 Các endpoint khác (đã triển khai)
 
@@ -667,8 +675,10 @@ Backend PHẢI chỉ lắng nghe `127.0.0.1` trong bản local-first.
 | T2-N1 | Schemas, sandbox, template RR, Gate API | Xong |
 | T2-N2 | Spec v0.3; upload + mock dual-pass; `CPUSchedulingProblem`; Frontend Ingestion (upload, Table Auditor) | Xong |
 | T2-N3 | `solve()` của template RR trả `gantt` đúng dạng §8.1; `GanttSegment` và `TwinQuestion.gantt` (§5.6) | Xong |
-| T2-N3 | Template SJF; `llm_config.py`; `POST /v1/blueprints` | Kế hoạch |
-| T2-N4 | `POST /v1/blueprints/{id}/twins`; Twin Viewer + Gantt chart trên Frontend | Kế hoạch |
+| T2-N3 | Template SJF; `llm_config.py` | Kế hoạch |
+| T2-N3 | `POST /v1/blueprints` | Kế hoạch (chưa đủ chi tiết về nguồn dữ liệu của slot, xem §6.3) |
+| T2-N4 | `POST /v1/blueprints/{id}/twins` | Xong, với nguồn trích dẫn và author mặc định chưa cấu hình (§6.3) |
+| T2-N4 | Twin Viewer + Gantt chart trên Frontend | Kế hoạch |
 | T2-N5 | Adapter VLM thật cho dual-pass; pool tiến trình sandbox | Kế hoạch |
 | Tuần 3 | Golden Flow end-to-end trên 5 đề thật; đo p95 (G3) | Kế hoạch |
 | Tuần 4 | SQLite + optimistic locking nguyên tử; Paging FIFO/LRU, Banker; Vault đa môn; đóng gói Tauri | Kế hoạch |
@@ -682,6 +692,7 @@ Backend PHẢI chỉ lắng nghe `127.0.0.1` trong bản local-first.
 | R3 | VLM đọc sai chữ số viết tay | Dual-pass + self-solve mismatch + người dùng xác nhận |
 | R4 | Nhà cung cấp LLM mặc định không có model thị giác | Cấu hình VLM tách riêng (§11.2); fallback mock có nhãn demo |
 | R5 | Tên model của nhà cung cấp thay đổi/ngừng phục vụ | Tên model là cấu hình, không hard-code |
+| R6 | Các twin trong cùng batch trùng seed (bước `k·7919` trùng bước re-roll `7919`) ⇒ đề trùng nhau | Chưa quyết định cách sửa (ví dụ bước giữa các twin lớn hơn `7919 × 40`); cần quyết định trước khi UI hiển thị batch |
 | D1 | Người dùng có được sửa template không? | **Không** trong MVP; chỉ sửa dữ liệu đề qua Gate |
 | D2 | Mã HTTP cho xung đột trạng thái | 409 cho xung đột version/duyệt; 400 cho vi phạm luật non-cloneable (đã chốt ở Tuần 2) |
 

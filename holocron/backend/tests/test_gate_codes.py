@@ -1,5 +1,6 @@
 """Mọi mã issue của Ingestion Gate và các nhánh lỗi của PATCH/approve."""
 
+from collections.abc import Sequence
 from typing import Any
 
 import pytest
@@ -20,7 +21,7 @@ RR_TOPIC = "os.cpu_sched.rr.avg_waiting_time"
 HEADERS = ["Tiến trình", "Thời điểm đến", "Burst time"]
 
 
-def _table(rows: list[tuple[str, str, str]], *, headers: list[str] | None = None, conf: float = 0.97) -> ExtractedTable:
+def _table(rows: Sequence[tuple[str, ...]], *, headers: list[str] | None = None, conf: float = 0.97) -> ExtractedTable:
     cells = [
         ExtractedCell(row=r, col=c, text=t, confidence=conf) for r, row in enumerate(rows) for c, t in enumerate(row)
     ]

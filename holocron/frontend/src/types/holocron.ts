@@ -202,6 +202,13 @@ export interface IngestionItem {
   approved: boolean;
 }
 
+/** `GET /v1/runtime`: chỉ cờ boolean, không có khoá API, tên model hay endpoint. */
+export interface RuntimeInfo {
+  demo_mode: boolean;
+  llm_configured: boolean;
+  vlm_configured: boolean;
+}
+
 export interface UploadResponse {
   document: UploadedDocument;
   item: IngestionItem;

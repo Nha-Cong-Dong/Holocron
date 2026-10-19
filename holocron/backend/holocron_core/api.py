@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
@@ -38,7 +39,7 @@ class IngestionItemCreate(BaseModel):
     table_primary: ExtractedTable
     table_secondary: ExtractedTable | None = None
     page_text_layer: str | None = None
-    solver_inputs: dict = Field(default_factory=dict)
+    solver_inputs: dict[str, Any] = Field(default_factory=dict)
 
 
 class IngestionItem(IngestionItemCreate):
@@ -79,11 +80,14 @@ def _recompute(item: IngestionItem) -> IngestionItem:
             item.self_solve = rerun_self_solve(solver, params, item.options)
         except (ValueError, KeyError) as exc:
             item.self_solve = SelfSolveResult(status="SKIPPED", solver_confidence=0.0)
-            pre_issues.append(GateIssue(code="NOT_A_NUMBER", severity=Severity.BLOCKING,
-                                        message_vi=f"Chưa thể tự giải: {exc}"))
-    issues = pre_issues + check_table(
-        item.topic_key, item.table_primary, item.table_secondary, item.page_text_layer, item.self_solve
-    ) + latex_issues(item.stem_latex)
+            pre_issues.append(
+                GateIssue(code="NOT_A_NUMBER", severity=Severity.BLOCKING, message_vi=f"Chưa thể tự giải: {exc}")
+            )
+    issues = (
+        pre_issues
+        + check_table(item.topic_key, item.table_primary, item.table_secondary, item.page_text_layer, item.self_solve)
+        + latex_issues(item.stem_latex)
+    )
     item.report = GateReport(
         table_id=item.table_primary.table_id,
         table_version=item.table_primary.version,
@@ -151,7 +155,9 @@ def flag_non_cloneable(item_id: str, body: NonCloneableRequest) -> IngestionItem
 def approve(item_id: str) -> IngestionItem:
     item = _get(item_id)
     if item.report is None or item.report.status is GateStatus.BLOCKED:
-        blocking = [i.message_vi for i in (item.report.issues if item.report else []) if i.severity is Severity.BLOCKING]
+        blocking = [
+            i.message_vi for i in (item.report.issues if item.report else []) if i.severity is Severity.BLOCKING
+        ]
         raise HTTPException(status_code=409, detail={"message": "còn lỗi BLOCKING", "issues": blocking})
     item.approved = True
     return item

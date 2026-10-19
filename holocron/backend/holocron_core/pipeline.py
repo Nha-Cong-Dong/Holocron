@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import random
 from collections import Counter
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -78,9 +78,9 @@ def _seed_sequence(base_seed: int) -> list[int]:
 
 def _run_with_rerolls(
     template: QuestionTemplate, base_seed: int, limits: SandboxLimits
-) -> tuple[SandboxResult | None, SandboxResult | None, int, Counter]:
+) -> tuple[SandboxResult | None, SandboxResult | None, int, Counter[str]]:
     """Trả về (kết_quả_ok, lỗi_code_đầu_tiên, số_seed_đã_thử, histogram assert)."""
-    histogram: Counter = Counter()
+    histogram: Counter[str] = Counter()
     tried = 0
     for seed in _seed_sequence(base_seed):
         tried += 1
@@ -101,12 +101,14 @@ def _feedback_from_error(err: SandboxResult) -> list[str]:
     return [f"{err.status.value.upper()}{where}: {err.message}"]
 
 
-def _feedback_ill_posed(histogram: Counter, tried: int) -> list[str]:
+def _feedback_ill_posed(histogram: Counter[str], tried: int) -> list[str]:
     top = ", ".join(f"{k}×{v}" for k, v in histogram.most_common(3))
     return [
-        f"ILL_POSED: 0/{tried} seed vượt qua validate(). Assert hay vi phạm nhất: {top}. "
-        "Hãy thu hẹp miền sinh biến trong generate_params() để thoả các assert này thường xuyên hơn; "
-        "KHÔNG được xoá assert."
+        (
+            f"ILL_POSED: 0/{tried} seed vượt qua validate(). Assert hay vi phạm nhất: {top}. "
+            "Hãy thu hẹp miền sinh biến trong generate_params() để thoả các assert này thường xuyên hơn; "
+            "KHÔNG được xoá assert."
+        )
     ]
 
 
@@ -131,19 +133,19 @@ def build_twin(
         template_sha256=template.source_sha256,
         provenance=template.provenance,
     )
-    common = dict(
-        blueprint_id=blueprint_id,
-        slot_index=slot_index,
-        template_id=template.template_id,
-        topic_key=template.topic_key,
-        seed=result.seed,
-        format=fmt,
-        stem=result.stem,
-        solution_explanation_vi=result.solution["explanation_vi"],
-        citation=citation,
-        trace=trace,
-        review_status=review_status,
-    )
+    common = {
+        "blueprint_id": blueprint_id,
+        "slot_index": slot_index,
+        "template_id": template.template_id,
+        "topic_key": template.topic_key,
+        "seed": result.seed,
+        "format": fmt,
+        "stem": result.stem,
+        "solution_explanation_vi": result.solution["explanation_vi"],
+        "citation": citation,
+        "trace": trace,
+        "review_status": review_status,
+    }
     if fmt is QuestionFormat.NUMERICAL:
         return TwinQuestion(
             **common,
@@ -155,7 +157,7 @@ def build_twin(
             ),
         )
 
-    entries: list[tuple[str, dict | None]] = [(result.solution["display"], None)]
+    entries: list[tuple[str, dict[str, Any] | None]] = [(result.solution["display"], None)]
     entries += [(d["display"], d) for d in result.distractors]
     shuffle_rng = random.Random(f"{template.source_sha256}:{result.seed}")
     shuffle_rng.shuffle(entries)
@@ -193,8 +195,11 @@ def produce_twin(
     if slot.non_cloneable:
         return ProductionOutcome(
             ticket=ReviewTicket(
-                blueprint_id=blueprint_id, slot_index=slot.slot_index, topic_key=slot.topic_key,
-                reason=f"non_cloneable: {slot.non_cloneable_reason}", attempts=[],
+                blueprint_id=blueprint_id,
+                slot_index=slot.slot_index,
+                topic_key=slot.topic_key,
+                reason=f"non_cloneable: {slot.non_cloneable_reason}",
+                attempts=[],
             ),
             attempts=[],
         )
@@ -205,50 +210,86 @@ def produce_twin(
             template = author.author(slot, feedback)
         except ValueError as exc:
             feedback = [f"SCHEMA_INVALID: {exc}"]
-            attempts.append(AttemptLog(
-                attempt=attempt, provenance=TemplateProvenance.LLM_GENERATED, template_sha256=None,
-                outcome="schema_invalid", seeds_tried=0, feedback_sent=feedback,
-            ))
+            attempts.append(
+                AttemptLog(
+                    attempt=attempt,
+                    provenance=TemplateProvenance.LLM_GENERATED,
+                    template_sha256=None,
+                    outcome="schema_invalid",
+                    seeds_tried=0,
+                    feedback_sent=feedback,
+                )
+            )
             continue
         ok, err, tried, hist = _run_with_rerolls(template, base_seed, limits)
         if ok is not None:
-            attempts.append(AttemptLog(
-                attempt=attempt, provenance=template.provenance, template_sha256=template.source_sha256,
-                outcome="ok", seeds_tried=tried, assertion_histogram=dict(hist),
-            ))
+            attempts.append(
+                AttemptLog(
+                    attempt=attempt,
+                    provenance=template.provenance,
+                    template_sha256=template.source_sha256,
+                    outcome="ok",
+                    seeds_tried=tried,
+                    assertion_histogram=dict(hist),
+                )
+            )
             twin = build_twin(
-                template, ok, blueprint_id=blueprint_id, slot_index=slot.slot_index, fmt=slot.format,
-                citation=citation, llm_attempts=attempt, seed_rerolls=tried - 1,
+                template,
+                ok,
+                blueprint_id=blueprint_id,
+                slot_index=slot.slot_index,
+                fmt=slot.format,
+                citation=citation,
+                llm_attempts=attempt,
+                seed_rerolls=tried - 1,
                 review_status=ReviewStatus.AUTO_PASS,
             )
             return ProductionOutcome(twin=twin, attempts=attempts)
         feedback = _feedback_from_error(err) if err is not None else _feedback_ill_posed(hist, tried)
-        attempts.append(AttemptLog(
-            attempt=attempt, provenance=template.provenance, template_sha256=template.source_sha256,
-            outcome=(err.status.value if err is not None else "ill_posed"), seeds_tried=tried,
-            assertion_histogram=dict(hist), feedback_sent=feedback,
-        ))
+        attempts.append(
+            AttemptLog(
+                attempt=attempt,
+                provenance=template.provenance,
+                template_sha256=template.source_sha256,
+                outcome=(err.status.value if err is not None else "ill_posed"),
+                seeds_tried=tried,
+                assertion_histogram=dict(hist),
+                feedback_sent=feedback,
+            )
+        )
 
     fallback = registry.get_verified(slot.topic_key)
     if fallback is not None:
         ok, err, tried, hist = _run_with_rerolls(fallback, base_seed, limits)
-        attempts.append(AttemptLog(
-            attempt=LLM_ATTEMPT_BUDGET + 1, provenance=fallback.provenance,
-            template_sha256=fallback.source_sha256,
-            outcome="ok" if ok is not None else (err.status.value if err is not None else "ill_posed"),
-            seeds_tried=tried, assertion_histogram=dict(hist),
-        ))
+        attempts.append(
+            AttemptLog(
+                attempt=LLM_ATTEMPT_BUDGET + 1,
+                provenance=fallback.provenance,
+                template_sha256=fallback.source_sha256,
+                outcome="ok" if ok is not None else (err.status.value if err is not None else "ill_posed"),
+                seeds_tried=tried,
+                assertion_histogram=dict(hist),
+            )
+        )
         if ok is not None:
             twin = build_twin(
-                fallback, ok, blueprint_id=blueprint_id, slot_index=slot.slot_index, fmt=slot.format,
-                citation=citation, llm_attempts=LLM_ATTEMPT_BUDGET, seed_rerolls=tried - 1,
+                fallback,
+                ok,
+                blueprint_id=blueprint_id,
+                slot_index=slot.slot_index,
+                fmt=slot.format,
+                citation=citation,
+                llm_attempts=LLM_ATTEMPT_BUDGET,
+                seed_rerolls=tried - 1,
                 review_status=ReviewStatus.AUTO_FALLBACK,
             )
             return ProductionOutcome(twin=twin, attempts=attempts)
 
     return ProductionOutcome(
         ticket=ReviewTicket(
-            blueprint_id=blueprint_id, slot_index=slot.slot_index, topic_key=slot.topic_key,
+            blueprint_id=blueprint_id,
+            slot_index=slot.slot_index,
+            topic_key=slot.topic_key,
             reason="hết LLM retry budget và không có/không chạy được template pre-computed",
             attempts=attempts,
         ),

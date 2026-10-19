@@ -1,6 +1,6 @@
 import pytest
 
-from holocron_core.sandbox import ASTGuard, SandboxLimits, SandboxStatus, run_template
+from holocron_core.sandbox.sandbox import ASTGuard, SandboxLimits, SandboxStatus, run_template
 
 ENTRY_TAIL = (
     "\ndef validate(p):\n    assert True\n"

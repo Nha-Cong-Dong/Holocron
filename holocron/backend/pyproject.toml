@@ -11,10 +11,11 @@ dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.4", "mypy>=1.10"]
 include = ["holocron_core*"]
 
 [tool.setuptools.package-data]
-holocron_core = ["templates/*.py"]
+holocron_core = ["infrastructure/templates/*.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 
 [tool.ruff]
 line-length = 120

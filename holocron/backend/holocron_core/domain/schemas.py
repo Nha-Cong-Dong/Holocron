@@ -212,6 +212,25 @@ class DistractorArchetype(StrictModel):
     reproduction_confidence: float = Field(ge=0.0, le=1.0)
 
 
+class SolverInputs(BaseModel):
+    """Tham số đề bài nằm ngoài bảng (vd. time quantum của Round Robin).
+
+    Field được phép vắng mặt (gate sẽ báo BLOCKING "chưa thể tự giải"), nhưng nếu client gửi
+    tường minh thì phải đúng kiểu — `null` bị từ chối ngay ở tầng validate (HTTP 422).
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    quantum: int | None = Field(default=None, gt=0)
+
+    @field_validator("quantum", mode="before")
+    @classmethod
+    def _reject_explicit_null(cls, v: object) -> object:
+        if v is None:
+            raise ValueError("quantum không được là null; bỏ trống field nếu chưa có giá trị")
+        return v
+
+
 class SelfSolveResult(StrictModel):
     status: Literal["MATCHED", "NO_MATCH", "AMBIGUOUS", "SKIPPED"]
     solved_answer_display: str | None = None

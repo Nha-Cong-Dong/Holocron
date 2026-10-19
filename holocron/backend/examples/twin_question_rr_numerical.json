@@ -1,5 +1,5 @@
 {
-  "twin_id": "twin_e1e8ae64811742f9",
+  "twin_id": "twin_0000000000004000",
   "blueprint_id": "bp_os_midterm_2025_de2",
   "slot_index": 7,
   "template_id": "tpl_os_rr_avg_wait_v1",
@@ -24,12 +24,12 @@
     "chunk_id": "chk_os05_rr_definition"
   },
   "trace": {
-    "sandbox_duration_ms": 143,
+    "sandbox_duration_ms": 42,
     "llm_attempts": 1,
     "seed_rerolls": 1,
     "template_sha256": "8aa7f5880d862382f9180329dfb2fe95fed424e640f95a40be3184ef7cb85208",
     "provenance": "llm_generated"
   },
   "review_status": "AUTO_PASS",
-  "generated_at": "2026-10-19T01:26:20.315833Z"
+  "generated_at": "2026-01-01T00:00:00Z"
 }

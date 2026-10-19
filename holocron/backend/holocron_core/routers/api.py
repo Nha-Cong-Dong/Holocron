@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from .ingestion_gate import (
+from ..domain.schemas import OptionKey, SelfSolveResult, SolverInputs
+from ..infrastructure.template_library import InMemoryTemplateRegistry
+from ..services.ingestion_gate import (
     CellPatch,
     ExtractedTable,
     GateIssue,
@@ -23,8 +24,6 @@ from .ingestion_gate import (
     rerun_self_solve,
     table_to_params,
 )
-from .schemas import OptionKey, SelfSolveResult
-from .template_library import InMemoryTemplateRegistry
 
 app = FastAPI(title="Holocron Ingestion Gate", version="0.2.0")
 REGISTRY = InMemoryTemplateRegistry()
@@ -39,7 +38,7 @@ class IngestionItemCreate(BaseModel):
     table_primary: ExtractedTable
     table_secondary: ExtractedTable | None = None
     page_text_layer: str | None = None
-    solver_inputs: dict[str, Any] = Field(default_factory=dict)
+    solver_inputs: SolverInputs = Field(default_factory=SolverInputs)
 
 
 class IngestionItem(IngestionItemCreate):
@@ -76,7 +75,9 @@ def _recompute(item: IngestionItem) -> IngestionItem:
     pre_issues: list[GateIssue] = []
     if solver is not None:
         try:
-            params = table_to_params(item.topic_key, item.table_primary, item.solver_inputs)
+            params = table_to_params(
+                item.topic_key, item.table_primary, item.solver_inputs.model_dump(exclude_none=True)
+            )
             item.self_solve = rerun_self_solve(solver, params, item.options)
         except (ValueError, KeyError) as exc:
             item.self_solve = SelfSolveResult(status="SKIPPED", solver_confidence=0.0)
@@ -106,7 +107,7 @@ def _get(item_id: str) -> IngestionItem:
 
 @app.post("/v1/ingestion/items", response_model=IngestionItem, status_code=201)
 def create_item(body: IngestionItemCreate) -> IngestionItem:
-    item = IngestionItem(item_id=f"ing_{uuid4().hex[:12]}", **body.model_dump())
+    item = IngestionItem(item_id=f"ing_{uuid4().hex[:12]}", **body.model_dump(exclude_unset=True))
     STORE[item.item_id] = _recompute(item)
     return STORE[item.item_id]
 
@@ -121,6 +122,7 @@ def patch_table(item_id: str, body: TablePatchRequest) -> IngestionItem:
     item = _get(item_id)
     if item.approved:
         raise HTTPException(status_code=409, detail="item đã approve, không sửa được")
+    # TODO (Week 4): Implement atomic optimistic locking using SQLAlchemy version_id_col when migrating to database.
     if body.expected_version != item.table_primary.version:
         raise HTTPException(status_code=409, detail=f"version lệch: hiện tại {item.table_primary.version}")
     try:
@@ -146,6 +148,8 @@ def patch_stem(item_id: str, body: StemPatchRequest) -> IngestionItem:
 @app.post("/v1/ingestion/items/{item_id}/non-cloneable", response_model=IngestionItem)
 def flag_non_cloneable(item_id: str, body: NonCloneableRequest) -> IngestionItem:
     item = _get(item_id)
+    if item.approved:
+        raise HTTPException(status_code=400, detail="item đã approve, không thể đánh dấu non-cloneable")
     item.non_cloneable = True
     item.non_cloneable_reason = body.reason
     return item
@@ -154,6 +158,8 @@ def flag_non_cloneable(item_id: str, body: NonCloneableRequest) -> IngestionItem
 @app.post("/v1/ingestion/items/{item_id}/approve", response_model=IngestionItem)
 def approve(item_id: str) -> IngestionItem:
     item = _get(item_id)
+    if item.non_cloneable:
+        raise HTTPException(status_code=400, detail="item đang bị đánh dấu non-cloneable, không thể approve")
     if item.report is None or item.report.status is GateStatus.BLOCKED:
         blocking = [
             i.message_vi for i in (item.report.issues if item.report else []) if i.severity is Severity.BLOCKING

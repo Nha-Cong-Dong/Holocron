@@ -11,12 +11,12 @@
 
 | Thành phần | Vai trò |
 |---|---|
-| `holocron_core/schemas.py` | Domain model Pydantic v2; validator chặt ở biên hệ thống |
-| `holocron_core/ingestion_gate.py` | Phát hiện VLM đọc sai bảng/LaTeX (5 tín hiệu), cho người dùng sửa |
-| `holocron_core/pipeline.py` | Điều phối LLM template → Sandbox → TwinQuestion, retry budget & fallback |
-| `holocron_core/sandbox.py`, `_sandbox_child.py` | Sandbox 3 lớp: ASTGuard, runtime tiến trình con, giới hạn OS (RLIMIT / Job Object, timeout) |
-| `holocron_core/template_library.py`, `templates/` | Template pre-computed đã kiểm chứng (fallback khi hết retry); là mã chạy **trong sandbox** nên chỉ được dùng kiểu builtin + `fractions`/`random`… trong whitelist (không `typing`, không tên `object`) |
-| `holocron_core/api.py` | FastAPI `/v1/ingestion/items…` (hiện là in-memory store, Tuần 4 thay bằng SQL repository) |
+| `holocron_core/domain/schemas.py` | Domain model Pydantic v2; validator chặt ở biên hệ thống |
+| `holocron_core/services/ingestion_gate.py` | Phát hiện VLM đọc sai bảng/LaTeX (5 tín hiệu), cho người dùng sửa |
+| `holocron_core/services/pipeline.py` | Điều phối LLM template → Sandbox → TwinQuestion, retry budget & fallback |
+| `holocron_core/sandbox/sandbox.py`, `_sandbox_child.py` | Sandbox 3 lớp: ASTGuard, runtime tiến trình con, giới hạn OS (RLIMIT / Job Object, timeout) |
+| `holocron_core/infrastructure/template_library.py`, `templates/` | Template pre-computed đã kiểm chứng (fallback khi hết retry); là mã chạy **trong sandbox** nên chỉ được dùng kiểu builtin + `fractions`/`random`… trong whitelist (không `typing`, không tên `object`) |
+| `holocron_core/routers/api.py` | FastAPI `/v1/ingestion/items…` (hiện là in-memory store, Tuần 4 thay bằng SQL repository) |
 | `scripts/run_walkthrough.py` | Walkthrough end-to-end, sinh JSON mẫu vào `examples/` |
 | `tests/` | pytest: sandbox security, schemas & gate, RR template |
 
@@ -34,7 +34,7 @@ pytest tests/test_sandbox_security.py    # một file
 pytest -k "rr" -x                        # lọc theo tên, dừng ở lỗi đầu tiên
 
 # Chạy server (FastAPI, docs tại http://127.0.0.1:8000/docs)
-uvicorn holocron_core.api:app --reload
+uvicorn holocron_core.routers.api:app --reload
 
 # Walkthrough end-to-end (sinh lại examples/*.json)
 python -m scripts.run_walkthrough

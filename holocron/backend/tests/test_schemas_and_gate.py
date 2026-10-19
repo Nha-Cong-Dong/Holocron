@@ -2,9 +2,9 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from holocron_core.api import app
-from holocron_core.ingestion_gate import latex_issues
-from holocron_core.schemas import KnowledgeChunk
+from holocron_core.domain.schemas import KnowledgeChunk
+from holocron_core.routers.api import app
+from holocron_core.services.ingestion_gate import latex_issues
 
 ROWS = [("P1", "0", "2"), ("P2", "2", "9"), ("P3", "5", "5"), ("P4", "8", "2"), ("P5", "11", "4")]
 

@@ -61,3 +61,5 @@ desktop.ini
 .claude/*
 !.claude/CLAUDE.md
 *.session
+# App desktop Claude ghi output vào repo
+Claude outputs/

@@ -29,6 +29,8 @@ out/
 .turbo/
 .cache/
 coverage/
+__pycache__/
+*.egg-info/
 
 # ==========================================
 # 4. Logs & Ghi nhận lỗi

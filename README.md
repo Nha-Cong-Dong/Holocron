@@ -25,31 +25,36 @@ Repo hiện tập trung vào Deterministic Core cho Golden Path **Hệ Điều H
 ```text
 Holocron/
 ├── .claude/CLAUDE.md          # Quy ước cho Claude Code
-├── SPECIFICATION.md           # Đặc tả kỹ thuật
-└── holocron/backend/
-    ├── pyproject.toml         # Dependencies & cấu hình pytest/ruff
-    ├── holocron_core/
-    │   ├── domain/
-    │   │   └── schemas.py             # Domain model Pydantic v2 (Blueprint, TwinQuestion, ...)
-    │   ├── services/
-    │   │   ├── ingestion_gate.py      # Phát hiện VLM đọc sai bảng/LaTeX, vá ô, self-solve lại
-    │   │   └── pipeline.py            # LLM template → Sandbox → TwinQuestion, retry budget & fallback
-    │   ├── sandbox/
-    │   │   ├── sandbox.py             # ASTGuard + chạy template trong tiến trình con
-    │   │   └── _sandbox_child.py      # Tiến trình con: builtins rút gọn, RLIMIT (Unix) / Job Object (Windows)
-    │   ├── infrastructure/
-    │   │   ├── template_library.py    # Kho template pre-computed đã kiểm chứng (fallback)
-    │   │   └── templates/             # Mã template chạy trong sandbox (vd. RR avg waiting time)
-    │   └── routers/
-    │       └── api.py                 # FastAPI: /v1/ingestion/items...
-    ├── scripts/run_walkthrough.py # Demo end-to-end, sinh JSON mẫu vào examples/
-    ├── examples/                  # Blueprint & TwinQuestion mẫu
-    └── tests/                     # pytest: sandbox security, schemas & gate, RR template
+├── SPECIFICATION.md           # Đặc tả kỹ thuật + API/Data contracts
+├── docs/adr/                  # Architecture Decision Records
+└── holocron/
+    ├── frontend/              # Next.js 15 (App Router): upload đề, Table Auditor của Ingestion Gate
+    │   └── src/{app,components,lib,types}/
+    └── backend/
+        ├── pyproject.toml         # Dependencies & cấu hình pytest/ruff
+        ├── holocron_core/
+        │   ├── domain/
+        │   │   └── schemas.py             # Domain model Pydantic v2 (Blueprint, TwinQuestion, ...)
+        │   ├── services/
+        │   │   ├── extraction.py          # DocumentExtractor (VLM) + MockDualPassExtractor tất định
+        │   │   ├── ingestion_gate.py      # Phát hiện VLM đọc sai bảng/LaTeX, vá ô, self-solve lại
+        │   │   └── pipeline.py            # LLM template → Sandbox → TwinQuestion, retry budget & fallback
+        │   ├── sandbox/
+        │   │   ├── sandbox.py             # ASTGuard + chạy template trong tiến trình con
+        │   │   └── _sandbox_child.py      # Tiến trình con: builtins rút gọn, RLIMIT (Unix) / Job Object (Windows)
+        │   ├── infrastructure/
+        │   │   ├── template_library.py    # Kho template pre-computed đã kiểm chứng (fallback)
+        │   │   └── templates/             # Mã template chạy trong sandbox (vd. RR avg waiting time)
+        │   └── routers/
+        │       └── api.py                 # FastAPI: /v1/ingestion/upload, /v1/ingestion/items...
+        ├── scripts/run_walkthrough.py # Demo end-to-end, sinh JSON mẫu vào examples/
+        ├── examples/                  # Blueprint & TwinQuestion mẫu
+        └── tests/                     # pytest: sandbox security, schemas & gate, RR template
 ```
 
 ## Cài đặt
 
-**Yêu cầu:** Python **>= 3.12**.
+**Yêu cầu:** Python **>= 3.12**; Node.js **>= 20** cho frontend.
 
 ```bash
 git clone https://github.com/Nha-Cong-Dong/Holocron.git
@@ -57,11 +62,18 @@ cd Holocron/holocron/backend
 pip install -e ".[dev]"
 ```
 
-Lệnh trên cài cả dependencies chạy (`pydantic`, `fastapi`, `uvicorn`) và công cụ dev (`pytest`, `httpx`, `ruff`, `mypy`).
+Lệnh trên cài cả dependencies chạy (`pydantic`, `fastapi`, `uvicorn`, `python-multipart`) và công cụ dev (`pytest`, `httpx`, `ruff`, `mypy`).
+
+```bash
+cd ../frontend
+npm install
+```
+
+Trên Windows, gọi công cụ Python qua `python -m` (ví dụ `python -m pytest`) và đặt `$env:PYTHONIOENCODING = "utf-8"` để console in được tiếng Việt.
 
 ## Sử dụng
 
-Chạy các lệnh dưới đây trong `holocron/backend/`.
+Các lệnh backend chạy trong `holocron/backend/`; lệnh frontend chạy trong `holocron/frontend/`.
 
 ### Chạy test
 
@@ -82,10 +94,20 @@ mypy --strict holocron_core
 ### Chạy FastAPI server
 
 ```bash
-uvicorn holocron_core.routers.api:app --reload
+uvicorn holocron_core.routers.api:app --reload --host 127.0.0.1 --port 8000
 ```
 
 Tài liệu API tương tác tại <http://127.0.0.1:8000/docs>.
+
+### Chạy frontend
+
+```bash
+npm run dev          # http://localhost:3000 — gọi backend qua /api/holocron/* (biến HOLOCRON_API_URL)
+npm run typecheck
+npm run build
+```
+
+Ở Tuần 2, bước đọc ảnh dùng `MockDualPassExtractor`: mọi file hợp lệ đều trả về cùng một đề Round Robin mẫu, trong đó một ô bị cố ý đọc lệch để minh hoạ luồng sửa ô của Ingestion Gate.
 
 ### Walkthrough end-to-end
 

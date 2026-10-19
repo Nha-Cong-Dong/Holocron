@@ -26,7 +26,7 @@
     {
       "attempt": 3,
       "provenance": "llm_generated",
-      "template_sha256": "1f23d75ef80ba014dd1189520561b10fc2016389f581f883b8e12b77074606c5",
+      "template_sha256": "8aa7f5880d862382f9180329dfb2fe95fed424e640f95a40be3184ef7cb85208",
       "outcome": "ok",
       "seeds_tried": 2,
       "assertion_histogram": {

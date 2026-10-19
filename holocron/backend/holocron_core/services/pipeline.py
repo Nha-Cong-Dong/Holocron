@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from ..domain.schemas import (
     BlueprintSlot,
     Citation,
+    GanttSegment,
     GenerationTrace,
     MisconceptionRef,
     NumericalAnswer,
@@ -145,6 +146,8 @@ def build_twin(
         "citation": citation,
         "trace": trace,
         "review_status": review_status,
+        # gantt lấy nguyên từ khoá "gantt" của solve() trong sandbox, KHÔNG tính lại ở đây (I1).
+        "gantt": [GanttSegment.model_validate(segment) for segment in result.solution.get("gantt", [])],
     }
     if fmt is QuestionFormat.NUMERICAL:
         return TwinQuestion(

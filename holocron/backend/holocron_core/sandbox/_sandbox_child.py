@@ -171,6 +171,24 @@ def _is_number(value: object) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool)
 
 
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _gantt_ok(gantt: object) -> bool:
+    """`gantt` là list các dict đúng {process: str, start: int, end: int} (spec §8.1)."""
+    if not isinstance(gantt, list):
+        return False
+    return all(
+        isinstance(seg, dict)
+        and set(seg) == {"process", "start", "end"}
+        and isinstance(seg["process"], str)
+        and _is_int(seg["start"])
+        and _is_int(seg["end"])
+        for seg in gantt
+    )
+
+
 def _check_outputs(solution: object, distractors: object) -> tuple[Json, list[Json]] | str:
     """Trả về (solution, distractors) đã kiểm hợp đồng (khoá VÀ kiểu), hoặc thông điệp lỗi."""
     if not isinstance(solution, dict) or not {"value", "display", "explanation_vi"} <= set(solution):
@@ -179,6 +197,8 @@ def _check_outputs(solution: object, distractors: object) -> tuple[Json, list[Js
         isinstance(solution[k], str) for k in ("display", "explanation_vi")
     ):
         return "solve(): value phải là số (không phải bool); display/explanation_vi phải là str"
+    if "gantt" in solution and not _gantt_ok(solution["gantt"]):
+        return "solve(): gantt phải là list các dict {process: str, start: int, end: int}"
     if not isinstance(distractors, list) or len(distractors) != 3:
         return "make_distractors() phải trả về list đúng 3 phần tử"
     checked: list[Json] = []

@@ -26,6 +26,7 @@ from pydantic import (
 )
 
 TOPIC_KEY_PATTERN = r"^[a-z0-9_]+(\.[a-z0-9_]+){2,}$"
+CPU_SCHEDULING_TOPIC_PREFIX = "os.cpu_sched."
 MISCONCEPTION_CODE_PATTERN = r"^[A-Z][A-Z0-9_]{2,63}$"
 TAG_PATTERN = r"^#[a-z0-9_]+$"
 
@@ -491,6 +492,20 @@ class GenerationTrace(StrictModel):
     provenance: TemplateProvenance
 
 
+class GanttSegment(StrictModel):
+    """Một đoạn CPU chạy một tiến trình trong `[start, end)`; do sandbox sinh (I1), không tính lại ở nơi khác."""
+
+    process: str = Field(min_length=1, max_length=32)
+    start: int = Field(ge=0)
+    end: int
+
+    @model_validator(mode="after")
+    def _end_after_start(self) -> GanttSegment:
+        if self.end <= self.start:
+            raise ValueError("gantt: end phải lớn hơn start")
+        return self
+
+
 class TwinQuestion(StrictModel):
     twin_id: str = Field(default_factory=lambda: _new_id("twin"))
     blueprint_id: str
@@ -509,6 +524,18 @@ class TwinQuestion(StrictModel):
     trace: GenerationTrace
     review_status: ReviewStatus
     generated_at: datetime = Field(default_factory=_utcnow)
+    gantt: list[GanttSegment] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _gantt_rules(self) -> TwinQuestion:
+        if self.topic_key.startswith(CPU_SCHEDULING_TOPIC_PREFIX) and not self.gantt:
+            raise ValueError("gantt không được rỗng với topic CPU Scheduling")
+        for previous, current in zip(self.gantt, self.gantt[1:], strict=False):
+            if current.start < previous.start:
+                raise ValueError("gantt phải sắp theo start")
+            if current.start < previous.end:
+                raise ValueError("các đoạn gantt không được chồng lấn")
+        return self
 
     @model_validator(mode="after")
     def _format_rules(self) -> TwinQuestion:

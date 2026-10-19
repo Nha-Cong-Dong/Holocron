@@ -43,9 +43,51 @@
     "sandbox_duration_ms": 42,
     "llm_attempts": 1,
     "seed_rerolls": 1,
-    "template_sha256": "3c96f92760e5566feea98a2e7608ab09335b2e40d75fc051ca5ea456d14b47a9",
+    "template_sha256": "9e017d89400014501e7411a9d5adab79a655f851434975d124be614c30fa877e",
     "provenance": "llm_generated"
   },
   "review_status": "AUTO_PASS",
-  "generated_at": "2026-01-01T00:00:00Z"
+  "generated_at": "2026-01-01T00:00:00Z",
+  "gantt": [
+    {
+      "process": "P1",
+      "start": 0,
+      "end": 3
+    },
+    {
+      "process": "P2",
+      "start": 3,
+      "end": 6
+    },
+    {
+      "process": "P1",
+      "start": 6,
+      "end": 7
+    },
+    {
+      "process": "P3",
+      "start": 7,
+      "end": 10
+    },
+    {
+      "process": "P4",
+      "start": 10,
+      "end": 13
+    },
+    {
+      "process": "P2",
+      "start": 13,
+      "end": 16
+    },
+    {
+      "process": "P4",
+      "start": 16,
+      "end": 19
+    },
+    {
+      "process": "P2",
+      "start": 19,
+      "end": 20
+    }
+  ]
 }

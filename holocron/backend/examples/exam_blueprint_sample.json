@@ -1,0 +1,69 @@
+{
+  "blueprint_id": "bp_os_midterm_2025_de2",
+  "source_exam_doc_id": "doc_os_midterm_2025_de2_photo",
+  "subject_code": "IT3070",
+  "total_questions": 1,
+  "duration_minutes": 60,
+  "slots": [
+    {
+      "slot_index": 1,
+      "source_page_number": 2,
+      "format": "MCQ4",
+      "chapter_code": "ch5.3",
+      "topic_key": "os.cpu_sched.rr.avg_waiting_time",
+      "cognitive_level": "apply",
+      "is_computational": true,
+      "non_cloneable": false,
+      "non_cloneable_reason": null,
+      "distractor_archetypes": [
+        {
+          "misconception_code": "RR_TREATED_AS_FCFS",
+          "description": "Phương án B = kết quả FCFS",
+          "observed_option_key": "B",
+          "observed_option_text": "5.25",
+          "reproduction_confidence": 0.93
+        },
+        {
+          "misconception_code": "WAIT_EQUALS_FIRST_RESPONSE",
+          "description": "Phương án C = response time",
+          "observed_option_key": "C",
+          "observed_option_text": "3.00",
+          "reproduction_confidence": 0.88
+        },
+        {
+          "misconception_code": "WAIT_CONFUSED_WITH_TURNAROUND",
+          "description": "Phương án D = turnaround trung bình",
+          "observed_option_key": "D",
+          "observed_option_text": "11.50",
+          "reproduction_confidence": 0.91
+        }
+      ],
+      "self_solve": {
+        "status": "MATCHED",
+        "solved_answer_display": "6.75 ms",
+        "matched_option_key": "A",
+        "solver_confidence": 1.0,
+        "supporting_citations": [
+          {
+            "doc_id": "doc_os_lecture05_cpu_scheduling",
+            "page_number": 14,
+            "verbatim_quote": "Hết q mà chưa xong, tiến trình bị ngắt và đưa về cuối hàng đợi sẵn sàng.",
+            "chunk_id": "chk_os05_rr_definition"
+          }
+        ],
+        "solver_template_id": "tpl_os_rr_avg_wait_v1"
+      },
+      "mapping_confidence": 0.91,
+      "review_status": "AUTO_PASS"
+    }
+  ],
+  "created_at": "2026-10-18T22:36:28.770652Z",
+  "chapter_distribution": {
+    "ch5.3": 1
+  },
+  "format_distribution": {
+    "MCQ4": 1
+  },
+  "cloneable_ratio": 1.0,
+  "mean_mapping_confidence": 0.91
+}

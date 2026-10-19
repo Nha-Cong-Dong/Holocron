@@ -7,8 +7,31 @@ DECIMALS = 2
 MIN_OPTION_GAP = Fraction(1, 4)
 MAX_TIMELINE = 40
 
+# Chỉ dùng kiểu builtin: sandbox không cho import typing và cấm tên `object`.
+Params = dict[str, list[int] | list[str] | int]
+# (first_start, completion, gantt, preempt_times, idle_gaps); -1 = chưa gán
+Sim = tuple[list[int], list[int], list[list[int]], list[int], int]
 
-def generate_params(seed):
+
+def _ints(value: list[int] | list[str] | int) -> list[int]:
+    if isinstance(value, list):
+        return [x for x in value if isinstance(x, int)]
+    return []
+
+
+def _strs(value: list[int] | list[str] | int) -> list[str]:
+    if isinstance(value, list):
+        return [x for x in value if isinstance(x, str)]
+    return []
+
+
+def _int(value: list[int] | list[str] | int) -> int:
+    if isinstance(value, int):
+        return value
+    return 0
+
+
+def generate_params(seed: int) -> Params:
     rng = random.Random(seed)
     n = rng.randint(4, 5)
     quantum = rng.choice([2, 3, 4])
@@ -20,15 +43,15 @@ def generate_params(seed):
     return {"names": names, "arrivals": arrivals, "bursts": bursts, "quantum": quantum}
 
 
-def _simulate_rr(arrivals, bursts, quantum):
+def _simulate_rr(arrivals: list[int], bursts: list[int], quantum: int) -> Sim:
     n = len(arrivals)
     order = sorted(range(n), key=lambda i: arrivals[i])
     remaining = list(bursts)
-    first_start = [None] * n
-    completion = [None] * n
-    queue = []
-    gantt = []
-    preempt_times = []
+    first_start = [-1] * n
+    completion = [-1] * n
+    queue: list[int] = []
+    gantt: list[list[int]] = []
+    preempt_times: list[int] = []
     idle_gaps = 0
     t = 0
     nxt = 0
@@ -45,7 +68,7 @@ def _simulate_rr(arrivals, bursts, quantum):
                 nxt += 1
             continue
         i = queue.pop(0)
-        if first_start[i] is None:
+        if first_start[i] < 0:
             first_start[i] = t
         run = min(quantum, remaining[i])
         gantt.append([i, t, t + run])
@@ -60,16 +83,10 @@ def _simulate_rr(arrivals, bursts, quantum):
         else:
             completion[i] = t
             done += 1
-    return {
-        "first_start": first_start,
-        "completion": completion,
-        "gantt": gantt,
-        "preempt_times": preempt_times,
-        "idle_gaps": idle_gaps,
-    }
+    return first_start, completion, gantt, preempt_times, idle_gaps
 
 
-def _fcfs_waits(arrivals, bursts):
+def _fcfs_waits(arrivals: list[int], bursts: list[int]) -> list[int]:
     order = sorted(range(len(arrivals)), key=lambda i: arrivals[i])
     waits = [0] * len(arrivals)
     t = 0
@@ -80,59 +97,61 @@ def _fcfs_waits(arrivals, bursts):
     return waits
 
 
-def _metrics(params):
-    arrivals = params["arrivals"]
-    bursts = params["bursts"]
+def _metrics(params: Params) -> tuple[Sim, dict[str, list[int]], dict[str, Fraction]]:
+    """Trả về (sim, các danh sách theo tiến trình, các giá trị trung bình)."""
+    arrivals = _ints(params["arrivals"])
+    bursts = _ints(params["bursts"])
     n = len(arrivals)
-    sim = _simulate_rr(arrivals, bursts, params["quantum"])
-    turnaround = [sim["completion"][i] - arrivals[i] for i in range(n)]
+    sim = _simulate_rr(arrivals, bursts, _int(params["quantum"]))
+    first_start, completion = sim[0], sim[1]
+    turnaround = [completion[i] - arrivals[i] for i in range(n)]
     waiting = [turnaround[i] - bursts[i] for i in range(n)]
-    response = [sim["first_start"][i] - arrivals[i] for i in range(n)]
+    response = [first_start[i] - arrivals[i] for i in range(n)]
     fcfs = _fcfs_waits(arrivals, bursts)
-    return {
-        "sim": sim,
-        "turnaround": turnaround,
-        "waiting": waiting,
-        "response": response,
-        "avg_waiting": Fraction(sum(waiting), n),
-        "avg_turnaround": Fraction(sum(turnaround), n),
-        "avg_response": Fraction(sum(response), n),
-        "avg_fcfs_waiting": Fraction(sum(fcfs), n),
+    per_process = {"turnaround": turnaround, "waiting": waiting, "response": response}
+    averages = {
+        "waiting": Fraction(sum(waiting), n),
+        "turnaround": Fraction(sum(turnaround), n),
+        "response": Fraction(sum(response), n),
+        "fcfs_waiting": Fraction(sum(fcfs), n),
     }
+    return sim, per_process, averages
 
 
-def _rounded(x):
+def _rounded(x: Fraction) -> Fraction:
     return round(x, DECIMALS)
 
 
-def _fmt(x):
+def _fmt(x: Fraction) -> str:
     return format(float(_rounded(x)), "." + str(DECIMALS) + "f") + " " + UNIT
 
 
-def validate(params):
-    arrivals = params["arrivals"]
-    bursts = params["bursts"]
-    q = params["quantum"]
+def validate(params: Params) -> None:
+    arrivals = _ints(params["arrivals"])
+    bursts = _ints(params["bursts"])
+    names = _strs(params["names"])
+    q = _int(params["quantum"])
     n = len(arrivals)
     assert 4 <= n <= 5, "VALIDITY_PROCESS_COUNT"
-    assert len(bursts) == n and len(params["names"]) == n, "VALIDITY_SHAPE"
+    assert len(bursts) == n and len(names) == n, "VALIDITY_SHAPE"
     assert all(b >= 1 for b in bursts), "VALIDITY_POSITIVE_BURST"
     assert q in (2, 3, 4), "VALIDITY_QUANTUM"
     assert arrivals[0] == 0, "VALIDITY_START_AT_ZERO"
     assert len(set(arrivals)) == n, "TIE_SIMULTANEOUS_ARRIVAL"
-    m = _metrics(params)
-    sim = m["sim"]
-    assert not (set(sim["preempt_times"]) & set(arrivals)), "TIE_ARRIVAL_AT_PREEMPTION"
-    assert sim["idle_gaps"] == 0, "NONDEG_CPU_IDLE"
-    assert len(sim["preempt_times"]) >= 2, "NONDEG_TOO_FEW_PREEMPTIONS"
-    assert any(m["waiting"][i] != m["response"][i] for i in range(n)), "NONDEG_NO_REWAIT"
+    sim, per_process, averages = _metrics(params)
+    completion, preempt_times, idle_gaps = sim[1], sim[3], sim[4]
+    assert not (set(preempt_times) & set(arrivals)), "TIE_ARRIVAL_AT_PREEMPTION"
+    assert idle_gaps == 0, "NONDEG_CPU_IDLE"
+    assert len(preempt_times) >= 2, "NONDEG_TOO_FEW_PREEMPTIONS"
+    waiting, response = per_process["waiting"], per_process["response"]
+    assert any(waiting[i] != response[i] for i in range(n)), "NONDEG_NO_REWAIT"
     assert any(b > q for b in bursts) and any(b <= q for b in bursts), "NONDEG_QUANTUM_SPLIT"
-    assert max(sim["completion"]) <= MAX_TIMELINE, "NONDEG_TIMELINE_TOO_LONG"
+    assert max(completion) <= MAX_TIMELINE, "NONDEG_TIMELINE_TOO_LONG"
     values = [
-        _rounded(m["avg_waiting"]),
-        _rounded(m["avg_fcfs_waiting"]),
-        _rounded(m["avg_response"]),
-        _rounded(m["avg_turnaround"]),
+        _rounded(averages["waiting"]),
+        _rounded(averages["fcfs_waiting"]),
+        _rounded(averages["response"]),
+        _rounded(averages["turnaround"]),
     ]
     assert len(set(values)) == 4, "DISTINCT_OPTION_VALUES"
     for a in range(4):
@@ -140,67 +159,83 @@ def validate(params):
             assert abs(values[a] - values[b]) >= MIN_OPTION_GAP, "DISTINCT_OPTION_GAP"
 
 
-def solve(params):
-    m = _metrics(params)
-    names = params["names"]
+def solve(params: Params) -> dict[str, str | float]:
+    sim, per_process, averages = _metrics(params)
+    names = _strs(params["names"])
+    completion, gantt = sim[1], sim[2]
+    turnaround, waiting = per_process["turnaround"], per_process["waiting"]
     steps = []
     for i in range(len(names)):
         steps.append(
-            names[i] + ": CT=" + str(m["sim"]["completion"][i])
-            + ", TAT=" + str(m["turnaround"][i])
-            + ", WT=" + str(m["waiting"][i])
+            names[i] + ": CT=" + str(completion[i]) + ", TAT=" + str(turnaround[i]) + ", WT=" + str(waiting[i])
         )
-    gantt_text = " | ".join(
-        names[seg[0]] + "[" + str(seg[1]) + "-" + str(seg[2]) + "]" for seg in m["sim"]["gantt"]
-    )
+    gantt_text = " | ".join(names[seg[0]] + "[" + str(seg[1]) + "-" + str(seg[2]) + "]" for seg in gantt)
     return {
-        "value": float(_rounded(m["avg_waiting"])),
-        "exact": str(m["avg_waiting"]),
-        "display": _fmt(m["avg_waiting"]),
-        "explanation_vi": "Gantt: " + gantt_text + ". " + "; ".join(steps)
-        + ". WT trung bình = " + str(sum(m["waiting"])) + "/" + str(len(names))
-        + " = " + _fmt(m["avg_waiting"]) + ".",
+        "value": float(_rounded(averages["waiting"])),
+        "exact": str(averages["waiting"]),
+        "display": _fmt(averages["waiting"]),
+        "explanation_vi": "Gantt: "
+        + gantt_text
+        + ". "
+        + "; ".join(steps)
+        + ". WT trung bình = "
+        + str(sum(waiting))
+        + "/"
+        + str(len(names))
+        + " = "
+        + _fmt(averages["waiting"])
+        + ".",
     }
 
 
-def make_distractors(params, solution):
-    m = _metrics(params)
-    n = len(params["names"])
+def make_distractors(params: Params, solution: dict[str, str | float]) -> list[dict[str, str | float]]:
+    _, per_process, averages = _metrics(params)
+    n = len(_strs(params["names"]))
     return [
         {
             "misconception_code": "RR_TREATED_AS_FCFS",
-            "value": float(_rounded(m["avg_fcfs_waiting"])),
-            "display": _fmt(m["avg_fcfs_waiting"]),
+            "value": float(_rounded(averages["fcfs_waiting"])),
+            "display": _fmt(averages["fcfs_waiting"]),
             "rationale_vi": "Bỏ qua time quantum, cho mỗi tiến trình chạy hết burst theo thứ tự đến (FCFS): "
-            + "tổng chờ = " + str(int(m["avg_fcfs_waiting"] * n)) + ".",
+            + "tổng chờ = "
+            + str(int(averages["fcfs_waiting"] * n))
+            + ".",
         },
         {
             "misconception_code": "WAIT_EQUALS_FIRST_RESPONSE",
-            "value": float(_rounded(m["avg_response"])),
-            "display": _fmt(m["avg_response"]),
+            "value": float(_rounded(averages["response"])),
+            "display": _fmt(averages["response"]),
             "rationale_vi": "Chỉ tính thời gian chờ đến lần đầu được cấp CPU (response time), "
-            + "bỏ qua các lần chờ lại sau khi bị ngắt: tổng = " + str(sum(m["response"])) + ".",
+            + "bỏ qua các lần chờ lại sau khi bị ngắt: tổng = "
+            + str(sum(per_process["response"]))
+            + ".",
         },
         {
             "misconception_code": "WAIT_CONFUSED_WITH_TURNAROUND",
-            "value": float(_rounded(m["avg_turnaround"])),
-            "display": _fmt(m["avg_turnaround"]),
+            "value": float(_rounded(averages["turnaround"])),
+            "display": _fmt(averages["turnaround"]),
             "rationale_vi": "Lấy completion − arrival (turnaround) mà quên trừ burst time: tổng = "
-            + str(sum(m["turnaround"])) + ".",
+            + str(sum(per_process["turnaround"]))
+            + ".",
         },
     ]
 
 
-def render_stem(params):
+def render_stem(params: Params) -> str:
+    names = _strs(params["names"])
+    arrivals = _ints(params["arrivals"])
+    bursts = _ints(params["bursts"])
     rows = []
-    for i in range(len(params["names"])):
-        rows.append(
-            "| " + params["names"][i] + " | " + str(params["arrivals"][i]) + " | " + str(params["bursts"][i]) + " |"
-        )
+    for i in range(len(names)):
+        rows.append("| " + names[i] + " | " + str(arrivals[i]) + " | " + str(bursts[i]) + " |")
     table = "| Tiến trình | Thời điểm đến (ms) | Burst time (ms) |\n|---|---|---|\n" + "\n".join(rows)
     return (
         "Cho các tiến trình sau được lập lịch trên một CPU bằng thuật toán **Round Robin** "
-        + "với lượng tử thời gian $q = " + str(params["quantum"]) + "$ ms. "
-        + "Bỏ qua chi phí chuyển ngữ cảnh.\n\n" + table + "\n\n"
+        + "với lượng tử thời gian $q = "
+        + str(_int(params["quantum"]))
+        + "$ ms. "
+        + "Bỏ qua chi phí chuyển ngữ cảnh.\n\n"
+        + table
+        + "\n\n"
         + "Thời gian chờ trung bình $\\overline{WT} = \\frac{1}{n}\\sum_{i}(CT_i - AT_i - BT_i)$ là bao nhiêu?"
     )

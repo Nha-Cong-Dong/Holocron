@@ -11,7 +11,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Literal
 from uuid import uuid4
@@ -39,7 +39,7 @@ REQUIRED_TEMPLATE_ENTRYPOINTS: tuple[str, ...] = (
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _new_id(prefix: str) -> str:
@@ -175,7 +175,7 @@ class KnowledgeChunk(StrictModel):
         return sorted(set(v))
 
     @model_validator(mode="after")
-    def _consistency(self) -> "KnowledgeChunk":
+    def _consistency(self) -> KnowledgeChunk:
         required_tag = "#theory" if self.category is ChunkCategory.THEORY else "#practice_example"
         forbidden_tag = "#practice_example" if self.category is ChunkCategory.THEORY else "#theory"
         if required_tag not in self.tags:
@@ -221,7 +221,7 @@ class SelfSolveResult(StrictModel):
     solver_template_id: str | None = None
 
     @model_validator(mode="after")
-    def _status_consistency(self) -> "SelfSolveResult":
+    def _status_consistency(self) -> SelfSolveResult:
         if self.status == "MATCHED" and self.matched_option_key is None:
             raise ValueError("MATCHED yêu cầu matched_option_key")
         if self.status != "MATCHED" and self.matched_option_key is not None:
@@ -247,7 +247,7 @@ class BlueprintSlot(StrictModel):
     review_status: ReviewStatus = ReviewStatus.NEEDS_REVIEW
 
     @model_validator(mode="after")
-    def _rules(self) -> "BlueprintSlot":
+    def _rules(self) -> BlueprintSlot:
         if self.non_cloneable and not self.non_cloneable_reason:
             raise ValueError("non_cloneable=True bắt buộc có non_cloneable_reason")
         if not self.non_cloneable and self.non_cloneable_reason:
@@ -271,34 +271,34 @@ class ExamBlueprint(StrictModel):
     slots: list[BlueprintSlot]
     created_at: datetime = Field(default_factory=_utcnow)
 
-    @computed_field
-    @property
-    def chapter_distribution(self) -> dict[str, int]:
+    def _chapter_distribution(self) -> dict[str, int]:
         dist: dict[str, int] = {}
         for s in self.slots:
             dist[s.chapter_code] = dist.get(s.chapter_code, 0) + 1
         return dict(sorted(dist.items()))
 
-    @computed_field
-    @property
-    def format_distribution(self) -> dict[str, int]:
+    chapter_distribution = computed_field(property(_chapter_distribution))
+
+    def _format_distribution(self) -> dict[str, int]:
         dist: dict[str, int] = {}
         for s in self.slots:
             dist[s.format.value] = dist.get(s.format.value, 0) + 1
         return dict(sorted(dist.items()))
 
-    @computed_field
-    @property
-    def cloneable_ratio(self) -> float:
+    format_distribution = computed_field(property(_format_distribution))
+
+    def _cloneable_ratio(self) -> float:
         return round(sum(1 for s in self.slots if not s.non_cloneable) / len(self.slots), 4)
 
-    @computed_field
-    @property
-    def mean_mapping_confidence(self) -> float:
+    cloneable_ratio = computed_field(property(_cloneable_ratio))
+
+    def _mean_mapping_confidence(self) -> float:
         return round(sum(s.mapping_confidence for s in self.slots) / len(self.slots), 4)
 
+    mean_mapping_confidence = computed_field(property(_mean_mapping_confidence))
+
     @model_validator(mode="after")
-    def _slots_match_total(self) -> "ExamBlueprint":
+    def _slots_match_total(self) -> ExamBlueprint:
         if len(self.slots) != self.total_questions:
             raise ValueError(f"total_questions={self.total_questions} nhưng có {len(self.slots)} slot")
         indices = sorted(s.slot_index for s in self.slots)
@@ -323,7 +323,7 @@ class TemplateVariable(StrictModel):
     description: str = Field(min_length=3, max_length=300)
 
     @model_validator(mode="after")
-    def _domain(self) -> "TemplateVariable":
+    def _domain(self) -> TemplateVariable:
         if self.min_value is not None and self.max_value is not None and self.min_value > self.max_value:
             raise ValueError(f"{self.name}: min_value > max_value")
         if self.kind == "choice_int" and not self.choices:
@@ -368,10 +368,10 @@ class QuestionTemplate(StrictModel):
     theory_chunk_ids: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_utcnow)
 
-    @computed_field
-    @property
-    def source_sha256(self) -> str:
+    def _source_sha256(self) -> str:
         return hashlib.sha256(self.generator_source.encode("utf-8")).hexdigest()
+
+    source_sha256 = computed_field(property(_source_sha256))
 
     @field_validator("generator_source")
     @classmethod
@@ -390,7 +390,7 @@ class QuestionTemplate(StrictModel):
         return src
 
     @model_validator(mode="after")
-    def _unique_codes(self) -> "QuestionTemplate":
+    def _unique_codes(self) -> QuestionTemplate:
         codes = [m.misconception_code for m in self.misconceptions]
         if len(set(codes)) != 3:
             raise ValueError("3 misconception phải có mã khác nhau")
@@ -446,7 +446,7 @@ class TwinQuestion(StrictModel):
     generated_at: datetime = Field(default_factory=_utcnow)
 
     @model_validator(mode="after")
-    def _format_rules(self) -> "TwinQuestion":
+    def _format_rules(self) -> TwinQuestion:
         if self.format is QuestionFormat.MCQ4:
             if self.options is None or set(self.options) != set(OptionKey):
                 raise ValueError("MCQ4 yêu cầu đủ 4 options A-D")

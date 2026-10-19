@@ -33,8 +33,12 @@ def _reference_rr_avg_wait(arrivals, bursts, q):
 def test_known_case_seed_5():
     r = run_template(SRC, seed=5)
     assert r.status is SandboxStatus.OK
-    assert r.params == {"names": ["P1", "P2", "P3", "P4", "P5"], "arrivals": [0, 2, 5, 8, 11],
-                        "bursts": [2, 9, 5, 2, 4], "quantum": 4}
+    assert r.params == {
+        "names": ["P1", "P2", "P3", "P4", "P5"],
+        "arrivals": [0, 2, 5, 8, 11],
+        "bursts": [2, 9, 5, 2, 4],
+        "quantum": 4,
+    }
     assert r.solution["display"] == "6.00 ms"
     assert sorted(d["display"] for d in r.distractors) == ["10.40 ms", "2.60 ms", "4.20 ms"]
 
@@ -57,5 +61,5 @@ def test_every_accepted_seed_is_correct_and_unambiguous():
         assert r.solution["value"] == float(expected)
         values = [r.solution["value"]] + [d["value"] for d in r.distractors]
         assert len(set(values)) == 4
-        assert min(abs(x - y) for i, x in enumerate(values) for y in values[i + 1:]) >= 0.25
+        assert min(abs(x - y) for i, x in enumerate(values) for y in values[i + 1 :]) >= 0.25
     assert accepted >= 15

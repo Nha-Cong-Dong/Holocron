@@ -18,10 +18,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from holocron_core.pipeline import produce_twin
-from holocron_core.sandbox import SandboxResult
-from holocron_core.sandbox import run_template as _real_run_template
-from holocron_core.schemas import (
+from holocron_core.domain.schemas import (
     BlueprintSlot,
     ChunkCategory,
     Citation,
@@ -36,10 +33,13 @@ from holocron_core.schemas import (
     SelfSolveResult,
     TemplateProvenance,
 )
-from holocron_core.template_library import (
+from holocron_core.infrastructure.template_library import (
     InMemoryTemplateRegistry,
     rr_avg_waiting_template,
 )
+from holocron_core.sandbox.sandbox import SandboxResult
+from holocron_core.sandbox.sandbox import run_template as _real_run_template
+from holocron_core.services.pipeline import produce_twin
 
 OUT = Path(__file__).resolve().parents[1] / "examples"
 
@@ -63,9 +63,9 @@ def _run_template_fixed_duration(*args: Any, **kwargs: Any) -> SandboxResult:
 def frozen_nondeterminism() -> Iterator[None]:
     """Chỉ áp dụng trong lúc walkthrough chạy; không ảnh hưởng code production hay test."""
     with ExitStack() as stack:
-        stack.enter_context(patch("holocron_core.schemas.uuid4", return_value=FROZEN_UUID))
-        stack.enter_context(patch("holocron_core.schemas.datetime", _FrozenDatetime))
-        stack.enter_context(patch("holocron_core.pipeline.run_template", _run_template_fixed_duration))
+        stack.enter_context(patch("holocron_core.domain.schemas.uuid4", return_value=FROZEN_UUID))
+        stack.enter_context(patch("holocron_core.domain.schemas.datetime", _FrozenDatetime))
+        stack.enter_context(patch("holocron_core.services.pipeline.run_template", _run_template_fixed_duration))
         yield
 
 

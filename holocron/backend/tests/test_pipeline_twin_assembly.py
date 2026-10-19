@@ -1,6 +1,6 @@
-from holocron_core.pipeline import ProductionOutcome, produce_twin
-from holocron_core.schemas import BlueprintSlot, KnowledgeChunk, QuestionTemplate, TemplateProvenance
-from holocron_core.template_library import rr_avg_waiting_template
+from holocron_core.domain.schemas import BlueprintSlot, KnowledgeChunk, QuestionTemplate, TemplateProvenance
+from holocron_core.infrastructure.template_library import rr_avg_waiting_template
+from holocron_core.services.pipeline import ProductionOutcome, produce_twin
 
 UNDECLARED_CODE = "UNDECLARED_MISCONCEPTION"
 

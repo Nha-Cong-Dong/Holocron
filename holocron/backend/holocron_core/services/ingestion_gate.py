@@ -17,8 +17,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .sandbox import SandboxStatus, run_template
-from .schemas import OptionKey, QuestionTemplate, SelfSolveResult
+from ..domain.schemas import OptionKey, QuestionTemplate, SelfSolveResult
+from ..sandbox.sandbox import SandboxStatus, run_template
 
 CELL_CONFIDENCE_MIN = 0.85
 

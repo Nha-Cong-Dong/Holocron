@@ -2,7 +2,7 @@
 
 import pytest
 
-from holocron_core.schemas import (
+from holocron_core.domain.schemas import (
     BlueprintSlot,
     CognitiveLevel,
     DistractorArchetype,

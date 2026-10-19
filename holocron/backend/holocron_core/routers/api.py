@@ -7,7 +7,9 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from .ingestion_gate import (
+from ..domain.schemas import OptionKey, SelfSolveResult, SolverInputs
+from ..infrastructure.template_library import InMemoryTemplateRegistry
+from ..services.ingestion_gate import (
     CellPatch,
     ExtractedTable,
     GateIssue,
@@ -22,8 +24,6 @@ from .ingestion_gate import (
     rerun_self_solve,
     table_to_params,
 )
-from .schemas import OptionKey, SelfSolveResult, SolverInputs
-from .template_library import InMemoryTemplateRegistry
 
 app = FastAPI(title="Holocron Ingestion Gate", version="0.2.0")
 REGISTRY = InMemoryTemplateRegistry()
@@ -122,6 +122,7 @@ def patch_table(item_id: str, body: TablePatchRequest) -> IngestionItem:
     item = _get(item_id)
     if item.approved:
         raise HTTPException(status_code=409, detail="item đã approve, không sửa được")
+    # TODO (Week 4): Implement atomic optimistic locking using SQLAlchemy version_id_col when migrating to database.
     if body.expected_version != item.table_primary.version:
         raise HTTPException(status_code=409, detail=f"version lệch: hiện tại {item.table_primary.version}")
     try:

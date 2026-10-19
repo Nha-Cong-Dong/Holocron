@@ -18,8 +18,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
-from .sandbox import SandboxLimits, SandboxResult, SandboxStatus, run_template
-from .schemas import (
+from ..domain.schemas import (
     BlueprintSlot,
     Citation,
     GenerationTrace,
@@ -32,6 +31,7 @@ from .schemas import (
     TemplateProvenance,
     TwinQuestion,
 )
+from ..sandbox.sandbox import SandboxLimits, SandboxResult, SandboxStatus, run_template
 
 LLM_ATTEMPT_BUDGET = 3
 SEED_REROLL_BUDGET = 40

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from importlib.resources import files
 
-from .schemas import (
+from ..domain.schemas import (
     AnswerSpec,
     AssertionPurpose,
     MisconceptionSpec,
@@ -18,7 +18,7 @@ RR_TOPIC = "os.cpu_sched.rr.avg_waiting_time"
 
 
 def load_template_source(filename: str) -> str:
-    return files("holocron_core.templates").joinpath(filename).read_text(encoding="utf-8")
+    return files("holocron_core.infrastructure.templates").joinpath(filename).read_text(encoding="utf-8")
 
 
 def rr_avg_waiting_template(provenance: TemplateProvenance) -> QuestionTemplate:

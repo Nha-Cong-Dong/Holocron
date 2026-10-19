@@ -2,7 +2,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from holocron_core.api import app
+from holocron_core.routers.api import app
 
 ROWS = [("P1", "0", "2"), ("P2", "2", "9"), ("P3", "5", "5"), ("P4", "8", "2"), ("P5", "11", "4")]
 

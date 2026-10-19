@@ -24,19 +24,24 @@ Repo hiện tập trung vào Deterministic Core cho Golden Path **Hệ Điều H
 
 ```text
 Holocron/
-├── CLAUDE.md                  # Quy ước cho Claude Code
+├── .claude/CLAUDE.md          # Quy ước cho Claude Code
 ├── SPECIFICATION.md           # Đặc tả kỹ thuật
 └── holocron/backend/
     ├── pyproject.toml         # Dependencies & cấu hình pytest/ruff
     ├── holocron_core/
-    │   ├── schemas.py             # Domain model Pydantic v2 (Blueprint, TwinQuestion, ...)
-    │   ├── ingestion_gate.py      # Phát hiện VLM đọc sai bảng/LaTeX, vá ô, self-solve lại
-    │   ├── pipeline.py            # LLM template → Sandbox → TwinQuestion, retry budget & fallback
-    │   ├── sandbox.py             # ASTGuard + chạy template trong tiến trình con
-    │   ├── _sandbox_child.py      # Tiến trình con: builtins rút gọn, RLIMIT (Unix) / Job Object (Windows)
-    │   ├── template_library.py    # Kho template pre-computed đã kiểm chứng (fallback)
-    │   ├── templates/             # Mã template chạy trong sandbox (vd. RR avg waiting time)
-    │   └── api.py                 # FastAPI: /v1/ingestion/items...
+    │   ├── domain/
+    │   │   └── schemas.py             # Domain model Pydantic v2 (Blueprint, TwinQuestion, ...)
+    │   ├── services/
+    │   │   ├── ingestion_gate.py      # Phát hiện VLM đọc sai bảng/LaTeX, vá ô, self-solve lại
+    │   │   └── pipeline.py            # LLM template → Sandbox → TwinQuestion, retry budget & fallback
+    │   ├── sandbox/
+    │   │   ├── sandbox.py             # ASTGuard + chạy template trong tiến trình con
+    │   │   └── _sandbox_child.py      # Tiến trình con: builtins rút gọn, RLIMIT (Unix) / Job Object (Windows)
+    │   ├── infrastructure/
+    │   │   ├── template_library.py    # Kho template pre-computed đã kiểm chứng (fallback)
+    │   │   └── templates/             # Mã template chạy trong sandbox (vd. RR avg waiting time)
+    │   └── routers/
+    │       └── api.py                 # FastAPI: /v1/ingestion/items...
     ├── scripts/run_walkthrough.py # Demo end-to-end, sinh JSON mẫu vào examples/
     ├── examples/                  # Blueprint & TwinQuestion mẫu
     └── tests/                     # pytest: sandbox security, schemas & gate, RR template
@@ -77,7 +82,7 @@ mypy --strict holocron_core
 ### Chạy FastAPI server
 
 ```bash
-uvicorn holocron_core.api:app --reload
+uvicorn holocron_core.routers.api:app --reload
 ```
 
 Tài liệu API tương tác tại <http://127.0.0.1:8000/docs>.

@@ -196,7 +196,7 @@ def main() -> None:
     stage = "exec"
     try:
         code = compile(request["source"], "<template>", "exec")
-        exec(code, namespace)
+        exec(code, namespace)  # noqa: S102 - chủ đích: sandbox chạy mã đã qua ASTGuard và giới hạn OS
         missing = [e for e in ENTRYPOINTS if not callable(namespace.get(e))]
         if missing:
             _emit({"status": "contract_error", "stage": stage, "message": "thiếu entrypoint: " + ", ".join(missing)})

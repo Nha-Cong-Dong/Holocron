@@ -1,0 +1,24 @@
+name: Đề xuất tính năng
+description: Đề xuất thay đổi hoặc tính năng mới
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Vấn đề cần giải quyết
+      description: Phục vụ bước nào của Golden Path (upload → Gate → approve → sandbox → Twin)?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Đề xuất
+    validations:
+      required: true
+  - type: textarea
+    id: invariants
+    attributes:
+      label: Tác động tới bất biến I1–I5 và contract
+      description: Có đổi model Pydantic, `types/holocron.ts` hoặc SPECIFICATION.md không?
+    validations:
+      required: true

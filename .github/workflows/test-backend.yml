@@ -1,0 +1,100 @@
+name: Test Backend
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUTF8: "1"
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: holocron/backend/pyproject.toml
+      - name: Cài đặt
+        working-directory: holocron/backend
+        run: python -m pip install -e ".[dev]"
+      - name: ruff check
+        working-directory: holocron/backend
+        run: python -m ruff check .
+      - name: ruff format --check
+        working-directory: holocron/backend
+        run: python -m ruff format --check .
+      - name: mypy --strict
+        working-directory: holocron/backend
+        run: python -m mypy --strict holocron_core
+      - name: ruff cho scripts/
+        run: |
+          python -m ruff check scripts
+          python -m ruff format --check scripts
+      - name: Tự kiểm commit-msg checker
+        run: python scripts/check_commit_msg.py --self-test
+      - name: Version nhất quán
+        run: python scripts/check_versions.py
+
+  tests:
+    name: tests (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.12"]
+        include:
+          - os: ubuntu-latest
+            python-version: "3.13"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: holocron/backend/pyproject.toml
+      - name: Cài đặt
+        working-directory: holocron/backend
+        run: python -m pip install -e ".[dev]"
+      - name: Test bảo mật sandbox
+        working-directory: holocron/backend
+        run: python -m pytest tests/test_sandbox_security.py -q
+      - name: pytest kèm coverage
+        working-directory: holocron/backend
+        run: python -m pytest --cov --cov-report=xml
+      - name: Tải báo cáo coverage
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-xml
+          path: holocron/backend/coverage.xml
+
+  determinism:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: holocron/backend/pyproject.toml
+      - name: Cài đặt
+        working-directory: holocron/backend
+        run: python -m pip install -e ".[dev]"
+      - name: Sinh lại examples (I4)
+        working-directory: holocron/backend
+        run: python -m scripts.run_walkthrough
+      - name: examples phải giống từng byte
+        run: git diff --exit-code -- holocron/backend/examples

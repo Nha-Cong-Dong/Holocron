@@ -1,0 +1,37 @@
+name: Báo lỗi
+description: Hành vi sai so với SPECIFICATION.md
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: Điều gì đã xảy ra
+      description: Hành vi quan sát được và hành vi mong đợi theo SPECIFICATION.md.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Các bước tái hiện
+      description: Lệnh hoặc request tối thiểu; kèm seed nếu liên quan tới sandbox.
+    validations:
+      required: true
+  - type: dropdown
+    id: invariant
+    attributes:
+      label: Bất biến có thể bị ảnh hưởng
+      multiple: true
+      options:
+        - I1 (không số nào do LLM/frontend tự tính)
+        - I2 (mỗi phương án sai ánh xạ đúng 1 misconception)
+        - I3 (verbatim_quote nằm trong raw_text)
+        - I4 (tái lập theo template_sha256 và seed)
+        - I5 (BLOCKING chưa xử lý thì không vào pipeline)
+        - Không rõ
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Môi trường
+      description: Hệ điều hành, Python, Node và version Holocron.

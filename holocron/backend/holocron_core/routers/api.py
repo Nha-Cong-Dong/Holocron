@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+from typing import Annotated
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from ..domain.schemas import OptionKey, SelfSolveResult, SolverInputs
+from ..domain.schemas import CPUSchedulingProblem, OptionKey, SelfSolveResult, SolverInputs
 from ..infrastructure.template_library import InMemoryTemplateRegistry
+from ..services.extraction import (
+    DocumentExtractor,
+    MockDualPassExtractor,
+    UnsupportedTopicError,
+    UploadedDocument,
+    sniff_media_type,
+)
 from ..services.ingestion_gate import (
     CellPatch,
     ExtractedTable,
@@ -22,10 +30,12 @@ from ..services.ingestion_gate import (
     gate_status,
     latex_issues,
     rerun_self_solve,
-    table_to_params,
+    table_to_problem,
 )
 
-app = FastAPI(title="Holocron Ingestion Gate", version="0.2.0")
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+app = FastAPI(title="Holocron Ingestion Gate", version="0.3.0")
 REGISTRY = InMemoryTemplateRegistry()
 
 
@@ -45,10 +55,16 @@ class IngestionItem(IngestionItemCreate):
     item_id: str
     non_cloneable: bool = False
     non_cloneable_reason: str | None = None
+    problem: CPUSchedulingProblem | None = None
     self_solve: SelfSolveResult | None = None
     report: GateReport | None = None
     audits: list[PatchAudit] = Field(default_factory=list)
     approved: bool = False
+
+
+class UploadResponse(BaseModel):
+    document: UploadedDocument
+    item: IngestionItem
 
 
 class TablePatchRequest(BaseModel):
@@ -67,19 +83,51 @@ class NonCloneableRequest(BaseModel):
     reason: str = Field(min_length=5, max_length=300)
 
 
-STORE: dict[str, IngestionItem] = {}
+class IngestionStore:
+    """Kho in-memory cho item và tài liệu tải lên; được cấp qua `Depends(get_store)` để test thay được."""
+
+    def __init__(self) -> None:
+        self._items: dict[str, IngestionItem] = {}
+        self._documents: dict[str, UploadedDocument] = {}
+
+    def get_item(self, item_id: str) -> IngestionItem | None:
+        return self._items.get(item_id)
+
+    def save_item(self, item: IngestionItem) -> IngestionItem:
+        self._items[item.item_id] = item
+        return item
+
+    def save_document(self, document: UploadedDocument) -> UploadedDocument:
+        """Cùng nội dung ⇒ cùng `document_id`: giữ bản ghi đầu tiên (idempotent)."""
+        return self._documents.setdefault(document.document_id, document)
+
+
+_STORE = IngestionStore()
+_EXTRACTOR = MockDualPassExtractor()
+
+
+def get_store() -> IngestionStore:
+    return _STORE
+
+
+def get_extractor() -> DocumentExtractor:
+    return _EXTRACTOR
+
+
+StoreDep = Annotated[IngestionStore, Depends(get_store)]
+ExtractorDep = Annotated[DocumentExtractor, Depends(get_extractor)]
 
 
 def _recompute(item: IngestionItem) -> IngestionItem:
     solver = REGISTRY.get_verified(item.topic_key)
     pre_issues: list[GateIssue] = []
+    item.problem = None
     if solver is not None:
         try:
-            params = table_to_params(
-                item.topic_key, item.table_primary, item.solver_inputs.model_dump(exclude_none=True)
-            )
-            item.self_solve = rerun_self_solve(solver, params, item.options)
-        except (ValueError, KeyError) as exc:
+            item.problem = table_to_problem(item.topic_key, item.table_primary, item.solver_inputs.quantum)
+            item.self_solve = rerun_self_solve(solver, item.problem.to_template_params(), item.options)
+        except ValueError as exc:
+            item.problem = None
             item.self_solve = SelfSolveResult(status="SKIPPED", solver_confidence=0.0)
             pre_issues.append(
                 GateIssue(code="NOT_A_NUMBER", severity=Severity.BLOCKING, message_vi=f"Chưa thể tự giải: {exc}")
@@ -98,28 +146,80 @@ def _recompute(item: IngestionItem) -> IngestionItem:
     return item
 
 
-def _get(item_id: str) -> IngestionItem:
-    item = STORE.get(item_id)
+def _get(store: IngestionStore, item_id: str) -> IngestionItem:
+    item = store.get_item(item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="không tìm thấy ingestion item")
     return item
 
 
-@app.post("/v1/ingestion/items", response_model=IngestionItem, status_code=201)
-def create_item(body: IngestionItemCreate) -> IngestionItem:
+def _create(store: IngestionStore, body: IngestionItemCreate) -> IngestionItem:
     item = IngestionItem(item_id=f"ing_{uuid4().hex[:12]}", **body.model_dump(exclude_unset=True))
-    STORE[item.item_id] = _recompute(item)
-    return STORE[item.item_id]
+    return store.save_item(_recompute(item))
+
+
+@app.post("/v1/ingestion/upload", response_model=UploadResponse, status_code=201)
+async def upload_document(
+    store: StoreDep,
+    extractor: ExtractorDep,
+    file: Annotated[UploadFile, File(description="Ảnh (PNG/JPEG/WebP) hoặc PDF của đề thi")],
+    topic_key: Annotated[str, Form(pattern=r"^[a-z0-9_]+(\.[a-z0-9_]+){2,}$")],
+    quantum: Annotated[int | None, Form(ge=1, le=20)] = None,
+) -> UploadResponse:
+    content = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"file vượt {MAX_UPLOAD_BYTES} bytes")
+    if not content:
+        raise HTTPException(status_code=400, detail="file rỗng")
+    media_type = sniff_media_type(content)
+    if media_type is None:
+        raise HTTPException(status_code=415, detail="chỉ nhận PNG, JPEG, WebP hoặc PDF")
+    declared = file.content_type
+    if declared not in (None, "", "application/octet-stream", media_type):
+        raise HTTPException(
+            status_code=415, detail=f"Content-Type khai báo {declared} không khớp nội dung thực {media_type}"
+        )
+
+    document = store.save_document(
+        UploadedDocument.from_content(content, filename=file.filename or "upload", media_type=media_type)
+    )
+    try:
+        extraction = extractor.extract(document, content, topic_key)
+    except UnsupportedTopicError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    resolved_quantum = quantum if quantum is not None else extraction.quantum
+    solver_inputs = SolverInputs(quantum=resolved_quantum) if resolved_quantum is not None else SolverInputs()
+    item = _create(
+        store,
+        IngestionItemCreate(
+            source_doc_id=document.document_id,
+            page_number=extraction.page_number,
+            topic_key=topic_key,
+            stem_latex=extraction.stem_latex,
+            options=extraction.options,
+            table_primary=extraction.table_primary,
+            table_secondary=extraction.table_secondary,
+            page_text_layer=extraction.page_text_layer,
+            solver_inputs=solver_inputs,
+        ),
+    )
+    return UploadResponse(document=document, item=item)
+
+
+@app.post("/v1/ingestion/items", response_model=IngestionItem, status_code=201)
+def create_item(store: StoreDep, body: IngestionItemCreate) -> IngestionItem:
+    return _create(store, body)
 
 
 @app.get("/v1/ingestion/items/{item_id}", response_model=IngestionItem)
-def get_item(item_id: str) -> IngestionItem:
-    return _get(item_id)
+def get_item(store: StoreDep, item_id: str) -> IngestionItem:
+    return _get(store, item_id)
 
 
 @app.patch("/v1/ingestion/items/{item_id}/table", response_model=IngestionItem)
-def patch_table(item_id: str, body: TablePatchRequest) -> IngestionItem:
-    item = _get(item_id)
+def patch_table(store: StoreDep, item_id: str, body: TablePatchRequest) -> IngestionItem:
+    item = _get(store, item_id)
     if item.approved:
         raise HTTPException(status_code=409, detail="item đã approve, không sửa được")
     # TODO (Week 4): Implement atomic optimistic locking using SQLAlchemy version_id_col when migrating to database.
@@ -131,33 +231,31 @@ def patch_table(item_id: str, body: TablePatchRequest) -> IngestionItem:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     item.table_primary = new_table
     item.audits.append(audit)
-    STORE[item_id] = _recompute(item)
-    return STORE[item_id]
+    return store.save_item(_recompute(item))
 
 
 @app.patch("/v1/ingestion/items/{item_id}/stem", response_model=IngestionItem)
-def patch_stem(item_id: str, body: StemPatchRequest) -> IngestionItem:
-    item = _get(item_id)
+def patch_stem(store: StoreDep, item_id: str, body: StemPatchRequest) -> IngestionItem:
+    item = _get(store, item_id)
     if item.approved:
         raise HTTPException(status_code=409, detail="item đã approve, không sửa được")
     item.stem_latex = body.stem_latex
-    STORE[item_id] = _recompute(item)
-    return STORE[item_id]
+    return store.save_item(_recompute(item))
 
 
 @app.post("/v1/ingestion/items/{item_id}/non-cloneable", response_model=IngestionItem)
-def flag_non_cloneable(item_id: str, body: NonCloneableRequest) -> IngestionItem:
-    item = _get(item_id)
+def flag_non_cloneable(store: StoreDep, item_id: str, body: NonCloneableRequest) -> IngestionItem:
+    item = _get(store, item_id)
     if item.approved:
         raise HTTPException(status_code=400, detail="item đã approve, không thể đánh dấu non-cloneable")
     item.non_cloneable = True
     item.non_cloneable_reason = body.reason
-    return item
+    return store.save_item(item)
 
 
 @app.post("/v1/ingestion/items/{item_id}/approve", response_model=IngestionItem)
-def approve(item_id: str) -> IngestionItem:
-    item = _get(item_id)
+def approve(store: StoreDep, item_id: str) -> IngestionItem:
+    item = _get(store, item_id)
     if item.non_cloneable:
         raise HTTPException(status_code=400, detail="item đang bị đánh dấu non-cloneable, không thể approve")
     if item.report is None or item.report.status is GateStatus.BLOCKED:
@@ -166,4 +264,4 @@ def approve(item_id: str) -> IngestionItem:
         ]
         raise HTTPException(status_code=409, detail={"message": "còn lỗi BLOCKING", "issues": blocking})
     item.approved = True
-    return item
+    return store.save_item(item)

@@ -4,6 +4,8 @@ import type {
   IngestionItem,
   NonCloneableRequest,
   TablePatchRequest,
+  TwinBatch,
+  TwinBatchRequest,
   UploadResponse,
 } from "@/types/holocron";
 
@@ -95,4 +97,24 @@ export function flagNonCloneable(itemId: string, reason: string): Promise<Ingest
 
 export function approveItem(itemId: string): Promise<IngestionItem> {
   return request<IngestionItem>(`/v1/ingestion/items/${encodeURIComponent(itemId)}/approve`, { method: "POST" });
+}
+
+/**
+ * Sinh bộ Twin Questions cho blueprint. `Idempotency-Key` cho phép gửi lại cùng body trong 24 h mà backend trả đúng
+ * batch cũ, không chạy lại sandbox.
+ */
+export function createTwinBatch(
+  blueprintId: string,
+  payload: TwinBatchRequest,
+  idempotencyKey: string | null,
+): Promise<TwinBatch> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (idempotencyKey !== null) {
+    headers["Idempotency-Key"] = idempotencyKey;
+  }
+  return request<TwinBatch>(`/v1/blueprints/${encodeURIComponent(blueprintId)}/twins`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+  });
 }

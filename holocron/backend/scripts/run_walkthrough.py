@@ -189,7 +189,7 @@ def main() -> None:
         base_seed=20260419,
     )
     assert happy.twin is not None
-    (OUT / "twin_question_rr_mcq.json").write_text(happy.twin.model_dump_json(indent=2), encoding="utf-8")
+    (OUT / "twin_question_rr_mcq.json").write_text(happy.twin.model_dump_json(indent=2), encoding="utf-8", newline="\n")
 
     numerical_slot = SLOT.model_copy(update={"format": QuestionFormat.NUMERICAL, "distractor_archetypes": []})
     numerical = produce_twin(
@@ -201,7 +201,9 @@ def main() -> None:
         base_seed=20260419,
     )
     assert numerical.twin is not None
-    (OUT / "twin_question_rr_numerical.json").write_text(numerical.twin.model_dump_json(indent=2), encoding="utf-8")
+    (OUT / "twin_question_rr_numerical.json").write_text(
+        numerical.twin.model_dump_json(indent=2), encoding="utf-8", newline="\n"
+    )
 
     author = ScriptedAuthor(BROKEN_SOURCES)
     retried = produce_twin(
@@ -218,9 +220,9 @@ def main() -> None:
         "feedback_seen_by_llm": author.feedback_received,
     }
     (OUT / "retry_trace_rr.json").write_text(
-        json.dumps(trace, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+        json.dumps(trace, ensure_ascii=False, indent=2, default=str), encoding="utf-8", newline="\n"
     )
-    (OUT / "exam_blueprint_sample.json").write_text(blueprint.model_dump_json(indent=2), encoding="utf-8")
+    (OUT / "exam_blueprint_sample.json").write_text(blueprint.model_dump_json(indent=2), encoding="utf-8", newline="\n")
 
     print(happy.twin.model_dump_json(indent=2))
     print("retry outcomes:", [a.outcome for a in retried.attempts])

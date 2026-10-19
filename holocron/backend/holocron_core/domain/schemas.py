@@ -236,6 +236,9 @@ class SchedulingAlgorithm(str, Enum):
     SJF = "SJF"
 
 
+MAX_PROCESSES = 10
+
+
 class ProcessItem(StrictModel):
     """Một dòng của bảng tiến trình sau khi đã qua Ingestion Gate."""
 
@@ -248,7 +251,7 @@ class CPUSchedulingProblem(StrictModel):
     """Đề CPU Scheduling đã chuẩn hoá — đầu vào duy nhất mà sandbox `solve()` nhận cho nhóm topic này."""
 
     algorithm: SchedulingAlgorithm
-    processes: list[ProcessItem] = Field(min_length=1, max_length=10)
+    processes: list[ProcessItem] = Field(min_length=1, max_length=MAX_PROCESSES)
     quantum: int | None = Field(default=None, ge=1, le=20)
 
     @model_validator(mode="after")

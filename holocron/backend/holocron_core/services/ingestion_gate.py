@@ -18,6 +18,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..domain.schemas import (
+    MAX_PROCESSES,
     CPUSchedulingProblem,
     OptionKey,
     ProcessItem,
@@ -213,6 +214,16 @@ def check_table(
                         message_vi=f"Header '{header}' không khớp {spec.header_aliases[0]}.",
                     )
                 )
+
+    if schema is not None and primary.n_rows > MAX_PROCESSES:
+        issues.append(
+            GateIssue(
+                code="OUT_OF_RANGE",
+                severity=Severity.BLOCKING,
+                row=MAX_PROCESSES,
+                message_vi=f"Bảng có {primary.n_rows} dòng, tối đa {MAX_PROCESSES} tiến trình.",
+            )
+        )
 
     labels_seen: dict[str, int] = {}
     for row in range(primary.n_rows):

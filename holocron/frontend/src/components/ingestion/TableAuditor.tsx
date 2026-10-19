@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type KeyboardEvent } from "react";
+import { type KeyboardEvent, useMemo, useState } from "react";
 
 import { ApiError, approveItem, getItem, patchTable } from "@/lib/api";
 import { canApprove, cellKey, cellText, groupIssues, rowCount } from "@/lib/gate";

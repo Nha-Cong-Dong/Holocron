@@ -24,7 +24,8 @@ export default function IngestionReviewPage() {
         if (!cancelled) setState({ kind: "ready", item });
       })
       .catch((err: unknown) => {
-        if (!cancelled) setState({ kind: "error", message: err instanceof Error ? err.message : "Không tải được item." });
+        if (!cancelled)
+          setState({ kind: "error", message: err instanceof Error ? err.message : "Không tải được item." });
       });
     return () => {
       cancelled = true;
@@ -75,8 +76,8 @@ export default function IngestionReviewPage() {
 
       {item.approved && (
         <p role="status">
-          Đã duyệt. Bảng đã được con người xác nhận và sẵn sàng cho bước sinh Twin Questions
-          (<code>POST /v1/blueprints/{"{id}"}/twins</code>, xem SPECIFICATION §6.3).
+          Đã duyệt. Bảng đã được con người xác nhận và sẵn sàng cho bước sinh Twin Questions (
+          <code>POST /v1/blueprints/{"{id}"}/twins</code>, xem SPECIFICATION §6.3).
         </p>
       )}
     </main>

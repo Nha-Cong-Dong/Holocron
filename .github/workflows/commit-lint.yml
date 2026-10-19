@@ -1,0 +1,33 @@
+name: Commit Lint
+
+on:
+  pull_request:
+    branches: [main, develop]
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  commit-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Commit trong PR theo Conventional Commits
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: python scripts/check_commit_msg.py --range "origin/${BASE_REF}..HEAD"
+      - name: Tiêu đề PR theo Conventional Commits
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: python scripts/check_commit_msg.py --title "$PR_TITLE"

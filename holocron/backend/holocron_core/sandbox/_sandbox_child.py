@@ -167,16 +167,28 @@ def _make_builtins(preloaded: dict[str, types.SimpleNamespace]) -> Json:
     return safe
 
 
+def _is_number(value: object) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
 def _check_outputs(solution: object, distractors: object) -> tuple[Json, list[Json]] | str:
-    """Trả về (solution, distractors) đã kiểm hợp đồng, hoặc thông điệp lỗi."""
+    """Trả về (solution, distractors) đã kiểm hợp đồng (khoá VÀ kiểu), hoặc thông điệp lỗi."""
     if not isinstance(solution, dict) or not {"value", "display", "explanation_vi"} <= set(solution):
         return "solve() phải trả về dict có value/display/explanation_vi"
+    if not _is_number(solution["value"]) or not all(
+        isinstance(solution[k], str) for k in ("display", "explanation_vi")
+    ):
+        return "solve(): value phải là số (không phải bool); display/explanation_vi phải là str"
     if not isinstance(distractors, list) or len(distractors) != 3:
         return "make_distractors() phải trả về list đúng 3 phần tử"
     checked: list[Json] = []
     for d in distractors:
         if not isinstance(d, dict) or not {"misconception_code", "value", "display", "rationale_vi"} <= set(d):
             return "mỗi distractor cần misconception_code/value/display/rationale_vi"
+        if not _is_number(d["value"]) or not all(
+            isinstance(d[k], str) for k in ("misconception_code", "display", "rationale_vi")
+        ):
+            return "distractor: value phải là số (không phải bool); các trường còn lại phải là str"
         checked.append(d)
     return solution, checked
 

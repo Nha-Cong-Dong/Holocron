@@ -73,6 +73,13 @@ export interface GenerationTrace {
   provenance: TemplateProvenance;
 }
 
+/** Một đoạn CPU chạy một tiến trình trong `[start, end)`; do sandbox sinh, frontend chỉ vẽ lại. */
+export interface GanttSegment {
+  process: string;
+  start: number;
+  end: number;
+}
+
 export interface TwinQuestion {
   twin_id: string;
   blueprint_id: string;
@@ -91,6 +98,8 @@ export interface TwinQuestion {
   trace: GenerationTrace;
   review_status: ReviewStatus;
   generated_at: string;
+  /** Sắp theo `start`, không chồng lấn; khoảng CPU rảnh không có đoạn; không rỗng với topic CPU Scheduling. */
+  gantt: GanttSegment[];
 }
 
 // ---------------------------------------------------------- services/ingestion_gate.py

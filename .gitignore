@@ -54,5 +54,6 @@ desktop.ini
 # ==========================================
 # 6. Claude Code & AI Agent Specifics
 # ==========================================
-.claude/
+.claude/*
+!.claude/CLAUDE.md
 *.session

@@ -666,7 +666,8 @@ Backend PHẢI chỉ lắng nghe `127.0.0.1` trong bản local-first.
 |---|---|---|
 | T2-N1 | Schemas, sandbox, template RR, Gate API | Xong |
 | T2-N2 | Spec v0.3; upload + mock dual-pass; `CPUSchedulingProblem`; Frontend Ingestion (upload, Table Auditor) | Xong |
-| T2-N3 | Template SJF; `GanttSegment` + `solve()` trả gantt; `llm_config.py`; `POST /v1/blueprints` | Kế hoạch |
+| T2-N3 | `solve()` của template RR trả khoá `gantt` | Xong một phần: trả `[chỉ số tiến trình, start, end]` (số nguyên), chưa đúng dạng `{"process", "start", "end"}` của §8.1 |
+| T2-N3 | Template SJF; `GanttSegment` (§5.6) và đổi `gantt` của `solve()` sang dạng §8.1; `llm_config.py`; `POST /v1/blueprints` | Kế hoạch |
 | T2-N4 | `POST /v1/blueprints/{id}/twins`; Twin Viewer + Gantt chart trên Frontend | Kế hoạch |
 | T2-N5 | Adapter VLM thật cho dual-pass; pool tiến trình sandbox | Kế hoạch |
 | Tuần 3 | Golden Flow end-to-end trên 5 đề thật; đo p95 (G3) | Kế hoạch |

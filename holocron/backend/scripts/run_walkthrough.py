@@ -10,11 +10,20 @@ from __future__ import annotations
 import io
 import json
 import sys
+import uuid
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
+from typing import Any
+from unittest.mock import patch
 
 from holocron_core.pipeline import produce_twin
+from holocron_core.sandbox import SandboxResult
+from holocron_core.sandbox import run_template as _real_run_template
 from holocron_core.schemas import (
     BlueprintSlot,
+    ChunkCategory,
     Citation,
     CognitiveLevel,
     DistractorArchetype,
@@ -23,6 +32,7 @@ from holocron_core.schemas import (
     OptionKey,
     QuestionFormat,
     QuestionTemplate,
+    ReviewStatus,
     SelfSolveResult,
     TemplateProvenance,
 )
@@ -32,6 +42,32 @@ from holocron_core.template_library import (
 )
 
 OUT = Path(__file__).resolve().parents[1] / "examples"
+
+# Đóng băng mọi nguồn không tất định để examples/*.json giống hệt từng byte giữa các lần chạy.
+FROZEN_UUID = uuid.UUID("00000000-0000-4000-8000-000000001234")
+FROZEN_NOW = datetime(2026, 1, 1, tzinfo=UTC)
+FROZEN_DURATION_MS = 42
+
+
+class _FrozenDatetime(datetime):
+    @classmethod
+    def now(cls, tz: tzinfo | None = None) -> _FrozenDatetime:
+        return cls.fromtimestamp(FROZEN_NOW.timestamp(), tz)
+
+
+def _run_template_fixed_duration(*args: Any, **kwargs: Any) -> SandboxResult:
+    return _real_run_template(*args, **kwargs).model_copy(update={"duration_ms": FROZEN_DURATION_MS})
+
+
+@contextmanager
+def frozen_nondeterminism() -> Iterator[None]:
+    """Chỉ áp dụng trong lúc walkthrough chạy; không ảnh hưởng code production hay test."""
+    with ExitStack() as stack:
+        stack.enter_context(patch("holocron_core.schemas.uuid4", return_value=FROZEN_UUID))
+        stack.enter_context(patch("holocron_core.schemas.datetime", _FrozenDatetime))
+        stack.enter_context(patch("holocron_core.pipeline.run_template", _run_template_fixed_duration))
+        yield
+
 
 THEORY_CHUNK = KnowledgeChunk(
     chunk_id="chk_os05_rr_definition",
@@ -45,7 +81,7 @@ THEORY_CHUNK = KnowledgeChunk(
         "Thời gian chờ của tiến trình i: WT_i = CT_i - AT_i - BT_i."
     ),
     verbatim_quote="Hết q mà chưa xong, tiến trình bị ngắt và đưa về cuối hàng đợi sẵn sàng.",
-    category="THEORY",
+    category=ChunkCategory.THEORY,
     tags=["#theory", "#cpu_scheduling"],
     topic_keys=["os.cpu_sched.rr.avg_waiting_time"],
     linked_chunk_ids=["chk_os05_rr_example_2"],
@@ -92,17 +128,20 @@ SLOT = BlueprintSlot(
         solver_template_id="tpl_os_rr_avg_wait_v1",
     ),
     mapping_confidence=0.91,
-    review_status="AUTO_PASS",
+    review_status=ReviewStatus.AUTO_PASS,
 )
 
-BLUEPRINT = ExamBlueprint(
-    blueprint_id="bp_os_midterm_2025_de2",
-    source_exam_doc_id="doc_os_midterm_2025_de2_photo",
-    subject_code="IT3070",
-    total_questions=1,
-    duration_minutes=60,
-    slots=[SLOT.model_copy(update={"slot_index": 1})],
-)
+
+def build_blueprint() -> ExamBlueprint:
+    return ExamBlueprint(
+        blueprint_id="bp_os_midterm_2025_de2",
+        source_exam_doc_id="doc_os_midterm_2025_de2_photo",
+        subject_code="IT3070",
+        total_questions=1,
+        duration_minutes=60,
+        slots=[SLOT.model_copy(update={"slot_index": 1})],
+    )
+
 
 BROKEN_SOURCES = [
     (
@@ -137,12 +176,13 @@ def main() -> None:
     if isinstance(sys.stdout, io.TextIOWrapper):
         sys.stdout.reconfigure(encoding="utf-8")  # console Windows mặc định cp1252, không in được tiếng Việt
     OUT.mkdir(parents=True, exist_ok=True)
+    blueprint = build_blueprint()
     citation: Citation = THEORY_CHUNK.to_citation()
     registry = InMemoryTemplateRegistry()
 
     happy = produce_twin(
         SLOT,
-        blueprint_id=BLUEPRINT.blueprint_id,
+        blueprint_id=blueprint.blueprint_id,
         citation=citation,
         author=ScriptedAuthor([]),
         registry=registry,
@@ -154,7 +194,7 @@ def main() -> None:
     numerical_slot = SLOT.model_copy(update={"format": QuestionFormat.NUMERICAL, "distractor_archetypes": []})
     numerical = produce_twin(
         numerical_slot,
-        blueprint_id=BLUEPRINT.blueprint_id,
+        blueprint_id=blueprint.blueprint_id,
         citation=citation,
         author=ScriptedAuthor([]),
         registry=registry,
@@ -166,7 +206,7 @@ def main() -> None:
     author = ScriptedAuthor(BROKEN_SOURCES)
     retried = produce_twin(
         SLOT,
-        blueprint_id=BLUEPRINT.blueprint_id,
+        blueprint_id=blueprint.blueprint_id,
         citation=citation,
         author=author,
         registry=registry,
@@ -180,11 +220,12 @@ def main() -> None:
     (OUT / "retry_trace_rr.json").write_text(
         json.dumps(trace, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
     )
-    (OUT / "exam_blueprint_sample.json").write_text(BLUEPRINT.model_dump_json(indent=2), encoding="utf-8")
+    (OUT / "exam_blueprint_sample.json").write_text(blueprint.model_dump_json(indent=2), encoding="utf-8")
 
     print(happy.twin.model_dump_json(indent=2))
     print("retry outcomes:", [a.outcome for a in retried.attempts])
 
 
 if __name__ == "__main__":
-    main()
+    with frozen_nondeterminism():
+        main()

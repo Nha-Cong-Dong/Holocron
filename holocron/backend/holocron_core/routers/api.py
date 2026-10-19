@@ -9,6 +9,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from ..domain.schemas import MAX_PROCESSES, CPUSchedulingProblem, OptionKey, SelfSolveResult, SolverInputs
+from ..infrastructure.llm_config import RuntimeConfig, load_runtime_config
 from ..infrastructure.template_library import InMemoryTemplateRegistry
 from ..services.extraction import (
     DocumentExtractor,
@@ -65,6 +66,14 @@ class IngestionItem(IngestionItemCreate):
     approved: bool = False
 
 
+class RuntimeInfo(BaseModel):
+    """Trạng thái chạy cho UI: chỉ cờ boolean, KHÔNG chứa khoá API, tên model hay địa chỉ endpoint."""
+
+    demo_mode: bool
+    llm_configured: bool
+    vlm_configured: bool
+
+
 class UploadResponse(BaseModel):
     document: UploadedDocument
     item: IngestionItem
@@ -114,11 +123,18 @@ def get_store() -> IngestionStore:
 
 
 def get_extractor() -> DocumentExtractor:
+    # Adapter VLM thật thuộc T2-N5. Cho tới lúc đó mọi cấu hình đều dùng Mock; `RuntimeInfo.demo_mode` suy ra từ
+    # extractor đang chạy nên vẫn đúng khi đã đặt biến VLM mà chưa có adapter.
     return _EXTRACTOR
+
+
+def get_runtime_config() -> RuntimeConfig:
+    return load_runtime_config()
 
 
 StoreDep = Annotated[IngestionStore, Depends(get_store)]
 ExtractorDep = Annotated[DocumentExtractor, Depends(get_extractor)]
+RuntimeConfigDep = Annotated[RuntimeConfig, Depends(get_runtime_config)]
 
 
 def _recompute(item: IngestionItem) -> IngestionItem:
@@ -180,6 +196,15 @@ def _get(store: IngestionStore, item_id: str) -> IngestionItem:
 def _create(store: IngestionStore, body: IngestionItemCreate) -> IngestionItem:
     item = IngestionItem(item_id=f"ing_{uuid4().hex[:12]}", **body.model_dump(exclude_unset=True))
     return store.save_item(_recompute(item))
+
+
+@app.get("/v1/runtime", response_model=RuntimeInfo)
+def get_runtime(config: RuntimeConfigDep, extractor: ExtractorDep) -> RuntimeInfo:
+    return RuntimeInfo(
+        demo_mode=isinstance(extractor, MockDualPassExtractor),
+        llm_configured=config.llm_configured,
+        vlm_configured=config.vlm is not None,
+    )
 
 
 @app.post("/v1/ingestion/upload", response_model=UploadResponse, status_code=201)

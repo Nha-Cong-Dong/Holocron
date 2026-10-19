@@ -7,6 +7,7 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 
 ### 🚀 Tính năng mới
 - `GanttSegment` và `TwinQuestion.gantt` (validator: không rỗng với topic CPU Scheduling, sắp theo `start`, không chồng lấn); `solve()` của template RR trả `gantt` đúng dạng `{"process", "start", "end"}` của spec §8.1; sandbox kiểm kiểu `gantt`; `types/holocron.ts` bổ sung `GanttSegment`.
+- Template SJF không ưu tiên `os_sjf_avg_waiting` (topic `os.cpu_sched.sjf.avg_waiting_time`) với 3 misconception `WAIT_CONFUSED_WITH_TURNAROUND`, `SJF_IGNORES_ARRIVAL`, `SJF_COMPUTED_AS_SRTF`, đăng ký trong `template_library` và registry; kiểm bằng bộ giải tham chiếu độc lập, property test 200 seed (tỉ lệ nhận seed 16 %), tất định và sandbox không thoát bất thường. Chưa đăng ký ở Ingestion Gate (`TABLE_SCHEMAS`, `TOPIC_ALGORITHMS`).
 
 ### 🛠️ Cải tiến & Tối ưu
 

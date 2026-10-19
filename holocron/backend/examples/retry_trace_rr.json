@@ -1,0 +1,47 @@
+{
+  "final_review_status": "AUTO_PASS",
+  "attempts": [
+    {
+      "attempt": 1,
+      "provenance": "llm_generated",
+      "template_sha256": "cbf0afb1623c3e5bfeaed306450844e50c7e5920072bd218e9fbaaa8a9a647cc",
+      "outcome": "ast_rejected",
+      "seeds_tried": 1,
+      "assertion_histogram": {},
+      "feedback_sent": [
+        "AST_REJECTED: dòng 1: import bị cấm: os"
+      ]
+    },
+    {
+      "attempt": 2,
+      "provenance": "llm_generated",
+      "template_sha256": "eceae53de3a93b547c3f9a4bf392aaf15b74ddb3a792b66fd944820b4eeffaf8",
+      "outcome": "runtime_error",
+      "seeds_tried": 1,
+      "assertion_histogram": {},
+      "feedback_sent": [
+        "RUNTIME_ERROR (stage=solve, line=8): KeyError: 'y'"
+      ]
+    },
+    {
+      "attempt": 3,
+      "provenance": "llm_generated",
+      "template_sha256": "1f23d75ef80ba014dd1189520561b10fc2016389f581f883b8e12b77074606c5",
+      "outcome": "ok",
+      "seeds_tried": 2,
+      "assertion_histogram": {
+        "TIE_ARRIVAL_AT_PREEMPTION": 1
+      },
+      "feedback_sent": []
+    }
+  ],
+  "feedback_seen_by_llm": [
+    [],
+    [
+      "AST_REJECTED: dòng 1: import bị cấm: os"
+    ],
+    [
+      "RUNTIME_ERROR (stage=solve, line=8): KeyError: 'y'"
+    ]
+  ]
+}

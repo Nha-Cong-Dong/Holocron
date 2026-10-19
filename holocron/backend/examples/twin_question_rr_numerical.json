@@ -1,0 +1,35 @@
+{
+  "twin_id": "twin_b5298a7be711401c",
+  "blueprint_id": "bp_os_midterm_2025_de2",
+  "slot_index": 7,
+  "template_id": "tpl_os_rr_avg_wait_v1",
+  "topic_key": "os.cpu_sched.rr.avg_waiting_time",
+  "seed": 20268338,
+  "format": "NUMERICAL",
+  "stem": "Cho các tiến trình sau được lập lịch trên một CPU bằng thuật toán **Round Robin** với lượng tử thời gian $q = 3$ ms. Bỏ qua chi phí chuyển ngữ cảnh.\n\n| Tiến trình | Thời điểm đến (ms) | Burst time (ms) |\n|---|---|---|\n| P1 | 0 | 4 |\n| P2 | 2 | 7 |\n| P3 | 4 | 3 |\n| P4 | 5 | 6 |\n\nThời gian chờ trung bình $\\overline{WT} = \\frac{1}{n}\\sum_{i}(CT_i - AT_i - BT_i)$ là bao nhiêu?",
+  "options": null,
+  "correct_key": null,
+  "numerical_answer": {
+    "value": 6.25,
+    "tolerance_abs": 0.01,
+    "unit": "ms",
+    "decimals": 2
+  },
+  "distractor_to_misconception_map": {},
+  "solution_explanation_vi": "Gantt: P1[0-3] | P2[3-6] | P1[6-7] | P3[7-10] | P4[10-13] | P2[13-16] | P4[16-19] | P2[19-20]. P1: CT=7, TAT=7, WT=3; P2: CT=20, TAT=18, WT=11; P3: CT=10, TAT=6, WT=3; P4: CT=19, TAT=14, WT=8. WT trung bình = 25/4 = 6.25 ms.",
+  "citation": {
+    "doc_id": "doc_os_lecture05_cpu_scheduling",
+    "page_number": 14,
+    "verbatim_quote": "Hết q mà chưa xong, tiến trình bị ngắt và đưa về cuối hàng đợi sẵn sàng.",
+    "chunk_id": "chk_os05_rr_definition"
+  },
+  "trace": {
+    "sandbox_duration_ms": 39,
+    "llm_attempts": 1,
+    "seed_rerolls": 1,
+    "template_sha256": "1f23d75ef80ba014dd1189520561b10fc2016389f581f883b8e12b77074606c5",
+    "provenance": "llm_generated"
+  },
+  "review_status": "AUTO_PASS",
+  "generated_at": "2026-10-18T22:36:28.951123Z"
+}

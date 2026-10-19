@@ -6,6 +6,7 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 ## [Unreleased]
 
 ### 🚀 Tính năng mới
+- `infrastructure/llm_config.py`: cấu hình LLM/VLM từ biến môi trường `HOLOCRON_LLM_*`/`HOLOCRON_VLM_*` (khoá API bọc `SecretStr`, không lộ ở `repr`/serialize/log; thiếu VLM ⇒ chế độ demo) và `GET /v1/runtime` trả cờ `demo_mode`, `llm_configured`, `vlm_configured` cho UI; `types/holocron.ts` bổ sung `RuntimeInfo`.
 
 ### 🛠️ Cải tiến & Tối ưu
 

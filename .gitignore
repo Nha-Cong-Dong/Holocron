@@ -31,6 +31,8 @@ out/
 coverage/
 __pycache__/
 *.egg-info/
+*.tsbuildinfo
+next-env.d.ts
 
 # ==========================================
 # 4. Logs & Ghi nhận lỗi

@@ -328,7 +328,7 @@ class TwinQuestion(StrictModel):
 
 Quy tắc MCQ4: `correct_key ∉ distractor_to_misconception_map` và map phủ đúng 3 phương án còn lại (I2). NUMERICAL: không có `options`/`correct_key`, bắt buộc `numerical_answer.tolerance_abs`.
 
-### 5.6 Bổ sung chốt cho Tuần 2 Ngày 3 (chưa có trong code)
+### 5.6 Bổ sung chốt cho Tuần 2 Ngày 3 (`GanttSegment` và `TwinQuestion.gantt` đã có trong code; các model còn lại chưa)
 
 ```python
 class GanttSegment(StrictModel):
@@ -666,8 +666,8 @@ Backend PHẢI chỉ lắng nghe `127.0.0.1` trong bản local-first.
 |---|---|---|
 | T2-N1 | Schemas, sandbox, template RR, Gate API | Xong |
 | T2-N2 | Spec v0.3; upload + mock dual-pass; `CPUSchedulingProblem`; Frontend Ingestion (upload, Table Auditor) | Xong |
-| T2-N3 | `solve()` của template RR trả khoá `gantt` | Xong một phần: trả `[chỉ số tiến trình, start, end]` (số nguyên), chưa đúng dạng `{"process", "start", "end"}` của §8.1 |
-| T2-N3 | Template SJF; `GanttSegment` (§5.6) và đổi `gantt` của `solve()` sang dạng §8.1; `llm_config.py`; `POST /v1/blueprints` | Kế hoạch |
+| T2-N3 | `solve()` của template RR trả `gantt` đúng dạng §8.1; `GanttSegment` và `TwinQuestion.gantt` (§5.6) | Xong |
+| T2-N3 | Template SJF; `llm_config.py`; `POST /v1/blueprints` | Kế hoạch |
 | T2-N4 | `POST /v1/blueprints/{id}/twins`; Twin Viewer + Gantt chart trên Frontend | Kế hoạch |
 | T2-N5 | Adapter VLM thật cho dual-pass; pool tiến trình sandbox | Kế hoạch |
 | Tuần 3 | Golden Flow end-to-end trên 5 đề thật; đo p95 (G3) | Kế hoạch |

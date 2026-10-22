@@ -181,6 +181,8 @@ def get_extractor() -> DocumentExtractor:
 
 def get_runtime_config() -> RuntimeConfig:
     return load_runtime_config()
+
+
 def get_template_author() -> TemplateAuthor:
     return UnconfiguredTemplateAuthor()
 
@@ -191,6 +193,7 @@ def get_citation_provider() -> CitationProvider:
 
 def get_clock() -> Callable[[], datetime]:
     return lambda: datetime.now(UTC)
+
 
 StoreDep = Annotated[IngestionStore, Depends(get_store)]
 ExtractorDep = Annotated[DocumentExtractor, Depends(get_extractor)]

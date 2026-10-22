@@ -73,6 +73,32 @@ export interface GenerationTrace {
   provenance: TemplateProvenance;
 }
 
+/** Một đoạn CPU chạy một tiến trình trong `[start, end)`; do sandbox sinh, frontend chỉ vẽ lại. */
+export interface GanttSegment {
+  process: string;
+  start: number;
+  end: number;
+}
+
+export interface AttemptLog {
+  attempt: number;
+  provenance: TemplateProvenance;
+  template_sha256: string | null;
+  outcome: string;
+  seeds_tried: number;
+  assertion_histogram: Record<string, number>;
+  feedback_sent: string[];
+}
+
+/** Slot không sinh được (services/pipeline.py): cần người xem lại thủ công. */
+export interface ReviewTicket {
+  blueprint_id: string;
+  slot_index: number;
+  topic_key: string;
+  reason: string;
+  attempts: AttemptLog[];
+}
+
 export interface TwinQuestion {
   twin_id: string;
   blueprint_id: string;
@@ -91,6 +117,8 @@ export interface TwinQuestion {
   trace: GenerationTrace;
   review_status: ReviewStatus;
   generated_at: string;
+  /** Sắp theo `start`, không chồng lấn; khoảng CPU rảnh không có đoạn; không rỗng với topic CPU Scheduling. */
+  gantt: GanttSegment[];
 }
 
 // ---------------------------------------------------------- services/ingestion_gate.py
@@ -207,6 +235,18 @@ export interface RuntimeInfo {
   demo_mode: boolean;
   llm_configured: boolean;
   vlm_configured: boolean;
+/** Body của `POST /v1/blueprints/{id}/twins`; mọi field đều tuỳ chọn khi gửi. */
+export interface TwinBatchRequest {
+  count?: number;
+  format?: QuestionFormat;
+  base_seed?: number | null;
+}
+
+export interface TwinBatch {
+  blueprint_id: string;
+  base_seed: number;
+  twins: TwinQuestion[];
+  review_tickets: ReviewTicket[];
 }
 
 export interface UploadResponse {

@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from ..domain.schemas import MAX_PROCESSES, CPUSchedulingProblem, OptionKey, SelfSolveResult, SolverInputs
+from ..domain.schemas import (
+    MAX_PROCESSES,
+    CPUSchedulingProblem,
+    ExamBlueprint,
+    OptionKey,
+    SelfSolveResult,
+    SolverInputs,
+)
 from ..infrastructure.llm_config import RuntimeConfig, load_runtime_config
 from ..infrastructure.template_library import InMemoryTemplateRegistry
 from ..services.extraction import (
@@ -35,9 +45,19 @@ from ..services.ingestion_gate import (
     rerun_self_solve,
     table_to_problem,
 )
+from ..services.pipeline import TemplateAuthor
+from ..services.twin_batch import (
+    CitationProvider,
+    NoCitationProvider,
+    TwinBatch,
+    TwinBatchRequest,
+    UnconfiguredTemplateAuthor,
+    generate_twin_batch,
+)
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_FILENAME_LENGTH = 255  # khớp `UploadedDocument.filename`
+IDEMPOTENCY_TTL = timedelta(hours=24)
 
 app = FastAPI(title="Holocron Ingestion Gate", version="0.1.0a0")
 REGISTRY = InMemoryTemplateRegistry()
@@ -95,12 +115,21 @@ class NonCloneableRequest(BaseModel):
     reason: str = Field(min_length=5, max_length=300)
 
 
+class IdempotencyRecord(BaseModel):
+    body_digest: str
+    stored_at: datetime
+    batch: TwinBatch
+
+
 class IngestionStore:
     """Kho in-memory cho item và tài liệu tải lên; được cấp qua `Depends(get_store)` để test thay được."""
 
     def __init__(self) -> None:
         self._items: dict[str, IngestionItem] = {}
         self._documents: dict[str, UploadedDocument] = {}
+        self._blueprints: dict[str, ExamBlueprint] = {}
+        self._blueprint_items: dict[str, tuple[str, ...]] = {}
+        self._idempotency: dict[tuple[str, str], IdempotencyRecord] = {}
 
     def get_item(self, item_id: str) -> IngestionItem | None:
         return self._items.get(item_id)
@@ -112,6 +141,28 @@ class IngestionStore:
     def save_document(self, document: UploadedDocument) -> UploadedDocument:
         """Cùng nội dung ⇒ cùng `document_id`: giữ bản ghi đầu tiên (idempotent)."""
         return self._documents.setdefault(document.document_id, document)
+
+    def save_blueprint(self, blueprint: ExamBlueprint, item_ids: Sequence[str] = ()) -> ExamBlueprint:
+        """Lưu blueprint kèm danh sách item đã được duyệt mà nó được dựng từ (để kiểm lại I5 khi sinh twin)."""
+        self._blueprints[blueprint.blueprint_id] = blueprint
+        self._blueprint_items[blueprint.blueprint_id] = tuple(item_ids)
+        return blueprint
+
+    def get_blueprint(self, blueprint_id: str) -> ExamBlueprint | None:
+        return self._blueprints.get(blueprint_id)
+
+    def blueprint_item_ids(self, blueprint_id: str) -> tuple[str, ...]:
+        return self._blueprint_items.get(blueprint_id, ())
+
+    def get_idempotent(self, blueprint_id: str, key: str, now: datetime) -> IdempotencyRecord | None:
+        """Bản ghi còn hiệu lực (< 24 h) của `(blueprint, key)`; hết hạn thì coi như không có."""
+        record = self._idempotency.get((blueprint_id, key))
+        if record is None or now - record.stored_at > IDEMPOTENCY_TTL:
+            return None
+        return record
+
+    def save_idempotent(self, blueprint_id: str, key: str, record: IdempotencyRecord) -> None:
+        self._idempotency[(blueprint_id, key)] = record
 
 
 _STORE = IngestionStore()
@@ -130,11 +181,23 @@ def get_extractor() -> DocumentExtractor:
 
 def get_runtime_config() -> RuntimeConfig:
     return load_runtime_config()
+def get_template_author() -> TemplateAuthor:
+    return UnconfiguredTemplateAuthor()
 
+
+def get_citation_provider() -> CitationProvider:
+    return NoCitationProvider()
+
+
+def get_clock() -> Callable[[], datetime]:
+    return lambda: datetime.now(UTC)
 
 StoreDep = Annotated[IngestionStore, Depends(get_store)]
 ExtractorDep = Annotated[DocumentExtractor, Depends(get_extractor)]
 RuntimeConfigDep = Annotated[RuntimeConfig, Depends(get_runtime_config)]
+AuthorDep = Annotated[TemplateAuthor, Depends(get_template_author)]
+CitationDep = Annotated[CitationProvider, Depends(get_citation_provider)]
+ClockDep = Annotated[Callable[[], datetime], Depends(get_clock)]
 
 
 def _recompute(item: IngestionItem) -> IngestionItem:
@@ -317,3 +380,42 @@ def approve(store: StoreDep, item_id: str) -> IngestionItem:
         raise HTTPException(status_code=409, detail={"message": "còn lỗi BLOCKING", "issues": blocking})
     item.approved = True
     return store.save_item(item)
+
+
+@app.post("/v1/blueprints/{blueprint_id}/twins", response_model=TwinBatch, status_code=201)
+def create_twins(
+    store: StoreDep,
+    author: AuthorDep,
+    citations: CitationDep,
+    clock: ClockDep,
+    blueprint_id: str,
+    body: TwinBatchRequest,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> TwinBatch:
+    blueprint = store.get_blueprint(blueprint_id)
+    if blueprint is None:
+        raise HTTPException(status_code=404, detail="không tìm thấy blueprint")
+    # I5 kiểm lại ở cửa sinh twin: mọi item làm nguồn của blueprint PHẢI còn tồn tại, đã duyệt và không non-cloneable.
+    invalid = [
+        item_id
+        for item_id in store.blueprint_item_ids(blueprint_id)
+        if (item := store.get_item(item_id)) is None or not item.approved or item.non_cloneable
+    ]
+    if invalid:
+        raise HTTPException(
+            status_code=409, detail=f"blueprint chứa item chưa được duyệt hoặc không còn hợp lệ: {', '.join(invalid)}"
+        )
+
+    now = clock()
+    digest = hashlib.sha256(body.model_dump_json().encode("utf-8")).hexdigest()
+    existing = store.get_idempotent(blueprint_id, idempotency_key, now) if idempotency_key is not None else None
+    if existing is not None and existing.body_digest == digest:
+        return existing.batch  # cùng key + cùng body trong 24 h: trả lại đúng batch cũ, không chạy lại sandbox
+
+    batch = generate_twin_batch(blueprint, body, author=author, registry=REGISTRY, citations=citations)
+    # Cùng key nhưng khác body: coi là request mới và KHÔNG ghi đè bản ghi cũ (spec chưa định nghĩa trường hợp này).
+    if idempotency_key is not None and existing is None:
+        store.save_idempotent(
+            blueprint_id, idempotency_key, IdempotencyRecord(body_digest=digest, stored_at=now, batch=batch)
+        )
+    return batch

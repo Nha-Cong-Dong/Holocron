@@ -159,7 +159,7 @@ def validate(params: Params) -> None:
             assert abs(values[a] - values[b]) >= MIN_OPTION_GAP, "DISTINCT_OPTION_GAP"
 
 
-def solve(params: Params) -> dict[str, str | float | list[list[int]]]:
+def solve(params: Params) -> dict[str, str | float | list[dict[str, str | int]]]:
     sim, per_process, averages = _metrics(params)
     names = _strs(params["names"])
     completion, gantt = sim[1], sim[2]
@@ -171,7 +171,7 @@ def solve(params: Params) -> dict[str, str | float | list[list[int]]]:
         )
     gantt_text = " | ".join(names[seg[0]] + "[" + str(seg[1]) + "-" + str(seg[2]) + "]" for seg in gantt)
     return {
-        "gantt": [[seg[0], seg[1], seg[2]] for seg in gantt],
+        "gantt": [{"process": names[seg[0]], "start": seg[1], "end": seg[2]} for seg in gantt],
         "value": float(_rounded(averages["waiting"])),
         "exact": str(averages["waiting"]),
         "display": _fmt(averages["waiting"]),
@@ -190,7 +190,7 @@ def solve(params: Params) -> dict[str, str | float | list[list[int]]]:
 
 
 def make_distractors(
-    params: Params, solution: dict[str, str | float | list[list[int]]]
+    params: Params, solution: dict[str, str | float | list[dict[str, str | int]]]
 ) -> list[dict[str, str | float]]:
     _, per_process, averages = _metrics(params)
     n = len(_strs(params["names"]))

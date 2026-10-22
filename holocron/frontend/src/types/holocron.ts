@@ -230,6 +230,13 @@ export interface IngestionItem {
   approved: boolean;
 }
 
+/** `GET /v1/runtime`: chỉ cờ boolean, không có khoá API, tên model hay endpoint. */
+export interface RuntimeInfo {
+  demo_mode: boolean;
+  llm_configured: boolean;
+  vlm_configured: boolean;
+}
+
 /** Body của `POST /v1/blueprints/{id}/twins`; mọi field đều tuỳ chọn khi gửi. */
 export interface TwinBatchRequest {
   count?: number;

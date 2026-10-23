@@ -27,7 +27,7 @@
 - **Đọc đề vẫn là giả lập:** extractor là `MockDualPassExtractor`, trả cùng một đề Round Robin mẫu cho mọi file hợp lệ; chưa có adapter VLM thật.
 - **Sinh câu hỏi:** đã có `POST /v1/blueprints/{id}/twins` và trang xem twin; chưa có `POST /v1/blueprints` nên chưa tạo được blueprint từ đề đã duyệt qua API. Chưa có adapter LLM viết template nên pipeline dùng template đã kiểm chứng làm fallback.
 - **Chưa có Knowledge Vault đa môn**, chưa có ôn lý thuyết hay chấm câu trả lời.
-- **Thiết kế đa môn đang chờ ADR-005/006/007** (đang soạn). Cho tới khi các ADR được chấp nhận, contract trong `SPECIFICATION.md` vẫn có hiệu lực.
+- **Phạm vi MVP là đa môn** (`SPECIFICATION.md` §1, v0.4): desktop app Tauri cho sinh viên tự ôn luyện, ba môn demo. Thiết kế ở ADR-005/006/007/008, đang ở trạng thái *Đề xuất*; cho tới khi các ADR được chấp nhận, contract hiện hành trong `SPECIFICATION.md` §5–§12 vẫn có hiệu lực.
 
 ## Cấu trúc dự án
 

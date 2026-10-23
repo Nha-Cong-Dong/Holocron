@@ -13,29 +13,51 @@ CLAUDE.md §2.1 đã xếp "bộ sinh câu hỏi tất định (điền khuyết
 
 ### 1. Câu lý thuyết trong MVP sinh tất định từ Vault, không do LLM soạn
 
-Nguyên liệu là các **cặp khái niệm – định nghĩa** (`ConceptPair`) mà Vault lưu khi nhập tài liệu (ADR-006). Mỗi cặp gồm `term` (tên khái niệm), `definition_quote` (trích dẫn nguyên văn từ chunk), `chunk_id`, `subject_code`, `chapter_code`. Cặp chỉ được lưu khi `definition_quote` là chuỗi con nguyên văn của văn bản chunk (I3). Nếu `term` xuất hiện trong trích dẫn, vị trí xuất hiện được ghi lại.
+Nguyên liệu là các **cặp khái niệm – định nghĩa** (`ConceptPair`). Mỗi cặp gồm `term` (tên khái niệm), `definition_quote` (trích dẫn định nghĩa), `chunk_id`, `subject_code`, `chapter_code` và trạng thái xác nhận.
 
-Hai dạng câu MCQ4, đều do code sinh:
+**Nguồn của cặp, theo đúng thứ tự:**
+1. **DeepSeek đề xuất** cặp từ một chunk đã nằm trong Vault (ADR-006), tức từ văn bản người dùng đã xác nhận ở màn hình xem lại của bộ nhập.
+2. **Code kiểm nguyên văn:** `definition_quote` PHẢI là chuỗi con (đã chuẩn hoá khoảng trắng) của văn bản chunk đó (I3). Không khớp thì cặp bị loại ngay, không sửa hộ và không hiện cho người dùng.
+3. **Người dùng xác nhận** cặp ở màn hình xem lại; có thể sửa `term`, hoặc chọn lại trích dẫn bằng cách bôi đúng đoạn văn trong chunk (đoạn được chọn vẫn qua bước 2).
+
+**Chỉ cặp đã được người dùng xác nhận mới được dùng để sinh câu.** Cặp chưa xác nhận hay bị từ chối không vào nhóm ứng viên và không tính vào `pool_sha256`. Nếu `term` xuất hiện trong chính trích dẫn của nó, vị trí xuất hiện được ghi lại để che khi sinh câu.
+
+Ba dạng câu MCQ4, đều do code sinh; LLM không soạn thân câu, phương án hay giải thích:
 
 | Dạng | Thân câu | Đáp án đúng | Phương án nhiễu |
 |---|---|---|---|
-| Ghép khái niệm | "Khái niệm nào ứng với đoạn trích sau?" kèm `definition_quote`; tên khái niệm trong trích dẫn được thay bằng `____` | `term` của cặp | `term` của 3 cặp khác |
-| Điền khuyết | `definition_quote` với một thuật ngữ khác trong trích dẫn được thay bằng `____` (chỉ dùng khi thuật ngữ đó cũng là `term` của một cặp trong Vault) | Thuật ngữ bị che | `term` của 3 cặp khác |
+| Ghép khái niệm | "Khái niệm nào ứng với đoạn trích sau?" kèm `definition_quote`; tên khái niệm trong trích dẫn được thay bằng `____` | `term` của cặp | `term` của 3 cặp khác, ưu tiên cùng chương rồi mới tới cùng môn |
+| Điền khuyết | `definition_quote` với một thuật ngữ khác trong trích dẫn được thay bằng `____` (chỉ dùng khi thuật ngữ đó cũng là `term` của một cặp đã xác nhận) | Thuật ngữ bị che | `term` của 3 cặp khác, ưu tiên cùng chương rồi mới tới cùng môn |
+| Chọn định nghĩa đúng | "Phát biểu nào là định nghĩa của «`term`»?" | `definition_quote` của cặp | `definition_quote` của 3 khái niệm **khác cùng chương**; không đủ 3 khái niệm cùng chương thì không sinh dạng này |
 
-- Phương án nhiễu ưu tiên khái niệm cùng chương, rồi mới tới khái niệm cùng môn. Bốn phương án phải khác nhau sau khi chuẩn hoá (giống luật MCQ4 hiện có).
-- `citation` của câu là trích dẫn của cặp đúng. Giải thích cho từng phương án nhiễu là định nghĩa nguyên văn của khái niệm đó, kèm trích dẫn riêng.
-- Môn có ít hơn 4 khái niệm hợp lệ, hoặc không chọn được 3 phương án nhiễu khác nhau, thì slot vào `ReviewTicket` với lý do "không đủ căn cứ trong Vault".
+- Ở mọi dạng, tên khái niệm xuất hiện bên trong một phương án được che bằng `____`, để phương án không tự lộ đáp án.
+- Bốn phương án phải khác nhau sau khi chuẩn hoá (giống luật MCQ4 hiện có).
+- `citation` của câu là trích dẫn của cặp đúng. Giải thích cho từng phương án nhiễu là định nghĩa nguyên văn của khái niệm ứng với phương án đó, kèm trích dẫn riêng.
+- Không có đủ 4 khái niệm đã xác nhận (với dạng thứ ba: 4 khái niệm cùng chương), hoặc không chọn được 3 phương án nhiễu khác nhau, thì slot vào `ReviewTicket` với lý do "không đủ căn cứ trong Vault".
 
 ### 2. Tái lập và misconception
 
-- **Tái lập:** chọn cặp và phương án bằng `random.Random(f"{pool_sha256}:{seed}")`, trong đó `pool_sha256` là sha256 của danh sách cặp ứng viên đã sắp xếp. Cùng Vault và cùng seed thì cùng câu hỏi và cùng thứ tự phương án. Đây là cách mở rộng I4 sang câu không có template.
-- **Misconception:** bộ sinh khai báo cố định hai mã, `THEORY_SAME_CHAPTER_CONCEPT` và `THEORY_SAME_SUBJECT_CONCEPT`. Mỗi phương án nhiễu nhận đúng một mã tuỳ theo nguồn chọn, nên luật "map phủ đúng 3 phương án sai" của `TwinQuestion` vẫn giữ.
+- **Tái lập:** chọn cặp và phương án bằng `random.Random(f"{generator_version}:{pool_sha256}:{seed}")`. `pool_sha256` là sha256 của danh sách cặp **đã xác nhận** dùng làm ứng viên, sắp theo `(chapter_code, term, chunk_id)`; `generator_version` là phiên bản của bộ sinh, tăng khi đổi luật chọn. Cùng ba giá trị đó thì cùng câu hỏi, cùng đáp án và cùng thứ tự phương án. Đây là cách mở rộng I4 sang câu không có template.
+- **Misconception:** bộ sinh khai báo cố định hai mã, `THEORY_SAME_CHAPTER_CONCEPT` và `THEORY_SAME_SUBJECT_CONCEPT` (danh sách `THEORY_MISCONCEPTIONS`). Mỗi phương án nhiễu nhận đúng một mã tuỳ theo nguồn chọn; dạng "chọn định nghĩa đúng" chỉ dùng `THEORY_SAME_CHAPTER_CONCEPT`. Như vậy luật "map phủ đúng 3 phương án sai" của `TwinQuestion` vẫn giữ.
 
 ### 3. LLM chỉ đề xuất cặp khái niệm
 
-DeepSeek đọc chunk và đề xuất cặp `(term, definition_quote)`. Code kiểm nguyên văn; cặp sai bị loại. Người dùng có thể sửa hoặc xoá cặp ở màn hình xem lại. LLM không soạn thân câu, không soạn phương án, không viết giải thích.
+DeepSeek chỉ đề xuất cặp `(term, definition_quote)` theo đúng thứ tự ở mục 1: đề xuất, code kiểm nguyên văn, người dùng xác nhận. LLM không soạn thân câu, không soạn phương án, không viết giải thích.
 
-### 4. Chấm câu trả lời tự luận và `AnswerJudge`: sau MVP
+### 4. Đề xuất sửa câu chữ bất biến I2 và I4 (chờ người làm dự án đọc)
+
+Chỉ sửa câu chữ và cơ chế cưỡng chế trong bảng §0 của spec; nội dung với câu tính toán giữ nguyên.
+
+| | Trước (spec v0.4 §0) | Sau (đề xuất) |
+|---|---|---|
+| **I2** bất biến | Mỗi phương án sai của MCQ4 ánh xạ đúng một `misconception_code` đã khai báo trong template. | Mỗi phương án sai của MCQ4 ánh xạ đúng một `misconception_code` đã khai báo trước: trong template với câu tính toán, hoặc trong danh sách mã cố định `THEORY_MISCONCEPTIONS` của bộ sinh với câu lý thuyết (ADR-007). |
+| **I2** cơ chế | Validator `TwinQuestion._format_rules`; `build_twin` ném `ValueError` khi gặp mã lạ → retry (§10). | Validator `TwinQuestion._format_rules`; `build_twin` ném `ValueError` khi gặp mã lạ → retry (§10); bộ sinh câu lý thuyết chỉ gán mã thuộc `THEORY_MISCONCEPTIONS`, có test cưỡng chế. |
+| **I4** bất biến | `(template_sha256, seed)` ⇒ cùng đề, cùng đáp án, cùng thứ tự phương án, cùng Gantt. | Câu tính toán: `(template_sha256, seed)` ⇒ cùng đề, cùng đáp án, cùng thứ tự phương án, cùng Gantt. Câu lý thuyết: `(generator_version, pool_sha256, seed)` ⇒ cùng đề, cùng đáp án, cùng thứ tự phương án, trong đó `pool_sha256` là sha256 của danh sách cặp khái niệm đã xác nhận dùng làm ứng viên. |
+| **I4** cơ chế | `random.Random(seed)` trong template; trộn phương án bằng `random.Random(f"{sha256}:{seed}")`; walkthrough sinh `examples/*.json` giống từng byte. | Như cũ, cộng thêm: bộ sinh câu lý thuyết chỉ dùng `random.Random(f"{generator_version}:{pool_sha256}:{seed}")`; walkthrough sinh thêm ví dụ câu lý thuyết, cũng phải giống từng byte. |
+
+Khi được duyệt: sửa bảng §0 của spec, thêm test cưỡng chế vào bảng CLAUDE.md §9, rồi chuyển ADR này sang *Chấp nhận*.
+
+### 5. Chấm câu trả lời tự luận và `AnswerJudge`: sau MVP (đã duyệt 2026-10-24)
 
 Thiết kế giữ theo CLAUDE.md §2.1, chưa triển khai:
 
@@ -50,9 +72,9 @@ Lý do để sau MVP: chấm tự luận cần một bộ câu trả lời mẫu
 - Môn lý thuyết thuần chạy được luồng G1 mà không cần sandbox hay template.
 - Câu lý thuyết MVP chỉ kiểm tra **nhận biết khái niệm** (mức `remember`/`understand`), chưa kiểm tra lập luận. Đây là giới hạn có chủ đích.
 - Chất lượng câu hỏi phụ thuộc chất lượng cặp khái niệm, nên màn hình xem lại của Vault phải cho sửa và xoá cặp.
-- **Chạm bất biến I2 và I4:** câu chữ hiện tại của I2 ("mã đã khai báo trong template") và I4 ("`(template_sha256, seed)`") chỉ nói về câu có template. Mục 2 mở rộng cách hiểu hai bất biến cho câu lý thuyết. Theo CLAUDE.md §9, việc đổi câu chữ bất biến cần người dùng đồng ý; khi được duyệt sẽ thêm test cưỡng chế tương ứng.
+- **Chạm bất biến I2 và I4:** câu chữ hiện tại của I2 ("mã đã khai báo trong template") và I4 ("`(template_sha256, seed)`") chỉ nói về câu có template. Mục 4 ghi câu chữ trước và sau. Người làm dự án đã đồng ý về nguyên tắc ngày 2026-10-24; ADR giữ trạng thái *Đề xuất* cho tới khi câu chữ được duyệt (CLAUDE.md §9).
 - Contract (`question_kind`, model `ConceptPair`, trace cho câu không có template) được chốt ở Giai đoạn 3, spec §5/§6.
-- Kiểm chứng: test cho thấy cặp có trích dẫn không nguyên văn bị loại; Vault ít hơn 4 khái niệm thì vào `review_tickets`; cùng Vault và cùng seed thì câu hỏi giống từng byte; mọi phương án nhiễu đều có mã misconception.
+- Kiểm chứng: test cho thấy cặp có trích dẫn không nguyên văn bị loại; cặp chưa xác nhận không bao giờ được dùng và không làm đổi `pool_sha256`; Vault ít hơn 4 khái niệm đã xác nhận thì vào `review_tickets`; dạng "chọn định nghĩa đúng" chỉ lấy phương án nhiễu cùng chương; cùng `(generator_version, pool_sha256, seed)` thì câu hỏi giống từng byte; mọi phương án nhiễu đều có mã thuộc `THEORY_MISCONCEPTIONS`.
 
 ## Phương án đã loại
 

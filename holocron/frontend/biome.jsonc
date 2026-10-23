@@ -10,17 +10,17 @@
   "linter": {
     "enabled": true,
     "rules": {
-      "recommended": true,
+      "preset": "recommended",
       "suspicious": {
         "noExplicitAny": "error",
         "noTsIgnore": "error",
         "noConsole": "error",
-        "noArrayIndexKey": "warn"
+        "noArrayIndexKey": "error"
       },
       "style": { "noNonNullAssertion": "error", "useImportType": "error" },
       "correctness": { "noUnusedImports": "error", "noUnusedVariables": "error", "useExhaustiveDependencies": "error" },
-      // NỢ FE-001 (7 chỗ trong TableAuditor.tsx), để warn tới khi sửa, hạn trước v0.2.0-beta. Cấm thêm rule vào danh sách này nếu chưa có ADR.
-      "a11y": { "noAutofocus": "warn", "useSemanticElements": "warn" }
+      // FE-001 đã trả: các rule dưới đây là error. Hạ bất kỳ rule nào xuống warn cần ADR.
+      "a11y": { "noAutofocus": "error", "useSemanticElements": "error" }
     }
   }
 }

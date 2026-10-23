@@ -14,7 +14,7 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 
 ### 🛠️ Cải tiến & Tối ưu
 - Spec v0.4: viết lại §1 theo hướng đa môn (bài toán, người dùng mục tiêu là sinh viên tự ôn luyện, nền tảng desktop Tauri, tech stack kèm lý do, hai nhóm câu hỏi, bộ nhập PDF theo tầng, ba môn demo, chấm tự luận để sau MVP, tầm nhìn sau MVP); thêm §13.1 mô hình bảo mật của app local; cập nhật lộ trình và rủi ro R7–R9. Contract §5–§12 chưa đổi.
-- ADR-005 (pipeline câu hỏi không phụ thuộc topic, kế hoạch trả nợ ARCH-001), ADR-006 (Knowledge Vault đa môn), ADR-007 (câu lý thuyết sinh tất định từ Vault; chấm tự luận sau MVP) và ADR-008 (bộ nhập PDF theo tầng, khảo sát giấy phép thư viện), cả bốn ở trạng thái *Đề xuất*.
+- ADR-005 (pipeline câu hỏi không phụ thuộc topic, kế hoạch trả nợ ARCH-001), ADR-006 (Knowledge Vault đa môn), ADR-007 (câu lý thuyết sinh tất định từ Vault; chấm tự luận sau MVP) và ADR-008 (bộ nhập PDF theo tầng, khảo sát giấy phép thư viện, phép đo CER chọn engine OCR). ADR-005, 006, 008 *Chấp nhận*; ADR-007 *Đề xuất* chờ duyệt câu chữ I2/I4. Spec §1.5 thêm ba dạng câu lý thuyết và yêu cầu bộ tài liệu demo có PDF scan và PDF có bảng lấy từ tài liệu thật.
 - Frontend: trả nợ FE-001, `TableAuditor` hết 7 cảnh báo Biome. Key React dựng từ helper thuần `rowIndices`, `tableColumns`, `keyedIssues` ở `lib/gate.ts` (có test vitest) thay cho chỉ số mảng; panel sửa ô dùng `<fieldset>` thay `role="group"`; focus vào ô nhập bằng callback ref khi người dùng mở ô, thay `autoFocus`. `biome.jsonc` nâng `noArrayIndexKey`, `noAutofocus`, `useSemanticElements` lên `error` và đổi trường `recommended` đã deprecated sang `"preset": "recommended"`.
 - README: thêm bước cài hook `pre-commit`.
 

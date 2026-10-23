@@ -4,7 +4,7 @@
 |---|---|
 | Trạng thái | **v0.4** (2026-10-24): chốt §1 (bài toán, người dùng, nền tảng, phạm vi MVP đa môn) và §13.1 (mô hình bảo mật app local). Contract §5–§12 vẫn là bản v0.3 cho tới khi được cập nhật theo các ADR dưới đây. Thay đổi contract PHẢI qua PR sửa tài liệu này trước. |
 | Phạm vi | MVP đa môn cho sinh viên tự ôn luyện: nhập PDF tài liệu và đề của môn bất kỳ (bộ nhập theo tầng, có màn hình xem lại) · Knowledge Vault · Ingestion Gate · câu tính toán do sandbox tính · câu lý thuyết có trích dẫn nguyên văn · desktop app Tauri. Môn mẫu đầu tiên: Hệ điều hành — CPU Scheduling (Round Robin, SJF) |
-| Thiết kế đa môn | ADR-005 (pipeline câu hỏi không phụ thuộc topic), ADR-006 (Knowledge Vault đa môn), ADR-007 (câu lý thuyết và chấm câu trả lời), ADR-008 (bộ nhập PDF theo tầng) — trạng thái *Đề xuất*. Phần contract của các ADR này chỉ có hiệu lực khi ADR được chấp nhận và §5/§6 được cập nhật. |
+| Thiết kế đa môn | ADR-005 (pipeline câu hỏi không phụ thuộc topic), ADR-006 (Knowledge Vault đa môn), ADR-007 (câu lý thuyết và chấm câu trả lời), ADR-008 (bộ nhập PDF theo tầng). ADR-005, 006, 008: *Chấp nhận* (2026-10-24); ADR-007: *Đề xuất*, chờ duyệt câu chữ I2/I4. Phần contract của các ADR này có hiệu lực khi §5/§6 được cập nhật theo ADR. |
 | Nguồn chân lý code | `holocron/backend/holocron_core/` (Pydantic v2) · `holocron/frontend/src/types/holocron.ts` (TypeScript, khớp 1:1) |
 | Tài liệu liên quan | `docs/adr/`, `.claude/CLAUDE.md`, `holocron/backend/examples/*.json` |
 | Quy ước | **PHẢI / KHÔNG ĐƯỢC / NÊN / CÓ THỂ** theo nghĩa RFC 2119 (MUST / MUST NOT / SHOULD / MAY) |
@@ -84,7 +84,7 @@ Bài toán xuất phát từ hoàn cảnh của chính người làm dự án v�
 | Lưu trữ | SQLite (kế hoạch; hiện in-memory) | Một file cục bộ, không cần server; `version_id_col` của SQLAlchemy giải quyết optimistic locking nguyên tử (BE-003, §6.2) |
 | LLM văn bản | DeepSeek qua giao thức tương thích OpenAI | Phân loại môn/chương/dạng câu/mức nhận thức, viết template, tách cặp khái niệm–định nghĩa. **Chỉ xử lý văn bản.** Tên model là cấu hình `HOLOCRON_LLM_*` (§11.2) |
 | VLM | Tuỳ chọn, BYOK, nhà cung cấp bất kỳ tương thích OpenAI nhận `image_url` | DeepSeek không có model thị giác (R4). VLM chỉ dùng cho trang có độ tin cậy thấp hoặc có hình vẽ. **Không có VLM, app vẫn chạy đủ luồng** nhờ tầng 1–3 của bộ nhập và màn hình xem lại |
-| Bộ nhập PDF | Theo ADR-008 (*Đề xuất*) | Thư viện đọc PDF và OCR chạy offline, giấy phép tương thích MIT (không GPL/AGPL), xử lý file không tin cậy trong tiến trình con có giới hạn |
+| Bộ nhập PDF | Theo ADR-008: pypdfium2 (tầng 1), RapidOCR + onnxruntime (tầng 2, chốt sau phép đo CER), pdfplumber (tầng 3) | Thư viện đọc PDF và OCR chạy offline, giấy phép tương thích MIT (không GPL/AGPL), xử lý file không tin cậy trong tiến trình con có giới hạn |
 | Công cụ chất lượng | ruff, mypy `--strict`, pytest; Biome, Vitest | Một bộ cổng chạy ở cả pre-commit và CI (ADR-004) |
 
 ### 1.5 Phạm vi MVP
@@ -95,7 +95,7 @@ Bài toán xuất phát từ hoàn cảnh của chính người làm dự án v�
 | Nhóm | Đáp án đến từ | Bất biến chính | Khi không đủ căn cứ |
 |---|---|---|---|
 | Câu tính toán được | `solve()`/`make_distractors()` chạy trong sandbox; template đã kiểm chứng, hoặc template ứng viên do LLM viết rồi được kiểm chứng và người duyệt (§8, §10) | I1, I2, I4, I5 | `ReviewTicket` |
-| Câu lý thuyết | Trích dẫn nguyên văn từ chunk trong Vault; câu hỏi sinh tất định từ Vault (ADR-007) | I3 | `ReviewTicket`, không bịa |
+| Câu lý thuyết | Trích dẫn nguyên văn từ chunk trong Vault. Câu MCQ4 sinh tất định từ các cặp khái niệm–trích dẫn mà DeepSeek đề xuất và người dùng đã xác nhận, gồm ba dạng: ghép khái niệm, điền khuyết, chọn định nghĩa đúng với phương án nhiễu cùng chương (ADR-007). LLM không soạn câu | I3 | `ReviewTicket`, không bịa |
 
 **Bộ nhập PDF theo tầng** (ADR-008), dùng chung cho tài liệu học (đi vào Vault) và đề thi (đi vào Ingestion Gate, blueprint, twin):
 1. Tầng 1: đọc lớp chữ có sẵn của PDF số.
@@ -105,7 +105,7 @@ Bài toán xuất phát từ hoàn cảnh của chính người làm dự án v�
 
 Phân loại (môn, chương, dạng câu, mức nhận thức) do DeepSeek làm trên văn bản đã tách, không dùng VLM. Luôn có màn hình xem lại và sửa trước khi lưu, vì OCR và VLM có thể đọc sai số liệu. Không tự train model.
 
-**Môn demo.** Tài liệu demo do nhóm tự soạn; không dùng hay commit tài liệu có bản quyền (CLAUDE.md §6).
+**Môn demo.** Bộ tài liệu demo PHẢI có ít nhất **một PDF scan** và **một PDF có bảng** lấy từ tài liệu thật, để luồng OCR (tầng 2) và tầng 3 được thử trên dữ liệu thật; người làm dự án cung cấp các file này. Phần còn lại có thể do nhóm tự soạn. Tài liệu thật có thể có bản quyền nên chỉ giữ cục bộ trong `eval_data/` (đã nằm trong `.gitignore`), không commit (CLAUDE.md §6); repo chỉ chứa file mẫu tự tạo.
 
 | Môn | Vai trò trong demo |
 |---|---|
@@ -798,7 +798,7 @@ Sinh bằng `Model.model_json_schema()` cho mọi model ở §5; Frontend PHẢI
 - `docs/adr/002-sandbox-security.md` — Sandbox tiến trình con thay vì WASM; Job Object trên Windows.
 - `docs/adr/003-data-pipeline.md` — Dual-pass + Ingestion Gate; trích dẫn bằng `verbatim_quote` thay vì bounding box.
 - `docs/adr/004-engineering-discipline.md` — Kỷ luật kỹ thuật, quản trị phát hành và sổ nợ kỹ thuật.
-- `docs/adr/005-topic-agnostic-question-pipeline.md` — Pipeline câu hỏi không phụ thuộc topic; kế hoạch trả nợ ARCH-001 (*Đề xuất*).
-- `docs/adr/006-multi-subject-knowledge-vault.md` — Knowledge Vault đa môn và `CitationProvider` (*Đề xuất*).
-- `docs/adr/007-theory-questions-and-answer-grading.md` — Câu lý thuyết sinh tất định từ Vault; chấm tự luận sau MVP (*Đề xuất*).
-- `docs/adr/008-tiered-pdf-importer.md` — Bộ nhập PDF theo tầng, lựa chọn thư viện và biện pháp an toàn (*Đề xuất*).
+- `docs/adr/005-topic-agnostic-question-pipeline.md` — Pipeline câu hỏi không phụ thuộc topic; kế hoạch trả nợ ARCH-001 (*Chấp nhận*).
+- `docs/adr/006-multi-subject-knowledge-vault.md` — Knowledge Vault đa môn, tách từ tiếng Việt cho BM25 và `CitationProvider` (*Chấp nhận*).
+- `docs/adr/007-theory-questions-and-answer-grading.md` — Câu lý thuyết sinh tất định từ Vault; chấm tự luận sau MVP (*Đề xuất*, chờ duyệt câu chữ I2/I4).
+- `docs/adr/008-tiered-pdf-importer.md` — Bộ nhập PDF theo tầng, lựa chọn thư viện và biện pháp an toàn (*Chấp nhận*; engine OCR chốt sau phép đo).

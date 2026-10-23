@@ -2,9 +2,9 @@
 
 | Trường | Giá trị |
 |---|---|
-| Trạng thái | **v0.4** (2026-10-23): chốt §1 (bài toán, người dùng, nền tảng, phạm vi MVP đa môn) và §13.1 (mô hình bảo mật app local). Contract §5–§12 vẫn là bản v0.3 cho tới khi được cập nhật theo các ADR dưới đây. Thay đổi contract PHẢI qua PR sửa tài liệu này trước. |
+| Trạng thái | **v0.4** (2026-10-23): chốt §1 (bài toán, người dùng, nền tảng, phạm vi MVP đa môn), câu chữ I2 và I4 ở §0 cho câu lý thuyết (ADR-007) và §13.1 (mô hình bảo mật app local). §2–§12 vẫn mô tả hệ thống và contract hiện tại (v0.3) cho tới khi được cập nhật theo các ADR dưới đây. Thay đổi contract PHẢI qua PR sửa tài liệu này trước. |
 | Phạm vi | MVP đa môn cho sinh viên tự ôn luyện: nhập PDF tài liệu và đề của môn bất kỳ (bộ nhập theo tầng, có màn hình xem lại) · Knowledge Vault · Ingestion Gate · câu tính toán do sandbox tính · câu lý thuyết có trích dẫn nguyên văn · desktop app Tauri. Môn mẫu đầu tiên: Hệ điều hành — CPU Scheduling (Round Robin, SJF) |
-| Thiết kế đa môn | ADR-005 (pipeline câu hỏi không phụ thuộc topic), ADR-006 (Knowledge Vault đa môn), ADR-007 (câu lý thuyết và chấm câu trả lời), ADR-008 (bộ nhập PDF theo tầng). ADR-005, 006, 008: *Chấp nhận* (2026-10-23); ADR-007: *Đề xuất*, chờ duyệt câu chữ I2/I4. Phần contract của các ADR này có hiệu lực khi §5/§6 được cập nhật theo ADR. |
+| Thiết kế đa môn | ADR-005 (pipeline câu hỏi không phụ thuộc topic), ADR-006 (Knowledge Vault đa môn), ADR-007 (câu lý thuyết và chấm câu trả lời), ADR-008 (bộ nhập PDF theo tầng). Cả bốn ADR ở trạng thái *Chấp nhận* (2026-10-23). Phần contract của các ADR này có hiệu lực khi §5/§6 được cập nhật theo ADR. |
 | Nguồn chân lý code | `holocron/backend/holocron_core/` (Pydantic v2) · `holocron/frontend/src/types/holocron.ts` (TypeScript, khớp 1:1) |
 | Tài liệu liên quan | `docs/adr/`, `.claude/CLAUDE.md`, `holocron/backend/examples/*.json` |
 | Quy ước | **PHẢI / KHÔNG ĐƯỢC / NÊN / CÓ THỂ** theo nghĩa RFC 2119 (MUST / MUST NOT / SHOULD / MAY) |
@@ -42,9 +42,9 @@ Năm bất biến sau PHẢI đúng ở mọi phiên bản; vi phạm bất kỳ
 | ID | Bất biến | Cơ chế cưỡng chế |
 |---|---|---|
 | **I1** | Không con số nào do LLM tự viết. Đáp án đúng, mọi phương án nhiễu và sơ đồ Gantt đến từ `solve()` / `make_distractors()` chạy trong Sandbox. | LLM chỉ được sinh *mã template*; `TwinQuestion` chỉ được dựng từ `SandboxResult` (§9, §10). |
-| **I2** | Mỗi phương án sai của MCQ4 ánh xạ đúng một `misconception_code` đã khai báo trong template. | Validator `TwinQuestion._format_rules`; `build_twin` ném `ValueError` khi gặp mã lạ → retry (§10). |
+| **I2** | Mỗi phương án sai của MCQ4 ánh xạ đúng một `misconception_code` đã khai báo trước: trong template với câu tính toán, hoặc trong danh sách mã cố định `THEORY_MISCONCEPTIONS` của bộ sinh với câu lý thuyết (ADR-007). | Validator `TwinQuestion._format_rules`; `build_twin` ném `ValueError` khi gặp mã lạ → retry (§10); bộ sinh câu lý thuyết chỉ gán mã thuộc `THEORY_MISCONCEPTIONS`, có test cưỡng chế. |
 | **I3** | Mọi câu hỏi có `Citation` với `verbatim_quote` là chuỗi con (chuẩn hoá khoảng trắng) của `raw_text` chunk gốc. | Validator `KnowledgeChunk._consistency`; `Citation` sinh từ `KnowledgeChunk.to_citation()`. |
-| **I4** | `(template_sha256, seed)` ⇒ cùng đề, cùng đáp án, cùng thứ tự phương án, cùng Gantt. | `random.Random(seed)` trong template; trộn phương án bằng `random.Random(f"{sha256}:{seed}")`; walkthrough sinh `examples/*.json` giống từng byte. |
+| **I4** | Câu tính toán: `(template_sha256, seed)` ⇒ cùng đề, cùng đáp án, cùng thứ tự phương án, cùng Gantt. Câu lý thuyết: `(generator_version, pool_sha256, seed)` ⇒ cùng đề, cùng đáp án, cùng thứ tự phương án, trong đó `pool_sha256` là sha256 của các cặp khái niệm đã xác nhận cùng `subject_code` với slot (cách tính ở ADR-007 mục 2); dữ liệu của môn khác không làm đổi câu hỏi của môn này. | `random.Random(seed)` trong template; trộn phương án bằng `random.Random(f"{sha256}:{seed}")`; bộ sinh câu lý thuyết chỉ dùng `random.Random(f"{generator_version}:{pool_sha256}:{seed}")`; test cho thấy cùng nội dung nhập ở dạng NFC hay NFD cho cùng `pool_sha256`, và thêm cặp ở môn khác không làm đổi `pool_sha256` của môn này; walkthrough sinh `examples/*.json` (gồm ví dụ câu lý thuyết) giống từng byte. |
 | **I5** | Không đề nào vào pipeline tính toán khi Gate còn issue `BLOCKING` chưa được con người xử lý. | `POST …/approve` trả 409; Frontend vô hiệu nút duyệt (`canApprove`); `POST /v1/blueprints` chỉ nhận item `approved=true`. |
 
 ## 1. Bài toán, người dùng & phạm vi
@@ -84,7 +84,7 @@ Bài toán xuất phát từ hoàn cảnh của chính người làm dự án v�
 | Lưu trữ | SQLite (kế hoạch; hiện in-memory) | Một file cục bộ, không cần server; `version_id_col` của SQLAlchemy giải quyết optimistic locking nguyên tử (BE-003, §6.2) |
 | LLM văn bản | DeepSeek qua giao thức tương thích OpenAI | Phân loại môn/chương/dạng câu/mức nhận thức, viết template, tách cặp khái niệm–định nghĩa. **Chỉ xử lý văn bản.** Tên model là cấu hình `HOLOCRON_LLM_*` (§11.2) |
 | VLM | Tuỳ chọn, BYOK, nhà cung cấp bất kỳ tương thích OpenAI nhận `image_url` | DeepSeek không có model thị giác (R4). VLM chỉ dùng cho trang có độ tin cậy thấp hoặc có hình vẽ. **Không có VLM, app vẫn chạy đủ luồng** nhờ tầng 1–3 của bộ nhập và màn hình xem lại |
-| Bộ nhập PDF | Theo ADR-008: pypdfium2 (tầng 1), RapidOCR + onnxruntime (tầng 2, chốt sau phép đo CER), pdfplumber (tầng 3) | Thư viện đọc PDF và OCR chạy offline, giấy phép tương thích MIT (không GPL/AGPL), xử lý file không tin cậy trong tiến trình con có giới hạn |
+| Bộ nhập PDF | Theo ADR-008: pypdfium2 (tầng 1), RapidOCR + onnxruntime (tầng 2, chốt sau phép đo CER), pdfplumber (tầng 3, chỉ thêm khi làm tầng 3) | Thư viện đọc PDF và OCR chạy offline, giấy phép tương thích MIT (không GPL/AGPL), xử lý file không tin cậy trong tiến trình con có giới hạn |
 | Công cụ chất lượng | ruff, mypy `--strict`, pytest; Biome, Vitest | Một bộ cổng chạy ở cả pre-commit và CI (ADR-004) |
 
 ### 1.5 Phạm vi MVP
@@ -95,7 +95,7 @@ Bài toán xuất phát từ hoàn cảnh của chính người làm dự án v�
 | Nhóm | Đáp án đến từ | Bất biến chính | Khi không đủ căn cứ |
 |---|---|---|---|
 | Câu tính toán được | `solve()`/`make_distractors()` chạy trong sandbox; template đã kiểm chứng, hoặc template ứng viên do LLM viết rồi được kiểm chứng và người duyệt (§8, §10) | I1, I2, I4, I5 | `ReviewTicket` |
-| Câu lý thuyết | Trích dẫn nguyên văn từ chunk trong Vault. Câu MCQ4 sinh tất định từ các cặp khái niệm–trích dẫn mà DeepSeek đề xuất và người dùng đã xác nhận, gồm ba dạng: ghép khái niệm, điền khuyết, chọn định nghĩa đúng với phương án nhiễu cùng chương (ADR-007). LLM không soạn câu | I3 | `ReviewTicket`, không bịa |
+| Câu lý thuyết | Trích dẫn nguyên văn từ chunk trong Vault. Câu MCQ4 sinh tất định từ các cặp khái niệm–trích dẫn mà DeepSeek đề xuất và người dùng đã xác nhận, gồm ba dạng: ghép khái niệm, điền khuyết, chọn định nghĩa đúng với phương án nhiễu cùng chương (ADR-007). LLM không soạn câu | I2, I3, I4 | `ReviewTicket`, không bịa |
 
 **Bộ nhập PDF theo tầng** (ADR-008), dùng chung cho tài liệu học (đi vào Vault) và đề thi (đi vào Ingestion Gate, blueprint, twin):
 1. Tầng 1: đọc lớp chữ có sẵn của PDF số.
@@ -688,6 +688,7 @@ Feedback gửi LLM (một dòng mỗi lỗi): `AST_REJECTED: dòng N: …`, `RUN
 
 - Tên model là cấu hình, KHÔNG ĐƯỢC hard-code trong service.
 - Khi thiếu cấu hình VLM (cần đủ ba biến `HOLOCRON_VLM_*`), hệ thống PHẢI dùng `MockDualPassExtractor` và hiển thị rõ trên UI rằng đang ở chế độ demo; UI đọc cờ `demo_mode` từ `GET /v1/runtime` (§6.4). Biến đặt giá trị rỗng hoặc toàn khoảng trắng coi như chưa đặt; `HOLOCRON_LLM_TIMEOUT_S` không phải số dương hữu hạn là lỗi cấu hình (`ConfigError`, thông điệp chỉ nêu tên biến).
+- **Sẽ đổi ở Giai đoạn 3 (đã duyệt 2026-10-23):** theo G5 (§1.5), thiếu VLM không còn là chế độ demo vì bộ nhập PDF vẫn chạy đủ luồng bằng tầng 1–3. `demo_mode` được định nghĩa lại là "thiếu key LLM". Cho tới khi contract ở mục này được cập nhật, code vẫn chạy theo đoạn trên.
 
 ### 11.3 Hợp đồng prompt viết template
 System prompt gồm, theo thứ tự: (1) hợp đồng §8 nguyên văn; (2) danh sách import/builtin bị cấm của ASTGuard; (3) một ví dụ đầy đủ — chính file template RR; (4) slot cần sinh (`topic_key`, format, 3 `misconception_code` mục tiêu); (5) feedback lỗi của lượt trước theo định dạng §10. Output PHẢI là JSON khớp `QuestionTemplate` (không có trường `created_at`, `template_id`); JSON sai ⇒ `SCHEMA_INVALID` và trừ một lượt.
@@ -758,7 +759,7 @@ Backend PHẢI chỉ lắng nghe `127.0.0.1` trong bản local-first.
 | T2-N4 | Twin Viewer + Gantt chart trên Frontend | Xong: trang `/blueprints/[blueprintId]` gọi `POST …/twins` và hiển thị 3 twin, badge misconception, trích dẫn, `review_tickets`; chưa nối từ luồng ingestion vì `POST /v1/blueprints` chưa có (§6.3) |
 | T2-N4 | Trả nợ FE-001: cảnh báo Biome ở `TableAuditor.tsx` (ADR-004) | Xong (`5f3b2b4`, `1b9b5c4`) |
 | T2-N5 | Adapter VLM thật cho dual-pass; pool tiến trình sandbox | Kế hoạch |
-| T2-N6/N7 (24–25/10) | Spec v0.4 §1 và §13.1; ADR-005…008 (*Đề xuất*); sửa R6; bộ nhập PDF tầng 1–2 và màn hình xem lại; Vault và `CitationProvider` thật; `POST /v1/blueprints` và các GET; walkthrough 3 môn demo (§1.5) | Đang làm |
+| T2-N6/N7 (24–25/10) | Spec v0.4 §1, §0 (I2, I4) và §13.1; ADR-005…008 (*Chấp nhận*); sửa R6; bộ nhập PDF tầng 1–2 và màn hình xem lại; Vault và `CitationProvider` thật; `POST /v1/blueprints` và các GET; walkthrough 3 môn demo (§1.5) | Đang làm |
 | Tuần 3 | Luồng G1 trên tài liệu thật của 3 môn demo; đo p95 (G3) và thời gian bộ nhập PDF | Kế hoạch |
 | Tuần 4 | SQLite + optimistic locking nguyên tử; trả nợ ARCH-001 (ADR-005); đóng gói Tauri và mô hình bảo mật §13.1 | Kế hoạch |
 
@@ -800,5 +801,5 @@ Sinh bằng `Model.model_json_schema()` cho mọi model ở §5; Frontend PHẢI
 - `docs/adr/004-engineering-discipline.md` — Kỷ luật kỹ thuật, quản trị phát hành và sổ nợ kỹ thuật.
 - `docs/adr/005-topic-agnostic-question-pipeline.md` — Pipeline câu hỏi không phụ thuộc topic; kế hoạch trả nợ ARCH-001 (*Chấp nhận*).
 - `docs/adr/006-multi-subject-knowledge-vault.md` — Knowledge Vault đa môn, tách từ tiếng Việt cho BM25 và `CitationProvider` (*Chấp nhận*).
-- `docs/adr/007-theory-questions-and-answer-grading.md` — Câu lý thuyết sinh tất định từ Vault; chấm tự luận sau MVP (*Đề xuất*, chờ duyệt câu chữ I2/I4).
+- `docs/adr/007-theory-questions-and-answer-grading.md` — Câu lý thuyết sinh tất định từ Vault; chấm tự luận sau MVP; câu chữ I2/I4 cho câu lý thuyết (*Chấp nhận*).
 - `docs/adr/008-tiered-pdf-importer.md` — Bộ nhập PDF theo tầng, lựa chọn thư viện và biện pháp an toàn (*Chấp nhận*; engine OCR chốt sau phép đo).

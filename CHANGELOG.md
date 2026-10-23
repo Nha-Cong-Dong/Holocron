@@ -13,6 +13,8 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 - Template SJF không ưu tiên `os_sjf_avg_waiting` (topic `os.cpu_sched.sjf.avg_waiting_time`) với 3 misconception `WAIT_CONFUSED_WITH_TURNAROUND`, `SJF_IGNORES_ARRIVAL`, `SJF_COMPUTED_AS_SRTF`, đăng ký trong `template_library` và registry; kiểm bằng bộ giải tham chiếu độc lập, property test 200 seed (tỉ lệ nhận seed 16 %), tất định và sandbox không thoát bất thường. Chưa đăng ký ở Ingestion Gate (`TABLE_SCHEMAS`, `TOPIC_ALGORITHMS`).
 
 ### 🛠️ Cải tiến & Tối ưu
+- Frontend: trả nợ FE-001, `TableAuditor` hết 7 cảnh báo Biome. Key React dựng từ helper thuần `rowIndices`, `tableColumns`, `keyedIssues` ở `lib/gate.ts` (có test vitest) thay cho chỉ số mảng; panel sửa ô dùng `<fieldset>` thay `role="group"`; focus vào ô nhập bằng callback ref khi người dùng mở ô, thay `autoFocus`. `biome.jsonc` nâng `noArrayIndexKey`, `noAutofocus`, `useSemanticElements` lên `error` và đổi trường `recommended` đã deprecated sang `"preset": "recommended"`.
+- README: thêm bước cài hook `pre-commit`.
 
 ### 🐛 Sửa lỗi
 

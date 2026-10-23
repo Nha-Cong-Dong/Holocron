@@ -11,45 +11,52 @@
 
 **Bối cảnh:** dự án tham gia **Nhà Cộng Đồng Hackathon 2026**.
 
-**Ý tưởng cốt lõi:** Holocron tách thành hai tầng độc lập:
+**Ý tưởng cốt lõi:** nhập tài liệu của một môn học bất kỳ (slide, giáo trình, đề thi cũ) và sinh câu hỏi song sinh có kiểm chứng. LLM chỉ đọc tài liệu và viết template, **không bao giờ tính nhẩm**: mọi con số trong câu hỏi do code chạy trong sandbox tính ra. Hệ thống gồm ba luồng:
 
-| Tầng | Vai trò |
+| Luồng | Vai trò |
 |---|---|
-| **Deterministic Core** | Mọi con số trong câu hỏi do code chạy trong sandbox tính ra — LLM chỉ viết template, **không bao giờ tính nhẩm**. Gồm Ingestion Gate (bắt lỗi VLM đọc sai bảng/LaTeX), Sandbox Runtime, Pipeline retry & fallback. |
-| **Knowledge Vault UI** | Quản trị tài liệu đa môn, trích dẫn 1-click. *(chưa nằm trong repo này)* |
+| **Nhập tài liệu môn học → Knowledge Vault** | Phân tách, phân loại và liên kết tài liệu thành kho tri thức có cấu trúc; mọi khẳng định kiến thức hiển thị cho người dùng kèm trích dẫn nguyên văn từ tài liệu nguồn. |
+| **Nhập đề → Ingestion Gate** | Đọc đề từ ảnh/PDF, bắt lỗi đọc sai bảng/LaTeX; con người xác nhận dữ liệu trước khi đề được đưa vào tính toán. |
+| **Sinh câu hỏi → Deterministic Core** | LLM viết template, template chạy trong sandbox để tính đáp án, phương án nhiễu và lời giải; có retry budget và fallback về template đã kiểm chứng. |
 
-Repo hiện tập trung vào Deterministic Core cho Golden Path **Hệ Điều Hành — CPU Scheduling**. Đặc tả đầy đủ: [`SPECIFICATION.md`](SPECIFICATION.md).
+Đặc tả và contract: [`SPECIFICATION.md`](SPECIFICATION.md). Quy ước phát triển: [`.claude/CLAUDE.md`](.claude/CLAUDE.md).
+
+## Trạng thái hiện tại
+
+- **Bộ chứng minh đầu tiên là môn Hệ điều hành:** có hai template đã kiểm chứng là Round Robin và SJF không ưu tiên (thời gian chờ trung bình). Nhập đề qua upload hiện chỉ hỗ trợ dạng Round Robin; SJF mới dùng được ở bước sinh câu hỏi.
+- **Đọc đề vẫn là giả lập:** extractor là `MockDualPassExtractor`, trả cùng một đề Round Robin mẫu cho mọi file hợp lệ; chưa có adapter VLM thật.
+- **Sinh câu hỏi:** đã có `POST /v1/blueprints/{id}/twins` và trang xem twin; chưa có `POST /v1/blueprints` nên chưa tạo được blueprint từ đề đã duyệt qua API. Chưa có adapter LLM viết template nên pipeline dùng template đã kiểm chứng làm fallback.
+- **Chưa có Knowledge Vault đa môn**, chưa có ôn lý thuyết hay chấm câu trả lời.
+- **Thiết kế đa môn đang chờ ADR-005/006/007** (đang soạn). Cho tới khi các ADR được chấp nhận, contract trong `SPECIFICATION.md` vẫn có hiệu lực.
 
 ## Cấu trúc dự án
 
 ```text
 Holocron/
-├── .claude/CLAUDE.md          # Quy ước cho Claude Code
+├── .claude/CLAUDE.md          # Quy ước phát triển
 ├── SPECIFICATION.md           # Đặc tả kỹ thuật + API/Data contracts
-├── docs/adr/                  # Architecture Decision Records
+├── CHANGELOG.md
+├── docs/
+│   ├── adr/                   # Architecture Decision Records
+│   └── releases/              # Quy trình phát hành
+├── scripts/                   # Công cụ gốc repo (kiểm version, commit message, phát hành)
 └── holocron/
-    ├── frontend/              # Next.js 15 (App Router): upload đề, Table Auditor của Ingestion Gate
-    │   └── src/{app,components,lib,types}/
+    ├── frontend/              # Next.js 15 (App Router)
+    │   └── src/
+    │       ├── app/           # Trang
+    │       ├── components/    # Component giao diện
+    │       ├── lib/           # Client API và logic thuần
+    │       └── types/         # Kiểu TypeScript khớp 1:1 với Pydantic
     └── backend/
-        ├── pyproject.toml         # Dependencies & cấu hình pytest/ruff
         ├── holocron_core/
-        │   ├── domain/
-        │   │   └── schemas.py             # Domain model Pydantic v2 (Blueprint, TwinQuestion, ...)
-        │   ├── services/
-        │   │   ├── extraction.py          # DocumentExtractor (VLM) + MockDualPassExtractor tất định
-        │   │   ├── ingestion_gate.py      # Phát hiện VLM đọc sai bảng/LaTeX, vá ô, self-solve lại
-        │   │   └── pipeline.py            # LLM template → Sandbox → TwinQuestion, retry budget & fallback
-        │   ├── sandbox/
-        │   │   ├── sandbox.py             # ASTGuard + chạy template trong tiến trình con
-        │   │   └── _sandbox_child.py      # Tiến trình con: builtins rút gọn, RLIMIT (Unix) / Job Object (Windows)
-        │   ├── infrastructure/
-        │   │   ├── template_library.py    # Kho template pre-computed đã kiểm chứng (fallback)
-        │   │   └── templates/             # Mã template chạy trong sandbox (vd. RR avg waiting time)
-        │   └── routers/
-        │       └── api.py                 # FastAPI: /v1/ingestion/upload, /v1/ingestion/items...
-        ├── scripts/run_walkthrough.py # Demo end-to-end, sinh JSON mẫu vào examples/
-        ├── examples/                  # Blueprint & TwinQuestion mẫu
-        └── tests/                     # pytest: sandbox security, schemas & gate, RR template
+        │   ├── domain/            # Model Pydantic v2
+        │   ├── sandbox/           # ASTGuard + chạy template trong tiến trình con
+        │   ├── infrastructure/    # Cấu hình, kho template, template chạy trong sandbox
+        │   ├── services/          # Extraction, Ingestion Gate, pipeline, sinh batch
+        │   └── routers/           # FastAPI endpoints
+        ├── scripts/               # Walkthrough end-to-end
+        ├── examples/              # JSON mẫu tất định do walkthrough sinh
+        └── tests/
 ```
 
 ## Cài đặt
@@ -62,7 +69,7 @@ cd Holocron/holocron/backend
 pip install -e ".[dev]"
 ```
 
-Lệnh trên cài cả dependencies chạy (`pydantic`, `fastapi`, `uvicorn`, `python-multipart`) và công cụ dev (`pytest`, `httpx`, `ruff`, `mypy`).
+Lệnh trên cài cả dependencies chạy (`pydantic`, `fastapi`, `uvicorn`, `python-multipart`) và công cụ dev (`pytest`, `pytest-cov`, `httpx`, `ruff`, `mypy`).
 
 ```bash
 cd ../frontend
@@ -114,7 +121,7 @@ npm run typecheck
 npm run build
 ```
 
-Ở Tuần 2, bước đọc ảnh dùng `MockDualPassExtractor`: mọi file hợp lệ đều trả về cùng một đề Round Robin mẫu, trong đó một ô bị cố ý đọc lệch để minh hoạ luồng sửa ô của Ingestion Gate.
+Khi chưa đặt các biến `HOLOCRON_VLM_*`, hệ thống chạy chế độ demo với dữ liệu mẫu.
 
 ### Walkthrough end-to-end
 

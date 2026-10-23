@@ -27,11 +27,26 @@ Dự án có năm bất biến cần giữ qua nhiều tuần phát triển và 
 
 | Mã | Nợ | Ghi chú |
 |---|---|---|
-| FE-001 | 7 cảnh báo Biome ở `TableAuditor.tsx` (`noAutofocus`, `useSemanticElements`, `noArrayIndexKey`) | **Đã trả 2026-10-23:** key React ổn định từ `lib/gate.ts` (có test), `fieldset` thay `role="group"`, focus bằng callback ref khi mở ô; ba quy tắc nâng lên `error` |
+| FE-001 | 7 cảnh báo Biome ở `TableAuditor.tsx` (`noAutofocus`, `useSemanticElements`, `noArrayIndexKey`) | **Đã trả 2026-10-23** (`5f3b2b4`, `1b9b5c4`, gộp qua PR #29): key React ổn định từ `lib/gate.ts` (có test), `fieldset` thay `role="group"`, focus bằng callback ref khi mở ô; ba quy tắc nâng lên `error` |
 | BE-001 | `tests/` và `scripts/` chưa gõ kiểu: 29 lỗi `mypy --strict` | Không nằm trong cổng mypy hiện tại |
 | BE-002 | Ruleset ruff mở rộng: 27 (core + scripts) / 45 (cả tests) vi phạm | PR riêng |
 | BE-003 | Optimistic locking nguyên tử | Tuần 4, TODO đã duyệt trong `routers/api.py` |
 | BE-004 | Spawn tiến trình cho mỗi lần chạy sandbox | Pool tiến trình dựng sẵn và chạy song song seed |
+| ARCH-001 | Gắn cứng CPU Scheduling ngoài `infrastructure/templates/` và test (CLAUDE.md §1, ADR-005 đang soạn) | Danh sách file ở dưới; gỡ theo ADR-005, sau đó thêm kiểm tra vào `tests/test_architecture.py` |
+
+Chi tiết ARCH-001, lập ngày 2026-10-23 bằng `grep -rinE 'cpu_?sched|CPUScheduling|round.?robin|SJF|RR|quantum|burst|arrival|gantt|FCFS|SRTF'` trên `holocron_core/`, `holocron/backend/scripts/` và `holocron/frontend/src/`, bỏ `infrastructure/templates/` và file test, rồi lọc tay các kết quả chỉ nằm trong docstring:
+
+- `holocron_core/domain/schemas.py`: hằng `CPU_SCHEDULING_TOPIC_PREFIX` và validator của `TwinQuestion` rẽ nhánh `topic_key.startswith(...)` để bắt buộc `gantt`; model riêng `SchedulingAlgorithm`, `ProcessItem`, `CPUSchedulingProblem`; `SolverInputs.quantum`.
+- `holocron_core/services/ingestion_gate.py`: `TABLE_SCHEMAS` và `TOPIC_ALGORITHMS` khoá theo `os.cpu_sched.rr.avg_waiting_time` (cột tiến trình/arrival/burst cố định); `table_to_problem` trả `CPUSchedulingProblem`.
+- `holocron_core/services/extraction.py`: `MockDualPassExtractor` chỉ hỗ trợ topic RR, header và đề RR mẫu; `DualPassExtraction.quantum`.
+- `holocron_core/routers/api.py`: `IngestionItem.problem: CPUSchedulingProblem`; form field `quantum` của upload.
+- `holocron_core/infrastructure/template_library.py`: hằng `RR_TOPIC`, `SJF_TOPIC` và metadata hai template (biến, assert, misconception) viết trong code thay vì dữ liệu.
+- `holocron_core/sandbox/_sandbox_child.py`: `_gantt_ok` kiểm khoá `gantt` riêng của dạng bài lập lịch trong kết quả `solve()`.
+- `holocron_core/services/pipeline.py`: ánh xạ khoá `gantt` của `solve()` sang `TwinQuestion.gantt` (field riêng cho một dạng bài thay vì artifact đa hình).
+- `holocron/backend/scripts/run_walkthrough.py`: walkthrough I4 dựng slot, chunk và blueprint RR; chấp nhận được như fixture nhưng là ví dụ end-to-end duy nhất.
+- `holocron/frontend/src/types/holocron.ts`: `SchedulingAlgorithm`, `ProcessItem`, `CPUSchedulingProblem`, `SolverInputs.quantum`, `GanttSegment`, `TwinQuestion.gantt`.
+- `holocron/frontend/src/components/ingestion/UploadForm.tsx`: danh sách dạng bài ghi cứng (Round Robin) và ô nhập quantum; `holocron/frontend/src/lib/api.ts`: tham số `quantum` của `uploadDocument`.
+- `holocron/frontend/src/components/twins/GanttChart.tsx`, `GanttChart.module.css`, `TwinViewer.tsx`, `holocron/frontend/src/lib/twin.ts` (`ganttLayout`, `ganttDescription`) và biến màu `--gantt-*` trong `app/globals.css`: component vẽ riêng sơ đồ Gantt.
 
 ## Phương án đã loại
 

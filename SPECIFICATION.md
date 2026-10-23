@@ -4,6 +4,7 @@
 |---|---|
 | Trạng thái | **v0.3 — CHỐT cho Tuần 2** (Tuần 2 / Ngày 2). Thay đổi contract sau mốc này PHẢI qua PR sửa tài liệu này trước. |
 | Phạm vi | Golden Path MVP: Hệ điều hành — CPU Scheduling (Round Robin, SJF) · Ingestion Gate · Deterministic Core · Frontend Ingestion UI |
+| Hướng phát triển | Đang chuyển sang hướng đa môn — xem `.claude/CLAUDE.md` §1 và ADR-005/006/007 (đang soạn); cho tới khi các ADR được chấp nhận, contract trong file này vẫn có hiệu lực. |
 | Nguồn chân lý code | `holocron/backend/holocron_core/` (Pydantic v2) · `holocron/frontend/src/types/holocron.ts` (TypeScript, khớp 1:1) |
 | Tài liệu liên quan | `docs/adr/`, `.claude/CLAUDE.md`, `holocron/backend/examples/*.json` |
 | Quy ước | **PHẢI / KHÔNG ĐƯỢC / NÊN / CÓ THỂ** theo nghĩa RFC 2119 (MUST / MUST NOT / SHOULD / MAY) |
@@ -493,7 +494,7 @@ Kích hoạt sandbox sinh bộ Twin Questions cho mọi slot của blueprint.
 - `Idempotency-Key` có phạm vi theo `blueprint_id`; cùng key và cùng body (so sánh sau khi áp giá trị mặc định) trong 24 h trả lại đúng batch cũ, không chạy lại sandbox. Cùng key nhưng khác body được coi là request mới và không ghi đè bản ghi cũ (spec chưa định nghĩa trường hợp này).
 - `format` của request ghi đè `format` của slot cho cả batch (spec chưa nói rõ).
 - Mỗi slot không sinh được cho ra tối đa một `ReviewTicket`. Phụ thuộc ngoài đi qua `Protocol`: `CitationProvider` (mặc định `NoCitationProvider`, chưa có Knowledge Vault ⇒ mọi slot vào `review_tickets` với lý do thiếu nguồn trích dẫn) và `TemplateAuthor` (mặc định `UnconfiguredTemplateAuthor`, chưa có adapter LLM ⇒ pipeline rơi về template pre-computed, twin `AUTO_FALLBACK`).
-- **Vấn đề đã biết:** bước giữa các twin (`k·7919`) trùng bước re-roll seed (`7919`, §10), nên các twin trong cùng batch thường trùng seed và trùng đề (đo trên 30 batch × 3 twin của template RR: 27 batch có seed trùng, 46/90 twin bị nhân đôi). Xem R6 ở §17.
+- **Vấn đề đã biết:** bước giữa các twin (`k·7919`) trùng bước re-roll seed (`7919`, §10), nên các twin trong cùng batch thường trùng seed và trùng đề. Đo lại ngày 2026-10-23 trên `develop` (`799ef72`): 30 batch × 3 twin, mỗi batch một slot template RR (author và nguồn trích dẫn giả lập như `tests/test_twin_batch.py`), `base_seed` mặc định theo `blueprint_id` `bp_measure_0` … `bp_measure_29`. Kết quả: 29/30 batch có seed trùng, 16/30 batch cả 3 twin cùng một seed; 74/90 twin trùng seed với ít nhất một twin khác trong batch, chỉ còn 45/90 twin khác nhau. Xem R6 ở §17.
 
 ### 6.4 Các endpoint khác (đã triển khai)
 
@@ -676,10 +677,12 @@ Backend PHẢI chỉ lắng nghe `127.0.0.1` trong bản local-first.
 | T2-N1 | Schemas, sandbox, template RR, Gate API | Xong |
 | T2-N2 | Spec v0.3; upload + mock dual-pass; `CPUSchedulingProblem`; Frontend Ingestion (upload, Table Auditor) | Xong |
 | T2-N3 | `solve()` của template RR trả `gantt` đúng dạng §8.1; `GanttSegment` và `TwinQuestion.gantt` (§5.6) | Xong |
-| T2-N3 | Template SJF; `llm_config.py` | Kế hoạch |
+| T2-N3 | Template SJF không ưu tiên (`os_sjf_avg_waiting.py`, `031e26a`) | Xong: đăng ký trong kho template đã kiểm chứng, dùng được khi sinh twin; chưa có trong `TABLE_SCHEMAS`/`TOPIC_ALGORITHMS` và extractor mock nên chưa nhập đề SJF qua upload được |
+| T2-N3 | `infrastructure/llm_config.py` (`7e2371e`); `GET /v1/runtime` với cờ `demo_mode` (§6.4) | Xong; adapter LLM/VLM thật chưa có nên luôn ở chế độ demo, và Frontend chưa đọc `demo_mode` |
 | T2-N3 | `POST /v1/blueprints` | Kế hoạch (chưa đủ chi tiết về nguồn dữ liệu của slot, xem §6.3) |
-| T2-N4 | `POST /v1/blueprints/{id}/twins` | Xong, với nguồn trích dẫn và author mặc định chưa cấu hình (§6.3) |
+| T2-N4 | `POST /v1/blueprints/{id}/twins` | Xong, với nguồn trích dẫn và author mặc định chưa cấu hình (§6.3); twin trong batch còn trùng seed (R6) |
 | T2-N4 | Twin Viewer + Gantt chart trên Frontend | Xong: trang `/blueprints/[blueprintId]` gọi `POST …/twins` và hiển thị 3 twin, badge misconception, trích dẫn, `review_tickets`; chưa nối từ luồng ingestion vì `POST /v1/blueprints` chưa có (§6.3) |
+| T2-N4 | Trả nợ FE-001: cảnh báo Biome ở `TableAuditor.tsx` (ADR-004) | Xong (`5f3b2b4`, `1b9b5c4`) |
 | T2-N5 | Adapter VLM thật cho dual-pass; pool tiến trình sandbox | Kế hoạch |
 | Tuần 3 | Golden Flow end-to-end trên 5 đề thật; đo p95 (G3) | Kế hoạch |
 | Tuần 4 | SQLite + optimistic locking nguyên tử; Paging FIFO/LRU, Banker; Vault đa môn; đóng gói Tauri | Kế hoạch |
@@ -693,7 +696,7 @@ Backend PHẢI chỉ lắng nghe `127.0.0.1` trong bản local-first.
 | R3 | VLM đọc sai chữ số viết tay | Dual-pass + self-solve mismatch + người dùng xác nhận |
 | R4 | Nhà cung cấp LLM mặc định không có model thị giác | Cấu hình VLM tách riêng (§11.2); fallback mock có nhãn demo |
 | R5 | Tên model của nhà cung cấp thay đổi/ngừng phục vụ | Tên model là cấu hình, không hard-code |
-| R6 | Các twin trong cùng batch trùng seed (bước `k·7919` trùng bước re-roll `7919`) ⇒ đề trùng nhau | Chưa quyết định cách sửa (ví dụ bước giữa các twin lớn hơn `7919 × 40`); cần quyết định trước khi UI hiển thị batch |
+| R6 | Các twin trong cùng batch trùng seed (bước `k·7919` trùng bước re-roll `7919`) ⇒ đề trùng nhau. Đo 2026-10-23 (30 batch × 3 twin RR): 29/30 batch có seed trùng, chỉ 45/90 twin khác nhau (§6.3) | Chưa quyết định cách sửa (ví dụ bước giữa các twin lớn hơn `7919 × 40`). Trang Twin Viewer đã hiển thị batch nên vấn đề lộ ra trên UI; cần quyết định sớm |
 | D1 | Người dùng có được sửa template không? | **Không** trong MVP; chỉ sửa dữ liệu đề qua Gate |
 | D2 | Mã HTTP cho xung đột trạng thái | 409 cho xung đột version/duyệt; 400 cho vi phạm luật non-cloneable (đã chốt ở Tuần 2) |
 

@@ -1,6 +1,6 @@
 # Review tiến độ tuần 19–23/10/2026
 
-- Ngày lập: 2026-10-23, cập nhật 2026-10-24 sau khi người làm dự án chốt các quyết định A1–A8.
+- Ngày lập: 2026-10-23, cập nhật 2026-10-23 sau khi người làm dự án chốt các quyết định A1–A8.
 - Phạm vi: bốn hạng mục của tuần (chốt specification, SPEC/PRD chi tiết, khung repo, học Claude Code).
 - Mốc đánh giá: `develop` = `903b954` (sau PR #30). Hoạt động trong tuần: 70 commit từ 19/10 tới 23/10, PR #1 tới #30 đã merge.
 - Thang: ✅ Hoàn thành · 🟡 Làm dở · ❌ Chưa làm. Mục có quyết định nhưng chưa ghi vào tài liệu được tính là 🟡.
@@ -70,7 +70,7 @@ Các chỗ còn dẫn tới ADR chưa có file (gỡ khi F7 đóng): `SPECIFICAT
 
 ## 5. Kết quả cổng kiểm tra
 
-Chạy ngày 2026-10-24 trên `903b954`, Windows 11, Python 3.14.7, Node 24.22.0.
+Chạy ngày 2026-10-23 trên `903b954`, Windows 11, Python 3.14.7, Node 24.22.0.
 
 | Cổng | Lệnh | Kết quả |
 |---|---|---|

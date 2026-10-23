@@ -1,7 +1,7 @@
 # ADR 007: Câu lý thuyết sinh tất định từ Vault; chấm tự luận sau MVP
 
 - Trạng thái: Đề xuất
-- Ngày: 2026-10-24
+- Ngày: 2026-10-23
 
 ## Bối cảnh
 
@@ -57,7 +57,7 @@ Chỉ sửa câu chữ và cơ chế cưỡng chế trong bảng §0 của spec;
 
 Khi được duyệt: sửa bảng §0 của spec, thêm test cưỡng chế vào bảng CLAUDE.md §9, rồi chuyển ADR này sang *Chấp nhận*.
 
-### 5. Chấm câu trả lời tự luận và `AnswerJudge`: sau MVP (đã duyệt 2026-10-24)
+### 5. Chấm câu trả lời tự luận và `AnswerJudge`: sau MVP (đã duyệt 2026-10-23)
 
 Thiết kế giữ theo CLAUDE.md §2.1, chưa triển khai:
 
@@ -72,7 +72,7 @@ Lý do để sau MVP: chấm tự luận cần một bộ câu trả lời mẫu
 - Môn lý thuyết thuần chạy được luồng G1 mà không cần sandbox hay template.
 - Câu lý thuyết MVP chỉ kiểm tra **nhận biết khái niệm** (mức `remember`/`understand`), chưa kiểm tra lập luận. Đây là giới hạn có chủ đích.
 - Chất lượng câu hỏi phụ thuộc chất lượng cặp khái niệm, nên màn hình xem lại của Vault phải cho sửa và xoá cặp.
-- **Chạm bất biến I2 và I4:** câu chữ hiện tại của I2 ("mã đã khai báo trong template") và I4 ("`(template_sha256, seed)`") chỉ nói về câu có template. Mục 4 ghi câu chữ trước và sau. Người làm dự án đã đồng ý về nguyên tắc ngày 2026-10-24; ADR giữ trạng thái *Đề xuất* cho tới khi câu chữ được duyệt (CLAUDE.md §9).
+- **Chạm bất biến I2 và I4:** câu chữ hiện tại của I2 ("mã đã khai báo trong template") và I4 ("`(template_sha256, seed)`") chỉ nói về câu có template. Mục 4 ghi câu chữ trước và sau. Người làm dự án đã đồng ý về nguyên tắc ngày 2026-10-23; ADR giữ trạng thái *Đề xuất* cho tới khi câu chữ được duyệt (CLAUDE.md §9).
 - Contract (`question_kind`, model `ConceptPair`, trace cho câu không có template) được chốt ở Giai đoạn 3, spec §5/§6.
 - Kiểm chứng: test cho thấy cặp có trích dẫn không nguyên văn bị loại; cặp chưa xác nhận không bao giờ được dùng và không làm đổi `pool_sha256`; Vault ít hơn 4 khái niệm đã xác nhận thì vào `review_tickets`; dạng "chọn định nghĩa đúng" chỉ lấy phương án nhiễu cùng chương; cùng `(generator_version, pool_sha256, seed)` thì câu hỏi giống từng byte; mọi phương án nhiễu đều có mã thuộc `THEORY_MISCONCEPTIONS`.
 

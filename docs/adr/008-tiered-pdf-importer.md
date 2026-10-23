@@ -1,7 +1,7 @@
 # ADR 008: Bộ nhập PDF theo tầng
 
-- Trạng thái: Chấp nhận (2026-10-24). Engine OCR của tầng 2 chỉ được chốt sau phép đo ở mục 5 của phần Quyết định.
-- Ngày: 2026-10-24
+- Trạng thái: Chấp nhận (2026-10-23). Engine OCR của tầng 2 chỉ được chốt sau phép đo ở mục 5 của phần Quyết định.
+- Ngày: 2026-10-23
 
 ## Bối cảnh
 
@@ -16,7 +16,7 @@
 
 ## Khảo sát thư viện
 
-Giấy phép và ngày phát hành lấy ngày 2026-10-24 từ PyPI JSON API (`license_expression`, `license`, classifier) và, với giấy phép tuỳ biến, từ file LICENSE/README trên GitHub của dự án. Kích thước là kích thước wheel `win_amd64` (hoặc `none-any`) của bản mới nhất, chưa giải nén. Chất lượng tiếng Việt **chưa đo** cho thư viện nào; cột đó chỉ ghi mức hỗ trợ được tài liệu công bố.
+Giấy phép và ngày phát hành lấy ngày 2026-10-23 từ PyPI JSON API (`license_expression`, `license`, classifier) và, với giấy phép tuỳ biến, từ file LICENSE/README trên GitHub của dự án. Kích thước là kích thước wheel `win_amd64` (hoặc `none-any`) của bản mới nhất, chưa giải nén. Chất lượng tiếng Việt **chưa đo** cho thư viện nào; cột đó chỉ ghi mức hỗ trợ được tài liệu công bố.
 
 ### Tầng 1: lớp chữ
 
@@ -56,7 +56,7 @@ Dùng cấu hình `HOLOCRON_VLM_*` sẵn có (spec §11.2): nhà cung cấp bấ
 ## Quyết định
 
 1. **Thư viện:** tầng 1 dùng pypdfium2; tầng 2 dùng RapidOCR với onnxruntime và model `latin_PP-OCRv5` (chốt sau phép đo ở mục 5); tầng 3 dùng pdfplumber cho PDF số và code lưới riêng cho PDF scan; tầng 4 dùng VLM tuỳ chọn qua cấu hình hiện có. Model OCR đóng gói kèm app, tắt tính năng tự tải model của RapidOCR để chạy offline.
-   - **Đã duyệt ngày 2026-10-24, ghim chính xác:** `pypdfium2==5.14.0`, `rapidocr==3.10.0`, `onnxruntime==1.31.0`. `opencv-python-headless==5.0.0.93` là phụ thuộc bắc cầu của `rapidocr` và cũng được ghim, vì nó mang thành phần LGPL (xem phần Hệ quả).
+   - **Đã duyệt ngày 2026-10-23, ghim chính xác:** `pypdfium2==5.14.0`, `rapidocr==3.10.0`, `onnxruntime==1.31.0`. `opencv-python-headless==5.0.0.93` là phụ thuộc bắc cầu của `rapidocr` và cũng được ghim, vì nó mang thành phần LGPL (xem phần Hệ quả).
    - `pdfplumber` chưa được thêm. Chỉ thêm khi bắt đầu làm tầng 3, cùng một lần duyệt riêng.
 2. **Vị trí trong code:** `infrastructure/document_readers/` sau `Protocol` `PdfReader`. Service nhập tài liệu ở `services/` gọi qua `Protocol`; test thay bằng stub và file mẫu nhỏ tự tạo.
 3. **Cô lập:** việc đọc PDF chạy trong **tiến trình con riêng** (worker), theo tinh thần ADR-002:
@@ -94,7 +94,7 @@ Dùng cấu hình `HOLOCRON_VLM_*` sẵn có (spec §11.2): nhà cung cấp bấ
 - PDF số đọc nhanh và chính xác ở tầng 1. PDF scan tiếng Việt chạy offline bằng OCR mà không cần PyTorch.
 - Dung lượng: phần tầng 1–2 (pypdfium2, rapidocr, onnxruntime, opencv-python-headless) khoảng 90 MB wheel Windows chưa giải nén, chưa tính numpy, shapely và model `latin`. Con số chính xác đo khi đóng gói Tauri.
 - **Thêm dependency đọc file không tin cậy:** pypdfium2 (tầng 1), rapidocr và onnxruntime (tầng 2), pdfplumber (tầng 3). pdfplumber thêm một parser PDF thứ hai (pdfminer.six), làm tăng bề mặt tấn công; vì vậy nó cũng chạy trong worker có giới hạn, và có thể bỏ nếu tầng 3 bị cắt (thứ tự cắt ở kế hoạch 24–25/10).
-- **Giấy phép đi kèm (đã kiểm ngày 2026-10-24):**
+- **Giấy phép đi kèm (đã kiểm ngày 2026-10-23):**
   - `rapidocr` 3.10.0 vốn phụ thuộc `opencv-python-headless`, không phải `opencv-python`. Bản headless bỏ được Qt (LGPLv3, có trong wheel Linux của bản thường), nhưng **không bỏ được FFmpeg**: wheel `opencv_python_headless-5.0.0.93-cp37-abi3-win_amd64.whl` vẫn chứa `cv2/opencv_videoio_ffmpeg500_64.dll` (30,9 MB, LGPL-2.1). Wheel Linux chưa được kiểm.
   - FFmpeg là plugin video mà OpenCV chỉ nạp khi đọc hoặc ghi video; OCR không dùng tới. Khi đóng gói Tauri có thể bỏ file plugin này và chạy lại test OCR để xác nhận; nếu bỏ được thì gói không còn thành phần LGPL.
   - Dù bỏ được hay không, repo PHẢI có file `THIRD_PARTY_NOTICES` liệt kê giấy phép của mọi dependency được phát hành kèm app. Giấy phép Apache-2.0 và BSD vốn yêu cầu giữ thông báo bản quyền. File này được thêm trong cùng commit với dependency.

@@ -2,9 +2,9 @@
 
 | Trường | Giá trị |
 |---|---|
-| Trạng thái | **v0.4** (2026-10-24): chốt §1 (bài toán, người dùng, nền tảng, phạm vi MVP đa môn) và §13.1 (mô hình bảo mật app local). Contract §5–§12 vẫn là bản v0.3 cho tới khi được cập nhật theo các ADR dưới đây. Thay đổi contract PHẢI qua PR sửa tài liệu này trước. |
+| Trạng thái | **v0.4** (2026-10-23): chốt §1 (bài toán, người dùng, nền tảng, phạm vi MVP đa môn) và §13.1 (mô hình bảo mật app local). Contract §5–§12 vẫn là bản v0.3 cho tới khi được cập nhật theo các ADR dưới đây. Thay đổi contract PHẢI qua PR sửa tài liệu này trước. |
 | Phạm vi | MVP đa môn cho sinh viên tự ôn luyện: nhập PDF tài liệu và đề của môn bất kỳ (bộ nhập theo tầng, có màn hình xem lại) · Knowledge Vault · Ingestion Gate · câu tính toán do sandbox tính · câu lý thuyết có trích dẫn nguyên văn · desktop app Tauri. Môn mẫu đầu tiên: Hệ điều hành — CPU Scheduling (Round Robin, SJF) |
-| Thiết kế đa môn | ADR-005 (pipeline câu hỏi không phụ thuộc topic), ADR-006 (Knowledge Vault đa môn), ADR-007 (câu lý thuyết và chấm câu trả lời), ADR-008 (bộ nhập PDF theo tầng). ADR-005, 006, 008: *Chấp nhận* (2026-10-24); ADR-007: *Đề xuất*, chờ duyệt câu chữ I2/I4. Phần contract của các ADR này có hiệu lực khi §5/§6 được cập nhật theo ADR. |
+| Thiết kế đa môn | ADR-005 (pipeline câu hỏi không phụ thuộc topic), ADR-006 (Knowledge Vault đa môn), ADR-007 (câu lý thuyết và chấm câu trả lời), ADR-008 (bộ nhập PDF theo tầng). ADR-005, 006, 008: *Chấp nhận* (2026-10-23); ADR-007: *Đề xuất*, chờ duyệt câu chữ I2/I4. Phần contract của các ADR này có hiệu lực khi §5/§6 được cập nhật theo ADR. |
 | Nguồn chân lý code | `holocron/backend/holocron_core/` (Pydantic v2) · `holocron/frontend/src/types/holocron.ts` (TypeScript, khớp 1:1) |
 | Tài liệu liên quan | `docs/adr/`, `.claude/CLAUDE.md`, `holocron/backend/examples/*.json` |
 | Quy ước | **PHẢI / KHÔNG ĐƯỢC / NÊN / CÓ THỂ** theo nghĩa RFC 2119 (MUST / MUST NOT / SHOULD / MAY) |

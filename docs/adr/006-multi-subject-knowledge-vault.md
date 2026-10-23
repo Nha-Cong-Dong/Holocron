@@ -1,7 +1,7 @@
 # ADR 006: Knowledge Vault đa môn
 
-- Trạng thái: Chấp nhận (2026-10-24)
-- Ngày: 2026-10-24
+- Trạng thái: Chấp nhận (2026-10-23)
+- Ngày: 2026-10-23
 
 ## Bối cảnh
 
@@ -31,7 +31,7 @@ Mục tiêu G1 (`SPECIFICATION.md` §1.5) yêu cầu mọi twin đều có tríc
    4. Tách token theo âm tiết: chuỗi ký tự chữ hoặc số liền nhau (`\w+` của Unicode), bỏ dấu câu. Tiếng Việt viết cách giữa các âm tiết nên mỗi token là một âm tiết. Không ghép từ nhiều âm tiết: BM25 trên âm tiết vẫn bắt được cụm từ nhờ tần suất đồng xuất hiện, và tránh thêm một model tách từ có thể sai.
    5. Không bỏ dấu khi lập chỉ mục chính, vì `ma`, `mà`, `má`, `mã` là những từ khác nhau. SQLite FTS5 dùng tokenizer `unicode61 remove_diacritics 0` trên văn bản đã qua bước 1–3. Một chỉ mục phụ không dấu chỉ dùng khi chỉ mục chính không trả kết quả nào, và điểm của nó luôn xếp sau.
 
-   Thư viện tách từ đã cân nhắc (giấy phép kiểm trên PyPI và file LICENSE ngày 2026-10-24): **VnCoreNLP** là **GPL-3.0** nên bị loại; `py_vncorenlp` (MIT) chỉ là lớp bọc gọi VnCoreNLP. `underthesea` 9.5.0 là Apache-2.0 nhưng kéo theo `huggingface-hub` và tải model khi chạy. `pyvi` 0.1.1 là MIT nhưng từ 2021-06 không ra bản mới. Cả hai đều không cần cho tách theo âm tiết, nên MVP không thêm dependency nào.
+   Thư viện tách từ đã cân nhắc (giấy phép kiểm trên PyPI và file LICENSE ngày 2026-10-23): **VnCoreNLP** là **GPL-3.0** nên bị loại; `py_vncorenlp` (MIT) chỉ là lớp bọc gọi VnCoreNLP. `underthesea` 9.5.0 là Apache-2.0 nhưng kéo theo `huggingface-hub` và tải model khi chạy. `pyvi` 0.1.1 là MIT nhưng từ 2021-06 không ra bản mới. Cả hai đều không cần cho tách theo âm tiết, nên MVP không thêm dependency nào.
 6. **`VaultCitationProvider` thay `NoCitationProvider`.**
    - Slot tính toán: chọn chunk `THEORY` cùng `subject_code` có `topic_keys` chứa `topic_key` của slot; hoà điểm thì chọn trang nhỏ nhất rồi `chunk_id` nhỏ nhất. Không có chunk nào thì giữ hành vi hiện tại: `ReviewTicket` với lý do thiếu nguồn trích dẫn.
    - `QuestionTemplate.theory_chunk_ids` không còn dùng để tìm trích dẫn.

@@ -165,9 +165,9 @@ Thay đổi chạm một bất biến PHẢI giữ các test cưỡng chế dư�
 | Bất biến | Test cưỡng chế |
 |---|---|
 | I1 | `tests/test_pipeline_twin_assembly.py`, `tests/test_pipeline_fallback.py`, `tests/test_sandbox_security.py`, `tests/test_sandbox_limits.py` |
-| I2 | `tests/test_pipeline_twin_assembly.py` (misconception lạ), `tests/test_domain_validators.py` |
+| I2 | `tests/test_pipeline_twin_assembly.py` (misconception lạ), `tests/test_domain_validators.py`; câu lý thuyết: `tests/test_theory_generator.py` (mọi phương án nhiễu mang mã thuộc `THEORY_MISCONCEPTIONS`; thêm cùng bộ sinh câu lý thuyết, ADR-007) |
 | I3 | `test_chunk_rejects_quote_not_in_text` trong `tests/test_schemas_and_gate.py` |
-| I4 | `tests/test_rr_template.py` + `python -m scripts.run_walkthrough` rồi `git diff --exit-code -- holocron/backend/examples` |
+| I4 | `tests/test_rr_template.py` + `python -m scripts.run_walkthrough` rồi `git diff --exit-code -- holocron/backend/examples`; câu lý thuyết: `tests/test_theory_generator.py` (cùng `(generator_version, pool_sha256, seed)` cho cùng câu; NFC và NFD cho cùng `pool_sha256`; thêm cặp ở môn khác không đổi `pool_sha256`; thêm cùng bộ sinh câu lý thuyết, ADR-007) |
 | I5 | `tests/test_schemas_and_gate.py`, `tests/test_api_item_state.py`, `tests/test_i5_enforcement.py` (topic lạ, self-solve `SKIPPED`), `tests/test_input_limits.py`; phía frontend `src/lib/gate.test.ts` (`canApprove`) |
 | Phân tầng package (§2.2) | `tests/test_architecture.py` |
 

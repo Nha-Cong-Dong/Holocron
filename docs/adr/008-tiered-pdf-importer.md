@@ -1,6 +1,6 @@
 # ADR 008: Bộ nhập PDF theo tầng
 
-- Trạng thái: Đề xuất
+- Trạng thái: Chấp nhận (2026-10-24). Engine OCR của tầng 2 chỉ được chốt sau phép đo ở mục 5 của phần Quyết định.
 - Ngày: 2026-10-24
 
 ## Bối cảnh
@@ -55,10 +55,13 @@ Dùng cấu hình `HOLOCRON_VLM_*` sẵn có (spec §11.2): nhà cung cấp bấ
 
 ## Quyết định
 
-1. **Thư viện:** tầng 1 dùng pypdfium2; tầng 2 dùng RapidOCR với onnxruntime và model `latin_PP-OCRv5` (chốt sau phép đo ở mục 5); tầng 3 dùng pdfplumber cho PDF số và code lưới riêng cho PDF scan; tầng 4 dùng VLM tuỳ chọn qua cấu hình hiện có. Dependency được ghim chính xác version. Model OCR đóng gói kèm app, tắt tính năng tự tải model của RapidOCR để chạy offline.
+1. **Thư viện:** tầng 1 dùng pypdfium2; tầng 2 dùng RapidOCR với onnxruntime và model `latin_PP-OCRv5` (chốt sau phép đo ở mục 5); tầng 3 dùng pdfplumber cho PDF số và code lưới riêng cho PDF scan; tầng 4 dùng VLM tuỳ chọn qua cấu hình hiện có. Model OCR đóng gói kèm app, tắt tính năng tự tải model của RapidOCR để chạy offline.
+   - **Đã duyệt ngày 2026-10-24, ghim chính xác:** `pypdfium2==5.14.0`, `rapidocr==3.10.0`, `onnxruntime==1.31.0`. `opencv-python-headless==5.0.0.93` là phụ thuộc bắc cầu của `rapidocr` và cũng được ghim, vì nó mang thành phần LGPL (xem phần Hệ quả).
+   - `pdfplumber` chưa được thêm. Chỉ thêm khi bắt đầu làm tầng 3, cùng một lần duyệt riêng.
 2. **Vị trí trong code:** `infrastructure/document_readers/` sau `Protocol` `PdfReader`. Service nhập tài liệu ở `services/` gọi qua `Protocol`; test thay bằng stub và file mẫu nhỏ tự tạo.
 3. **Cô lập:** việc đọc PDF chạy trong **tiến trình con riêng** (worker), theo tinh thần ADR-002:
    - Worker tự áp giới hạn OS ngay khi khởi động: RLIMIT trên Unix (sau kiểm tra `sys.platform != "win32"`), Job Object trên Windows. RAM 2 GiB (OCR cần nhiều hơn sandbox), CPU theo trang, `RLIMIT_FSIZE` 0, cwd là thư mục tạm, biến môi trường tối thiểu, đọc/ghi UTF-8 tường minh.
+   - **Mã giới hạn OS dùng chung (đã duyệt, phương án a):** phần áp RLIMIT/Job Object hiện nằm trong `sandbox/_sandbox_child.py` được tách thành một module chỉ dùng thư viện chuẩn, để child của sandbox và worker đọc PDF cùng dùng. Việc tách nằm trong **một commit riêng chỉ để refactor** và được review riêng. Mọi test sandbox hiện có (`tests/test_sandbox_security.py`, `tests/test_sandbox_limits.py`) phải xanh mà không sửa test. Commit này không đổi giá trị giới hạn hay whitelist nào của sandbox.
    - Tiến trình cha giữ wall-clock timeout theo trang: 5 s cho tầng 1, 30 s cho tầng 2. Quá hạn thì kill worker, đánh dấu trang `failed`, dựng worker mới cho trang tiếp theo.
    - Worker nhận đường dẫn file chỉ-đọc, trả kết quả dạng JSON qua stdout theo từng trang. Kết quả được validate bằng model Pydantic ở tiến trình cha, như `SandboxResult`.
 4. **Giới hạn đầu vào và xử lý file xấu:**
@@ -67,11 +70,12 @@ Dùng cấu hình `HOLOCRON_VLM_*` sẵn có (spec §11.2): nhà cung cấp bấ
    - Không khởi tạo form, không chạy JavaScript/XFA (wheel không có V8), bỏ qua file đính kèm, liên kết và nội dung nhúng.
    - PDF cần mật khẩu để mở: trả 422 "PDF có mật khẩu", không thử phá. PDF chỉ có mật khẩu chủ (giới hạn quyền) vẫn đọc được vì là tài liệu của chính người dùng.
    - Không mở được tài liệu: 422 cho cả tài liệu. Lỗi ở một trang: trang đó `failed`, các trang khác vẫn xử lý.
-5. **Phép đo chọn engine OCR**, làm đầu tiên ở Giai đoạn 4, sau khi được duyệt dependency:
-   - Script opt-in ở `holocron/backend/scripts/`, chạy ngoài pytest, theo CLAUDE.md §2.2.
-   - Dữ liệu: ít nhất 20 trang tiếng Việt có dấu do nhóm tự soạn, in ra PDF rồi render thành bản scan ở 200 và 300 DPI, có trang chứa bảng số.
-   - Chỉ số: CER (tỉ lệ lỗi ký tự, tính cả dấu) và tỉ lệ chữ số đọc sai.
-   - Chọn engine có CER thấp hơn. Ghi số liệu vào ADR này trước khi chuyển trạng thái sang *Chấp nhận*.
+5. **Phép đo chọn engine OCR**, làm **trước khi viết code quanh RapidOCR** (đầu Giai đoạn 4):
+   - Script opt-in ở `holocron/backend/scripts/`, chạy ngoài pytest, theo CLAUDE.md §2.2. Tesseract chỉ được cài trong môi trường đo, không thành dependency của app.
+   - Dữ liệu: 5–10 trang **scan tiếng Việt thật** do người làm dự án cung cấp, có ít nhất một trang chứa bảng số. File giữ trong `eval_data/` (đã nằm trong `.gitignore`), không commit. Văn bản chuẩn để so được gõ tay một lần và cũng giữ trong `eval_data/`.
+   - Chỉ số: CER tính cả dấu (sau chuẩn hoá Unicode NFC) và tỉ lệ chữ số đọc sai, so RapidOCR (`latin_PP-OCRv5`) với Tesseract `vie` (tessdata_best).
+   - **Quy tắc dừng:** nếu RapidOCR kém rõ rệt, tức CER cao hơn Tesseract quá 2 điểm phần trăm tuyệt đối hoặc tỉ lệ chữ số sai cao hơn, thì DỪNG và báo người làm dự án, không tự đổi engine.
+   - Ghi số liệu vào mục "Kết quả đo" của ADR này.
 6. **Độ tin cậy theo trang và cách chọn tầng:**
 
    | Bước | Điểm | Cách tính |
@@ -90,10 +94,16 @@ Dùng cấu hình `HOLOCRON_VLM_*` sẵn có (spec §11.2): nhà cung cấp bấ
 - PDF số đọc nhanh và chính xác ở tầng 1. PDF scan tiếng Việt chạy offline bằng OCR mà không cần PyTorch.
 - Dung lượng: phần tầng 1–2 (pypdfium2, rapidocr, onnxruntime, opencv-python-headless) khoảng 90 MB wheel Windows chưa giải nén, chưa tính numpy, shapely và model `latin`. Con số chính xác đo khi đóng gói Tauri.
 - **Thêm dependency đọc file không tin cậy:** pypdfium2 (tầng 1), rapidocr và onnxruntime (tầng 2), pdfplumber (tầng 3). pdfplumber thêm một parser PDF thứ hai (pdfminer.six), làm tăng bề mặt tấn công; vì vậy nó cũng chạy trong worker có giới hạn, và có thể bỏ nếu tầng 3 bị cắt (thứ tự cắt ở kế hoạch 24–25/10).
-- **Giấy phép đi kèm:** OpenCV đóng kèm FFmpeg theo LGPL-2.1 (liên kết động, không thuộc nhóm GPL/AGPL bị cấm). Bản phát hành phải kèm file thông báo giấy phép bên thứ ba.
-- **Chạm sandbox, cần duyệt riêng:** worker cần cùng mã giới hạn OS đang nằm trong `sandbox/_sandbox_child.py`. Có hai cách: tách phần đó thành một module chỉ dùng thư viện chuẩn để hai child dùng chung (sửa file của sandbox), hoặc worker giữ một bản sao và ghi nợ trùng lặp vào ADR-004. Cả hai đều thuộc nhóm DỪNG VÀ HỎI ở CLAUDE.md §3.
+- **Giấy phép đi kèm (đã kiểm ngày 2026-10-24):**
+  - `rapidocr` 3.10.0 vốn phụ thuộc `opencv-python-headless`, không phải `opencv-python`. Bản headless bỏ được Qt (LGPLv3, có trong wheel Linux của bản thường), nhưng **không bỏ được FFmpeg**: wheel `opencv_python_headless-5.0.0.93-cp37-abi3-win_amd64.whl` vẫn chứa `cv2/opencv_videoio_ffmpeg500_64.dll` (30,9 MB, LGPL-2.1). Wheel Linux chưa được kiểm.
+  - FFmpeg là plugin video mà OpenCV chỉ nạp khi đọc hoặc ghi video; OCR không dùng tới. Khi đóng gói Tauri có thể bỏ file plugin này và chạy lại test OCR để xác nhận; nếu bỏ được thì gói không còn thành phần LGPL.
+  - Dù bỏ được hay không, repo PHẢI có file `THIRD_PARTY_NOTICES` liệt kê giấy phép của mọi dependency được phát hành kèm app. Giấy phép Apache-2.0 và BSD vốn yêu cầu giữ thông báo bản quyền. File này được thêm trong cùng commit với dependency.
 - Công thức trên PDF scan chưa được nhận dạng offline; người dùng phải gõ lại hoặc bật VLM.
 - Kiểm chứng: test với file mẫu nhỏ tự tạo, gồm một PDF số, một PDF scan, một PDF hỏng hoặc quá lớn, và một PDF dùng font TCVN3 để kiểm `text_score`. Có thêm test timeout và giới hạn trang.
+
+## Kết quả đo
+
+Chưa đo. Mục này được điền sau phép đo ở mục 5 của phần Quyết định.
 
 ## Phương án đã loại
 

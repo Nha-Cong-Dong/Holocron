@@ -1,6 +1,6 @@
 # ADR 006: Knowledge Vault đa môn
 
-- Trạng thái: Đề xuất
+- Trạng thái: Chấp nhận (2026-10-24)
 - Ngày: 2026-10-24
 
 ## Bối cảnh
@@ -23,12 +23,20 @@ Mục tiêu G1 (`SPECIFICATION.md` §1.5) yêu cầu mọi twin đều có tríc
 
    Mọi nhãn chỉ là gợi ý, hiện trên màn hình xem lại kèm `mapping_confidence`. Trích dẫn do LLM chọn PHẢI là chuỗi con nguyên văn (đã chuẩn hoá khoảng trắng) của văn bản chunk; không khớp thì bị loại, không sửa hộ (I3).
 3. **Cắt chunk tất định bằng code** theo spec §12.1 (heading, 450 token, chồng lấn 1 câu). LLM không cắt chunk. Cùng văn bản đầu vào thì cùng tập chunk.
-4. **Tìm chunk bằng từ khoá, không dùng embedding trong MVP.** Truy vấn lọc theo `subject_code` và `topic_keys`, xếp hạng bằng BM25: SQLite FTS5 khi chuyển sang SQLite, còn bản in-memory dùng điểm trùng từ đơn giản. Kết quả xếp hạng tất định. Embedding chạy offline thuộc tầm nhìn sau MVP (§1.6), vì cần thêm model và làm nặng bộ cài.
-5. **`VaultCitationProvider` thay `NoCitationProvider`.**
+4. **Tìm chunk bằng từ khoá, không dùng embedding trong MVP.** Truy vấn lọc theo `subject_code` và `topic_keys`, xếp hạng bằng BM25: SQLite FTS5 khi chuyển sang SQLite, còn bản in-memory dùng BM25 tự cài trên cùng bộ token. Kết quả xếp hạng tất định: hoà điểm thì xếp theo `chunk_id`. Embedding chạy offline thuộc tầm nhìn sau MVP (§1.6), vì cần thêm model và làm nặng bộ cài.
+5. **Tách từ tiếng Việt cho BM25: theo âm tiết, chuẩn hoá dấu, không dùng thư viện tách từ.** Một hàm thuần chỉ dùng thư viện chuẩn (`unicodedata`, `re`), dùng chung cho văn bản chunk lúc lập chỉ mục và cho truy vấn:
+   1. Chuẩn hoá Unicode NFC, vì PDF hay trả chữ có dấu ở dạng tổ hợp (NFD) và hai dạng phải so khớp được.
+   2. Chuẩn hoá vị trí dấu thanh về một quy ước: dấu đặt trên nguyên âm chính theo kiểu mới (`hòa`, `thủy`, `khỏe`), nên `hoà` và `hòa`, `thuỷ` và `thủy` cho cùng token. Bảng ánh xạ cho các vần `oa`, `oe`, `uy` (có và không có phụ âm cuối) nằm cùng hàm, có test cho từng cặp.
+   3. `casefold()`; giữ `đ` là chữ riêng, không đổi thành `d`.
+   4. Tách token theo âm tiết: chuỗi ký tự chữ hoặc số liền nhau (`\w+` của Unicode), bỏ dấu câu. Tiếng Việt viết cách giữa các âm tiết nên mỗi token là một âm tiết. Không ghép từ nhiều âm tiết: BM25 trên âm tiết vẫn bắt được cụm từ nhờ tần suất đồng xuất hiện, và tránh thêm một model tách từ có thể sai.
+   5. Không bỏ dấu khi lập chỉ mục chính, vì `ma`, `mà`, `má`, `mã` là những từ khác nhau. SQLite FTS5 dùng tokenizer `unicode61 remove_diacritics 0` trên văn bản đã qua bước 1–3. Một chỉ mục phụ không dấu chỉ dùng khi chỉ mục chính không trả kết quả nào, và điểm của nó luôn xếp sau.
+
+   Thư viện tách từ đã cân nhắc (giấy phép kiểm trên PyPI và file LICENSE ngày 2026-10-24): **VnCoreNLP** là **GPL-3.0** nên bị loại; `py_vncorenlp` (MIT) chỉ là lớp bọc gọi VnCoreNLP. `underthesea` 9.5.0 là Apache-2.0 nhưng kéo theo `huggingface-hub` và tải model khi chạy. `pyvi` 0.1.1 là MIT nhưng từ 2021-06 không ra bản mới. Cả hai đều không cần cho tách theo âm tiết, nên MVP không thêm dependency nào.
+6. **`VaultCitationProvider` thay `NoCitationProvider`.**
    - Slot tính toán: chọn chunk `THEORY` cùng `subject_code` có `topic_keys` chứa `topic_key` của slot; hoà điểm thì chọn trang nhỏ nhất rồi `chunk_id` nhỏ nhất. Không có chunk nào thì giữ hành vi hiện tại: `ReviewTicket` với lý do thiếu nguồn trích dẫn.
    - `QuestionTemplate.theory_chunk_ids` không còn dùng để tìm trích dẫn.
-6. **Trích dẫn là bản chụp giá trị.** `TwinQuestion.citation` chép `doc_id`, `page_number`, `verbatim_quote` tại thời điểm sinh. Xoá tài liệu thì xoá chunk của nó, nhưng twin đã sinh vẫn giữ trích dẫn và UI báo "tài liệu gốc đã bị xoá" khi không mở được trang.
-7. **File gốc được giữ cục bộ** trong thư mục dữ liệu ứng dụng, đặt tên theo `sha256`, để PDF.js mở đúng trang khi bấm trích dẫn (spec §12.2). Cùng nội dung thì cùng file, tương tự `document_id` của upload hiện tại.
+7. **Trích dẫn là bản chụp giá trị.** `TwinQuestion.citation` chép `doc_id`, `page_number`, `verbatim_quote` tại thời điểm sinh. Xoá tài liệu thì xoá chunk của nó, nhưng twin đã sinh vẫn giữ trích dẫn và UI báo "tài liệu gốc đã bị xoá" khi không mở được trang.
+8. **File gốc được giữ cục bộ** trong thư mục dữ liệu ứng dụng, đặt tên theo `sha256`, để PDF.js mở đúng trang khi bấm trích dẫn (spec §12.2). Cùng nội dung thì cùng file, tương tự `document_id` của upload hiện tại.
 
 ## Hệ quả
 

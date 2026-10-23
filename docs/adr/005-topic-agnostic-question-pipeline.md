@@ -1,6 +1,6 @@
 # ADR 005: Pipeline câu hỏi không phụ thuộc topic
 
-- Trạng thái: Đề xuất
+- Trạng thái: Chấp nhận (2026-10-24). F16 (SJF ở Ingestion Gate) làm theo bước 1 của thứ tự trả nợ bên dưới, không thêm vào `TABLE_SCHEMAS`. Việc đổi câu chữ I1 ("sơ đồ Gantt" thành "artifact lời giải") ở bước 3 vẫn cần người làm dự án đồng ý riêng (CLAUDE.md §9).
 - Ngày: 2026-10-24
 
 ## Bối cảnh

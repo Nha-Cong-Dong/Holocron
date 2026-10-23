@@ -74,7 +74,7 @@ Dùng cấu hình `HOLOCRON_VLM_*` sẵn có (spec §11.2): nhà cung cấp bấ
    - Script opt-in ở `holocron/backend/scripts/`, chạy ngoài pytest, theo CLAUDE.md §2.2. Tesseract chỉ được cài trong môi trường đo, không thành dependency của app.
    - Dữ liệu: 5–10 trang **scan tiếng Việt thật** do người làm dự án cung cấp, có ít nhất một trang chứa bảng số. File giữ trong `eval_data/` (đã nằm trong `.gitignore`), không commit. Văn bản chuẩn để so được gõ tay một lần và cũng giữ trong `eval_data/`.
    - Chỉ số: CER tính cả dấu (sau chuẩn hoá Unicode NFC) và tỉ lệ chữ số đọc sai, so RapidOCR (`latin_PP-OCRv5`) với Tesseract `vie` (tessdata_best).
-   - **Quy tắc dừng:** nếu RapidOCR kém rõ rệt, tức CER cao hơn Tesseract quá 2 điểm phần trăm tuyệt đối hoặc tỉ lệ chữ số sai cao hơn, thì DỪNG và báo người làm dự án, không tự đổi engine.
+   - **Quy tắc dừng (ngưỡng đã duyệt 2026-10-23):** nếu RapidOCR kém rõ rệt, tức CER cao hơn Tesseract quá 2 điểm phần trăm tuyệt đối hoặc tỉ lệ chữ số sai cao hơn, thì DỪNG và báo người làm dự án, không tự đổi engine.
    - Ghi số liệu vào mục "Kết quả đo" của ADR này.
 6. **Độ tin cậy theo trang và cách chọn tầng:**
 
@@ -82,7 +82,7 @@ Dùng cấu hình `HOLOCRON_VLM_*` sẵn có (spec §11.2): nhà cung cấp bấ
    |---|---|---|
    | Tầng 1 | `text_score` ∈ [0, 1] | Tích của ba thành phần: (a) độ đủ chữ `min(1, số ký tự không trắng / 200)`; (b) `1 − tỉ lệ ký tự rác` (U+FFFD, vùng Private Use, ký tự điều khiển); (c) tỉ lệ từ hợp lệ, trong đó từ chứa ký tự đặc trưng của TCVN3/VNI (ví dụ `¬`, `−`, `®` lẫn giữa chữ) bị tính là không hợp lệ |
    | Tầng 2 | `ocr_score` ∈ [0, 1] | Trung bình điểm nhận dạng của các dòng, có trọng số theo số ký tự; dòng điểm thấp được tô trên màn hình xem lại |
-   | Cờ trang | `has_figure`, `has_table`, `has_formula` | `has_figure`: tỉ lệ diện tích đối tượng ảnh và đường vẽ trên trang; `has_table`: lưới đường kẻ (pdfplumber) hoặc lưới toạ độ chữ; `has_formula`: mật độ ký hiệu toán (∑ ∫ √ ≤ ≥ ±, chữ Hy Lạp, chỉ số trên/dưới) |
+   | Cờ trang | `has_figure`, `has_table`, `has_formula` | `has_figure`: tỉ lệ diện tích đối tượng ảnh và đường vẽ trên trang; `has_table`: lưới toạ độ chữ (tầng 1–2), cộng lưới đường kẻ của pdfplumber khi có tầng 3; `has_formula`: mật độ ký hiệu toán (∑ ∫ √ ≤ ≥ ±, chữ Hy Lạp, chỉ số trên/dưới) |
 
    - Dùng lớp chữ khi `text_score ≥ 0.85`; ngược lại OCR trang đó.
    - Trang có điểm của tầng đã dùng `< 0.80`, hoặc có `has_figure` hay `has_formula` trên trang scan, được đánh dấu "cần xem kỹ". Nếu đã cấu hình VLM, các trang này được gửi VLM.
@@ -93,10 +93,10 @@ Dùng cấu hình `HOLOCRON_VLM_*` sẵn có (spec §11.2): nhà cung cấp bấ
 
 - PDF số đọc nhanh và chính xác ở tầng 1. PDF scan tiếng Việt chạy offline bằng OCR mà không cần PyTorch.
 - Dung lượng: phần tầng 1–2 (pypdfium2, rapidocr, onnxruntime, opencv-python-headless) khoảng 90 MB wheel Windows chưa giải nén, chưa tính numpy, shapely và model `latin`. Con số chính xác đo khi đóng gói Tauri.
-- **Thêm dependency đọc file không tin cậy:** pypdfium2 (tầng 1), rapidocr và onnxruntime (tầng 2), pdfplumber (tầng 3). pdfplumber thêm một parser PDF thứ hai (pdfminer.six), làm tăng bề mặt tấn công; vì vậy nó cũng chạy trong worker có giới hạn, và có thể bỏ nếu tầng 3 bị cắt (thứ tự cắt ở kế hoạch 24–25/10).
+- **Thêm dependency đọc file không tin cậy:** pypdfium2 (tầng 1), rapidocr và onnxruntime (tầng 2) đã được duyệt. pdfplumber (tầng 3) chỉ được thêm khi làm tầng 3, sau một lần duyệt riêng; nó mang theo parser PDF thứ hai (pdfminer.six), làm tăng bề mặt tấn công, nên cũng chạy trong worker có giới hạn. Nếu tầng 3 bị cắt (thứ tự cắt ở kế hoạch 24–25/10) thì không thêm.
 - **Giấy phép đi kèm (đã kiểm ngày 2026-10-23):**
-  - `rapidocr` 3.10.0 vốn phụ thuộc `opencv-python-headless`, không phải `opencv-python`. Bản headless bỏ được Qt (LGPLv3, có trong wheel Linux của bản thường), nhưng **không bỏ được FFmpeg**: wheel `opencv_python_headless-5.0.0.93-cp37-abi3-win_amd64.whl` vẫn chứa `cv2/opencv_videoio_ffmpeg500_64.dll` (30,9 MB, LGPL-2.1). Wheel Linux chưa được kiểm.
-  - FFmpeg là plugin video mà OpenCV chỉ nạp khi đọc hoặc ghi video; OCR không dùng tới. Khi đóng gói Tauri có thể bỏ file plugin này và chạy lại test OCR để xác nhận; nếu bỏ được thì gói không còn thành phần LGPL.
+  - `rapidocr` 3.10.0 vốn phụ thuộc `opencv-python-headless`, không phải `opencv-python`. Bản headless bỏ được Qt (LGPLv3, có trong wheel Linux của bản thường), nhưng **không bỏ được FFmpeg**: wheel `opencv_python_headless-5.0.0.93-cp37-abi3-win_amd64.whl` vẫn chứa `cv2/opencv_videoio_ffmpeg500_64.dll` (30,9 MB, LGPL-2.1). Wheel Linux và macOS chưa được kiểm.
+  - FFmpeg là plugin video mà OpenCV chỉ nạp khi đọc hoặc ghi video; OCR không dùng tới. Việc bỏ file plugin này khi đóng gói Tauri, chạy lại test OCR và kiểm wheel Linux/macOS được ghi thành nợ PKG-001 ở ADR-004. Nếu bỏ được thì gói không còn thành phần LGPL.
   - Dù bỏ được hay không, repo PHẢI có file `THIRD_PARTY_NOTICES` liệt kê giấy phép của mọi dependency được phát hành kèm app. Giấy phép Apache-2.0 và BSD vốn yêu cầu giữ thông báo bản quyền. File này được thêm trong cùng commit với dependency.
 - Công thức trên PDF scan chưa được nhận dạng offline; người dùng phải gõ lại hoặc bật VLM.
 - Kiểm chứng: test với file mẫu nhỏ tự tạo, gồm một PDF số, một PDF scan, một PDF hỏng hoặc quá lớn, và một PDF dùng font TCVN3 để kiểm `text_score`. Có thêm test timeout và giới hạn trang.

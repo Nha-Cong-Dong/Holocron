@@ -190,6 +190,8 @@
 .editorPanel {
   display: grid;
   gap: 12px;
+  margin: 0;
+  min-inline-size: 0;
   padding: 12px;
   border: 1px dashed var(--border);
   border-radius: 8px;

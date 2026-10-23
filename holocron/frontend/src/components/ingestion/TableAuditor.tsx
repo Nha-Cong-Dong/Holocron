@@ -1,9 +1,9 @@
 "use client";
 
-import { type KeyboardEvent, useMemo, useState } from "react";
+import { type KeyboardEvent, useCallback, useMemo, useState } from "react";
 
 import { ApiError, approveItem, getItem, patchTable } from "@/lib/api";
-import { canApprove, cellKey, cellText, groupIssues, rowCount } from "@/lib/gate";
+import { canApprove, cellKey, cellText, groupIssues, keyedIssues, rowIndices, tableColumns } from "@/lib/gate";
 import type { GateIssue, IngestionItem, Severity } from "@/types/holocron";
 
 import styles from "./TableAuditor.module.css";
@@ -64,7 +64,8 @@ export function TableAuditor({ item, onItemChange, onApproved }: TableAuditorPro
   const [error, setError] = useState<string | null>(null);
 
   const table = item.table_primary;
-  const rows = rowCount(table);
+  const rows = rowIndices(table);
+  const columns = tableColumns(table);
   const { byCell, tableLevel } = useMemo(() => groupIssues(item.report), [item.report]);
   const blockingCount = item.report?.issues.filter((i) => i.severity === "blocking").length ?? 0;
   const warningCount = item.report?.issues.filter((i) => i.severity === "warning").length ?? 0;
@@ -73,6 +74,12 @@ export function TableAuditor({ item, onItemChange, onApproved }: TableAuditorPro
 
   const editingIssues = editing === null ? [] : (byCell.get(cellKey(editing.row, editing.col)) ?? []);
   const alternatives = [...new Set(editingIssues.flatMap((i) => i.alternatives))];
+
+  // Đưa focus vào ô nhập khi người dùng chủ động mở một ô để sửa (thay cho `autoFocus`).
+  // Callback ổn định nên React chỉ gọi lại khi ô nhập được mount mới, không phải mỗi lần gõ phím.
+  const focusOnMount = useCallback((input: HTMLInputElement | null) => {
+    input?.focus();
+  }, []);
 
   function startEditing(row: number, col: number): void {
     if (!editable) return;
@@ -170,8 +177,8 @@ export function TableAuditor({ item, onItemChange, onApproved }: TableAuditorPro
 
       {tableLevel.length > 0 && (
         <ul className={styles.tableIssues}>
-          {tableLevel.map((issue, index) => (
-            <li key={`${issue.code}-${index}`} data-severity={issue.severity}>
+          {keyedIssues(tableLevel).map(({ key, issue }) => (
+            <li key={key} data-severity={issue.severity}>
               <strong>{SEVERITY_LABEL[issue.severity]}</strong> {issue.message_vi}
             </li>
           ))}
@@ -185,20 +192,20 @@ export function TableAuditor({ item, onItemChange, onApproved }: TableAuditorPro
               <th scope="col" className={styles.rowHead}>
                 #
               </th>
-              {table.headers.map((header, col) => (
-                <th key={`${header}-${col}`} scope="col">
+              {columns.map(({ col, header }) => (
+                <th key={col} scope="col">
                   {header}
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {Array.from({ length: rows }, (_, row) => (
+            {rows.map((row) => (
               <tr key={row}>
                 <th scope="row" className={styles.rowHead}>
                   {row + 1}
                 </th>
-                {table.headers.map((header, col) => {
+                {columns.map(({ col, header }) => {
                   const issues = byCell.get(cellKey(row, col)) ?? [];
                   const severity = worstSeverity(issues);
                   const cell = table.cells.find((c) => c.row === row && c.col === col);
@@ -212,7 +219,7 @@ export function TableAuditor({ item, onItemChange, onApproved }: TableAuditorPro
                           aria-label={`Sửa ${label}`}
                           value={editing.draft}
                           maxLength={MAX_CELL_TEXT}
-                          autoFocus
+                          ref={focusOnMount}
                           disabled={busy !== null}
                           onChange={(event) => setEditing({ row, col, draft: event.target.value })}
                           onKeyDown={handleKeyDown}
@@ -247,11 +254,11 @@ export function TableAuditor({ item, onItemChange, onApproved }: TableAuditorPro
       </div>
 
       {editing !== null && (
-        <div className={styles.editorPanel} role="group" aria-label="Chi tiết ô đang sửa">
+        <fieldset className={styles.editorPanel} aria-label="Chi tiết ô đang sửa">
           {editingIssues.length > 0 && (
             <ul className={styles.cellIssues}>
-              {editingIssues.map((issue, index) => (
-                <li key={`${issue.code}-${index}`} data-severity={issue.severity}>
+              {keyedIssues(editingIssues).map(({ key, issue }) => (
+                <li key={key} data-severity={issue.severity}>
                   <strong>{SEVERITY_LABEL[issue.severity]}</strong> {issue.message_vi}
                 </li>
               ))}
@@ -294,7 +301,7 @@ export function TableAuditor({ item, onItemChange, onApproved }: TableAuditorPro
               Huỷ (Esc)
             </button>
           </div>
-        </div>
+        </fieldset>
       )}
 
       {error !== null && (

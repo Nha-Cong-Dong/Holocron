@@ -71,6 +71,13 @@ npm install
 
 Trên Windows, gọi công cụ Python qua `python -m` (ví dụ `python -m pytest`) và đặt `$env:PYTHONIOENCODING = "utf-8"` để console in được tiếng Việt.
 
+Cài hook kiểm tra cục bộ một lần, chạy ở gốc repo (cài cả hook `commit-msg` và `pre-push`):
+
+```bash
+python -m pip install pre-commit
+python -m pre_commit install
+```
+
 ## Sử dụng
 
 Các lệnh backend chạy trong `holocron/backend/`; lệnh frontend chạy trong `holocron/frontend/`.

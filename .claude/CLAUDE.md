@@ -1,6 +1,6 @@
 # Project Guidelines for Claude Code — Holocron
 
-Đọc toàn bộ file này trước khi sửa code. Cách cài đặt và chạy: `README.md`. Quy trình phát hành: `docs/releases/README.md`. Sổ nợ kỹ thuật: `docs/adr/004-engineering-discipline.md`. Phạm vi sản phẩm và contract nằm ở `SPECIFICATION.md` (nguồn chân lý về hành vi sản phẩm); thiết kế đa môn ở ADR-005 (pipeline câu hỏi không phụ thuộc topic), ADR-006 (Knowledge Vault đa môn) và ADR-007 (ôn lý thuyết và chấm câu trả lời).
+Đọc toàn bộ file này trước khi sửa code. Cách cài đặt và chạy: `README.md`. Quy trình phát hành: `docs/releases/README.md`. Sổ nợ kỹ thuật: `docs/adr/004-engineering-discipline.md`. Phạm vi sản phẩm và contract nằm ở `SPECIFICATION.md` (nguồn chân lý về hành vi sản phẩm); thiết kế đa môn ở ADR-005 (pipeline câu hỏi không phụ thuộc topic), ADR-006 (Knowledge Vault đa môn), ADR-007 (ôn lý thuyết và chấm câu trả lời) và ADR-008 (bộ nhập PDF theo tầng).
 
 **Giai đoạn chuyển tiếp:** ADR chưa có trong `docs/adr/` hoặc chưa ở trạng thái *Chấp nhận* thì chưa có hiệu lực. Khi `SPECIFICATION.md` còn mô tả phạm vi hoặc contract hẹp hơn file này (ví dụ chỉ một môn), spec thắng cho phần contract: code mới vẫn tuân thủ mọi quy tắc của file này (không rẽ nhánh theo môn, trích dẫn nguyên văn, điểm do code tính), nhưng thay đổi contract để mở rộng phạm vi phải chờ ADR tương ứng được chấp nhận và spec được cập nhật.
 

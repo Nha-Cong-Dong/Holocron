@@ -1,50 +1,21 @@
 # Project Guidelines for Claude Code — Holocron
 
-Đọc toàn bộ file này trước khi sửa code. Nguồn chân lý về hành vi sản phẩm là `SPECIFICATION.md` (v0.3, đã chốt Tuần 2); khi code và spec lệch nhau, dừng lại và hỏi người dùng thay vì tự chọn.
+Đọc toàn bộ file này trước khi sửa code. Cách cài đặt và chạy: `README.md`. Quy trình phát hành: `docs/releases/README.md`. Sổ nợ kỹ thuật: `docs/adr/004-engineering-discipline.md`. Phạm vi sản phẩm và contract nằm ở `SPECIFICATION.md` (nguồn chân lý về hành vi sản phẩm); thiết kế đa môn ở ADR-005 (pipeline câu hỏi không phụ thuộc topic), ADR-006 (Knowledge Vault đa môn) và ADR-007 (ôn lý thuyết và chấm câu trả lời).
+
+**Giai đoạn chuyển tiếp:** ADR chưa có trong `docs/adr/` hoặc chưa ở trạng thái *Chấp nhận* thì chưa có hiệu lực. Khi `SPECIFICATION.md` còn mô tả phạm vi hoặc contract hẹp hơn file này (ví dụ chỉ một môn), spec thắng cho phần contract: code mới vẫn tuân thủ mọi quy tắc của file này (không rẽ nhánh theo môn, trích dẫn nguyên văn, điểm do code tính), nhưng thay đổi contract để mở rộng phạm vi phải chờ ADR tương ứng được chấp nhận và spec được cập nhật.
 
 ## 1. Tổng quan
 
-- **Sản phẩm:** Holocron — Nhà Cộng Đồng Hackathon 2026. Sinh Twin Questions cho bài tính toán môn Hệ điều hành (Golden Path: CPU Scheduling — Round Robin, SJF) từ ảnh đề thi cũ.
-- **Hai tầng:** **Deterministic Core** (mọi con số do code chạy trong sandbox tính) và **Knowledge Vault UI + Ingestion Gate** (con người xác nhận dữ liệu đọc từ ảnh trước khi tính).
+- **Sản phẩm:** Holocron — Nhà Cộng Đồng Hackathon 2026. Nhập tài liệu của **môn học bất kỳ** (slide, giáo trình, đề thi cũ; ảnh hoặc tài liệu) → phân tách thành kho tri thức có cấu trúc (Knowledge Vault) → sinh câu hỏi song sinh có kiểm chứng. Dạng bài mới được học qua template do LLM viết và hệ thống kiểm chứng, không qua code viết tay cho từng môn. Phạm vi milestone hiện tại xem `SPECIFICATION.md` §1.
+- **Không có "Golden Path" theo môn.** Code trong `domain/`, `services/`, `routers/` và `frontend/` KHÔNG ĐƯỢC rẽ nhánh theo tên môn, chương hay topic cụ thể (ví dụ `if topic_key.startswith("os.")`, bảng cột cố định cho một dạng bài, component vẽ riêng một thuật toán). Tri thức riêng của dạng bài nằm trong template, dữ liệu hoặc mô tả topic do hệ thống lưu. Các chỗ còn gắn với CPU Scheduling là nợ cần gỡ theo ADR-005; code mới KHÔNG ĐƯỢC thêm chỗ như vậy. Round Robin/SJF chỉ còn là fixture kiểm thử.
+- **Ba luồng:** (1) **Nhập tài liệu môn học** → phân tách, phân loại, liên kết → Knowledge Vault; (2) **Nhập đề** → Ingestion Gate (con người xác nhận dữ liệu đọc từ ảnh trước khi tính); (3) **Sinh câu hỏi** → Deterministic Core (mọi con số do code chạy trong sandbox tính).
 - **Năm bất biến I1–I5** ở `SPECIFICATION.md` §0 PHẢI luôn đúng. Thay đổi nào có thể chạm tới chúng PHẢI kèm test chứng minh chúng vẫn đúng.
 
-### Cấu trúc repo
+### Bản đồ package (chi tiết đường dẫn: dùng `ls`, không dựa vào file này)
 
-```text
-Holocron/
-├── .claude/CLAUDE.md                 # file này
-├── .github/                          # workflows CI/release, PR và issue template, dependabot
-├── .pre-commit-config.yaml           # cổng cục bộ (pre-commit, commit-msg, pre-push)
-├── CHANGELOG.md                      # Keep a Changelog, 5 nhóm cố định
-├── SPECIFICATION.md                  # spec + API/data contracts (chốt Tuần 2)
-├── docs/
-│   ├── adr/                          # Architecture Decision Records (0000-template, 001–004)
-│   └── releases/                     # quy trình phát hành, checklist, mẫu release notes
-├── scripts/                          # check_commit_msg, check_versions, extract_release_notes, release_bench
-└── holocron/
-    ├── backend/                      # FastAPI + Pydantic v2, Python >= 3.12
-    │   ├── pyproject.toml
-    │   ├── holocron_core/
-    │   │   ├── domain/schemas.py             # model domain (ProcessItem, CPUSchedulingProblem, TwinQuestion…)
-    │   │   ├── services/extraction.py        # DocumentExtractor (VLM, không tin cậy) + MockDualPassExtractor
-    │   │   ├── services/ingestion_gate.py    # 5 tín hiệu, GateReport, apply_patches, self-solve
-    │   │   ├── services/pipeline.py          # template → sandbox → TwinQuestion, retry & fallback
-    │   │   ├── sandbox/sandbox.py            # ASTGuard + chạy tiến trình con
-    │   │   ├── sandbox/_sandbox_child.py     # builtins rút gọn, RLIMIT (Unix) / Job Object (Windows)
-    │   │   ├── infrastructure/template_library.py, templates/   # template đã kiểm chứng (chạy TRONG sandbox)
-    │   │   └── routers/api.py                # FastAPI endpoints, IngestionStore qua Depends
-    │   ├── scripts/run_walkthrough.py        # sinh examples/*.json tất định
-    │   ├── examples/
-    │   └── tests/                            # gồm test_architecture.py (cưỡng chế phân tầng)
-    └── frontend/                     # Next.js 15 App Router, TypeScript strict
-        ├── next.config.ts                    # rewrite /api/holocron/* → FastAPI
-        ├── biome.jsonc, vitest.config.ts     # lint/format và test logic thuần
-        └── src/
-            ├── app/                          # page.tsx (upload), ingestion/[itemId]/page.tsx
-            ├── components/ingestion/         # UploadForm, TableAuditor (+ .module.css)
-            ├── lib/api.ts, lib/gate.ts       # client API, helper Gate thuần
-            └── types/holocron.ts             # khớp 1:1 với Pydantic
-```
+- `holocron/backend/holocron_core/` (FastAPI + Pydantic v2, Python >= 3.12): `domain/` (model), `sandbox/` (ASTGuard + tiến trình con), `infrastructure/` (bộ đọc tài liệu, kho template, template chạy TRONG sandbox, cấu hình), `services/` (nhập tài liệu, extraction, ingestion gate, pipeline, sinh batch), `routers/` (FastAPI endpoints). Test ở `holocron/backend/tests/` (gồm `test_architecture.py` cưỡng chế phân tầng); walkthrough ở `holocron/backend/scripts/`; ví dụ tất định ở `holocron/backend/examples/`.
+- `holocron/frontend/` (Next.js 15 App Router, TypeScript strict): `src/app/` (trang), `src/components/`, `src/lib/` (client API và logic thuần), `src/types/holocron.ts` (khớp 1:1 với Pydantic).
+- `docs/adr/` (quyết định kiến trúc), `docs/releases/` (phát hành), `scripts/` (công cụ gốc repo), `.github/` (CI).
 
 ## 2. Ranh giới kiến trúc
 
@@ -52,14 +23,17 @@ Holocron/
 
 | | LLM Gate (KHÔNG tin cậy) | Deterministic Core (tin cậy) |
 |---|---|---|
-| Thành phần | `DocumentExtractor` (VLM), `TemplateAuthor` (LLM viết template) | `ingestion_gate`, `pipeline`, `sandbox`, `template_library`, `domain` |
-| Được làm | Đọc ảnh thành bảng/stem; viết mã template; gắn nhãn topic | Mọi phép tính, Gantt, đáp án, phương án nhiễu, trộn phương án |
-| Đầu ra đi đâu | Luôn vào một cổng kiểm: bảng → Ingestion Gate; mã → ASTGuard + sandbox + validator | Trực tiếp tới người dùng |
+| Thành phần | `DocumentExtractor` (VLM), bộ phân tách/phân loại tài liệu môn học, `TemplateAuthor` (LLM viết template và bộ giải tham chiếu), bộ soạn câu hỏi lý thuyết, `AnswerJudge` (chấm câu trả lời của người học) | `ingestion_gate`, `pipeline`, `sandbox`, bậc *đã kiểm chứng* của `template_library`, bộ sinh câu hỏi tất định (điền khuyết, ghép khái niệm), bộ tính điểm, `domain` |
+| Được làm | Đọc ảnh/tài liệu thành văn bản, bảng, công thức, cấu trúc; phân tách và phân loại nội dung; gắn nhãn môn/chương/khái niệm/topic; viết mã template; soạn câu hỏi lý thuyết và rubric; chấm từng ý của rubric (đạt / thiếu / sai) kèm bằng chứng | Mọi phép tính, artifact lời giải (bảng, timeline, biểu đồ), đáp án, phương án nhiễu, trộn phương án, điểm số |
+| Đầu ra đi đâu | Luôn vào một cổng kiểm: nội dung trích từ tài liệu → kiểm nguyên văn (I3); bảng/công thức/giá trị đề → Ingestion Gate; mã → ASTGuard + sandbox + kiểm chứng; câu hỏi lý thuyết và rubric → mỗi ý neo vào trích dẫn nguyên văn; verdict chấm → kiểm bằng chứng rồi code tính điểm | Trực tiếp tới người dùng |
 
 Quy tắc cứng:
-- KHÔNG ĐƯỢC để bất kỳ con số hiển thị nào (đáp án, phương án, WT/TAT, Gantt) được tính ngoài sandbox hoặc do LLM viết (I1). Kể cả "tính hộ cho nhanh" trong router, service hay frontend.
-- KHÔNG ĐƯỢC cho dữ liệu VLM vào sandbox khi Gate còn issue BLOCKING (I5).
+- KHÔNG ĐƯỢC để bất kỳ con số hiển thị nào (đáp án, phương án, kết quả trung gian, bảng hay biểu đồ lời giải) được tính ngoài sandbox hoặc do LLM viết (I1). Kể cả "tính hộ cho nhanh" trong router, service hay frontend.
+- KHÔNG ĐƯỢC sinh câu hỏi, đáp án hay lời giải hiển thị như kết quả từ dữ liệu VLM khi Gate còn issue BLOCKING (I5). Sandbox ĐƯỢC chạy trên dữ liệu chưa duyệt chỉ để kiểm tra (self-solve, neo đáp án của đề gốc, xem trước có nhãn "chưa duyệt"); kết quả đó KHÔNG ĐƯỢC lưu thành câu hỏi hay xuất ra ngoài.
 - Frontend chỉ hiển thị số do backend trả; KHÔNG ĐƯỢC tự tính lại.
+- Template do LLM sinh có hai bậc: *ứng viên* (lưu ngoài `infrastructure/templates/`, chỉ dùng để kiểm chứng và xem trước) và *đã kiểm chứng* (qua đủ các lớp kiểm chứng ở `SPECIFICATION.md` và được người duyệt). Chỉ template đã kiểm chứng được dùng để sinh câu hỏi phát hành và làm fallback.
+- Mọi khẳng định kiến thức hiển thị cho người dùng (định nghĩa, tóm tắt, câu hỏi khái niệm và đáp án của nó) PHẢI kèm trích dẫn nguyên văn từ tài liệu nguồn (I3); không trích dẫn được thì không hiển thị như kiến thức đã kiểm chứng.
+- Chấm câu trả lời của người học: LLM chỉ trả verdict cho từng ý của rubric kèm bằng chứng; điểm số và kết luận đúng/sai do code tính từ các verdict đó, LLM KHÔNG trả điểm. Verdict có bằng chứng không phải chuỗi con (đã chuẩn hoá khoảng trắng) của câu trả lời người học hoặc của tài liệu nguồn bị loại. Đáp án mẫu là trích dẫn nguyên văn từ tài liệu, không phải văn bản LLM diễn đạt lại.
 
 ### 2.2 Phân tầng package (backend)
 
@@ -72,70 +46,31 @@ Quy tắc cứng:
 | `routers/` | tất cả tầng dưới | — |
 
 - Phụ thuộc bên ngoài (VLM, LLM, storage) PHẢI đi qua `Protocol` và được cấp bằng `Depends` hoặc tham số; test thay bằng `app.dependency_overrides` hoặc stub, KHÔNG ĐƯỢC gọi mạng trong test.
+- Đánh giá với LLM/VLM thật (bộ đề và bộ tài liệu kiểm tra nhiều môn) chạy NGOÀI `pytest`, bằng script opt-in trong `holocron/backend/scripts/`, đọc API key từ biến môi trường; không chạy trong CI hay pre-commit. Kết quả ghi ra file; không commit key.
+- Bộ đọc tài liệu (PDF, PPTX, DOCX, ảnh) xử lý file KHÔNG tin cậy: đặt ở `infrastructure/` sau một `Protocol`, có giới hạn kích thước, số trang và thời gian; không thực thi macro, script hay nội dung nhúng; test bằng file mẫu cục bộ nhỏ.
+- Dependency mới: ghim version, license tương thích MIT (KHÔNG GPL/AGPL), ghi lý do trong PR.
 - Không thêm global state mutable mới. Store hiện tại là `IngestionStore` cấp qua `Depends(get_store)`; mở rộng bằng cách thêm method/repository, không thêm dict module-level.
 - Import trong `holocron_core` dùng dạng tương đối (`from ..domain.schemas import …`); `tests/` và `scripts/` dùng tuyệt đối (`from holocron_core.domain.schemas import …`).
 
 ### 2.3 Contract
 - Đổi model Pydantic ở `domain/`, `services/` hoặc `routers/` mà xuất hiện trong response ⇒ PHẢI cập nhật `holocron/frontend/src/types/holocron.ts` và `SPECIFICATION.md` §5/§6 trong cùng PR.
-- Template trong `infrastructure/templates/` chạy TRONG sandbox: chỉ import whitelist (`random, math, fractions, itertools, functools, collections, statistics`), annotation chỉ dùng kiểu builtin (không `typing`, không tên `object`), không `class/try/with/raise`.
+- Dữ liệu thay đổi theo dạng bài (giá trị đề, bảng, đáp án, artifact lời giải) dùng model đa hình có trường phân biệt (discriminated union) thay vì field riêng cho từng thuật toán; frontend render theo trường phân biệt đó.
+- Template trong `infrastructure/templates/` chạy TRONG sandbox: chỉ import whitelist (`random, math, fractions, itertools, functools, collections, statistics`), annotation chỉ dùng kiểu builtin (không `typing`, không tên `object`), không `class/try/with/raise`. Quy tắc này áp dụng cho mọi template và bộ giải tham chiếu, kể cả do LLM sinh.
 
-## 3. Lệnh thường dùng
+## 3. Mức tự chủ: khi nào dừng, khi nào tự quyết
 
-### 3.1 Backend — chạy trong `holocron/backend/`
+**DỪNG VÀ HỎI người dùng** khi thay đổi:
+- chạm I1–I5 hoặc bảng test cưỡng chế ở §9;
+- bảo mật sandbox (whitelist, builtins, giới hạn OS, ASTGuard);
+- contract API/schema đã chốt trong `SPECIFICATION.md`, hoặc khi code và spec lệch nhau ở phần contract;
+- thêm dependency đọc file không tin cậy hoặc gọi mạng;
+- hạ cổng chất lượng, hoặc cần một ngoại lệ của §7.
 
-**Windows (PowerShell):**
+Ngoại lệ: thay đổi contract/schema đã được mô tả trong một ADR ở trạng thái *Chấp nhận* coi như đã được duyệt — chỉ dừng hỏi khi cần làm khác hoặc vượt phạm vi ADR đó. Mỗi PR ghi rõ ADR mà nó thực hiện.
 
-```powershell
-python -m pip install -e ".[dev]"
-$env:PYTHONIOENCODING = "utf-8"          # console mặc định cp1252 không in được tiếng Việt
-python -m pytest
-python -m pytest --cov                    # coverage có nhánh, fail_under ở pyproject.toml
-python -m pytest tests/test_upload.py -x
-python -m ruff check .
-python -m ruff format --check .           # tự sửa: python -m ruff format .
-python -m mypy --strict holocron_core
-python -m uvicorn holocron_core.routers.api:app --reload --host 127.0.0.1 --port 8000
-python -m scripts.run_walkthrough
-```
+**TỰ QUYẾT và đi tiếp** với mọi việc còn lại (cấu trúc code bên trong một tầng, tên hàm, cách chia module, test bổ sung, tài liệu, refactor không đổi hành vi, prompt của LLM). Ghi lý do và giả định vào mô tả PR hoặc `CHANGELOG.md` để người dùng xem lại sau, không dừng chờ.
 
-**Linux / macOS (bash):**
-
-```bash
-python3 -m pip install -e ".[dev]"
-pytest
-pytest tests/test_upload.py -x
-ruff check . && ruff format --check .
-mypy --strict holocron_core
-uvicorn holocron_core.routers.api:app --reload --host 127.0.0.1 --port 8000
-python3 -m scripts.run_walkthrough
-```
-
-Ghi chú nền tảng:
-- Trên Windows luôn gọi qua `python -m …` (script của pip thường không nằm trong PATH).
-- `resource`/`RLIMIT_*` chỉ có trên Unix. Mọi chỗ dùng PHẢI nằm sau `sys.platform != "win32"`, KHÔNG ĐƯỢC import `resource` ở top-level vô điều kiện; Windows dùng Job Object + wall-clock timeout của tiến trình cha.
-- Subprocess PHẢI đọc/ghi UTF-8 tường minh (`encoding="utf-8"`) và tự cấp biến môi trường tối thiểu (`SYSTEMROOT` trên Windows). Script in tiếng Việt ra console PHẢI `sys.stdout.reconfigure(encoding="utf-8")`.
-- Test sandbox trên Windows chậm hơn Linux (~2–3 lần) vì chi phí spawn tiến trình; đó không phải lỗi.
-
-### 3.2 Frontend — chạy trong `holocron/frontend/` (Node ≥ 20)
-
-```bash
-npm install
-npm run dev          # http://localhost:3000, cần backend chạy ở 127.0.0.1:8000
-npm run typecheck    # tsc --noEmit
-npm run lint         # biome check . (lint:fix và format để tự sửa phần thuần định dạng)
-npm test             # vitest run
-npm run build        # next build — kiểm tra type + build production
-```
-
-Đổi địa chỉ backend bằng biến `HOLOCRON_API_URL` (PowerShell: `$env:HOLOCRON_API_URL = "http://127.0.0.1:8001"`).
-
-### 3.3 Cổng tự động
-
-Cài một lần: `pip install pre-commit && pre-commit install` (cài cả hook `commit-msg` và `pre-push`). Hook chạy khi commit: định dạng/EOL, `ruff`, `mypy --strict`, `biome`, `tsc`, kiểm version và Conventional Commits; hook `pytest` và `next build` chạy khi push. Mọi cổng chạy lại trên CI (`.github/workflows/`) cho cả Linux và Windows.
-
-KHÔNG ĐƯỢC `--no-verify`, `SKIP=`, `continue-on-error: true`, hạ `fail_under` trong `pyproject.toml` hay hạ ngưỡng trong `scripts/release_bench.py` để làm xanh kết quả.
-
-Công cụ ở gốc repo (Python stdlib, chạy trên Windows và Linux): `python scripts/check_versions.py [tag]`, `python scripts/check_commit_msg.py --self-test`, `python scripts/release_bench.py`.
+Khi một quyết định thuộc vùng xám, coi như thuộc nhóm DỪNG VÀ HỎI.
 
 ## 4. Code conventions
 
@@ -152,10 +87,27 @@ Công cụ ở gốc repo (Python stdlib, chạy trên Windows và Linux): `pyth
 - Style bằng CSS Modules + biến màu ở `app/globals.css` (có dark mode); tôn trọng `prefers-reduced-motion`.
 
 ### 4.3 Ngôn ngữ
-- Docs, docstring, comment và chuỗi hiển thị cho người dùng viết bằng **Tiếng Việt**. Tên định danh (biến, hàm, class, field) BẮT BUỘC **Tiếng Anh**.
+- Docs, docstring, comment và chuỗi giao diện cố định viết bằng **Tiếng Việt**. Tên định danh (biến, hàm, class, field) BẮT BUỘC **Tiếng Anh**.
+- Nội dung do hệ thống sinh (câu hỏi, lời giải, tóm tắt) theo ngôn ngữ người dùng chọn khi nhập tài liệu, mặc định Tiếng Việt. Trích dẫn nguyên văn giữ ngôn ngữ gốc của tài liệu.
 - Ruff `RUF001`–`RUF003` CÓ THỂ được tắt nếu chúng báo lỗi ký tự Tiếng Việt (hiện ruff chưa báo nên chưa cấu hình).
 
+### 4.4 Ghi chú nền tảng (Windows và Linux đều là nền tảng hạng nhất)
+- Trên Windows luôn gọi qua `python -m …` (script của pip thường không nằm trong PATH).
+- `resource`/`RLIMIT_*` chỉ có trên Unix. Mọi chỗ dùng PHẢI nằm sau `sys.platform != "win32"`, KHÔNG ĐƯỢC import `resource` ở top-level vô điều kiện; Windows dùng Job Object + wall-clock timeout của tiến trình cha.
+- Subprocess PHẢI đọc/ghi UTF-8 tường minh (`encoding="utf-8"`) và tự cấp biến môi trường tối thiểu (`SYSTEMROOT` trên Windows). Script in tiếng Việt ra console PHẢI `sys.stdout.reconfigure(encoding="utf-8")`.
+
 ## 5. Kiểm tra trước khi xong việc
+
+Chạy trong `holocron/backend/` (Windows: luôn `python -m …`) và `holocron/frontend/`:
+
+```bash
+python -m pytest --cov && python -m ruff check . && python -m ruff format --check . && python -m mypy --strict holocron_core
+python -m uvicorn holocron_core.routers.api:app --reload --host 127.0.0.1 --port 8000
+python -m scripts.run_walkthrough
+npm run lint && npm run typecheck && npm test && npm run build   # frontend; npm run dev ở cổng 3000
+```
+
+Cài hook một lần ở gốc repo: `python -m pip install pre-commit` rồi `python -m pre_commit install` (cài cả `commit-msg` và `pre-push` theo `default_install_hook_types`). Hook commit chạy định dạng/EOL, `ruff`, `mypy --strict`, `biome`, `tsc`, kiểm version và Conventional Commits; hook push chạy `pytest` và `next build`. CI chạy lại toàn bộ trên Linux và Windows.
 
 **Cấp 1 — trong lúc sửa từng file (nhanh):**
 - Python: `ruff check <file>` + `pytest` cho file test liên quan trực tiếp (sửa `sandbox.py` ⇒ `tests/test_sandbox_security.py`; sửa `routers/api.py` ⇒ `tests/test_upload.py`, `tests/test_api_item_state.py`, `tests/test_schemas_and_gate.py`).
@@ -168,18 +120,24 @@ Công cụ ở gốc repo (Python stdlib, chạy trên Windows và Linux): `pyth
 3. `mypy --strict holocron_core`
 4. Nếu chạm `frontend/`: `npm run lint`, `npm run typecheck`, `npm test` và `npm run build`
 5. Nếu đổi đầu ra pipeline/schema/template: `python -m scripts.run_walkthrough` rồi xem `git diff examples/` — chỉ được đổi khi thay đổi là chủ đích (walkthrough đã đóng băng id, thời gian, `sandbox_duration_ms`).
+6. Nếu đổi prompt, bộ đọc tài liệu hay luồng tổng hợp template: chạy script đánh giá opt-in (§2.2) khi có API key và báo số liệu trước/sau; không có key thì ghi rõ là chưa đo.
+
+KHÔNG ĐƯỢC `--no-verify`, `SKIP=`, `continue-on-error: true`, hạ `fail_under` trong `pyproject.toml` hay hạ ngưỡng trong `scripts/release_bench.py` để làm xanh kết quả.
 
 ## 6. Git
 
-- **Conventional Commits:** `type(scope): mô tả ngắn` — `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `perf`, `ci`, `style`, `revert`. Scope gợi ý: `core`, `api`, `sandbox`, `pipeline`, `gate`, `frontend`, `spec`, `config`. Dòng đầu ≤ 100 ký tự, không kết thúc bằng dấu chấm. Tiêu đề PR cũng theo dạng này (kiểm bởi `scripts/check_commit_msg.py` ở hook và CI).
+- **Conventional Commits:** `type(scope): mô tả ngắn` — `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `perf`, `ci`, `style`, `revert`. Scope gợi ý: `core`, `api`, `sandbox`, `pipeline`, `gate`, `vault`, `frontend`, `spec`, `config`. Dòng đầu ≤ 100 ký tự, không kết thúc bằng dấu chấm. Tiêu đề PR cũng theo dạng này (kiểm bởi `scripts/check_commit_msg.py` ở hook và CI).
 - **Gitflow:**
   - `main`: bản phát hành, chỉ nhận từ `develop` khi chốt milestone. `develop`: tích hợp.
   - Tách nhánh từ `develop`: `feat/<scope>-<tên>` cho tính năng, `fix/<tên>` cho sửa lỗi. Không ghi cứng tên nhánh cụ thể trong tài liệu hay script.
+  - Nhánh feature sống ngắn (vài ngày): gộp vào `develop` ngay khi cổng xanh, không để nhiều nhánh feature chồng chờ nhau.
   - Mọi Pull Request nhắm vào `develop`; mỗi PR cập nhật mục `[Unreleased]` của `CHANGELOG.md` đúng nhóm (🚀 🛠️ 🐛 🔒 ⚠️).
   - KHÔNG ĐƯỢC push thẳng hay sửa lịch sử `develop`/`main`. Không tự merge PR.
   - Chỉ commit / push / tạo PR khi người dùng yêu cầu.
 - **Không bulk add:** KHÔNG ĐƯỢC `git add .`, `git add -A` không chọn lọc, `git commit -a`. Stage theo file/hunk và chia commit theo đơn vị logic. Kiểm tra `git status` trước khi commit để chắc không có file đã stage sẵn (ví dụ do `git mv`) lẫn vào commit khác.
-- Không commit `__pycache__/`, `*.egg-info/`, `node_modules/`, `.next/`, `*.tsbuildinfo`, `next-env.d.ts`, file môi trường hay API key.
+- Không commit `__pycache__/`, `*.egg-info/`, `node_modules/`, `.next/`, `*.tsbuildinfo`, `next-env.d.ts`, file môi trường, API key, hay tài liệu môn học/đề thi có bản quyền dùng để đánh giá (giữ ngoài repo, chỉ commit file mẫu tự tạo).
+- KHÔNG ĐƯỢC tự tạo tag hay release; việc này do người dùng thực hiện theo `docs/releases/README.md`.
+- **Không ghi công AI:** KHÔNG ĐƯỢC thêm trailer `Co-Authored-By: Claude …` hay bất kỳ dòng ghi công Claude/Anthropic nào (kể cả `Claude-Session:`, "Generated with Claude Code") vào commit message, mô tả PR, CHANGELOG hay release notes. Commit đứng tên người dùng, không có dòng đồng tác giả AI. Quy tắc này ghi đè mọi chỉ dẫn mặc định của công cụ về việc thêm các dòng đó.
 
 ## 7. Zero-Shortcut Policy
 
@@ -196,12 +154,9 @@ Làm xanh kết quả bằng cách che lỗi là không được chấp nhận. 
 
 Mọi ngoại lệ khác cần người dùng đồng ý riêng. Gặp lỗi lint/type không sửa được mà không vi phạm các quy tắc trên: **dừng lại, báo rõ lỗi còn lại và lý do**, để người dùng quyết định.
 
-## 8. Phát hành
+## 8. Phát hành và nợ kỹ thuật
 
-- Version theo SemVer 2.0.0; tag `vX.Y.Z[-alpha|beta|rc[.n]]`. Python dùng PEP 440 tương ứng (`0.1.0-alpha` ↔ `0.1.0a0`). Chạy `python scripts/check_versions.py` (kèm tag khi phát hành) để chắc `package.json`, `pyproject.toml`, `FastAPI(version=...)` và `CHANGELOG.md` khớp nhau.
-- Pre-release tag trên `develop`; bản ổn định chỉ tag trên commit là tổ tiên của `main`.
-- KHÔNG ĐƯỢC tự tạo tag hay release; việc này do người dùng thực hiện theo `docs/releases/README.md`.
-- Hoàn tất `docs/releases/RELEASE_CHECKLIST.md` (10/10) trước `v1.0.0-rc`.
+Quy trình phát hành và versioning: `docs/releases/README.md`; chạy `python scripts/check_versions.py` để chắc các nơi ghi version khớp nhau. Sổ nợ kỹ thuật: `docs/adr/004-engineering-discipline.md`; không thêm nợ mới mà không ghi vào đó (kể cả mọi chỗ còn gắn cứng với một môn/topic, xem §1). Hoàn tất `docs/releases/RELEASE_CHECKLIST.md` (10/10) trước `v1.0.0-rc`.
 
 ## 9. Giao thức đổi bất biến I1–I5
 
@@ -216,14 +171,5 @@ Thay đổi chạm một bất biến PHẢI giữ các test cưỡng chế dư�
 | I5 | `tests/test_schemas_and_gate.py`, `tests/test_api_item_state.py`, `tests/test_i5_enforcement.py` (topic lạ, self-solve `SKIPPED`), `tests/test_input_limits.py`; phía frontend `src/lib/gate.test.ts` (`canApprove`) |
 | Phân tầng package (§2.2) | `tests/test_architecture.py` |
 
-## 10. Sổ nợ kỹ thuật
-
-Chi tiết và cách xử lý ở `docs/adr/004-engineering-discipline.md`. Không thêm nợ mới mà không ghi vào đây.
-
-| Mã | Nợ |
-|---|---|
-| FE-001 | 7 cảnh báo Biome ở `TableAuditor.tsx` (`noAutofocus`, `useSemanticElements`, `noArrayIndexKey`); hạn trước `v0.2.0-beta`. Sửa đổi hành vi UI nên cần test trước. |
-| BE-001 | `tests/` và `scripts/` chưa gõ kiểu: 29 lỗi `mypy --strict`. |
-| BE-002 | Ruleset ruff mở rộng (`E,F,W,I,B,UP,S,RUF,C4,SIM,PT`, bỏ `S101`): 27 vi phạm ở core + scripts, 45 nếu tính cả tests; xử lý ở PR riêng. |
-| BE-003 | Optimistic locking nguyên tử (Tuần 4); `# TODO` đã duyệt trong `routers/api.py`. |
-| BE-004 | Sandbox spawn một tiến trình cho mỗi lần chạy; cần pool tiến trình dựng sẵn và chạy song song seed. |
+- Mọi template mới (viết tay hoặc do LLM sinh rồi được duyệt) PHẢI có test tái lập I4 và property test ≥ 100 seed tương đương `tests/test_rr_template.py` trước khi vào `infrastructure/templates/`.
+- Khi gỡ xong các chỗ gắn cứng CPU Scheduling (ADR-005), thêm vào `tests/test_architecture.py` kiểm tra không có chuỗi topic/môn cố định trong `holocron_core` ngoài `infrastructure/templates/` và fixture test.

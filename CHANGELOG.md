@@ -26,6 +26,7 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 - I3 so khớp sau chuẩn hoá Unicode NFC và gộp khoảng trắng (người dùng đồng ý 2026-10-24): spec §0, ADR-006 mục 9, ADR-007; CLAUDE.md §2.1 (bằng chứng verdict) và §9 thêm `test_chunk_accepts_quote_in_nfd_against_nfc_text` vào dòng I3. Test thêm cùng nhánh triển khai.
 - ADR-008: bảy điểm đề xuất ở mục 8–14 được duyệt 2026-10-24 (dấu vân tay R6, `coverage_ratio`, mẫu số `ink_outside_text_ratio`, PP-OCRv6 small, Tesseract qua stdin/stdout TSV, `HOLOCRON_PDF_OCR_PRIMARY` chỉ nhận `tesseract`, `TEXT_LAYER_MIN=0.85`, tên 6 test, `max_rows` của `input_schema` thay `MAX_PROCESSES`); 6 test PDF gắn vào dòng I5 ở CLAUDE.md §9.
 - Thêm `.env.example` ở gốc repo (chỉ placeholder) cho mọi biến `HOLOCRON_*`; spec §11.2 bổ sung biến của ADR-008, `HOLOCRON_DATA_DIR` (đề xuất) và `HOLOCRON_API_URL`.
+- `RELEASE_CHECKLIST.md`: mục 8 theo định nghĩa `demo_mode` mới; mục 9 đổi "Golden Path RR/SJF" thành luồng G1 cho ba môn demo; ghi chú trạng thái bỏ ý "chưa có template SJF".
 - Tài liệu: báo cáo review tiến độ tuần 19–23/10 (`docs/progress-review-2026-10-23.md`) với danh sách thiếu sót F1–F18 và kết quả cổng kiểm tra chạy lại trên `903b954`.
 
 ### 🐛 Sửa lỗi

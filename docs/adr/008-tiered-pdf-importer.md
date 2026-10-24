@@ -1,7 +1,7 @@
 # ADR 008: Bộ nhập PDF theo tầng
 
-- Trạng thái: Chấp nhận (2026-10-23). Engine OCR của tầng 2 đã chốt ngày 2026-10-24, sau phép đo ở mục 5 của phần Quyết định (đo trên scan giả lập): Tesseract `vie` là engine chính, RapidOCR chỉ đối chiếu token số và mã (mục 8). Các mục 8–14 bổ sung ngày 2026-10-24 và có hiệu lực khi PR thêm chúng được người dùng duyệt. Những điểm ghi "đề xuất" trong các mục này chờ người dùng xác nhận riêng.
-- Ngày: 2026-10-23; cập nhật 2026-10-24 (kết quả đo, engine OCR, chuyển tầng, đối chiếu chéo)
+- Trạng thái: Chấp nhận (2026-10-23). Engine OCR của tầng 2 đã chốt ngày 2026-10-24, sau phép đo ở mục 5 của phần Quyết định (đo trên scan giả lập): Tesseract `vie` là engine chính, RapidOCR chỉ đối chiếu token số và mã (mục 8). Các mục 8–14 bổ sung ngày 2026-10-24. Bảy điểm từng ghi "đề xuất" trong các mục này được người dùng duyệt ngày 2026-10-24, ghi lại tại chỗ là "đã duyệt 2026-10-24". Contract chi tiết (mục 11, 13) nằm ở spec §5.7, §6.5 và §7.4.
+- Ngày: 2026-10-23; cập nhật 2026-10-24 (kết quả đo, engine OCR, chuyển tầng, đối chiếu chéo; duyệt các điểm đề xuất; contract ở spec)
 
 ## Bối cảnh
 
@@ -112,20 +112,20 @@ Kết luận: không dùng cho MVP. Sau MVP có thể thêm Docling như một w
 7. **Xem lại trước khi lưu:** mọi kết quả, kể cả trang `text_score` cao, đều qua màn hình xem lại. Trang "cần xem kỹ" và dòng điểm thấp được làm nổi bật. Chỉ văn bản người dùng đã xác nhận mới vào Vault hoặc Ingestion Gate.
 8. **Engine OCR (người dùng chọn ngày 2026-10-24):**
    - **Engine chính của tầng 2 là Tesseract `vie` (tessdata_best).** App gọi binary `tesseract` do người dùng tự cài, qua subprocess. Không thêm gói Python nào: không dùng `tesserocr` (rủi ro giấy phép của wheel, mục "Kết quả đo"), không dùng `pytesseract`.
-   - **Cách gọi:** đầu vào là ảnh PNG do pypdfium2 render, không phải file PDF, nên Tesseract không đọc file không tin cậy gốc. Subprocess dùng UTF-8 tường minh, môi trường tối thiểu (`SYSTEMROOT` trên Windows) và timeout (CLAUDE.md §4.4). Tesseract chạy như tiến trình con của worker ở mục 3, nên chịu giới hạn OS của worker (RLIMIT kế thừa trên Unix; Job Object bao cả tiến trình con trên Windows). Đề xuất: truyền ảnh qua stdin và đọc kết quả TSV qua stdout (`tesseract stdin stdout -l vie tsv`), để giữ được `RLIMIT_FSIZE` 0.
+   - **Cách gọi:** đầu vào là ảnh PNG do pypdfium2 render, không phải file PDF, nên Tesseract không đọc file không tin cậy gốc. Subprocess dùng UTF-8 tường minh, môi trường tối thiểu (`SYSTEMROOT` trên Windows) và timeout (CLAUDE.md §4.4). Tesseract chạy như tiến trình con của worker ở mục 3, nên chịu giới hạn OS của worker (RLIMIT kế thừa trên Unix; Job Object bao cả tiến trình con trên Windows). Đã duyệt 2026-10-24: truyền ảnh qua stdin và đọc kết quả TSV qua stdout (`tesseract stdin stdout -l vie tsv`), để giữ được `RLIMIT_FSIZE` 0.
    - **Thiếu engine:** worker kiểm có binary và có `vie.traineddata` khi khởi động (`tesseract --version`, `--list-langs` với `--tessdata-dir`, có timeout). Thiếu một trong hai thì trang scan được gửi VLM nếu có key; nếu không có key thì trang bị đánh dấu `failed`, kèm hướng dẫn cài Tesseract và `vie.traineddata`. Trang có lớp chữ tốt vẫn đọc bình thường ở tầng 1.
-   - **RapidOCR chỉ làm lượt đọc thứ hai**, đối chiếu token số và mã (mục 11). Các dependency đã duyệt giữ nguyên version ghim. Không dùng văn bản của RapidOCR cho nội dung. Đề xuất: lượt thứ hai dùng model PP-OCRv6 small đóng sẵn trong wheel `rapidocr` 3.10.0, vì có tỉ lệ chữ số đúng cao nhất (98.6%) và không cần tải thêm model `latin`.
+   - **RapidOCR chỉ làm lượt đọc thứ hai**, đối chiếu token số và mã (mục 11). Các dependency đã duyệt giữ nguyên version ghim. Không dùng văn bản của RapidOCR cho nội dung. Đã duyệt 2026-10-24: lượt thứ hai dùng model PP-OCRv6 small đóng sẵn trong wheel `rapidocr` 3.10.0, vì có tỉ lệ chữ số đúng cao nhất (98.6%) và không cần tải thêm model `latin`.
    - **Sau MVP:** đóng gói Tesseract cùng app. Khi làm việc đó phải kiểm giấy phép của bản build Tesseract được đóng gói (thư viện ảnh và thư viện kèm theo).
    - PKG-001 (FFmpeg LGPL trong `opencv-python-headless`) vẫn còn, vì RapidOCR vẫn được dùng.
 9. **Chuyển tầng theo cờ trang:**
    - Trang có `has_table` lên tầng 3: pdfplumber trên PDF số, lưới toạ độ chữ OCR trên trang scan.
    - Trang có `has_formula` hoặc `has_figure` lên tầng 3 nếu là PDF số. Trên trang scan, các trang này được đánh dấu "cần xem kỹ", và gửi VLM nếu đã có key.
    - Nếu tầng 3 bị cắt khỏi MVP thì các trang lẽ ra lên tầng 3 được đánh dấu "cần xem kỹ".
-   - **`has_figure` trên trang scan:** đo bằng `ink_outside_text_ratio`, tức tỉ lệ mực nằm ngoài các hộp chữ của lượt OCR chính; bật cờ khi `≥ FIGURE_INK_MIN` (0.10). Số đo: trang thường ≤ 0.004, trang có sơ đồ 0.17. Đề xuất mẫu số: tổng số điểm ảnh mực của trang sau khi nhị phân hoá.
+   - **`has_figure` trên trang scan:** đo bằng `ink_outside_text_ratio`, tức tỉ lệ mực nằm ngoài các hộp chữ của lượt OCR chính; bật cờ khi `≥ FIGURE_INK_MIN` (0.10). Số đo: trang thường ≤ 0.004, trang có sơ đồ 0.17. Mẫu số (đã duyệt 2026-10-24): tổng số điểm ảnh mực của trang sau khi nhị phân hoá.
    - **`has_figure` trên PDF số:** diện tích path vector do pypdfium2 báo nhầm khung viền quanh code (16–18% diện tích trang), nên tín hiệu này chỉ dùng cùng tín hiệu khác (ví dụ có đối tượng ảnh trên trang), không dùng một mình.
    - **`has_formula`:** bổ sung dải ký tự toán U+1D400–1D7FF vào mật độ ký hiệu toán (mục 6).
 10. **Độ phủ dòng và chữ viết tay:**
-    - **Độ phủ dòng:** điểm trung bình không đủ để tin một trang (mục "Kết quả đo": Tesseract bỏ sót chữ trong khung viền mà điểm trung bình vẫn 0.88–0.94). Đề xuất định nghĩa `coverage_ratio = min(n_chính, n_phụ) / max(n_chính, n_phụ)`, với `n` là số dòng mỗi lượt đọc trả về; `null` khi không có lượt đọc thứ hai. Trang có `coverage_ratio < COVERAGE_MIN` (0.85) thành `needs_review` dù điểm trung bình cao. Khi không có lượt thứ hai, `ink_outside_text_ratio` cao (mục 9) cũng đưa trang vào "cần xem kỹ".
+    - **Độ phủ dòng:** điểm trung bình không đủ để tin một trang (mục "Kết quả đo": Tesseract bỏ sót chữ trong khung viền mà điểm trung bình vẫn 0.88–0.94). Định nghĩa (đã duyệt 2026-10-24): `coverage_ratio = min(n_chính, n_phụ) / max(n_chính, n_phụ)`, với `n` là số dòng mỗi lượt đọc trả về; `null` khi không có lượt đọc thứ hai. Trang có `coverage_ratio < COVERAGE_MIN` (0.85) thành `needs_review` dù điểm trung bình cao. Khi không có lượt thứ hai, `ink_outside_text_ratio` cao (mục 9) cũng đưa trang vào "cần xem kỹ".
     - **Chữ viết tay:** MVP không nhận dạng chữ viết tay (spec §1.5, phi mục tiêu), chỉ coi một dòng là "nghi ngờ" khi có một trong hai tín hiệu dưới đây. Dòng nghi ngờ được đánh dấu "cần xem kỹ". Cả hai ngưỡng **chưa thử trên chữ viết tay thật**.
       - Độ tin cậy dòng của Tesseract `< LINE_CONF_MIN` (0.70). Đo trên font giả chữ viết tay: 0.25–0.58.
       - Tỉ lệ số dòng giữa hai lượt đọc `< COVERAGE_MIN` (0.85), nếu có lượt đọc thứ hai.
@@ -137,7 +137,7 @@ Kết luận: không dùng cho MVP. Sau MVP có thể thêm Docling như một w
     - Lượt đọc thứ hai phải **độc lập**, tức khác họ model với lượt chính. Hai model cùng gốc PaddleOCR (ví dụ PP-OCRv6 và `latin_PP-OCRv5`) không tính là độc lập. Tesseract (LSTM riêng) và RapidOCR (gốc PaddleOCR) là hai họ khác nhau.
     - Chỉ so **token số và mã**, lấy bằng regex `0x[0-9A-F]+|#?-?\d+`, so khớp chính xác sau chuẩn hoá NFC. Dòng của hai lượt được ghép theo hộp toạ độ.
     - Token lệch thì dùng lại mã `DUAL_PASS_MISMATCH` của Gate (spec §7.2), kèm `alternatives` là giá trị của hai lượt. Không thêm mã issue mới cho việc này.
-    - Không có lượt đọc thứ hai thì ghi `cross_check = unavailable`, kèm một issue mức WARNING, và ô số không được AUTO_PASS. Mã issue cụ thể chốt cùng contract ở Đợt 2b (spec §5.3).
+    - Không có lượt đọc thứ hai thì ghi `cross_check = unavailable`, kèm một issue mức WARNING, và ô số không được AUTO_PASS. Mã issue là `CROSS_CHECK_UNAVAILABLE`, gắn cho từng ô số chưa được con người xác nhận (contract ở spec §5.3, §7.2 và §7.4, viết ở Đợt 2b ngày 2026-10-24).
     - Ngưỡng CER văn bản giữa hai lượt (`CROSS_LINE_CER_WARN` 0.05 để tô dòng, 0.15 để đánh dấu trang) là **chưa xác minh**.
     - Lưu ý: đường OCR một lượt hiện **không sinh** `DUAL_PASS_MISMATCH`. Tín hiệu S1 của Gate hiện chỉ đến từ dual-pass VLM; nếu không có lượt thứ hai, S1 im lặng, nên mới cần quy tắc "ô số không được AUTO_PASS" ở trên.
     - **Kiểm theo logic môn:** miền giá trị của ô lấy từ `input_schema` của template đã kiểm chứng (ADR-005 bước 1), không rẽ nhánh theo môn (CLAUDE.md §1).
@@ -146,18 +146,18 @@ Kết luận: không dùng cho MVP. Sau MVP có thể thêm Docling như một w
 
       | Biến | Mặc định | Ý nghĩa |
       |---|---|---|
-      | `HOLOCRON_PDF_OCR_PRIMARY` | `tesseract` | Engine chính của tầng 2. Đề xuất: MVP chỉ nhận `tesseract`, vì văn bản RapidOCR không dùng cho nội dung |
+      | `HOLOCRON_PDF_OCR_PRIMARY` | `tesseract` | Engine chính của tầng 2. Đã duyệt 2026-10-24: MVP chỉ nhận `tesseract`, vì văn bản RapidOCR không dùng cho nội dung |
       | `HOLOCRON_PDF_OCR_SECONDARY` | `rapidocr` | Lượt đọc thứ hai. Rỗng nghĩa là không có lượt thứ hai (`cross_check = unavailable`). Không được cùng họ model với lượt chính (mục 11) |
       | `HOLOCRON_TESSERACT_CMD` | `tesseract` (tìm trong PATH) | Đường dẫn binary Tesseract |
       | `HOLOCRON_TESSDATA_DIR` | thư mục mặc định của bản cài Tesseract | Thư mục chứa `vie.traineddata`, truyền qua `--tessdata-dir` |
 
-    - Ngưỡng, là field có giá trị mặc định của model cấu hình bộ nhập ở `infrastructure/`: `TEXT_SCORE_MIN=0.80`, `OCR_SCORE_MIN=0.80` (giữ ngưỡng 0.80 ở mục 6), `LINE_CONF_MIN=0.70`, `COVERAGE_MIN=0.85`, `FIGURE_INK_MIN=0.10`, `CROSS_LINE_CER_WARN=0.05`. Ngưỡng 0.85 chọn lớp chữ ở mục 6 cũng là cấu hình; đề xuất tên `TEXT_LAYER_MIN=0.85`.
-    - Bảng biến môi trường ở spec §11.2 và `.env.example` được cập nhật cùng PR thêm code.
-13. **Kết quả theo trang `PageExtraction`** (mô tả ở mức ADR; contract JSON chi tiết, `types/holocron.ts` và UI theo trang thuộc Đợt 2b):
+    - Ngưỡng, là field có giá trị mặc định của model cấu hình bộ nhập ở `infrastructure/`: `TEXT_SCORE_MIN=0.80`, `OCR_SCORE_MIN=0.80` (giữ ngưỡng 0.80 ở mục 6), `LINE_CONF_MIN=0.70`, `COVERAGE_MIN=0.85`, `FIGURE_INK_MIN=0.10`, `CROSS_LINE_CER_WARN=0.05`. Ngưỡng 0.85 chọn lớp chữ ở mục 6 cũng là cấu hình, tên `TEXT_LAYER_MIN=0.85` (đã duyệt 2026-10-24).
+    - Bảng biến môi trường ở spec §11.2 và `.env.example` (gốc repo) đã được cập nhật ở Đợt 2b (2026-10-24), trước khi có code.
+13. **Kết quả theo trang `PageExtraction`** (mô tả ở mức ADR; contract JSON chi tiết ở spec §5.7, viết ở Đợt 2b ngày 2026-10-24; `types/holocron.ts` cập nhật cùng nhánh triển khai):
 
     | Field | Nguồn |
     |---|---|
-    | `page_index` | Chỉ số trang trong tài liệu do pypdfium2 trả. Đợt 2b chốt cách quy đổi sang `page_number` (bắt đầu từ 1) của `ExtractedTable` và `Citation` |
+    | `page_index` | Chỉ số trang trong tài liệu do pypdfium2 trả. Spec §5 (Đợt 2b) đề xuất, chờ duyệt: contract chỉ dùng `page_number = page_index + 1`, như `ExtractedTable` và `Citation`; `page_index` chỉ dùng bên trong worker |
     | `tier_used` | Tầng đã cho ra văn bản của trang, theo mục 6 và mục 9 |
     | `status` | `ok`, `needs_review` (có ít nhất một lý do trong `review_reasons`) hoặc `failed` (timeout, lỗi trang, thiếu engine OCR mà không có VLM) |
     | `text_score` | Tầng 1, công thức ở mục 6 |
@@ -167,19 +167,19 @@ Kết luận: không dùng cho MVP. Sau MVP có thể thêm Docling như một w
     | `has_figure`, `has_table`, `has_formula` | Cờ trang, mục 6 và mục 9 |
     | `lines[]` | Mỗi dòng gồm `text` (NFC), `bbox`, `conf` ∈ [0, 1] và `engine` (lớp chữ, Tesseract, RapidOCR hoặc VLM). Trên trang OCR, `text` lấy từ lượt chính; RapidOCR chỉ đóng góp token để đối chiếu |
     | `cross_check` | `ok`, `mismatch` hoặc `unavailable` (mục 11), kèm danh sách token lệch (dòng, giá trị lượt chính, giá trị lượt thứ hai) |
-    | `review_reasons[]` | Các lý do đưa trang vào "cần xem kỹ": điểm thấp, độ phủ dòng thấp, có hình hoặc công thức trên trang scan, dòng nghi chữ viết tay, token lệch, thiếu lượt đối chiếu, thiếu engine OCR. Mã cụ thể chốt ở Đợt 2b |
+    | `review_reasons[]` | Các lý do đưa trang vào "cần xem kỹ": điểm thấp, độ phủ dòng thấp, có hình hoặc công thức trên trang scan, dòng nghi chữ viết tay, token lệch, thiếu lượt đối chiếu, thiếu engine OCR. Mã cụ thể ở spec §5.7 (`ReviewReason`) |
 
-14. **Sáu test bắt buộc** (trong `holocron/backend/tests/`; tên file là đề xuất, tên test giữ khi triển khai):
-    1. `test_ocr_charset_covers_vietnamese`: từ điển của engine chính chứa đủ 134 chữ cái tiếng Việt ngoài ASCII (67 thường, 67 hoa: 66 nguyên âm có dấu và `đ`), sau chuẩn hoá NFC. Với Tesseract, file `vie.traineddata` do người dùng cài nên CI không kiểm tất định trên file thật được. Cách kiểm thay thế (đề xuất): một hàm thuần đọc phần unicharset của file `.traineddata` và trả danh sách chữ còn thiếu; test chạy hàm đó trên file mẫu nhỏ tự tạo (một file đủ chữ, một file thiếu chữ). Worker gọi cùng hàm khi khởi động; thiếu chữ thì coi như thiếu engine (mục 8). Script đánh giá opt-in chạy hàm trên `vie.traineddata` thật và ghi kết quả.
+14. **Sáu test bắt buộc** (trong `holocron/backend/tests/`; tên test và tên file đã duyệt 2026-10-24):
+    1. `test_ocr_charset_covers_vietnamese`: từ điển của engine chính chứa đủ 134 chữ cái tiếng Việt ngoài ASCII (67 thường, 67 hoa: 66 nguyên âm có dấu và `đ`), sau chuẩn hoá NFC. Với Tesseract, file `vie.traineddata` do người dùng cài nên CI không kiểm tất định trên file thật được. Cách kiểm thay thế (đã duyệt 2026-10-24): một hàm thuần đọc phần unicharset của file `.traineddata` và trả danh sách chữ còn thiếu; test chạy hàm đó trên file mẫu nhỏ tự tạo (một file đủ chữ, một file thiếu chữ). Worker gọi cùng hàm khi khởi động; thiếu chữ thì coi như thiếu engine (mục 8). Script đánh giá opt-in chạy hàm trên `vie.traineddata` thật và ghi kết quả.
     2. `test_low_line_coverage_marks_page_needs_review`: độ phủ dòng thấp thì trang thành `needs_review`, dù điểm trung bình cao.
     3. `test_numeric_token_mismatch_raises_dual_pass_mismatch`: token số lệch giữa hai lượt đọc thì sinh `DUAL_PASS_MISMATCH` kèm `alternatives`.
     4. `test_cross_check_unavailable_blocks_auto_pass`: `cross_check = unavailable` thì ô số không AUTO_PASS.
     5. `test_page_flags_select_tier`: cờ trang `has_table`, `has_formula`, `has_figure` chọn đúng tầng, cho cả PDF số và trang scan.
     6. `test_bad_pdf_limits`: giới hạn file xấu (magic bytes, số trang, timeout), dùng file mẫu nhỏ tự tạo.
 
-    Đề xuất file: test 1–4 ở `tests/test_pdf_ocr.py`, test 5 ở `tests/test_pdf_tiers.py`, test 6 ở `tests/test_pdf_input_limits.py`.
+    File (đã duyệt 2026-10-24): test 1–4 ở `tests/test_pdf_ocr.py`, test 5 ở `tests/test_pdf_tiers.py`, test 6 ở `tests/test_pdf_input_limits.py`.
 
-    **Đề xuất, chờ người dùng quyết:** gắn sáu test này vào dòng I5 trong bảng test cưỡng chế ở CLAUDE.md §9. Test 2–4 trực tiếp ngăn số chưa được đối chiếu đi tới AUTO_PASS; test 1, 5 và 6 liên quan gián tiếp hơn (chất lượng đọc, chọn tầng, xử lý file không tin cậy). ADR này không sửa CLAUDE.md.
+    **Đã duyệt 2026-10-24:** sáu test này được gắn vào dòng I5 trong bảng test cưỡng chế ở CLAUDE.md §9 (CLAUDE.md đã cập nhật ở Đợt 2b). Test 2–4 trực tiếp ngăn số chưa được đối chiếu đi tới AUTO_PASS; test 1, 5 và 6 liên quan gián tiếp hơn (chất lượng đọc, chọn tầng, xử lý file không tin cậy).
 
 ## Hệ quả
 

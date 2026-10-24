@@ -62,7 +62,7 @@ Bổ sung ngày 2026-10-24 (số dòng theo `777c521`), các chỗ còn thiếu 
 - `holocron/frontend/src/components/ingestion/TableAuditor.tsx:168`: tiêu đề "bảng tiến trình".
 - `holocron/frontend/src/components/ingestion/UploadForm.tsx:14`: topic Round Robin ghi cứng trong `TOPICS`.
 
-Ghi chú: `tests/test_input_limits.py:36-53` khoá hành vi "bảng > 10 tiến trình → `OUT_OF_RANGE` (BLOCKING)". Đây là test I5 (CLAUDE.md §9), nên bước 2 của ADR-005 phải giữ hành vi này mà không sửa test. Đề xuất: khi đó giới hạn số dòng đến từ `input_schema` của template thay cho `MAX_PROCESSES`; ADR-005 chưa ghi số dòng tối đa là một phần của `input_schema`.
+Ghi chú: `tests/test_input_limits.py:36-53` khoá hành vi "bảng > 10 tiến trình → `OUT_OF_RANGE` (BLOCKING)". Đây là test I5 (CLAUDE.md §9), nên bước 2 của ADR-005 phải giữ hành vi này mà không sửa test. Đã duyệt 2026-10-24: khi đó giới hạn số dòng đến từ `input_schema` của template (`max_rows`, spec §5.10) thay cho `MAX_PROCESSES`; template RR khai báo `max_rows = 10` để giữ hành vi trên. ADR-005 mục 2 đã ghi thêm `max_rows`.
 
 ## Phương án đã loại
 

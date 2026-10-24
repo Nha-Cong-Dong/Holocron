@@ -17,7 +17,7 @@ Nguyên liệu là các **cặp khái niệm – định nghĩa** (`ConceptPair`
 
 **Nguồn của cặp, theo đúng thứ tự:**
 1. **DeepSeek đề xuất** cặp từ một chunk đã nằm trong Vault (ADR-006), tức từ văn bản người dùng đã xác nhận ở màn hình xem lại của bộ nhập.
-2. **Code kiểm nguyên văn:** `definition_quote` PHẢI là chuỗi con (đã chuẩn hoá khoảng trắng) của văn bản chunk đó (I3). Không khớp thì cặp bị loại ngay, không sửa hộ và không hiện cho người dùng.
+2. **Code kiểm nguyên văn:** `definition_quote` PHẢI là chuỗi con (đã chuẩn hoá NFC và khoảng trắng, ADR-006 mục 9, duyệt 2026-10-24) của văn bản chunk đó (I3). Không khớp thì cặp bị loại ngay, không sửa hộ và không hiện cho người dùng.
 3. **Người dùng xác nhận** cặp ở màn hình xem lại; có thể sửa `term`, hoặc chọn lại trích dẫn bằng cách bôi đúng đoạn văn trong chunk (đoạn được chọn vẫn qua bước 2).
 
 **Chỉ cặp đã được người dùng xác nhận mới được dùng để sinh câu.** Cặp chưa xác nhận hay bị từ chối không vào nhóm ứng viên và không tính vào `pool_sha256` (mục 2). Nhóm ứng viên của một slot chỉ gồm các cặp cùng `subject_code` với slot. Nếu `term` xuất hiện trong chính trích dẫn của nó, vị trí xuất hiện được ghi lại để che khi sinh câu.
@@ -68,7 +68,7 @@ Test cưỡng chế được ghi vào bảng CLAUDE.md §9 và thêm cùng bộ 
 Thiết kế giữ theo CLAUDE.md §2.1, chưa triển khai:
 
 - Rubric gồm các ý, mỗi ý neo vào một trích dẫn nguyên văn. Đáp án mẫu là trích dẫn, không phải văn bản LLM diễn đạt lại.
-- LLM chỉ trả verdict cho từng ý (`đạt` / `thiếu` / `sai`) kèm bằng chứng. Bằng chứng phải là chuỗi con (đã chuẩn hoá khoảng trắng) của câu trả lời người học hoặc của tài liệu nguồn; verdict không có bằng chứng hợp lệ bị loại và ý đó chuyển sang "cần người xem".
+- LLM chỉ trả verdict cho từng ý (`đạt` / `thiếu` / `sai`) kèm bằng chứng. Bằng chứng phải là chuỗi con (đã chuẩn hoá NFC và khoảng trắng, ADR-006 mục 9) của câu trả lời người học hoặc của tài liệu nguồn; verdict không có bằng chứng hợp lệ bị loại và ý đó chuyển sang "cần người xem".
 - Điểm và kết luận đúng/sai do code tính từ verdict. LLM không trả điểm.
 
 Lý do để sau MVP: chấm tự luận cần một bộ câu trả lời mẫu có nhãn để đo độ đúng (script đánh giá opt-in, CLAUDE.md §2.2), và việc này không làm kịp trong thời hạn hackathon. MVP chỉ có câu có đáp án xác định (MCQ4, câu trả lời số).
@@ -79,7 +79,7 @@ Lý do để sau MVP: chấm tự luận cần một bộ câu trả lời mẫu
 - Câu lý thuyết MVP chỉ kiểm tra **nhận biết khái niệm** (mức `remember`/`understand`), chưa kiểm tra lập luận. Đây là giới hạn có chủ đích.
 - Chất lượng câu hỏi phụ thuộc chất lượng cặp khái niệm, nên màn hình xem lại của Vault phải cho sửa và xoá cặp.
 - **Chạm bất biến I2 và I4:** câu chữ cũ của I2 ("mã đã khai báo trong template") và I4 ("`(template_sha256, seed)`") chỉ nói về câu có template. Người làm dự án đã duyệt câu chữ mới ngày 2026-10-23 (mục 4); spec §0 và bảng CLAUDE.md §9 đã cập nhật theo (CLAUDE.md §9).
-- Contract (`question_kind`, model `ConceptPair`, trace cho câu không có template) được chốt ở Giai đoạn 3, spec §5/§6.
+- Contract (`question_kind`, model `ConceptPair`, trace cho câu không có template) được viết ở spec §5.8, §5.9, §5.11 và §6.6 (Đợt 2b, 2026-10-24); trace cho câu lý thuyết và các field nullable của câu không có template là đề xuất, chờ duyệt.
 - Kiểm chứng: test cho thấy cặp có trích dẫn không nguyên văn bị loại; cặp chưa xác nhận không bao giờ được dùng và không làm đổi `pool_sha256`; Vault ít hơn 4 khái niệm đã xác nhận thì vào `review_tickets`; dạng "chọn định nghĩa đúng" chỉ lấy phương án nhiễu cùng chương; cùng `(generator_version, pool_sha256, seed)` thì câu hỏi giống từng byte; cùng nội dung nhập ở dạng NFC hay NFD cho cùng `pool_sha256`; thêm cặp ở môn khác không làm đổi `pool_sha256` của môn này; mọi phương án nhiễu đều có mã thuộc `THEORY_MISCONCEPTIONS`.
 
 ## Phương án đã loại

@@ -16,6 +16,7 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 - Frontend: trả nợ FE-001, `TableAuditor` hết 7 cảnh báo Biome. Key React dựng từ helper thuần `rowIndices`, `tableColumns`, `keyedIssues` ở `lib/gate.ts` (có test vitest) thay cho chỉ số mảng; panel sửa ô dùng `<fieldset>` thay `role="group"`; focus vào ô nhập bằng callback ref khi người dùng mở ô, thay `autoFocus`. `biome.jsonc` nâng `noArrayIndexKey`, `noAutofocus`, `useSemanticElements` lên `error` và đổi trường `recommended` đã deprecated sang `"preset": "recommended"`.
 - Claude Code: thêm 5 subagent trong `.claude/agents/` (`pdf-researcher`, `spec-writer`, `backend-impl`, `frontend-impl`, `reviewer`), mỗi agent có phạm vi file và bộ công cụ riêng; `.claude/settings.json` cho phép push nhánh và tạo PR nháp, chặn force push, push thẳng `develop`/`main`, xoá nhánh, merge PR, `merge`, `rebase`, `reset --hard`; `.gitignore` mở ngoại lệ cho hai đường dẫn này.
 - README: thêm bước cài hook `pre-commit`.
+- Tài liệu: báo cáo review tiến độ tuần 19–23/10 (`docs/progress-review-2026-10-23.md`) với danh sách thiếu sót F1–F18 và kết quả cổng kiểm tra chạy lại trên `903b954`.
 
 ### 🐛 Sửa lỗi
 

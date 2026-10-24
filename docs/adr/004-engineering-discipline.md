@@ -32,7 +32,8 @@ Dự án có năm bất biến cần giữ qua nhiều tuần phát triển và 
 | BE-002 | Ruleset ruff mở rộng: 27 (core + scripts) / 45 (cả tests) vi phạm | PR riêng |
 | BE-003 | Optimistic locking nguyên tử | Tuần 4, TODO đã duyệt trong `routers/api.py` |
 | BE-004 | Spawn tiến trình cho mỗi lần chạy sandbox | Pool tiến trình dựng sẵn và chạy song song seed |
-| ARCH-001 | Gắn cứng CPU Scheduling ngoài `infrastructure/templates/` và test (CLAUDE.md §1, ADR-005 đang soạn) | Danh sách file ở dưới; gỡ theo ADR-005, sau đó thêm kiểm tra vào `tests/test_architecture.py` |
+| ARCH-001 | Gắn cứng CPU Scheduling ngoài `infrastructure/templates/` và test (CLAUDE.md §1, ADR-005 *Chấp nhận*) | Danh sách file ở dưới; gỡ theo ADR-005, sau đó thêm kiểm tra vào `tests/test_architecture.py` |
+| PKG-001 | Wheel `opencv-python-headless` (phụ thuộc bắc cầu của `rapidocr`, ADR-008) đóng kèm FFmpeg theo LGPL-2.1 (`cv2/opencv_videoio_ffmpeg*.dll` trên Windows) | Khi đóng gói Tauri: bỏ file plugin `opencv_videoio_ffmpeg*.dll` khỏi gói, chạy lại test OCR để xác nhận OCR không dùng tới; kiểm wheel Linux và macOS xem có thư viện FFmpeg hay Qt đi kèm không; cập nhật `THIRD_PARTY_NOTICES` theo kết quả |
 
 Chi tiết ARCH-001, lập ngày 2026-10-23 bằng `grep -rinE 'cpu_?sched|CPUScheduling|round.?robin|SJF|RR|quantum|burst|arrival|gantt|FCFS|SRTF'` trên `holocron_core/`, `holocron/backend/scripts/` và `holocron/frontend/src/`, bỏ `infrastructure/templates/` và file test, rồi lọc tay các kết quả chỉ nằm trong docstring:
 

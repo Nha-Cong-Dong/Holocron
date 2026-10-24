@@ -33,7 +33,7 @@ Dự án có năm bất biến cần giữ qua nhiều tuần phát triển và 
 | BE-003 | Optimistic locking nguyên tử | Tuần 4, TODO đã duyệt trong `routers/api.py` |
 | BE-004 | Spawn tiến trình cho mỗi lần chạy sandbox | Pool tiến trình dựng sẵn và chạy song song seed |
 | ARCH-001 | Gắn cứng CPU Scheduling ngoài `infrastructure/templates/` và test (CLAUDE.md §1, ADR-005 *Chấp nhận*) | Danh sách file ở dưới; gỡ theo ADR-005, sau đó thêm kiểm tra vào `tests/test_architecture.py` |
-| PKG-001 | Wheel `opencv-python-headless` (phụ thuộc bắc cầu của `rapidocr`, ADR-008) đóng kèm FFmpeg theo LGPL-2.1 (`cv2/opencv_videoio_ffmpeg*.dll` trên Windows) | Khi đóng gói Tauri: bỏ file plugin `opencv_videoio_ffmpeg*.dll` khỏi gói, chạy lại test OCR để xác nhận OCR không dùng tới; kiểm wheel Linux và macOS xem có thư viện FFmpeg hay Qt đi kèm không; cập nhật `THIRD_PARTY_NOTICES` theo kết quả |
+| PKG-001 | Wheel `opencv-python-headless` (phụ thuộc bắc cầu của `rapidocr`, ADR-008) đóng kèm FFmpeg theo LGPL-2.1 (`cv2/opencv_videoio_ffmpeg*.dll` trên Windows). Vẫn còn sau quyết định engine OCR ngày 2026-10-24, vì RapidOCR vẫn làm lượt đọc thứ hai. Thêm 2026-10-24: wheel `tesserocr` kèm libiconv (LGPL-2.1) trên Windows và libjbig (GPL-2.0+) trên manylinux | Khi đóng gói Tauri: bỏ file plugin `opencv_videoio_ffmpeg*.dll` khỏi gói, chạy lại test OCR để xác nhận OCR không dùng tới; kiểm wheel Linux và macOS xem có thư viện FFmpeg hay Qt đi kèm không; cập nhật `THIRD_PARTY_NOTICES` theo kết quả. `tesserocr`: cách tránh đã chọn (ADR-008 mục 8) là không dùng wheel này, gọi binary `tesseract` do người dùng tự cài qua subprocess với ảnh PNG do pypdfium2 render. Khi đóng gói Tesseract cùng app (sau MVP) phải kiểm giấy phép của bản build |
 
 Chi tiết ARCH-001, lập ngày 2026-10-23 bằng `grep -rinE 'cpu_?sched|CPUScheduling|round.?robin|SJF|RR|quantum|burst|arrival|gantt|FCFS|SRTF'` trên `holocron_core/`, `holocron/backend/scripts/` và `holocron/frontend/src/`, bỏ `infrastructure/templates/` và file test, rồi lọc tay các kết quả chỉ nằm trong docstring:
 
@@ -48,6 +48,21 @@ Chi tiết ARCH-001, lập ngày 2026-10-23 bằng `grep -rinE 'cpu_?sched|CPUSc
 - `holocron/frontend/src/types/holocron.ts`: `SchedulingAlgorithm`, `ProcessItem`, `CPUSchedulingProblem`, `SolverInputs.quantum`, `GanttSegment`, `TwinQuestion.gantt`.
 - `holocron/frontend/src/components/ingestion/UploadForm.tsx`: danh sách dạng bài ghi cứng (Round Robin) và ô nhập quantum; `holocron/frontend/src/lib/api.ts`: tham số `quantum` của `uploadDocument`.
 - `holocron/frontend/src/components/twins/GanttChart.tsx`, `GanttChart.module.css`, `TwinViewer.tsx`, `holocron/frontend/src/lib/twin.ts` (`ganttLayout`, `ganttDescription`) và biến màu `--gantt-*` trong `app/globals.css`: component vẽ riêng sơ đồ Gantt.
+
+Bổ sung ngày 2026-10-24 (số dòng theo `777c521`), các chỗ còn thiếu trong danh sách trên:
+
+- `holocron_core/domain/schemas.py:240` và `holocron_core/routers/api.py:220`: hằng `MAX_PROCESSES`; thông điệp "tiến trình" khi bảng quá số dòng ở `holocron_core/services/ingestion_gate.py:218-226`.
+- `holocron_core/domain/schemas.py:269-278`: `to_template_params` với các khoá `names`, `arrivals`, `bursts` riêng của dạng bài lập lịch.
+- `holocron_core/domain/schemas.py:495` (`GanttSegment`) và `:527` (`TwinQuestion.gantt`).
+- `holocron_core/services/ingestion_gate.py:393-397`: `table_to_params` gắn cứng khoá `"quantum"`.
+- `holocron_core/routers/api.py:328`: `create_item` kiểm `TOPIC_ALGORITHMS`.
+- `holocron_core/infrastructure/template_library.py:113`: `theory_chunk_ids=["chk_os05_rr_definition"]`.
+- `holocron/frontend/src/types/holocron.ts:226`: `IngestionItem.problem: CPUSchedulingProblem | null`.
+- `holocron/frontend/src/app/layout.tsx:8`: mô tả trang ghi "môn Hệ điều hành".
+- `holocron/frontend/src/components/ingestion/TableAuditor.tsx:168`: tiêu đề "bảng tiến trình".
+- `holocron/frontend/src/components/ingestion/UploadForm.tsx:14`: topic Round Robin ghi cứng trong `TOPICS`.
+
+Ghi chú: `tests/test_input_limits.py:36-53` khoá hành vi "bảng > 10 tiến trình → `OUT_OF_RANGE` (BLOCKING)". Đây là test I5 (CLAUDE.md §9), nên bước 2 của ADR-005 phải giữ hành vi này mà không sửa test. Đề xuất: khi đó giới hạn số dòng đến từ `input_schema` của template thay cho `MAX_PROCESSES`; ADR-005 chưa ghi số dòng tối đa là một phần của `input_schema`.
 
 ## Phương án đã loại
 

@@ -23,7 +23,7 @@
 
 ## Trạng thái hiện tại
 
-- **Bộ chứng minh đầu tiên là môn Hệ điều hành:** có hai template đã kiểm chứng là Round Robin và SJF không ưu tiên (thời gian chờ trung bình). Nhập đề qua upload hiện chỉ hỗ trợ dạng Round Robin; SJF mới dùng được ở bước sinh câu hỏi.
+- **Ba môn demo của MVP** là Kỹ thuật vi xử lý (ARM Assembly), Xác suất thống kê và Triết học Mác–Lênin (`SPECIFICATION.md` §1.5); template của môn Vi xử lý chưa có. Code hiện có hai template đã kiểm chứng là Round Robin và SJF không ưu tiên (thời gian chờ trung bình); chúng chỉ còn là fixture kiểm thử và walkthrough. Nhập đề qua upload hiện chỉ hỗ trợ dạng Round Robin; SJF mới dùng được ở bước sinh câu hỏi.
 - **Đọc đề vẫn là giả lập:** extractor là `MockDualPassExtractor`, trả cùng một đề Round Robin mẫu cho mọi file hợp lệ; chưa có adapter VLM thật.
 - **Sinh câu hỏi:** đã có `POST /v1/blueprints/{id}/twins` và trang xem twin; chưa có `POST /v1/blueprints` nên chưa tạo được blueprint từ đề đã duyệt qua API. Chưa có adapter LLM viết template nên pipeline dùng template đã kiểm chứng làm fallback.
 - **Chưa có Knowledge Vault đa môn**, chưa có ôn lý thuyết hay chấm câu trả lời.

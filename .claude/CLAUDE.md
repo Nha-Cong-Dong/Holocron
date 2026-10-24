@@ -33,7 +33,7 @@ Quy tắc cứng:
 - Frontend chỉ hiển thị số do backend trả; KHÔNG ĐƯỢC tự tính lại.
 - Template do LLM sinh có hai bậc: *ứng viên* (lưu ngoài `infrastructure/templates/`, chỉ dùng để kiểm chứng và xem trước) và *đã kiểm chứng* (qua đủ các lớp kiểm chứng ở `SPECIFICATION.md` và được người duyệt). Chỉ template đã kiểm chứng được dùng để sinh câu hỏi phát hành và làm fallback.
 - Mọi khẳng định kiến thức hiển thị cho người dùng (định nghĩa, tóm tắt, câu hỏi khái niệm và đáp án của nó) PHẢI kèm trích dẫn nguyên văn từ tài liệu nguồn (I3); không trích dẫn được thì không hiển thị như kiến thức đã kiểm chứng.
-- Chấm câu trả lời của người học: LLM chỉ trả verdict cho từng ý của rubric kèm bằng chứng; điểm số và kết luận đúng/sai do code tính từ các verdict đó, LLM KHÔNG trả điểm. Verdict có bằng chứng không phải chuỗi con (đã chuẩn hoá khoảng trắng) của câu trả lời người học hoặc của tài liệu nguồn bị loại. Đáp án mẫu là trích dẫn nguyên văn từ tài liệu, không phải văn bản LLM diễn đạt lại.
+- Chấm câu trả lời của người học: LLM chỉ trả verdict cho từng ý của rubric kèm bằng chứng; điểm số và kết luận đúng/sai do code tính từ các verdict đó, LLM KHÔNG trả điểm. Verdict có bằng chứng không phải chuỗi con (đã chuẩn hoá NFC và khoảng trắng) của câu trả lời người học hoặc của tài liệu nguồn bị loại. Đáp án mẫu là trích dẫn nguyên văn từ tài liệu, không phải văn bản LLM diễn đạt lại.
 
 ### 2.2 Phân tầng package (backend)
 
@@ -166,9 +166,9 @@ Thay đổi chạm một bất biến PHẢI giữ các test cưỡng chế dư�
 |---|---|
 | I1 | `tests/test_pipeline_twin_assembly.py`, `tests/test_pipeline_fallback.py`, `tests/test_sandbox_security.py`, `tests/test_sandbox_limits.py` |
 | I2 | `tests/test_pipeline_twin_assembly.py` (misconception lạ), `tests/test_domain_validators.py`; câu lý thuyết: `tests/test_theory_generator.py` (mọi phương án nhiễu mang mã thuộc `THEORY_MISCONCEPTIONS`; thêm cùng bộ sinh câu lý thuyết, ADR-007) |
-| I3 | `test_chunk_rejects_quote_not_in_text` trong `tests/test_schemas_and_gate.py` |
+| I3 | `test_chunk_rejects_quote_not_in_text` và `test_chunk_accepts_quote_in_nfd_against_nfc_text` trong `tests/test_schemas_and_gate.py` |
 | I4 | `tests/test_rr_template.py` + `python -m scripts.run_walkthrough` rồi `git diff --exit-code -- holocron/backend/examples`; câu lý thuyết: `tests/test_theory_generator.py` (cùng `(generator_version, pool_sha256, seed)` cho cùng câu; NFC và NFD cho cùng `pool_sha256`; thêm cặp ở môn khác không đổi `pool_sha256`; thêm cùng bộ sinh câu lý thuyết, ADR-007) |
-| I5 | `tests/test_schemas_and_gate.py`, `tests/test_api_item_state.py`, `tests/test_i5_enforcement.py` (topic lạ, self-solve `SKIPPED`), `tests/test_input_limits.py`; phía frontend `src/lib/gate.test.ts` (`canApprove`) |
+| I5 | `tests/test_schemas_and_gate.py`, `tests/test_api_item_state.py`, `tests/test_i5_enforcement.py` (topic lạ, self-solve `SKIPPED`), `tests/test_input_limits.py`; phía frontend `src/lib/gate.test.ts` (`canApprove`); bộ nhập PDF (ADR-008 mục 14): `tests/test_pdf_ocr.py` (`test_ocr_charset_covers_vietnamese`, `test_low_line_coverage_marks_page_needs_review`, `test_numeric_token_mismatch_raises_dual_pass_mismatch`, `test_cross_check_unavailable_blocks_auto_pass`), `tests/test_pdf_tiers.py` (`test_page_flags_select_tier`), `tests/test_pdf_input_limits.py` (`test_bad_pdf_limits`) |
 | Phân tầng package (§2.2) | `tests/test_architecture.py` |
 
 - Mọi template mới (viết tay hoặc do LLM sinh rồi được duyệt) PHẢI có test tái lập I4 và property test ≥ 100 seed tương đương `tests/test_rr_template.py` trước khi vào `infrastructure/templates/`.

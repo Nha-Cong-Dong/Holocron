@@ -542,7 +542,13 @@ Kích hoạt sandbox sinh bộ Twin Questions cho mọi slot của blueprint.
 - `base_seed` không gửi ⇒ server dùng `int(sha256(blueprint_id)[:15], 16)` để kết quả tái lập được (I4).
 - Header `Idempotency-Key` (tuỳ chọn): cùng key + cùng body trong 24 h PHẢI trả lại đúng `TwinBatch` đã sinh, không chạy lại sandbox.
 
-**Xử lý:** với mỗi slot và mỗi `k ∈ [0, count)`, gọi `produce_twin(base_seed = base_seed + k·7919)` (§10). Mỗi twin nhận `gantt` từ `solve()`; `distractor_to_misconception_map` là nguồn duy nhất cho badge misconception trên UI. Slot không sinh được ⇒ một `ReviewTicket` trong `review_tickets`, không làm hỏng cả batch.
+**Xử lý:** với mỗi slot và mỗi `k ∈ [0, count)`, gọi `produce_twin` với seed gốc của twin k là `seed_k = (base_seed + k·7919·40) mod SEED_SPACE`, trong đó `SEED_SPACE = 2**63` (§10). Mỗi twin nhận `gantt` từ `solve()`; `distractor_to_misconception_map` là nguồn duy nhất cho badge misconception trên UI. Slot không sinh được ⇒ một `ReviewTicket` trong `review_tickets`, không làm hỏng cả batch.
+
+**Tách dải seed và loại câu trùng (R6, phương án B, người dùng chọn ngày 2026-10-23):**
+- Các lần re-roll của twin k dùng `(seed_k + j·7919) mod SEED_SPACE`, với `j ∈ [0, 40)` (ngân sách re-roll ở §10). Bước giữa hai twin là `7919·40`, đúng bằng độ dài một dải, nên dải seed của các twin không chồng nhau.
+- **Dấu vân tay của câu** (đề xuất, người dùng xác nhận khi duyệt PR): `sha256` của JSON chính tắc gồm `template_id` và `params` (kết quả `generate_params()` trả về từ sandbox), serialize bằng `json.dumps({"template_id": …, "params": …}, sort_keys=True, ensure_ascii=False, separators=(",", ":"))` rồi mã hoá UTF-8. Phạm vi so trùng (đề xuất): mọi twin đã sinh trong cùng batch.
+- Câu có dấu vân tay trùng với một twin đã sinh thì re-roll tiếp trong dải của twin đó (j tiếp theo). Câu trùng không tính là `ill_posed` và không trừ lượt LLM. Hết dải mà vẫn trùng thì ghi lý do vào `review_tickets`, KHÔNG ĐƯỢC sinh câu trùng.
+- **Ảnh hưởng tới I4:** cùng `(template_sha256, seed)` vẫn cho cùng câu. Cùng `(blueprint, base_seed)` vẫn cho cùng batch, nhưng batch khác với trước khi sửa. Twin k = 0 không đổi seed, nên `examples/` chỉ đổi nếu walkthrough sinh từ hai twin trở lên; việc này phải được xác nhận ở PR sửa R6. Số đo ở "Vấn đề đã biết" dưới đây là mốc so sánh trước và sau khi sửa.
 
 **Response:** `201 TwinBatch`:
 
@@ -578,7 +584,7 @@ Kích hoạt sandbox sinh bộ Twin Questions cho mọi slot của blueprint.
 - `Idempotency-Key` có phạm vi theo `blueprint_id`; cùng key và cùng body (so sánh sau khi áp giá trị mặc định) trong 24 h trả lại đúng batch cũ, không chạy lại sandbox. Cùng key nhưng khác body được coi là request mới và không ghi đè bản ghi cũ (spec chưa định nghĩa trường hợp này).
 - `format` của request ghi đè `format` của slot cho cả batch (spec chưa nói rõ).
 - Mỗi slot không sinh được cho ra tối đa một `ReviewTicket`. Phụ thuộc ngoài đi qua `Protocol`: `CitationProvider` (mặc định `NoCitationProvider`, chưa có Knowledge Vault ⇒ mọi slot vào `review_tickets` với lý do thiếu nguồn trích dẫn) và `TemplateAuthor` (mặc định `UnconfiguredTemplateAuthor`, chưa có adapter LLM ⇒ pipeline rơi về template pre-computed, twin `AUTO_FALLBACK`).
-- **Vấn đề đã biết:** bước giữa các twin (`k·7919`) trùng bước re-roll seed (`7919`, §10), nên các twin trong cùng batch thường trùng seed và trùng đề. Đo lại ngày 2026-10-23 trên `develop` (`799ef72`): 30 batch × 3 twin, mỗi batch một slot template RR (author và nguồn trích dẫn giả lập như `tests/test_twin_batch.py`), `base_seed` mặc định theo `blueprint_id` `bp_measure_0` … `bp_measure_29`. Kết quả: 29/30 batch có seed trùng, 16/30 batch cả 3 twin cùng một seed; 74/90 twin trùng seed với ít nhất một twin khác trong batch, chỉ còn 45/90 twin khác nhau. Xem R6 ở §17.
+- **Vấn đề đã biết (đã quyết định cách sửa, chưa sửa trong code):** code hiện vẫn dùng `base_seed + k·7919` cho twin k. Bước giữa các twin (`k·7919`) trùng bước re-roll seed (`7919`, §10), nên các twin trong cùng batch thường trùng seed và trùng đề. Cách sửa là phương án B ở trên. Đo lại ngày 2026-10-23 trên `develop` (`799ef72`): 30 batch × 3 twin, mỗi batch một slot template RR (author và nguồn trích dẫn giả lập như `tests/test_twin_batch.py`), `base_seed` mặc định theo `blueprint_id` `bp_measure_0` … `bp_measure_29`. Kết quả: 29/30 batch có seed trùng, 16/30 batch cả 3 twin cùng một seed; 74/90 twin trùng seed với ít nhất một twin khác trong batch, chỉ còn 45/90 twin khác nhau. Xem R6 ở §17.
 
 ### 6.4 Các endpoint khác (đã triển khai)
 
@@ -673,7 +679,7 @@ Mỗi lần chạy spawn một tiến trình (~40–60 ms Linux, ~120–150 ms W
 
 Cây quyết định:
 1. Slot `non_cloneable` ⇒ `ReviewTicket` ngay.
-2. ≤ 3 lượt LLM; mỗi lượt re-roll ≤ 40 seed theo dãy tất định `base_seed + k·7919`.
+2. ≤ 3 lượt LLM; mỗi lượt re-roll ≤ 40 seed theo dãy tất định `(seed_k + j·7919) mod SEED_SPACE`, `j ∈ [0, 40)`, trong đó `seed_k` là seed gốc của twin k (§6.3, R6 phương án B). Câu trùng dấu vân tay với twin đã sinh cũng re-roll trong dải này, không tính là `ill_posed` (§6.3).
 3. Hết lượt ⇒ template `precomputed_verified` cùng `topic_key` ⇒ twin `AUTO_FALLBACK`. Fallback cũng dựng twin lỗi ⇒ `ReviewTicket`, không crash.
 4. Không có fallback ⇒ `ReviewTicket`, slot `NEEDS_REVIEW`.
 
@@ -775,7 +781,7 @@ Backend PHẢI chỉ lắng nghe `127.0.0.1` trong bản local-first.
 | T2-N4 | Twin Viewer + Gantt chart trên Frontend | Xong: trang `/blueprints/[blueprintId]` gọi `POST …/twins` và hiển thị 3 twin, badge misconception, trích dẫn, `review_tickets`; chưa nối từ luồng ingestion vì `POST /v1/blueprints` chưa có (§6.3) |
 | T2-N4 | Trả nợ FE-001: cảnh báo Biome ở `TableAuditor.tsx` (ADR-004) | Xong (`5f3b2b4`, `1b9b5c4`) |
 | T2-N5 | Adapter VLM thật cho dual-pass; pool tiến trình sandbox | Kế hoạch |
-| T2-N6/N7 (24–25/10) | Spec v0.4 §1, §0 (I2, I4) và §13.1; ADR-005…008 (*Chấp nhận*); sửa R6; bộ nhập PDF tầng 1–2 và màn hình xem lại; Vault và `CitationProvider` thật; `POST /v1/blueprints` và các GET; walkthrough 3 môn demo (§1.5) | Đang làm |
+| T2-N6/N7 (24–25/10) | Spec v0.4 §1, §0 (I2, I4) và §13.1; ADR-005…008 (*Chấp nhận*); engine OCR ADR-008 (chốt 2026-10-24); sửa R6 theo phương án B (§6.3); bộ nhập PDF tầng 1–2 và màn hình xem lại; Vault và `CitationProvider` thật; `POST /v1/blueprints` và các GET; walkthrough 3 môn demo (§1.5) | Đang làm |
 | Tuần 3 | Luồng G1 trên tài liệu thật của 3 môn demo; đo p95 (G3) và thời gian bộ nhập PDF | Kế hoạch |
 | Tuần 4 | SQLite + optimistic locking nguyên tử; trả nợ ARCH-001 (ADR-005); đóng gói Tauri và mô hình bảo mật §13.1 | Kế hoạch |
 
@@ -788,7 +794,7 @@ Backend PHẢI chỉ lắng nghe `127.0.0.1` trong bản local-first.
 | R3 | VLM đọc sai chữ số viết tay | Dual-pass + self-solve mismatch + người dùng xác nhận |
 | R4 | Nhà cung cấp LLM mặc định không có model thị giác | Cấu hình VLM tách riêng (§11.2); fallback mock có nhãn demo |
 | R5 | Tên model của nhà cung cấp thay đổi/ngừng phục vụ | Tên model là cấu hình, không hard-code |
-| R6 | Các twin trong cùng batch trùng seed (bước `k·7919` trùng bước re-roll `7919`) ⇒ đề trùng nhau. Đo 2026-10-23 (30 batch × 3 twin RR): 29/30 batch có seed trùng, chỉ 45/90 twin khác nhau (§6.3) | Chưa quyết định cách sửa (ví dụ bước giữa các twin lớn hơn `7919 × 40`). Trang Twin Viewer đã hiển thị batch nên vấn đề lộ ra trên UI; cần quyết định sớm |
+| R6 | Các twin trong cùng batch trùng seed (bước `k·7919` trùng bước re-roll `7919`) ⇒ đề trùng nhau. Đo 2026-10-23 (30 batch × 3 twin RR): 29/30 batch có seed trùng, chỉ 45/90 twin khác nhau (§6.3) | **Đã quyết định** (người dùng chọn phương án B ngày 2026-10-23): tách dải seed, `seed_k = (base_seed + k·7919·40) mod SEED_SPACE`, re-roll `seed_k + j·7919` với `j ∈ [0, 40)`; loại câu trùng theo dấu vân tay, hết dải thì vào `review_tickets` (§6.3, §10). Định nghĩa dấu vân tay và phạm vi so trùng là đề xuất, chờ người dùng xác nhận. Số đo 45/90 là mốc so sánh trước và sau khi sửa. Code chưa sửa |
 | R7 | OCR đọc sai dấu tiếng Việt hoặc sai chữ số | Màn hình xem lại bắt buộc trước khi lưu; độ tin cậy theo trang và theo dòng, độ phủ dòng, đối chiếu token số với lượt đọc thứ hai (ADR-008 mục 10–11). Engine chọn ngày 2026-10-24 bằng phép đo trên scan giả lập (ADR-008, mục "Kết quả đo"); phép đo trên scan thật chưa làm |
 | R8 | PDF tiếng Việt dùng font mã cũ (TCVN3, VNI) nên lớp chữ là ký tự rác dù trông bình thường | Tầng 1 phát hiện văn bản rác và hạ độ tin cậy để chuyển trang sang OCR (ADR-008) |
 | R9 | Model OCR và thư viện ảnh làm bộ cài desktop nặng | Không dùng PyTorch; Tesseract do người dùng tự cài nên không nằm trong gói MVP; Docling để sau MVP như worker tuỳ chọn; ghi kích thước gói vào ADR-008 |

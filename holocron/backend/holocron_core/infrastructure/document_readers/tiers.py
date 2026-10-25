@@ -27,7 +27,7 @@ from ...domain.documents import (
     TokenMismatch,
 )
 from .config import PdfReaderConfig
-from .cross_check import coverage_ratio, cross_check_lines
+from .cross_check import CrossCheckLimitError, CrossCheckLimits, coverage_ratio, cross_check_lines
 from .protocol import RawOcrLine, RawOcrPage, RawPdfPage
 from .text_layer import has_figure, has_formula, has_table, page_text, text_score
 
@@ -193,15 +193,24 @@ def _line_pieces(lines: Sequence[RawOcrLine]) -> list[list[int]]:
 def _cross_check(
     ocr: RawOcrPage, pieces: Sequence[Sequence[int]], config: PdfReaderConfig
 ) -> tuple[CrossCheck, set[int]]:
-    """`CrossCheck` của trang và chỉ số các `ExtractedLine` có token lệch."""
+    """`CrossCheck` của trang và chỉ số các `ExtractedLine` có token lệch.
+
+    Không có lượt thứ hai, hoặc dữ liệu hai lượt vượt trần độ phức tạp của đối chiếu (`cross_check_max_*`) ⇒
+    `unavailable`: trang vào `needs_review` với `CROSS_CHECK_UNAVAILABLE`, và ô số của bảng không được AUTO_PASS.
+    """
+    unavailable = CrossCheck(status="unavailable", secondary_engine=None)
     if ocr.secondary is None:
-        return CrossCheck(status="unavailable", secondary_engine=None), set()
-    comparisons = cross_check_lines(
-        [line.text for line in ocr.lines],
-        [line.bbox for line in ocr.lines],
-        ocr.secondary.lines,
-        config.line_match_min_overlap,
-    )
+        return unavailable, set()
+    try:
+        comparisons = cross_check_lines(
+            [line.text for line in ocr.lines],
+            [line.bbox for line in ocr.lines],
+            ocr.secondary.lines,
+            config.line_match_min_overlap,
+            limits=CrossCheckLimits.from_config(config),
+        )
+    except CrossCheckLimitError:
+        return unavailable, set()
     mismatches: list[TokenMismatch] = []
     flagged: set[int] = set()
     for comparison in comparisons:

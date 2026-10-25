@@ -38,6 +38,13 @@ OCR_INSTALL_HINT = (
 MIB = 1024 * 1024
 GIB = 1024 * MIB
 
+# Giá trị mặc định dùng chung giữa field của `PdfReaderConfig` và tham số mặc định của các hàm cấp thấp (gọi được
+# riêng trong test hay script), để mỗi con số chỉ ghi ở một chỗ.
+DEFAULT_CROSS_CHECK_MAX_LINES = 5000
+DEFAULT_CROSS_CHECK_MAX_LINE_TOKENS = 512
+DEFAULT_CROSS_CHECK_MAX_LINE_PAIRS = 200_000
+DEFAULT_CROSS_CHECK_MAX_TOKEN_CELLS = 250_000
+
 
 class PdfReaderConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
@@ -80,6 +87,16 @@ class PdfReaderConfig(BaseModel):
     # Ghép dòng hai lượt đọc theo hộp toạ độ (mục 11): hai hộp phải chồng nhau theo chiều dọc ít nhất tỉ lệ này
     # (tính trên chiều cao của hộp thấp hơn) và có phần chồng theo chiều ngang. Giá trị khởi đầu, chưa hiệu chỉnh.
     line_match_min_overlap: float = Field(default=0.5, gt=0.0, le=1.0)
+    # Trần độ phức tạp của đối chiếu chéo (mục 11). Việc đối chiếu chạy ở tiến trình cha, nơi không có giới hạn OS,
+    # trên dữ liệu của worker (không tin cậy), nên mọi vòng lặp đều có trần: số dòng mỗi lượt, số token mỗi dòng,
+    # số cặp dòng được xét khi ghép (chỉ các cặp chồng nhau theo trục y, qua index sắp theo mép trên) và số ô của
+    # bảng gióng token (quy hoạch động O(n·m) mỗi dòng, cộng dồn cả trang). Vượt trần nào thì trang coi như không có
+    # lượt đối chiếu (`cross_check = unavailable`, `needs_review`), không bao giờ coi là khớp. Trang A4 dày đặc có
+    # vài trăm dòng và vài chục token mỗi dòng, thấp hơn các trần này nhiều lần.
+    cross_check_max_lines: int = Field(default=DEFAULT_CROSS_CHECK_MAX_LINES, ge=1)
+    cross_check_max_line_tokens: int = Field(default=DEFAULT_CROSS_CHECK_MAX_LINE_TOKENS, ge=1)
+    cross_check_max_line_pairs: int = Field(default=DEFAULT_CROSS_CHECK_MAX_LINE_PAIRS, ge=1)
+    cross_check_max_token_cells: int = Field(default=DEFAULT_CROSS_CHECK_MAX_TOKEN_CELLS, ge=1)
 
     # Ngưỡng của ADR-008 mục 6, 10, 11, 12.
     text_layer_min: float = Field(default=0.85, ge=0.0, le=1.0)

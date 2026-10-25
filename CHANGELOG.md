@@ -13,6 +13,15 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 - Template SJF không ưu tiên `os_sjf_avg_waiting` (topic `os.cpu_sched.sjf.avg_waiting_time`) với 3 misconception `WAIT_CONFUSED_WITH_TURNAROUND`, `SJF_IGNORES_ARRIVAL`, `SJF_COMPUTED_AS_SRTF`, đăng ký trong `template_library` và registry; kiểm bằng bộ giải tham chiếu độc lập, property test 200 seed (tỉ lệ nhận seed 16 %), tất định và sandbox không thoát bất thường. Chưa đăng ký ở Ingestion Gate (`TABLE_SCHEMAS`, `TOPIC_ALGORITHMS`).
 
 ### 🛠️ Cải tiến & Tối ưu
+- Spec v0.6 (quyết định 2026-10-24/25):
+  - `format` (MCQ4/NUMERICAL/ESSAY) tách khỏi `question_kind`; mỗi môn có `exam_format`.
+  - Essay "Trình bày khái niệm X" chấm offline bằng n-gram âm tiết, báo "khớp x/y ý", không cho điểm tuyệt đối; chỉ làm nếu kịp mốc 29/10 (§5.14, §6.9).
+  - LLM là tuỳ chọn, thay quy tắc "503 khi thiếu key" bằng chế độ khả năng (`RuntimeInfo.capabilities`, §11.4). Adapter kiểu OpenAI đi qua gateway của ban tổ chức (§11.5).
+  - R10 chọn (c). Duyệt `citation_for(subject_code, slot)` và 14/15 đề xuất của v0.5.
+  - Kiểm Host luôn bật, token theo `HOLOCRON_REQUIRE_TOKEN` (§13.1).
+  - Lịch mới ưu tiên lát cắt dọc: mốc 28/10, 29/10, 1–4/11, 7/11.
+- README: thêm mục "Điểm khác biệt" có nhãn ĐÃ CÓ / SẼ LÀM / HƯỚNG, và mục "Dữ liệu và LLM" (dữ liệu đi qua gateway của ban tổ chức khi bật LLM).
+- `.env.example`: biến LLM trung lập nhà cung cấp, base URL gồm `/v1`, thêm `HOLOCRON_REQUIRE_TOKEN`. RELEASE_CHECKLIST theo chế độ khả năng. Thêm `docs/tauri-spike-plan.md`.
 - Spec v0.4: viết lại §1 theo hướng đa môn (bài toán, người dùng mục tiêu là sinh viên tự ôn luyện, nền tảng desktop Tauri, tech stack kèm lý do, hai nhóm câu hỏi, ba dạng câu lý thuyết, bộ nhập PDF theo tầng, ba môn demo kèm yêu cầu có PDF scan và PDF có bảng lấy từ tài liệu thật, chấm tự luận để sau MVP, tầm nhìn sau MVP); mở rộng câu chữ I2 và I4 ở §0 cho câu lý thuyết (ADR-007); thêm §13.1 mô hình bảo mật của app local; cập nhật lộ trình và rủi ro R7–R9. Contract §5–§12 chưa đổi.
 - ADR-005 (pipeline câu hỏi không phụ thuộc topic, kế hoạch trả nợ ARCH-001), ADR-006 (Knowledge Vault đa môn, tách từ tiếng Việt cho BM25), ADR-007 (câu lý thuyết sinh tất định từ Vault, cách tính `pool_sha256`; chấm tự luận sau MVP) và ADR-008 (bộ nhập PDF theo tầng, khảo sát giấy phép thư viện, phép đo CER chọn engine OCR), cả bốn ở trạng thái *Chấp nhận*. ADR-004 thêm nợ PKG-001 (FFmpeg LGPL trong wheel OpenCV); bảng test cưỡng chế ở CLAUDE.md §9 thêm test I2/I4 cho câu lý thuyết.
 - Frontend: trả nợ FE-001, `TableAuditor` hết 7 cảnh báo Biome. Key React dựng từ helper thuần `rowIndices`, `tableColumns`, `keyedIssues` ở `lib/gate.ts` (có test vitest) thay cho chỉ số mảng; panel sửa ô dùng `<fieldset>` thay `role="group"`; focus vào ô nhập bằng callback ref khi người dùng mở ô, thay `autoFocus`. `biome.jsonc` nâng `noArrayIndexKey`, `noAutofocus`, `useSemanticElements` lên `error` và đổi trường `recommended` đã deprecated sang `"preset": "recommended"`.

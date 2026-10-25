@@ -10,6 +10,7 @@ Riêng `ingestion_items` so thêm toàn bộ trạng thái đã đọc (xem `upd
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 from collections.abc import Iterator, Sequence
@@ -32,18 +33,32 @@ from ...domain.repositories import (
     SearchIndex,
     StorageBusyError,
     StorageError,
+    VaultEntity,
     VaultSearchUnavailableError,
     VersionConflictError,
     same_item_state,
 )
 from ...domain.schemas import DocumentMeta, ExamBlueprint, KnowledgeChunk, TwinQuestion
+from ...domain.search_text import search_body, strip_diacritics
 from ...domain.twins import IdempotencyRecord, ReviewTicket, TwinBatch
-from ...domain.vault import ConceptPair, ConceptPairStatus
+from ...domain.vault import (
+    ConceptPair,
+    ConceptPairStatus,
+    QuoteMismatchError,
+    VaultEdit,
+    check_definition_quote,
+    link_practice_chunks,
+)
 from .connection import connect, fts5_available, immediate_transaction, is_busy, read_transaction
 from .migrator import load_fts5_script, migrate
 
 IMPORTED_MEDIA_TYPE = "application/pdf"  # bộ nhập §6.5 chỉ nhận PDF trong MVP
 _FTS_TABLES: dict[SearchIndex, str] = {"primary": "chunks_fts", "no_diacritics": "chunks_fts_nodiac"}
+_LOGGER = logging.getLogger(__name__)
+_EDIT_TABLES: dict[VaultEntity, tuple[str, str]] = {
+    "chunk": ("chunks", "chunk_id"),
+    "concept_pair": ("concept_pairs", "pair_id"),
+}
 
 
 def _ts(moment: datetime) -> str:
@@ -492,11 +507,18 @@ class SQLiteStore:
                         f"DELETE FROM {table} WHERE chunk_id IN (SELECT chunk_id FROM chunks WHERE document_id = ?)",
                         (document_id,),
                     )
+            subjects = {
+                str(row["subject_code"])
+                for row in conn.execute(
+                    "SELECT DISTINCT subject_code FROM chunks WHERE document_id = ?", (document_id,)
+                )
+            }
             try:
                 conn.execute("DELETE FROM documents WHERE document_id = ?", (document_id,))
             except sqlite3.IntegrityError as exc:
                 in_use = RecordInUseError(f"tài liệu {document_id} còn được ingestion item tham chiếu")
                 raise _translate(exc, in_use) from exc
+            self._relink(conn, subjects)  # chunk còn lại không được trỏ tới chunk vừa xoá
         return True
 
     def add_page(
@@ -558,45 +580,76 @@ class SQLiteStore:
     # VaultRepository
     # ------------------------------------------------------------------ #
 
-    def add_chunk(self, chunk: KnowledgeChunk, search_body: str) -> None:
+    def _insert_chunk(self, conn: sqlite3.Connection, chunk: KnowledgeChunk, body: str) -> None:
+        """Ghi một chunk, `chunk_topics` và hai chỉ mục FTS5 bằng kết nối đang ở trong giao dịch ghi.
+
+        Chỉ mục chính nhận `body` (token đã qua ADR-006 mục 5); chỉ mục không dấu nhận `strip_diacritics(body)`, tức
+        đúng token của `no_diacritics_tokens`, nên FTS5 không phải tự bỏ dấu (xem `fts5_vault.sql`).
+        """
         if chunk.embedding_model is not None:
             raise ValueError("bảng chunks chưa có cột embedding_model (luôn null trong MVP, ADR-006 mục 4)")
-        with self._write() as conn:
-            try:
-                conn.execute(
-                    "INSERT INTO chunks (chunk_id, document_id, subject_code, chapter_code, category, page_number, "
-                    "page_end, raw_text, verbatim_quote, tags_json, linked_chunk_ids_json, token_count, label_status, "
-                    "mapping_confidence, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        chunk.chunk_id,
-                        chunk.doc_id,
-                        chunk.subject_code,
-                        chunk.chapter_code,
-                        chunk.category.value,
-                        chunk.page_number,
-                        chunk.page_end,
-                        chunk.raw_text,
-                        chunk.verbatim_quote,
-                        json.dumps(chunk.tags, ensure_ascii=False),
-                        json.dumps(chunk.linked_chunk_ids, ensure_ascii=False),
-                        chunk.token_count,
-                        chunk.label_status,
-                        chunk.mapping_confidence,
-                        chunk.version,
-                    ),
-                )
-            except sqlite3.IntegrityError as exc:
-                raise self._missing_document(exc, chunk.doc_id) from exc
-            conn.executemany(
-                "INSERT INTO chunk_topics (chunk_id, topic_key) VALUES (?, ?)",
-                [(chunk.chunk_id, topic_key) for topic_key in chunk.topic_keys],
+        try:
+            conn.execute(
+                "INSERT INTO chunks (chunk_id, document_id, subject_code, chapter_code, category, page_number, "
+                "page_end, raw_text, verbatim_quote, tags_json, linked_chunk_ids_json, token_count, label_status, "
+                "mapping_confidence, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    chunk.chunk_id,
+                    chunk.doc_id,
+                    chunk.subject_code,
+                    chunk.chapter_code,
+                    chunk.category.value,
+                    chunk.page_number,
+                    chunk.page_end,
+                    chunk.raw_text,
+                    chunk.verbatim_quote,
+                    json.dumps(chunk.tags, ensure_ascii=False),
+                    json.dumps(chunk.linked_chunk_ids, ensure_ascii=False),
+                    chunk.token_count,
+                    chunk.label_status,
+                    chunk.mapping_confidence,
+                    chunk.version,
+                ),
             )
-            if self._fts5:
-                for table in _FTS_TABLES.values():
-                    conn.execute(
-                        f"INSERT INTO {table} (body, chunk_id, subject_code) VALUES (?, ?, ?)",
-                        (search_body, chunk.chunk_id, chunk.subject_code),
-                    )
+        except sqlite3.IntegrityError as exc:
+            raise self._missing_document(exc, chunk.doc_id) from exc
+        conn.executemany(
+            "INSERT INTO chunk_topics (chunk_id, topic_key) VALUES (?, ?)",
+            [(chunk.chunk_id, topic_key) for topic_key in chunk.topic_keys],
+        )
+        if self._fts5:
+            bodies: dict[SearchIndex, str] = {"primary": body, "no_diacritics": strip_diacritics(body)}
+            for index, table in _FTS_TABLES.items():
+                conn.execute(
+                    f"INSERT INTO {table} (body, chunk_id, subject_code) VALUES (?, ?, ?)",
+                    (bodies[index], chunk.chunk_id, chunk.subject_code),
+                )
+
+    def add_chunk(self, chunk: KnowledgeChunk, search_body: str) -> None:
+        with self._write() as conn:
+            self._insert_chunk(conn, chunk, search_body)
+
+    def add_chunks(self, chunks: Sequence[KnowledgeChunk]) -> list[KnowledgeChunk]:
+        """Một giao dịch `BEGIN IMMEDIATE` cho cả lô: lỗi ở chunk bất kỳ thì `ROLLBACK`, không còn dòng nào."""
+        with self._write() as conn:
+            subjects: set[str] = set()
+            for chunk in chunks:
+                if conn.execute("SELECT 1 FROM chunks WHERE chunk_id = ?", (chunk.chunk_id,)).fetchone() is not None:
+                    continue
+                self._insert_chunk(conn, chunk, search_body(chunk.raw_text))
+                subjects.add(chunk.subject_code)
+            self._relink(conn, subjects)
+            stored = {
+                chunk.chunk_id: chunk
+                for chunk in self._load_chunks(
+                    conn, "WHERE chunk_id IN (SELECT value FROM json_each(?))", (self._ids_json(chunks),)
+                )
+            }
+        return [stored[chunk.chunk_id] for chunk in chunks]
+
+    @staticmethod
+    def _ids_json(chunks: Sequence[KnowledgeChunk]) -> str:
+        return json.dumps([chunk.chunk_id for chunk in chunks])
 
     @staticmethod
     def _chunk_from_row(row: sqlite3.Row, topic_keys: list[str]) -> KnowledgeChunk:
@@ -627,30 +680,48 @@ class SQLiteStore:
         "FROM chunks"
     )
 
+    def _load_chunks(self, conn: sqlite3.Connection, where: str, params: Sequence[object]) -> list[KnowledgeChunk]:
+        """Chunk thoả `where` kèm `topic_keys`, sắp theo `(document_id, page_number, chunk_id)`."""
+        rows = conn.execute(
+            f"{self._CHUNK_SELECT} {where} ORDER BY document_id, page_number, chunk_id", params
+        ).fetchall()
+        topic_rows = conn.execute(
+            f"SELECT chunk_id, topic_key FROM chunk_topics WHERE chunk_id IN (SELECT chunk_id FROM chunks {where}) "
+            "ORDER BY topic_key",
+            params,
+        ).fetchall()
+        topics: dict[str, list[str]] = {}
+        for topic in topic_rows:
+            topics.setdefault(str(topic["chunk_id"]), []).append(str(topic["topic_key"]))
+        return [self._chunk_from_row(row, topics.get(str(row["chunk_id"]), [])) for row in rows]
+
+    def _relink(self, conn: sqlite3.Connection, subject_codes: set[str]) -> None:
+        """Tính lại `linked_chunk_ids` (§12.1) của mọi chunk thuộc `subject_codes`, trong giao dịch ghi đang mở.
+
+        Không tăng `version`: liên kết là dữ liệu dẫn xuất, không phải nhãn mà `expected_version` bảo vệ.
+        """
+        for subject_code in sorted(subject_codes):
+            members = self._load_chunks(conn, "WHERE subject_code = ?", (subject_code,))
+            links = link_practice_chunks(members)
+            conn.executemany(
+                "UPDATE chunks SET linked_chunk_ids_json = ? WHERE chunk_id = ?",
+                [
+                    (json.dumps(links[chunk.chunk_id], ensure_ascii=False), chunk.chunk_id)
+                    for chunk in members
+                    if chunk.linked_chunk_ids != links[chunk.chunk_id]
+                ],
+            )
+
     def get_chunk(self, chunk_id: str) -> KnowledgeChunk | None:
         with self._read() as conn:
-            row = conn.execute(f"{self._CHUNK_SELECT} WHERE chunk_id = ?", (chunk_id,)).fetchone()
-            topics = conn.execute(
-                "SELECT topic_key FROM chunk_topics WHERE chunk_id = ? ORDER BY topic_key", (chunk_id,)
-            ).fetchall()
-        return None if row is None else self._chunk_from_row(row, [str(topic["topic_key"]) for topic in topics])
+            found = self._load_chunks(conn, "WHERE chunk_id = ?", (chunk_id,))
+        return found[0] if found else None
 
     def list_chunks(self, subject_code: str, chapter_code: str | None = None) -> list[KnowledgeChunk]:
         where = "WHERE subject_code = ?" + ("" if chapter_code is None else " AND chapter_code = ?")
         params: tuple[str, ...] = (subject_code,) if chapter_code is None else (subject_code, chapter_code)
         with self._read() as conn:
-            rows = conn.execute(
-                f"{self._CHUNK_SELECT} {where} ORDER BY document_id, page_number, chunk_id", params
-            ).fetchall()
-            topic_rows = conn.execute(
-                f"SELECT chunk_id, topic_key FROM chunk_topics WHERE chunk_id IN (SELECT chunk_id FROM chunks {where}) "
-                "ORDER BY topic_key",
-                params,
-            ).fetchall()
-        topics: dict[str, list[str]] = {}
-        for topic in topic_rows:
-            topics.setdefault(str(topic["chunk_id"]), []).append(str(topic["topic_key"]))
-        return [self._chunk_from_row(row, topics.get(str(row["chunk_id"]), [])) for row in rows]
+            return self._load_chunks(conn, where, params)
 
     def match_chunk_ids(self, subject_code: str, fts_query: str, index: SearchIndex = "primary") -> list[str]:
         if not self._fts5:
@@ -666,17 +737,28 @@ class SQLiteStore:
                 raise ValueError(f"biểu thức FTS5 không hợp lệ: {exc}") from exc
         return [str(row["chunk_id"]) for row in rows]
 
-    def update_chunk_labels(self, chunk: KnowledgeChunk, expected_version: int) -> KnowledgeChunk:
+    @staticmethod
+    def _edit_columns(edit: VaultEdit | None) -> tuple[str | None, str | None]:
+        return (None, None) if edit is None else (edit.editor_id, _ts(edit.at))
+
+    def update_chunk_labels(
+        self, chunk: KnowledgeChunk, expected_version: int, edit: VaultEdit | None = None
+    ) -> KnowledgeChunk:
+        """Một giao dịch: nhãn của chunk, `chapter_code` của cặp thuộc chunk, `linked_chunk_ids` của môn, người sửa."""
+        edited_by, edited_at = self._edit_columns(edit)
         with self._write() as conn:
             cursor = conn.execute(
                 "UPDATE chunks SET chapter_code = ?, category = ?, tags_json = ?, label_status = ?, "
-                "mapping_confidence = ?, version = version + 1 WHERE chunk_id = ? AND version = ?",
+                "mapping_confidence = ?, edited_by = COALESCE(?, edited_by), edited_at = COALESCE(?, edited_at), "
+                "version = version + 1 WHERE chunk_id = ? AND version = ?",
                 (
                     chunk.chapter_code,
                     chunk.category.value,
                     json.dumps(chunk.tags, ensure_ascii=False),
                     chunk.label_status,
                     chunk.mapping_confidence,
+                    edited_by,
+                    edited_at,
                     chunk.chunk_id,
                     expected_version,
                 ),
@@ -695,20 +777,28 @@ class SQLiteStore:
                 "INSERT INTO chunk_topics (chunk_id, topic_key) VALUES (?, ?)",
                 [(chunk.chunk_id, topic_key) for topic_key in chunk.topic_keys],
             )
-            row = conn.execute(f"{self._CHUNK_SELECT} WHERE chunk_id = ?", (chunk.chunk_id,)).fetchone()
-        return self._chunk_from_row(row, list(chunk.topic_keys))
+            conn.execute(
+                "UPDATE concept_pairs SET chapter_code = ?, version = version + 1 "
+                "WHERE chunk_id = ? AND chapter_code <> ?",
+                (chunk.chapter_code, chunk.chunk_id, chunk.chapter_code),
+            )
+            subject = conn.execute("SELECT subject_code FROM chunks WHERE chunk_id = ?", (chunk.chunk_id,)).fetchone()
+            self._relink(conn, {str(subject["subject_code"])})
+            stored = self._load_chunks(conn, "WHERE chunk_id = ?", (chunk.chunk_id,))
+        return stored[0]
 
     # ------------------------------------------------------------------ #
     # Cặp khái niệm (§5.8, ADR-007)
     # ------------------------------------------------------------------ #
 
     _PAIR_SELECT = (
-        "SELECT pair_id, chunk_id, subject_code, chapter_code, term, definition_quote, term_spans_json, status, "
-        "proposed_by, mapping_confidence, created_at, confirmed_at, version FROM concept_pairs"
+        "SELECT p.pair_id, p.chunk_id, p.subject_code, p.chapter_code, p.term, p.definition_quote, "
+        "p.term_spans_json, p.status, p.proposed_by, p.mapping_confidence, p.created_at, p.confirmed_at, p.version, "
+        "c.raw_text FROM concept_pairs AS p LEFT JOIN chunks AS c ON c.chunk_id = p.chunk_id"
     )
 
     @staticmethod
-    def _pair_from_row(row: sqlite3.Row) -> ConceptPair:
+    def _pair_model(row: sqlite3.Row) -> ConceptPair:
         return ConceptPair.model_validate(
             {
                 "pair_id": row["pair_id"],
@@ -727,13 +817,46 @@ class SQLiteStore:
             }
         )
 
-    def add_concept_pair(self, pair: ConceptPair) -> ConceptPair:
+    def _pair_from_row(self, row: sqlite3.Row) -> ConceptPair | None:
+        """Cặp của dòng `row`; `None` (kèm cảnh báo trong log) khi trích dẫn không khớp nguyên văn chunk (I3).
+
+        Dòng như vậy chỉ có khi DB bị sửa ngoài app, vì mọi đường ghi đều kiểm I3. Bỏ qua thay vì ném lỗi: cặp vi
+        phạm không bao giờ được trả ra, mà một dòng hỏng cũng không làm hỏng việc liệt kê cả môn. Log chỉ ghi
+        `pair_id` và `chunk_id`, không ghi nội dung tài liệu.
+        """
+        pair = self._pair_model(row)
+        raw_text = row["raw_text"]
+        try:
+            check_definition_quote(pair.chunk_id, "" if raw_text is None else str(raw_text), pair.definition_quote)
+        except QuoteMismatchError:
+            _LOGGER.warning(
+                "bỏ qua cặp khái niệm %s: definition_quote không khớp nguyên văn chunk %s (I3)",
+                pair.pair_id,
+                pair.chunk_id,
+            )
+            return None
+        return pair
+
+    def _pairs_where(self, conn: sqlite3.Connection, where: str, params: Sequence[object]) -> list[ConceptPair]:
+        rows = conn.execute(f"{self._PAIR_SELECT} {where}", params).fetchall()
+        return [pair for pair in (self._pair_from_row(row) for row in rows) if pair is not None]
+
+    def _check_quote(self, conn: sqlite3.Connection, chunk_id: str, definition_quote: str) -> None:
+        """I3 trong giao dịch ghi đang mở; chunk không có ⇒ `MissingReferenceError`."""
+        row = conn.execute("SELECT raw_text FROM chunks WHERE chunk_id = ?", (chunk_id,)).fetchone()
+        if row is None:
+            raise MissingReferenceError(f"không tìm thấy chunk {chunk_id}")
+        check_definition_quote(chunk_id, str(row["raw_text"]), definition_quote)
+
+    def add_concept_pair(self, pair: ConceptPair, edit: VaultEdit | None = None) -> ConceptPair:
+        edited_by, edited_at = self._edit_columns(edit)
         with self._write() as conn:
+            self._check_quote(conn, pair.chunk_id, pair.definition_quote)
             try:
                 conn.execute(
                     "INSERT INTO concept_pairs (pair_id, chunk_id, subject_code, chapter_code, term, definition_quote, "
-                    "term_spans_json, status, proposed_by, mapping_confidence, created_at, confirmed_at, version) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "term_spans_json, status, proposed_by, mapping_confidence, created_at, confirmed_at, version, "
+                    "edited_by, edited_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         pair.pair_id,
                         pair.chunk_id,
@@ -748,6 +871,8 @@ class SQLiteStore:
                         _ts(pair.created_at),
                         None if pair.confirmed_at is None else _ts(pair.confirmed_at),
                         pair.version,
+                        edited_by,
+                        edited_at,
                     ),
                 )
             except sqlite3.IntegrityError as exc:
@@ -756,32 +881,43 @@ class SQLiteStore:
 
     def get_concept_pair(self, pair_id: str) -> ConceptPair | None:
         with self._read() as conn:
-            row = conn.execute(f"{self._PAIR_SELECT} WHERE pair_id = ?", (pair_id,)).fetchone()
-        return None if row is None else self._pair_from_row(row)
+            found = self._pairs_where(conn, "WHERE p.pair_id = ?", (pair_id,))
+        return found[0] if found else None
 
     def list_concept_pairs(
         self, subject_code: str, chapter_code: str | None = None, status: ConceptPairStatus | None = None
     ) -> list[ConceptPair]:
-        clauses = ["subject_code = ?"]
+        clauses = ["p.subject_code = ?"]
         params: list[str] = [subject_code]
         if chapter_code is not None:
-            clauses.append("chapter_code = ?")
+            clauses.append("p.chapter_code = ?")
             params.append(chapter_code)
         if status is not None:
-            clauses.append("status = ?")
+            clauses.append("p.status = ?")
             params.append(status.value)
         with self._read() as conn:
-            rows = conn.execute(f"{self._PAIR_SELECT} WHERE {' AND '.join(clauses)}", params).fetchall()
+            found = self._pairs_where(conn, f"WHERE {' AND '.join(clauses)}", params)
         # Sắp trong Python theo điểm mã Unicode, giống hệt bản in-memory (không phụ thuộc collation của SQLite).
-        return sorted(
-            (self._pair_from_row(row) for row in rows), key=lambda pair: (pair.chapter_code, pair.term, pair.pair_id)
-        )
+        return sorted(found, key=lambda pair: (pair.chapter_code, pair.term, pair.pair_id))
 
-    def update_concept_pair(self, pair: ConceptPair, expected_version: int) -> ConceptPair:
+    def update_concept_pair(
+        self, pair: ConceptPair, expected_version: int, edit: VaultEdit | None = None
+    ) -> ConceptPair:
+        """So version, rồi kiểm I3 trên văn bản của chunk mà cặp ĐANG LƯU trỏ tới, rồi ghi; cùng một giao dịch."""
+        edited_by, edited_at = self._edit_columns(edit)
         with self._write() as conn:
+            current = conn.execute(
+                "SELECT chunk_id, version FROM concept_pairs WHERE pair_id = ?", (pair.pair_id,)
+            ).fetchone()
+            if current is None:
+                raise RecordNotFoundError("cặp khái niệm", pair.pair_id)
+            if int(current["version"]) != expected_version:
+                raise VersionConflictError("cặp khái niệm", pair.pair_id, expected_version, int(current["version"]))
+            self._check_quote(conn, str(current["chunk_id"]), pair.definition_quote)
             cursor = conn.execute(
                 "UPDATE concept_pairs SET term = ?, definition_quote = ?, term_spans_json = ?, status = ?, "
-                "mapping_confidence = ?, confirmed_at = ?, version = version + 1 WHERE pair_id = ? AND version = ?",
+                "mapping_confidence = ?, confirmed_at = ?, edited_by = COALESCE(?, edited_by), "
+                "edited_at = COALESCE(?, edited_at), version = version + 1 WHERE pair_id = ? AND version = ?",
                 (
                     pair.term,
                     pair.definition_quote,
@@ -789,18 +925,22 @@ class SQLiteStore:
                     pair.status.value,
                     pair.mapping_confidence,
                     None if pair.confirmed_at is None else _ts(pair.confirmed_at),
+                    edited_by,
+                    edited_at,
                     pair.pair_id,
                     expected_version,
                 ),
             )
-            if cursor.rowcount == 0:
-                raise _version_conflict(
-                    conn,
-                    "cặp khái niệm",
-                    pair.pair_id,
-                    expected_version,
-                    "SELECT version FROM concept_pairs WHERE pair_id = ?",
-                    (pair.pair_id,),
-                )
-            row = conn.execute(f"{self._PAIR_SELECT} WHERE pair_id = ?", (pair.pair_id,)).fetchone()
-        return self._pair_from_row(row)
+            if cursor.rowcount != 1:  # không xảy ra khi đang giữ khoá ghi; giữ để không báo thành công khi chưa ghi
+                raise ConcurrentUpdateError("cặp khái niệm", pair.pair_id)
+            # Vừa kiểm I3 trên đúng chunk này trong cùng giao dịch, nên đọc lại không cần lọc.
+            row = conn.execute(f"{self._PAIR_SELECT} WHERE p.pair_id = ?", (pair.pair_id,)).fetchone()
+        return self._pair_model(row)
+
+    def get_last_edit(self, entity: VaultEntity, key: str) -> VaultEdit | None:
+        table, column = _EDIT_TABLES[entity]
+        with self._read() as conn:
+            row = conn.execute(f"SELECT edited_by, edited_at FROM {table} WHERE {column} = ?", (key,)).fetchone()
+        if row is None or row["edited_by"] is None:
+            return None
+        return VaultEdit(editor_id=str(row["edited_by"]), at=datetime.fromisoformat(str(row["edited_at"])))

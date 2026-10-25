@@ -3,24 +3,32 @@ xác nhận và từ chối cặp khái niệm. `POST /v1/vault/concept-pairs/pr
 
 Mọi truy vấn bắt buộc lọc theo `subject_code` (ADR-006 mục 4). Lỗi: 404 không có chunk/cặp; 409 lệch
 `expected_version`; 422 body sai hoặc `definition_quote` không khớp nguyên văn văn bản chunk (I3).
+
+Giới hạn đầu vào: `editor_id`, `chunk_id`, `pair_id` tối đa 128 ký tự; mỗi `topic_key` tối đa 128 ký tự và tối đa 32
+khoá mỗi request. Mọi thao tác sửa (nhãn chunk; tạo, xác nhận, từ chối cặp) lưu `editor_id` và thời điểm kèm bản ghi
+(hàng Repudiation của §13).
 """
 
 from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Path, Query
 from pydantic import BaseModel, Field, ValidationError
 
 from ..domain.repositories import RecordNotFoundError, VersionConflictError
 from ..domain.schemas import ChunkCategory, KnowledgeChunk, StrictModel
 from ..domain.vault import (
     CHAPTER_CODE_PATTERN,
+    MAX_ID_CHARS,
+    MAX_TOPIC_KEYS,
     SUBJECT_CODE_PATTERN,
     ConceptPair,
     ConceptPairStatus,
+    QuoteMismatchError,
     SearchHit,
     TopicKey,
+    VaultEdit,
 )
 from ..services import vault as vault_service
 from .deps import ClockDep, VaultDep
@@ -29,7 +37,10 @@ router = APIRouter(prefix="/v1/vault")
 
 SubjectQuery = Annotated[str, Query(pattern=SUBJECT_CODE_PATTERN)]
 ChapterQuery = Annotated[str | None, Query(pattern=CHAPTER_CODE_PATTERN)]
-TopicKeysQuery = Annotated[list[TopicKey] | None, Query(alias="topic_key")]
+TopicKeysQuery = Annotated[list[TopicKey] | None, Query(alias="topic_key", max_length=MAX_TOPIC_KEYS)]
+ChunkIdPath = Annotated[str, Path(min_length=1, max_length=MAX_ID_CHARS)]
+PairIdPath = Annotated[str, Path(min_length=1, max_length=MAX_ID_CHARS)]
+EditorId = Annotated[str, Field(min_length=1, max_length=MAX_ID_CHARS)]
 
 
 class ChunkListResponse(BaseModel):
@@ -38,29 +49,29 @@ class ChunkListResponse(BaseModel):
 
 
 class ChunkLabelsPatch(StrictModel):
-    editor_id: str
+    editor_id: EditorId
     expected_version: int = Field(ge=1)
     chapter_code: str | None = Field(default=None, pattern=CHAPTER_CODE_PATTERN)
     category: ChunkCategory | None = None
-    topic_keys: list[TopicKey] | None = None
+    topic_keys: list[TopicKey] | None = Field(default=None, max_length=MAX_TOPIC_KEYS)
 
 
 class ConceptPairCreate(StrictModel):
-    editor_id: str
-    chunk_id: str = Field(min_length=1, max_length=128)
+    editor_id: EditorId
+    chunk_id: str = Field(min_length=1, max_length=MAX_ID_CHARS)
     term: str = Field(min_length=1, max_length=120)
     definition_quote: str = Field(min_length=8, max_length=600)
 
 
 class ConceptPairConfirm(StrictModel):
-    editor_id: str
+    editor_id: EditorId
     expected_version: int = Field(ge=1)
     term: str | None = Field(default=None, min_length=1, max_length=120)
     definition_quote: str | None = Field(default=None, min_length=8, max_length=600)
 
 
 class ConceptPairReject(StrictModel):
-    editor_id: str
+    editor_id: EditorId
     expected_version: int = Field(ge=1)
 
 
@@ -118,7 +129,9 @@ def search(
 
 
 @router.patch("/chunks/{chunk_id}/labels", response_model=KnowledgeChunk)
-def patch_chunk_labels(vault: VaultDep, chunk_id: str, body: ChunkLabelsPatch) -> KnowledgeChunk:
+def patch_chunk_labels(
+    vault: VaultDep, clock: ClockDep, chunk_id: ChunkIdPath, body: ChunkLabelsPatch
+) -> KnowledgeChunk:
     try:
         return vault_service.update_chunk_labels(
             vault,
@@ -127,6 +140,7 @@ def patch_chunk_labels(vault: VaultDep, chunk_id: str, body: ChunkLabelsPatch) -
             chapter_code=body.chapter_code,
             category=body.category,
             topic_keys=body.topic_keys,
+            edit=VaultEdit(editor_id=body.editor_id, at=clock()),
         )
     except RecordNotFoundError as exc:
         raise _not_found(exc) from exc
@@ -138,11 +152,16 @@ def patch_chunk_labels(vault: VaultDep, chunk_id: str, body: ChunkLabelsPatch) -
 def create_concept_pair(vault: VaultDep, clock: ClockDep, body: ConceptPairCreate) -> ConceptPair:
     try:
         return vault_service.create_concept_pair(
-            vault, chunk_id=body.chunk_id, term=body.term, definition_quote=body.definition_quote, now=clock()
+            vault,
+            chunk_id=body.chunk_id,
+            term=body.term,
+            definition_quote=body.definition_quote,
+            now=clock(),
+            editor_id=body.editor_id,
         )
     except RecordNotFoundError as exc:
         raise _not_found(exc) from exc
-    except vault_service.QuoteMismatchError as exc:
+    except QuoteMismatchError as exc:
         raise _invalid("definition_quote", str(exc)) from exc
     except ValidationError as exc:
         raise _validation(exc) from exc
@@ -159,7 +178,9 @@ def list_concept_pairs(
 
 
 @router.post("/concept-pairs/{pair_id}/confirm", response_model=ConceptPair)
-def confirm_concept_pair(vault: VaultDep, clock: ClockDep, pair_id: str, body: ConceptPairConfirm) -> ConceptPair:
+def confirm_concept_pair(
+    vault: VaultDep, clock: ClockDep, pair_id: PairIdPath, body: ConceptPairConfirm
+) -> ConceptPair:
     try:
         return vault_service.confirm_concept_pair(
             vault,
@@ -168,21 +189,27 @@ def confirm_concept_pair(vault: VaultDep, clock: ClockDep, pair_id: str, body: C
             now=clock(),
             term=body.term,
             definition_quote=body.definition_quote,
+            editor_id=body.editor_id,
         )
     except RecordNotFoundError as exc:
         raise _not_found(exc) from exc
     except VersionConflictError as exc:
         raise _conflict(exc) from exc
-    except vault_service.QuoteMismatchError as exc:
+    except QuoteMismatchError as exc:
         raise _invalid("definition_quote", str(exc)) from exc
     except ValidationError as exc:
         raise _validation(exc) from exc
 
 
 @router.post("/concept-pairs/{pair_id}/reject", response_model=ConceptPair)
-def reject_concept_pair(vault: VaultDep, pair_id: str, body: ConceptPairReject) -> ConceptPair:
+def reject_concept_pair(vault: VaultDep, clock: ClockDep, pair_id: PairIdPath, body: ConceptPairReject) -> ConceptPair:
     try:
-        return vault_service.reject_concept_pair(vault, pair_id, expected_version=body.expected_version)
+        return vault_service.reject_concept_pair(
+            vault,
+            pair_id,
+            expected_version=body.expected_version,
+            edit=VaultEdit(editor_id=body.editor_id, at=clock()),
+        )
     except RecordNotFoundError as exc:
         raise _not_found(exc) from exc
     except VersionConflictError as exc:

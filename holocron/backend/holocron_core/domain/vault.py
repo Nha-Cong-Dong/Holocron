@@ -3,13 +3,17 @@
 - `ConfirmedPage`/`ConfirmedDocumentText`: văn bản người dùng đã xác nhận ở bộ nhập tài liệu, đầu vào duy nhất của
   bộ cắt chunk (§12.1, ADR-006 mục 1 và 3).
 - `ConceptPair`: cặp khái niệm – trích dẫn định nghĩa (ADR-007 mục 1). `definition_quote` được lưu ở dạng NFC đã gộp
-  khoảng trắng; việc kiểm nó là chuỗi con của `raw_text` của chunk (I3) do service làm, vì model không thấy chunk.
+  khoảng trắng. Model không thấy chunk, nên việc kiểm nó là chuỗi con của `raw_text` của chunk (I3) nằm ở
+  `check_definition_quote`: service gọi trước khi ghi, và mọi repository gọi lại trong giao dịch ghi và khi nạp.
+- `VaultEdit`: ai sửa và lúc nào (hàng Repudiation của §13), lưu kèm chunk hoặc cặp; không xuất hiện trong response.
+- `link_practice_chunks`: `linked_chunk_ids` theo §12.1, hàm thuần mà repository gọi trong giao dịch ghi.
 - `SearchHit`: một kết quả tìm kiếm BM25 (§6.6).
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from datetime import datetime
 from enum import Enum
 from typing import Annotated, Literal
@@ -17,15 +21,19 @@ from uuid import uuid4
 
 from pydantic import Field, field_validator, model_validator
 
-from .schemas import TOPIC_KEY_PATTERN, ChunkCategory, KnowledgeChunk, StrictModel, normalize_quote
+from .schemas import TOPIC_KEY_PATTERN, ChunkCategory, KnowledgeChunk, StrictModel, normalize_quote, quote_in_text
 
 SUBJECT_CODE_PATTERN = r"^[A-Z]{2,6}[0-9]{2,4}$"
 CHAPTER_CODE_PATTERN = r"^ch[0-9]{1,2}(\.[0-9]{1,2})?$"
 MAX_PAGE_LINES = 5000
 MAX_LINE_CHARS = 2000
 MIN_QUOTE_CHARS = 8
+MAX_DOCUMENT_PAGES = 300  # cùng giới hạn trang của bộ nhập PDF (§6.5, ADR-008 mục 4)
+MAX_TOPIC_KEY_CHARS = 128
+MAX_TOPIC_KEYS = 32
+MAX_ID_CHARS = 128  # `chunk_id`, `pair_id`, `editor_id`
 
-TopicKey = Annotated[str, Field(pattern=TOPIC_KEY_PATTERN)]
+TopicKey = Annotated[str, Field(pattern=TOPIC_KEY_PATTERN, max_length=MAX_TOPIC_KEY_CHARS)]
 
 
 class ConfirmedPage(StrictModel):
@@ -54,8 +62,8 @@ class ConfirmedDocumentText(StrictModel):
     subject_code: str = Field(pattern=SUBJECT_CODE_PATTERN)
     chapter_code: str = Field(pattern=CHAPTER_CODE_PATTERN)
     category: ChunkCategory = ChunkCategory.THEORY
-    topic_keys: list[TopicKey] = Field(default_factory=list)
-    pages: list[ConfirmedPage] = Field(min_length=1)
+    topic_keys: list[TopicKey] = Field(default_factory=list, max_length=MAX_TOPIC_KEYS)
+    pages: list[ConfirmedPage] = Field(min_length=1, max_length=MAX_DOCUMENT_PAGES)
 
     @model_validator(mode="after")
     def _pages_in_order(self) -> ConfirmedDocumentText:
@@ -63,6 +71,33 @@ class ConfirmedDocumentText(StrictModel):
         if numbers != sorted(set(numbers)):
             raise ValueError("pages phải theo page_number tăng dần, không trùng")
         return self
+
+
+class QuoteMismatchError(ValueError):
+    """Trích dẫn không phải chuỗi con nguyên văn (NFC + gộp khoảng trắng) của văn bản chunk (I3)."""
+
+    def __init__(self, chunk_id: str) -> None:
+        super().__init__(
+            f"definition_quote không phải chuỗi con nguyên văn của chunk {chunk_id} "
+            "(đã chuẩn hoá NFC và khoảng trắng, I3)"
+        )
+        self.chunk_id = chunk_id
+
+
+def check_definition_quote(chunk_id: str, raw_text: str, definition_quote: str) -> None:
+    """I3: `definition_quote` là chuỗi con của `raw_text` của chunk sau NFC và gộp khoảng trắng.
+
+    Sai ⇒ `QuoteMismatchError`; không sửa hộ trích dẫn.
+    """
+    if not quote_in_text(definition_quote, raw_text):
+        raise QuoteMismatchError(chunk_id)
+
+
+class VaultEdit(StrictModel):
+    """Người sửa và thời điểm của lần sửa gần nhất (sửa nhãn chunk; tạo, xác nhận, từ chối cặp khái niệm)."""
+
+    editor_id: str = Field(min_length=1, max_length=MAX_ID_CHARS)
+    at: datetime
 
 
 class ConceptPairStatus(str, Enum):
@@ -127,3 +162,40 @@ class SearchHit(StrictModel):
     chunk: KnowledgeChunk
     score: float
     index: Literal["primary", "no_diacritics"]
+
+
+def _page_gap(chunk: KnowledgeChunk, other: KnowledgeChunk) -> int:
+    """Khoảng cách trang giữa hai đoạn `[page_number, page_end]`; hai đoạn chồng nhau thì 0."""
+    first_end = chunk.page_end or chunk.page_number
+    other_end = other.page_end or other.page_number
+    return max(0, other.page_number - first_end, chunk.page_number - other_end)
+
+
+def _nearest_theory(chunk: KnowledgeChunk, candidates: list[KnowledgeChunk]) -> str:
+    """`chunk_id` của chunk gần `chunk` nhất: cùng tài liệu trước, rồi khoảng cách trang, trang, `chunk_id`."""
+    ranked = sorted(
+        candidates,
+        key=lambda other: (other.doc_id != chunk.doc_id, _page_gap(chunk, other), other.page_number, other.chunk_id),
+    )
+    return ranked[0].chunk_id
+
+
+def link_practice_chunks(chunks: Sequence[KnowledgeChunk]) -> dict[str, list[str]]:
+    """`linked_chunk_ids` của mọi chunk trong `chunks` (các chunk của cùng một môn) theo §12.1.
+
+    Chunk `PRACTICE`: với mỗi `topic_key` của nó, liên kết tới chunk `THEORY` có cùng khoá đó và gần nhất về trang.
+    "Gần nhất" xét lần lượt: cùng tài liệu trước tài liệu khác, khoảng cách trang nhỏ hơn, trang nhỏ hơn, `chunk_id`
+    nhỏ hơn; nên kết quả tất định. Danh sách sắp theo `chunk_id`, không trùng. Chunk `THEORY` và chunk `PRACTICE` không
+    có `topic_keys` thì danh sách rỗng.
+    """
+    theory = [chunk for chunk in chunks if chunk.category is ChunkCategory.THEORY]
+    links: dict[str, list[str]] = {}
+    for chunk in chunks:
+        found: set[str] = set()
+        if chunk.category is ChunkCategory.PRACTICE:
+            for topic_key in chunk.topic_keys:
+                candidates = [other for other in theory if topic_key in other.topic_keys]
+                if candidates:
+                    found.add(_nearest_theory(chunk, candidates))
+        links[chunk.chunk_id] = sorted(found)
+    return links

@@ -62,7 +62,11 @@ CREATE TABLE chunks (
     token_count           INTEGER NOT NULL CHECK (token_count >= 1),
     label_status          TEXT NOT NULL DEFAULT 'proposed' CHECK (label_status IN ('proposed', 'confirmed')),
     mapping_confidence    REAL CHECK (mapping_confidence IS NULL OR (mapping_confidence >= 0 AND mapping_confidence <= 1)),
-    version               INTEGER NOT NULL DEFAULT 1
+    version               INTEGER NOT NULL DEFAULT 1,
+    -- Người sửa nhãn gần nhất và thời điểm (hàng Repudiation của §13); null khi chưa ai sửa.
+    edited_by             TEXT,
+    edited_at             TEXT,
+    CHECK ((edited_by IS NULL) = (edited_at IS NULL))
 );
 CREATE INDEX ix_chunks_subject_chapter ON chunks (subject_code, chapter_code);
 CREATE INDEX ix_chunks_document_page ON chunks (document_id, page_number);
@@ -87,7 +91,11 @@ CREATE TABLE concept_pairs (
     mapping_confidence REAL CHECK (mapping_confidence IS NULL OR (mapping_confidence >= 0 AND mapping_confidence <= 1)),
     created_at         TEXT NOT NULL,
     confirmed_at       TEXT,
-    version            INTEGER NOT NULL DEFAULT 1
+    version            INTEGER NOT NULL DEFAULT 1,
+    -- Người tạo, xác nhận hoặc từ chối gần nhất và thời điểm (hàng Repudiation của §13); null với cặp LLM đề xuất.
+    edited_by          TEXT,
+    edited_at          TEXT,
+    CHECK ((edited_by IS NULL) = (edited_at IS NULL))
 );
 CREATE INDEX ix_concept_pairs_subject_status_chapter ON concept_pairs (subject_code, status, chapter_code);
 

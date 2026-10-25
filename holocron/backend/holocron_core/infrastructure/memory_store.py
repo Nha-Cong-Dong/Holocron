@@ -19,13 +19,14 @@ from ..domain.repositories import (
     RecordNotFoundError,
     SearchIndex,
     StorageError,
+    VaultEntity,
     VaultSearchUnavailableError,
     VersionConflictError,
     same_item_state,
 )
 from ..domain.schemas import ExamBlueprint, KnowledgeChunk
 from ..domain.twins import IdempotencyRecord
-from ..domain.vault import ConceptPair, ConceptPairStatus
+from ..domain.vault import ConceptPair, ConceptPairStatus, VaultEdit, check_definition_quote, link_practice_chunks
 
 __all__ = ["IDEMPOTENCY_TTL", "IngestionStore"]
 
@@ -41,6 +42,7 @@ class IngestionStore:
         self._idempotency: dict[tuple[str, str], IdempotencyRecord] = {}
         self._chunks: dict[str, KnowledgeChunk] = {}
         self._pairs: dict[str, ConceptPair] = {}
+        self._edits: dict[tuple[VaultEntity, str], VaultEdit] = {}
         self._lock = threading.Lock()
 
     def get_item(self, item_id: str) -> IngestionItem | None:
@@ -110,16 +112,42 @@ class IngestionStore:
     def vault_search_available(self) -> bool:
         return False
 
-    def add_chunk(self, chunk: KnowledgeChunk, search_body: str) -> None:
-        """Như bản SQLite: tài liệu phải tồn tại, `chunk_id` không trùng; `search_body` không dùng (không có FTS5)."""
+    def _check_new_chunk(self, chunk: KnowledgeChunk, pending: dict[str, KnowledgeChunk]) -> None:
+        """Như bản SQLite: không có embedding, tài liệu phải tồn tại, `chunk_id` không trùng."""
         if chunk.embedding_model is not None:
             raise ValueError("kho chưa lưu embedding_model (luôn null trong MVP, ADR-006 mục 4)")
+        if chunk.doc_id not in self._documents:
+            raise MissingReferenceError(f"không tìm thấy tài liệu nguồn {chunk.doc_id}")
+        if chunk.chunk_id in self._chunks or chunk.chunk_id in pending:
+            raise StorageError(f"chunk {chunk.chunk_id} đã tồn tại")
+
+    def _relink(self, subject_codes: set[str]) -> None:
+        """Tính lại `linked_chunk_ids` (§12.1) của mọi chunk thuộc các môn `subject_codes`; gọi khi đang giữ khoá."""
+        for subject_code in sorted(subject_codes):
+            members = [chunk for chunk in self._chunks.values() if chunk.subject_code == subject_code]
+            for chunk_id, linked in link_practice_chunks(members).items():
+                current = self._chunks[chunk_id]
+                if current.linked_chunk_ids != linked:
+                    self._chunks[chunk_id] = current.model_copy(update={"linked_chunk_ids": linked})
+
+    def add_chunk(self, chunk: KnowledgeChunk, search_body: str) -> None:
+        """Như bản SQLite; `search_body` không dùng (không có FTS5)."""
         with self._lock:
-            if chunk.doc_id not in self._documents:
-                raise MissingReferenceError(f"không tìm thấy tài liệu nguồn {chunk.doc_id}")
-            if chunk.chunk_id in self._chunks:
-                raise StorageError(f"chunk {chunk.chunk_id} đã tồn tại")
+            self._check_new_chunk(chunk, {})
             self._chunks[chunk.chunk_id] = chunk.model_copy(deep=True)
+
+    def add_chunks(self, chunks: Sequence[KnowledgeChunk]) -> list[KnowledgeChunk]:
+        """Kiểm mọi chunk mới trước khi ghi chunk nào, nên lỗi ở chunk bất kỳ không để lại phần nào."""
+        with self._lock:
+            pending: dict[str, KnowledgeChunk] = {}
+            for chunk in chunks:
+                if chunk.chunk_id in self._chunks:
+                    continue
+                self._check_new_chunk(chunk, pending)
+                pending[chunk.chunk_id] = chunk.model_copy(deep=True)
+            self._chunks.update(pending)
+            self._relink({chunk.subject_code for chunk in pending.values()})
+            return [self._chunks[chunk.chunk_id].model_copy(deep=True) for chunk in chunks]
 
     def get_chunk(self, chunk_id: str) -> KnowledgeChunk | None:
         chunk = self._chunks.get(chunk_id)
@@ -136,7 +164,11 @@ class IngestionStore:
     def match_chunk_ids(self, subject_code: str, fts_query: str, index: SearchIndex = "primary") -> list[str]:
         raise VaultSearchUnavailableError("kho in-memory không có FTS5; dùng BM25 tự cài (ADR-006 mục 4)")
 
-    def update_chunk_labels(self, chunk: KnowledgeChunk, expected_version: int) -> KnowledgeChunk:
+    def update_chunk_labels(
+        self, chunk: KnowledgeChunk, expected_version: int, edit: VaultEdit | None = None
+    ) -> KnowledgeChunk:
+        """Như bản SQLite: nhãn, `chapter_code` của cặp thuộc chunk, `linked_chunk_ids` của môn và người sửa đổi
+        cùng lúc dưới một khoá."""
         with self._lock:
             current = self._chunks.get(chunk.chunk_id)
             if current is None:
@@ -153,16 +185,30 @@ class IngestionStore:
                 "version": expected_version + 1,
             }
             stored = KnowledgeChunk.model_validate({**current.model_dump(), **labels})
-            self._chunks[chunk.chunk_id] = stored
-        return stored.model_copy(deep=True)
+            moved = {
+                pair_id: pair.model_copy(update={"chapter_code": stored.chapter_code, "version": pair.version + 1})
+                for pair_id, pair in self._pairs.items()
+                if pair.chunk_id == stored.chunk_id and pair.chapter_code != stored.chapter_code
+            }
+            self._chunks[stored.chunk_id] = stored
+            self._pairs.update(moved)
+            self._relink({stored.subject_code})
+            if edit is not None:
+                self._edits[("chunk", stored.chunk_id)] = edit
+            return self._chunks[stored.chunk_id].model_copy(deep=True)
 
-    def add_concept_pair(self, pair: ConceptPair) -> ConceptPair:
+    def add_concept_pair(self, pair: ConceptPair, edit: VaultEdit | None = None) -> ConceptPair:
+        """Kiểm I3 dưới khoá, trên văn bản chunk đang lưu, trước khi ghi."""
         with self._lock:
-            if pair.chunk_id not in self._chunks:
+            chunk = self._chunks.get(pair.chunk_id)
+            if chunk is None:
                 raise MissingReferenceError(f"không tìm thấy chunk {pair.chunk_id}")
             if pair.pair_id in self._pairs:
                 raise StorageError(f"cặp khái niệm {pair.pair_id} đã tồn tại")
+            check_definition_quote(chunk.chunk_id, chunk.raw_text, pair.definition_quote)
             self._pairs[pair.pair_id] = pair.model_copy(deep=True)
+            if edit is not None:
+                self._edits[("concept_pair", pair.pair_id)] = edit
         return pair
 
     def get_concept_pair(self, pair_id: str) -> ConceptPair | None:
@@ -181,7 +227,10 @@ class IngestionStore:
         ]
         return sorted(found, key=lambda pair: (pair.chapter_code, pair.term, pair.pair_id))
 
-    def update_concept_pair(self, pair: ConceptPair, expected_version: int) -> ConceptPair:
+    def update_concept_pair(
+        self, pair: ConceptPair, expected_version: int, edit: VaultEdit | None = None
+    ) -> ConceptPair:
+        """Kiểm I3 dưới khoá, trên văn bản chunk đang lưu, trước khi ghi."""
         with self._lock:
             current = self._pairs.get(pair.pair_id)
             if current is None:
@@ -197,5 +246,13 @@ class IngestionStore:
                 "version": expected_version + 1,
             }
             stored = ConceptPair.model_validate({**current.model_dump(), **changes})
-            self._pairs[pair.pair_id] = stored
+            chunk = self._chunks.get(stored.chunk_id)
+            check_definition_quote(stored.chunk_id, "" if chunk is None else chunk.raw_text, stored.definition_quote)
+            self._pairs[stored.pair_id] = stored
+            if edit is not None:
+                self._edits[("concept_pair", stored.pair_id)] = edit
         return stored.model_copy(deep=True)
+
+    def get_last_edit(self, entity: VaultEntity, key: str) -> VaultEdit | None:
+        edit = self._edits.get((entity, key))
+        return None if edit is None else edit.model_copy()

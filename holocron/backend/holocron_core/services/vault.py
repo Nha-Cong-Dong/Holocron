@@ -1,13 +1,18 @@
 """Knowledge Vault (SPECIFICATION §5.8, §6.6, §12; ADR-006, ADR-007): nhập chunk, liệt kê, tìm kiếm BM25, sửa nhãn,
 cặp khái niệm và nguồn trích dẫn theo môn.
 
-- **Nhập:** chỉ từ văn bản người dùng đã xác nhận (`ConfirmedDocumentText`), cắt tất định ở `vault_chunking`.
+- **Nhập:** chỉ từ văn bản người dùng đã xác nhận (`ConfirmedDocumentText`), cắt tất định ở `vault_chunking`, ghi
+  nguyên tử theo lô (`VaultRepository.add_chunks`).
 - **Tìm kiếm (ADR-006 mục 4–5):** truy vấn và văn bản chunk qua cùng bộ tách từ (`domain.search_text`). Tập ứng viên
   lấy từ FTS5 khi kho có (`match_chunk_ids`), ngược lại so token trực tiếp; điểm luôn là BM25 tự tính trên cùng bộ
-  token, nên kho SQLite có hay không có FTS5 và kho in-memory cho cùng kết quả. Chỉ mục chính (giữ dấu) chạy trước;
+  token, nên kho SQLite có hay không có FTS5 và kho in-memory cho cùng kết quả: FTS5 chỉ lọc ứng viên và nhận đúng
+  token Python (kể cả token đã bỏ dấu của chỉ mục phụ), nên không loại sót chunk nào mà BM25 tự cài chấm điểm > 0. Chỉ mục chính (giữ dấu) chạy trước;
   chỉ mục không dấu chỉ chạy khi chỉ mục chính không trả kết quả nào. Hoà điểm thì xếp theo `chunk_id`.
 - **Cặp khái niệm (ADR-007 mục 1):** `definition_quote` PHẢI là chuỗi con của `raw_text` của chunk sau NFC và gộp
-  khoảng trắng (I3); sai thì `QuoteMismatchError`, không lưu và không sửa hộ.
+  khoảng trắng (I3); sai thì `QuoteMismatchError`, không lưu và không sửa hộ. Repository kiểm lại trong giao dịch
+  ghi, nên bất biến đúng cả khi gọi thẳng repository.
+- **Người sửa:** mọi thao tác của người dùng nhận `VaultEdit` (người sửa, thời điểm) và repository lưu kèm bản ghi
+  (hàng Repudiation của §13).
 - **`VaultCitationProvider` (ADR-006 mục 6):** chỉ trả trích dẫn của chunk cùng `subject_code` với blueprint.
 """
 
@@ -20,10 +25,33 @@ from datetime import datetime
 from typing import Literal
 
 from ..domain.repositories import RecordNotFoundError, SearchIndex, VaultRepository
-from ..domain.schemas import BlueprintSlot, ChunkCategory, Citation, KnowledgeChunk, quote_in_text
-from ..domain.search_text import no_diacritics_tokens, search_body, search_tokens
-from ..domain.vault import ConceptPair, ConceptPairStatus, ConfirmedDocumentText, SearchHit
+from ..domain.schemas import BlueprintSlot, ChunkCategory, Citation, KnowledgeChunk
+from ..domain.search_text import no_diacritics_tokens, search_tokens
+from ..domain.vault import (
+    ConceptPair,
+    ConceptPairStatus,
+    ConfirmedDocumentText,
+    QuoteMismatchError,
+    SearchHit,
+    VaultEdit,
+)
+from ..domain.vault import check_definition_quote as check_quote_text
 from .vault_chunking import build_chunks
+
+__all__ = [
+    "QuoteMismatchError",
+    "VaultCitationProvider",
+    "bm25_scores",
+    "check_definition_quote",
+    "confirm_concept_pair",
+    "create_concept_pair",
+    "fts_query",
+    "ingest_confirmed_text",
+    "list_chunks",
+    "reject_concept_pair",
+    "search_chunks",
+    "update_chunk_labels",
+]
 
 BM25_K1 = 1.2
 BM25_B = 0.75
@@ -38,37 +66,19 @@ _TOKENIZERS: tuple[tuple[SearchIndex, Callable[[str], list[str]]], ...] = (
 )
 
 
-class QuoteMismatchError(ValueError):
-    """Trích dẫn không phải chuỗi con nguyên văn (NFC + gộp khoảng trắng) của văn bản chunk (I3)."""
-
-    def __init__(self, chunk_id: str) -> None:
-        super().__init__(
-            f"definition_quote không phải chuỗi con nguyên văn của chunk {chunk_id} "
-            "(đã chuẩn hoá NFC và khoảng trắng, I3)"
-        )
-        self.chunk_id = chunk_id
-
-
 # --------------------------------------------------------------------------- #
 # Nhập và liệt kê chunk
 # --------------------------------------------------------------------------- #
 
 
 def ingest_confirmed_text(vault: VaultRepository, document: ConfirmedDocumentText) -> list[KnowledgeChunk]:
-    """Cắt văn bản đã xác nhận rồi ghi chunk cùng chỉ mục tìm kiếm; trả chunk theo thứ tự cắt.
+    """Cắt văn bản đã xác nhận rồi ghi mọi chunk cùng chỉ mục tìm kiếm trong một giao dịch; trả bản đang lưu của
+    từng chunk theo thứ tự cắt (kèm `linked_chunk_ids` đã tính lại).
 
-    Nhập lại cùng văn bản là idempotent: chunk đã có (cùng `chunk_id`) giữ nguyên bản đang lưu, kể cả nhãn đã sửa.
-    Tài liệu không có ⇒ `MissingReferenceError` từ kho.
+    Nguyên tử: lỗi ở bất kỳ chunk nào thì không chunk nào được ghi. Nhập lại cùng văn bản là idempotent: chunk đã có
+    (cùng `chunk_id`) giữ nguyên bản đang lưu, kể cả nhãn đã sửa. Tài liệu không có ⇒ `MissingReferenceError` từ kho.
     """
-    stored: list[KnowledgeChunk] = []
-    for chunk in build_chunks(document):
-        existing = vault.get_chunk(chunk.chunk_id)
-        if existing is not None:
-            stored.append(existing)
-            continue
-        vault.add_chunk(chunk, search_body(chunk.raw_text))
-        stored.append(chunk)
-    return stored
+    return vault.add_chunks(build_chunks(document))
 
 
 def _matches_topics(chunk: KnowledgeChunk, topic_keys: Sequence[str]) -> bool:
@@ -103,10 +113,12 @@ def update_chunk_labels(
     chapter_code: str | None = None,
     category: ChunkCategory | None = None,
     topic_keys: Sequence[str] | None = None,
+    edit: VaultEdit | None = None,
 ) -> KnowledgeChunk:
     """Sửa nhãn (field nào `None` thì giữ nguyên) và đánh dấu `label_status = "confirmed"` (§6.6).
 
-    Đổi `category` thì tag `#theory`/`#practice_example` được dựng lại theo loại mới. Văn bản không đổi.
+    Đổi `category` thì tag `#theory`/`#practice_example` được dựng lại theo loại mới. Văn bản không đổi. Cùng giao
+    dịch với nhãn, kho cập nhật `chapter_code` của cặp khái niệm thuộc chunk, `linked_chunk_ids` của môn và `edit`.
     """
     current = vault.get_chunk(chunk_id)
     if current is None:
@@ -121,7 +133,7 @@ def update_chunk_labels(
             "label_status": "confirmed",
         }
     )
-    return vault.update_chunk_labels(updated, expected_version)
+    return vault.update_chunk_labels(updated, expected_version, edit)
 
 
 # --------------------------------------------------------------------------- #
@@ -208,15 +220,26 @@ def _chunk_of(vault: VaultRepository, chunk_id: str) -> KnowledgeChunk:
 
 
 def check_definition_quote(chunk: KnowledgeChunk, definition_quote: str) -> None:
-    """I3: `definition_quote` là chuỗi con của `chunk.raw_text` sau NFC và gộp khoảng trắng; sai ⇒ `QuoteMismatchError`."""
-    if not quote_in_text(definition_quote, chunk.raw_text):
-        raise QuoteMismatchError(chunk.chunk_id)
+    """I3: `definition_quote` là chuỗi con của `chunk.raw_text` sau NFC và gộp khoảng trắng; sai ⇒ `QuoteMismatchError`.
+
+    Kiểm sớm để báo lỗi trước khi dựng model; repository vẫn kiểm lại trong giao dịch ghi.
+    """
+    check_quote_text(chunk.chunk_id, chunk.raw_text, definition_quote)
 
 
 def create_concept_pair(
-    vault: VaultRepository, *, chunk_id: str, term: str, definition_quote: str, now: datetime
+    vault: VaultRepository,
+    *,
+    chunk_id: str,
+    term: str,
+    definition_quote: str,
+    now: datetime,
+    editor_id: str | None = None,
 ) -> ConceptPair:
-    """Người dùng tự tạo cặp bằng cách bôi đoạn trong chunk: `proposed_by = "user"`, `status = "confirmed"` (§6.6)."""
+    """Người dùng tự tạo cặp bằng cách bôi đoạn trong chunk: `proposed_by = "user"`, `status = "confirmed"` (§6.6).
+
+    `editor_id` (nếu có) được lưu làm người sửa gần nhất, thời điểm `now`.
+    """
     chunk = _chunk_of(vault, chunk_id)
     check_definition_quote(chunk, definition_quote)
     pair = ConceptPair(
@@ -230,7 +253,7 @@ def create_concept_pair(
         created_at=now,
         confirmed_at=now,
     )
-    return vault.add_concept_pair(pair)
+    return vault.add_concept_pair(pair, None if editor_id is None else VaultEdit(editor_id=editor_id, at=now))
 
 
 def _pair_of(vault: VaultRepository, pair_id: str) -> ConceptPair:
@@ -248,8 +271,9 @@ def confirm_concept_pair(
     now: datetime,
     term: str | None = None,
     definition_quote: str | None = None,
+    editor_id: str | None = None,
 ) -> ConceptPair:
-    """Sửa (nếu có) rồi xác nhận; trích dẫn luôn được kiểm lại với văn bản chunk (I3)."""
+    """Sửa (nếu có) rồi xác nhận; trích dẫn luôn được kiểm lại với văn bản chunk (I3). `editor_id` như ở tạo cặp."""
     pair = _pair_of(vault, pair_id)
     quote = pair.definition_quote if definition_quote is None else definition_quote
     check_definition_quote(_chunk_of(vault, pair.chunk_id), quote)
@@ -262,14 +286,17 @@ def confirm_concept_pair(
             "confirmed_at": now,
         }
     )
-    return vault.update_concept_pair(updated, expected_version)
+    edit = None if editor_id is None else VaultEdit(editor_id=editor_id, at=now)
+    return vault.update_concept_pair(updated, expected_version, edit)
 
 
-def reject_concept_pair(vault: VaultRepository, pair_id: str, *, expected_version: int) -> ConceptPair:
+def reject_concept_pair(
+    vault: VaultRepository, pair_id: str, *, expected_version: int, edit: VaultEdit | None = None
+) -> ConceptPair:
     """Từ chối: cặp không còn vào nhóm ứng viên sinh câu (ADR-007 mục 1)."""
     pair = _pair_of(vault, pair_id)
     updated = pair.model_copy(update={"status": ConceptPairStatus.REJECTED, "confirmed_at": None})
-    return vault.update_concept_pair(updated, expected_version)
+    return vault.update_concept_pair(updated, expected_version, edit)
 
 
 # --------------------------------------------------------------------------- #

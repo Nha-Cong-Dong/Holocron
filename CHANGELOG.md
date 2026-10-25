@@ -13,6 +13,7 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 - Template SJF không ưu tiên `os_sjf_avg_waiting` (topic `os.cpu_sched.sjf.avg_waiting_time`) với 3 misconception `WAIT_CONFUSED_WITH_TURNAROUND`, `SJF_IGNORES_ARRIVAL`, `SJF_COMPUTED_AS_SRTF`, đăng ký trong `template_library` và registry; kiểm bằng bộ giải tham chiếu độc lập, property test 200 seed (tỉ lệ nhận seed 16 %), tất định và sandbox không thoát bất thường. Chưa đăng ký ở Ingestion Gate (`TABLE_SCHEMAS`, `TOPIC_ALGORITHMS`).
 
 ### 🛠️ Cải tiến & Tối ưu
+- Spec v0.7 và tài liệu theo quyết định tối 2026-10-25: §0 thu hẹp I1 cho bộ tính điểm chấm câu trả lời của người học, thêm quy tắc ESSAY vào I3/I4, artifact lời giải theo `kind` thay Gantt; SQLite in-memory khi không đặt `HOLOCRON_DATA_DIR`; `LOW_TEXT_SCORE`; bỏ `temperature`; `page_source` bắt buộc với item từ PDF; 503 chỉ khi kho SQLite bận; nối câu lý thuyết vào twin; nháp D6 (§10.1). Áp dụng diff đã duyệt vào CLAUDE.md (§2.1, §2.2 cho `infrastructure/` import `sandbox.os_limits`, §5, §7, §9) và ADR-004…008. `.env.example`, RELEASE_CHECKLIST (VLM tuỳ chọn có điều kiện) và `docs/releases/README.md` cập nhật cho khớp.
 - Spec v0.6 (quyết định 2026-10-24/25):
   - `format` (MCQ4/NUMERICAL/ESSAY) tách khỏi `question_kind`; mỗi môn có `exam_format`.
   - Essay "Trình bày khái niệm X" chấm offline bằng n-gram âm tiết, báo "khớp x/y ý", không cho điểm tuyệt đối; chỉ làm nếu kịp mốc 29/10 (§5.14, §6.9).

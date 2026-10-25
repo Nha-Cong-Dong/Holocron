@@ -20,7 +20,7 @@ Lộ trình dự kiến:
 | Tag | Nội dung |
 |---|---|
 | `v0.1.0-alpha` | Deterministic Core và Ingestion Gate cơ bản |
-| `v0.2.0-beta` | VLM dual-pass, Table Auditor, SJF, Twin và Gantt |
+| `v0.2.0-beta` | Table Auditor, SJF, Twin và Gantt; VLM dual-pass là tuỳ chọn có điều kiện (RELEASE_CHECKLIST mục 5, 2026-10-25) |
 | `v1.0.0-rc` | MVP demo Hackathon |
 
 Bản pre-release (có `-`) được tag trên `develop`. Bản ổn định (không có `-`) chỉ được tag trên commit là tổ tiên của `main`; workflow `release.yml` từ chối nếu không đúng.

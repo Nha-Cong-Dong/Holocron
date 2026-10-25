@@ -2,11 +2,11 @@
 
 | Trường | Giá trị |
 |---|---|
-| Trạng thái | **v0.5** (2026-10-24, Đợt 2b): thêm contract cho bộ nhập PDF, Knowledge Vault, blueprint và lưu trữ SQLite theo ADR-005…008 (§5.7–§5.13, §6.5–§6.7, §7.4); so khớp I3 sau chuẩn hoá NFC (§0, đã duyệt 2026-10-24); 7 điểm của ADR-008 mục 8–14 và R6 được duyệt 2026-10-24. Phần nào của các mục mới vượt ra ngoài ADR đã *Chấp nhận* thì ghi "đề xuất (chờ duyệt)". Các mục mới mô tả contract mục tiêu; code chưa triển khai trừ khi ghi "đã triển khai". **v0.4** (2026-10-23): chốt §1, câu chữ I2 và I4 ở §0 cho câu lý thuyết (ADR-007) và §13.1; cập nhật 2026-10-24: ba môn demo và §1.6, engine OCR theo ADR-008, R6 (§6.3, §10, §17). Thay đổi contract PHẢI qua PR sửa tài liệu này trước. |
+| Trạng thái | **v0.6** (2026-10-25): ghi các quyết định người dùng chốt ngày 2026-10-24/25: mục tiêu sản phẩm (§1.2); `format` thêm `ESSAY` và `exam_format` theo môn (§1.5, §5.14, §6.8); chấm tự luận offline bằng n-gram, "MVP nếu còn thời gian" (§1.5, §5.14, §6.9); LLM là tuỳ chọn, chế độ khả năng thay quy tắc 503 (§5.12, §6.0, §11.4); adapter LLM qua gateway của ban tổ chức (§11.2, §11.5, §13.1); R10 chọn (c) (§8.1); kiểm Host luôn bật, token theo `HOLOCRON_REQUIRE_TOKEN` (§13.1); lịch lát cắt dọc (§16). 14 trong 15 điểm "đề xuất (chờ duyệt)" của v0.5 được duyệt 2026-10-25; điểm "503 khi thiếu key" bị thay (§17 D7). Phần mới vượt ra ngoài quyết định đã duyệt ghi "đề xuất (chờ duyệt)"; chỗ lệch ADR ghi "đã duyệt 2026-10-25, chờ sửa ADR-00x". **v0.5** (2026-10-24, Đợt 2b): thêm contract cho bộ nhập PDF, Knowledge Vault, blueprint và lưu trữ SQLite theo ADR-005…008 (§5.7–§5.13, §6.5–§6.7, §7.4); so khớp I3 sau chuẩn hoá NFC (§0, đã duyệt 2026-10-24); 7 điểm của ADR-008 mục 8–14 và R6 được duyệt 2026-10-24. Phần nào của các mục mới vượt ra ngoài ADR đã *Chấp nhận* thì ghi "đề xuất (chờ duyệt)". Các mục mới mô tả contract mục tiêu; code chưa triển khai trừ khi ghi "đã triển khai". **v0.4** (2026-10-23): chốt §1, câu chữ I2 và I4 ở §0 cho câu lý thuyết (ADR-007) và §13.1; cập nhật 2026-10-24: ba môn demo và §1.6, engine OCR theo ADR-008, R6 (§6.3, §10, §17). Thay đổi contract PHẢI qua PR sửa tài liệu này trước. |
 | Phạm vi | MVP đa môn cho sinh viên tự ôn luyện: nhập PDF tài liệu và đề của môn bất kỳ (bộ nhập theo tầng, có màn hình xem lại) · Knowledge Vault · Ingestion Gate · câu tính toán do sandbox tính · câu lý thuyết có trích dẫn nguyên văn · desktop app Tauri. Ba môn demo: Kỹ thuật vi xử lý (ARM Assembly), Xác suất thống kê, Triết học Mác–Lênin (§1.5). CPU Scheduling (Round Robin, SJF) chỉ còn là fixture kiểm thử và walkthrough |
-| Thiết kế đa môn | ADR-005 (pipeline câu hỏi không phụ thuộc topic), ADR-006 (Knowledge Vault đa môn), ADR-007 (câu lý thuyết và chấm câu trả lời), ADR-008 (bộ nhập PDF theo tầng). Cả bốn ADR ở trạng thái *Chấp nhận* (2026-10-23); engine OCR của ADR-008 chốt ngày 2026-10-24. Contract của các ADR này được viết vào §5.7–§5.13, §6.5–§6.7 và §7.4 ngày 2026-10-24 (Đợt 2b); code và `types/holocron.ts` cập nhật ở nhánh triển khai. |
+| Thiết kế đa môn | ADR-005 (pipeline câu hỏi không phụ thuộc topic), ADR-006 (Knowledge Vault đa môn), ADR-007 (câu lý thuyết và chấm câu trả lời), ADR-008 (bộ nhập PDF theo tầng). Cả bốn ADR ở trạng thái *Chấp nhận* (2026-10-23); engine OCR của ADR-008 chốt ngày 2026-10-24. Contract của các ADR này được viết vào §5.7–§5.13, §6.5–§6.7 và §7.4 ngày 2026-10-24 (Đợt 2b); code và `types/holocron.ts` cập nhật ở nhánh triển khai. Quyết định ngày 2026-10-25 lệch câu chữ của ADR-006, ADR-007 và ADR-008 ở ba chỗ: nhà cung cấp LLM (DeepSeek thành gateway của ban tổ chức, LLM tuỳ chọn), chấm tự luận offline trong MVP, và pdfplumber đã duyệt; spec ghi "chờ sửa ADR-00x" tại chỗ (§17 D9). |
 | Nguồn chân lý code | `holocron/backend/holocron_core/` (Pydantic v2) · `holocron/frontend/src/types/holocron.ts` (TypeScript, khớp 1:1) |
-| Tài liệu liên quan | `docs/adr/`, `.claude/CLAUDE.md`, `holocron/backend/examples/*.json` |
+| Tài liệu liên quan | `docs/adr/`, `.claude/CLAUDE.md`, `holocron/backend/examples/*.json`, `docs/tauri-spike-plan.md` (kế hoạch spike đóng gói Tauri) |
 | Quy ước | **PHẢI / KHÔNG ĐƯỢC / NÊN / CÓ THỂ** theo nghĩa RFC 2119 (MUST / MUST NOT / SHOULD / MAY) |
 
 ## Mục lục
@@ -59,20 +59,27 @@ Bài toán xuất phát từ hoàn cảnh của chính người làm dự án v�
 
 ### 1.2 Người dùng mục tiêu
 - **Duy nhất:** sinh viên tự học và ôn luyện các môn mình đang học, bằng tài liệu của chính môn đó (slide, giáo trình, đề thi cũ). Phạm vi không giới hạn ở một trường hay một ngành.
-- Một máy, một người dùng; người dùng tự cấp API key (BYOK).
+- Một máy, một người dùng. API key của LLM là **tuỳ chọn** (§11.4): không có key, app vẫn chạy offline các luồng chính; key, nếu có, do người dùng tự cấu hình (BYOK).
+- **Người dùng đầu tiên** là chính người làm dự án, sinh viên năm 3, dùng app để ôn thi thật (đã duyệt 2026-10-25). Vì vậy MVP phải ổn định đủ cho việc ôn thật, không chỉ chạy được trong buổi demo.
 - **Không phải người dùng:** giảng viên, nhà trường, trung tâm luyện thi. Sản phẩm không có chức năng ra đề cho lớp, quản lý lớp hay chấm bài cho người khác.
+
+**Mục tiêu sản phẩm (đã duyệt 2026-10-25):**
+- Desktop app Tauri chạy local cho sinh viên tự ôn (§1.4).
+- Ở hackathon: nổi bật so với các sản phẩm khác, nhờ con số do sandbox tính (I1), trích dẫn nguyên văn (I3) và con người xác nhận dữ liệu đọc từ tài liệu (I5).
+- Sau hackathon: phát triển thành app riêng. Thiết kế PHẢI mở rộng được theo hai trục, nhiều môn và nhiều dạng câu hỏi, mà không rẽ nhánh theo môn trong code (CLAUDE.md §1): môn mới đi qua dữ liệu (Vault, template, `subjects`), dạng câu mới đi qua trường phân biệt `format` và `question_kind` (§5.14).
 
 ### 1.3 Giải pháp
 - **Một bộ nhập PDF theo tầng** (§1.5, ADR-008) dùng chung cho tài liệu học và đề thi; mọi kết quả tách đều qua **màn hình xem lại và sửa** trước khi lưu.
 - **Knowledge Vault** lưu tài liệu học thành các chunk có trích dẫn nguyên văn (I3), gắn nhãn môn, chương, khái niệm (ADR-006).
 - **Hai nhóm câu hỏi** (§1.5): câu tính toán do template chạy trong sandbox tính mọi con số (I1, I2, I4); câu lý thuyết lấy đáp án là trích dẫn nguyên văn từ Vault (I3). Không đủ căn cứ thì đưa vào `review_tickets`, không bịa.
+- **Ba hình thức trả lời** (`format`, §5.14): trắc nghiệm `MCQ4`, câu trả lời số `NUMERICAL`, tự luận `ESSAY` (MVP nếu còn thời gian). Câu tự luận được chấm offline bằng code, chỉ báo khớp bao nhiêu ý, không cho điểm tuyệt đối.
 - **Con người xác nhận dữ liệu trước khi tính** (I5): đề chỉ vào pipeline sau khi Gate hết issue BLOCKING.
-- LLM chỉ đọc, gắn nhãn và viết mã; mọi đầu ra của LLM đi qua một cổng kiểm (§3.3, ADR-001).
+- LLM là tuỳ chọn (§11.4). Khi có, LLM chỉ đọc, gắn nhãn, đề xuất và viết mã; mọi đầu ra của LLM đi qua một cổng kiểm (§3.3, ADR-001).
 
 ### 1.4 Nền tảng & tech stack
 **Nền tảng:** desktop app chạy local, đóng gói bằng **Tauri**; backend Python chạy như tiến trình sidecar. Windows và Linux là nền tảng hạng nhất, mọi test PHẢI xanh trên cả hai. Webapp localhost hiện tại (Next.js dev server + uvicorn) chỉ là bước trung gian để phát triển. Backend chỉ nghe `127.0.0.1` (§13.1).
 
-**Tiêu chí chọn:** DeepSeek là API do ban tổ chức cấp; các thành phần còn lại chọn theo tiêu chí tốt nhất hiện có cho đúng việc nó làm trong code.
+**Tiêu chí chọn:** API LLM hiện có là key do ban tổ chức cấp, đi qua một gateway kiểu OpenAI, model `claude-haiku-5-5` (đã duyệt 2026-10-25; trước đó spec ghi DeepSeek). Nhà cung cấp là cấu hình, đổi được; không nhà cung cấp nào là mặc định bắt buộc (§11.2). Các thành phần còn lại chọn theo tiêu chí tốt nhất hiện có cho đúng việc nó làm trong code.
 
 | Thành phần | Lựa chọn | Lý do (gắn với cách code dùng) |
 |---|---|---|
@@ -81,10 +88,10 @@ Bài toán xuất phát từ hoàn cảnh của chính người làm dự án v�
 | Sandbox | Tiến trình con Python + ASTGuard + giới hạn OS | ADR-002: chạy được trên cả Windows (Job Object) và Linux (RLIMIT), không cần WASM |
 | Frontend | Next.js 15 App Router, TypeScript strict | Rewrite `/api/holocron/*` về backend cùng origin nên không cần CORS (§6.0); `types/holocron.ts` khớp 1:1 với Pydantic |
 | Desktop | Tauri | Đóng gói frontend và backend sidecar thành app cài trên máy; dùng WebView có sẵn của hệ điều hành nên bộ cài nhỏ hơn Electron |
-| Lưu trữ | SQLite (kế hoạch; hiện in-memory) | Một file cục bộ, không cần server; optimistic locking nguyên tử bằng `UPDATE … WHERE version = :expected` (BE-003, §6.2). Đề xuất (chờ duyệt, §5.13): dùng `sqlite3` của thư viện chuẩn thay SQLAlchemy, không thêm dependency |
-| LLM văn bản | DeepSeek qua giao thức tương thích OpenAI | Phân loại môn/chương/dạng câu/mức nhận thức, viết template, tách cặp khái niệm–định nghĩa. **Chỉ xử lý văn bản.** Tên model là cấu hình `HOLOCRON_LLM_*` (§11.2) |
-| VLM | Tuỳ chọn, BYOK, nhà cung cấp bất kỳ tương thích OpenAI nhận `image_url` | DeepSeek không có model thị giác (R4). VLM chỉ dùng cho trang có độ tin cậy thấp hoặc có hình vẽ. **Không có VLM, app vẫn chạy đủ luồng** nhờ tầng 1–3 của bộ nhập và màn hình xem lại; với PDF scan, điều này cần Tesseract và `vie.traineddata` do người dùng tự cài (G5, ADR-008 mục 8) |
-| Bộ nhập PDF | Theo ADR-008: pypdfium2 (tầng 1); tầng 2 dùng Tesseract `vie` làm engine chính, gọi binary do người dùng tự cài qua subprocess, và RapidOCR + onnxruntime chỉ làm lượt đọc thứ hai để đối chiếu token số và mã (chốt 2026-10-24 sau phép đo CER trên scan giả lập); pdfplumber (tầng 3, chỉ thêm khi làm tầng 3) | Thư viện đọc PDF và OCR chạy offline, giấy phép tương thích MIT (không GPL/AGPL; không dùng wheel `tesserocr` vì kèm thư viện LGPL/GPL), xử lý file không tin cậy trong tiến trình con có giới hạn |
+| Lưu trữ | SQLite (kế hoạch; hiện in-memory) | Một file cục bộ, không cần server; optimistic locking nguyên tử bằng `UPDATE … WHERE version = :expected` (BE-003, §6.2). Dùng `sqlite3` của thư viện chuẩn thay SQLAlchemy, không thêm dependency (D5, đã duyệt 2026-10-25, §5.13) |
+| LLM văn bản | **Tuỳ chọn** (§11.4). Endpoint bất kỳ theo giao thức OpenAI Chat Completions; hiện là gateway của ban tổ chức, model `claude-haiku-5-5` (§11.5) | Đề xuất nhãn môn/chương/dạng câu/mức nhận thức, đề xuất cặp khái niệm–định nghĩa, viết template. **Chỉ xử lý văn bản.** Địa chỉ và tên model là cấu hình `HOLOCRON_LLM_*` (§11.2). Có thể trỏ tới model chạy local qua `HOLOCRON_LLM_BASE_URL` (tuỳ chọn, MVP chưa làm) |
+| VLM | Tuỳ chọn, BYOK, nhà cung cấp bất kỳ tương thích OpenAI nhận `image_url`. **Đang park** (2026-10-25) | Chưa kiểm gateway của ban tổ chức có nhận ảnh hay không (R4). VLM chỉ dùng cho trang có độ tin cậy thấp hoặc có hình vẽ. **Không có VLM, app vẫn chạy đủ luồng** nhờ tầng 1–3 của bộ nhập và màn hình xem lại; với PDF scan, điều này cần Tesseract và `vie.traineddata` do người dùng tự cài (G5, ADR-008 mục 8) |
+| Bộ nhập PDF | Theo ADR-008: pypdfium2 (tầng 1); tầng 2 dùng Tesseract `vie` làm engine chính, gọi binary do người dùng tự cài qua subprocess, và RapidOCR + onnxruntime chỉ làm lượt đọc thứ hai để đối chiếu token số và mã (chốt 2026-10-24 sau phép đo CER trên scan giả lập); tầng 3 dùng `pdfplumber==0.11.10` (MIT), kéo theo `pdfminer.six==20260107` (MIT), đã duyệt 2026-10-25 (giấy phép kiểm trên PyPI cùng ngày; chờ sửa ADR-008 mục 1), chỉ thêm vào `pyproject.toml` khi làm tầng 3 | Thư viện đọc PDF và OCR chạy offline, giấy phép tương thích MIT (không GPL/AGPL; không dùng wheel `tesserocr` vì kèm thư viện LGPL/GPL), xử lý file không tin cậy trong tiến trình con có giới hạn |
 | Công cụ chất lượng | ruff, mypy `--strict`, pytest; Biome, Vitest | Một bộ cổng chạy ở cả pre-commit và CI (ADR-004) |
 
 ### 1.5 Phạm vi MVP
@@ -95,15 +102,32 @@ Bài toán xuất phát từ hoàn cảnh của chính người làm dự án v�
 | Nhóm | Đáp án đến từ | Bất biến chính | Khi không đủ căn cứ |
 |---|---|---|---|
 | Câu tính toán được | `solve()`/`make_distractors()` chạy trong sandbox; template đã kiểm chứng, hoặc template ứng viên do LLM viết rồi được kiểm chứng và người duyệt (§8, §10) | I1, I2, I4, I5 | `ReviewTicket` |
-| Câu lý thuyết | Trích dẫn nguyên văn từ chunk trong Vault. Câu MCQ4 sinh tất định từ các cặp khái niệm–trích dẫn mà DeepSeek đề xuất và người dùng đã xác nhận, gồm ba dạng: ghép khái niệm, điền khuyết, chọn định nghĩa đúng với phương án nhiễu cùng chương (ADR-007). LLM không soạn câu | I2, I3, I4 | `ReviewTicket`, không bịa |
+| Câu lý thuyết | Trích dẫn nguyên văn từ chunk trong Vault. Câu MCQ4 sinh tất định từ các cặp khái niệm–trích dẫn đã được người dùng xác nhận (cặp do LLM đề xuất nếu có LLM, hoặc người dùng tự bôi trong chunk), gồm ba dạng: ghép khái niệm, điền khuyết, chọn định nghĩa đúng với phương án nhiễu cùng chương (ADR-007). Câu tự luận "Trình bày khái niệm X" (MVP nếu còn thời gian, §5.14). LLM không soạn câu | I2, I3, I4 | `ReviewTicket`, không bịa |
+
+Nhóm câu (`question_kind`, ADR-005 mục 1) nói **câu hỏi lấy từ đâu** và giữ nguyên hai giá trị `computational`, `theory`. **Hình thức trả lời** là trường riêng `format` (đã duyệt 2026-10-25, §5.14):
+
+| `format` | Người học trả lời | Dùng với | Ai chấm |
+|---|---|---|---|
+| `MCQ4` | Chọn một trong 4 phương án | `computational`, `theory` | Code so khoá đã chọn với `correct_key` |
+| `NUMERICAL` | Nhập một số | `computational` | Code so với `numerical_answer` trong dung sai |
+| `ESSAY` | Viết đoạn văn | `theory`, chỉ dạng "Trình bày khái niệm X" trong MVP | Code chấm offline bằng độ phủ n-gram, báo "khớp x/y ý" (§5.14); `AnswerJudge` bằng LLM là nâng cấp tuỳ chọn sau MVP |
+
+**Hình thức thi theo môn (đã duyệt 2026-10-25).** Mỗi môn có `exam_format ∈ {mcq, essay, mixed}`, vì năm 1–2 đa số môn thi trắc nghiệm, còn năm 3 đa số thi tự luận. `exam_format` chỉ là mặc định cho hình thức của slot lý thuyết và để UI hiển thị (§5.14, §6.8). **Không có quy tắc hạ tự luận xuống trắc nghiệm:** code KHÔNG ĐƯỢC tự đổi slot `ESSAY` thành `MCQ4`; khi chấm tự luận chưa khả dụng, người dùng tự chọn hình thức của từng slot.
+
+**Tự luận trong MVP (đã duyệt 2026-10-25, chờ sửa ADR-007 mục 5; "MVP nếu còn thời gian").** Chỉ làm nếu lát cắt dọc ở §16 chạy được trước hết ngày 29/10; nếu không, toàn bộ phần tự luận chuyển sang sau MVP (§1.6) và capability `essay_grading_offline` báo `not_implemented` (§11.4).
+- **Phạm vi:** chỉ dạng "Trình bày khái niệm X". Đáp án tham chiếu là `definition_quote` của một `ConceptPair` đã xác nhận (ADR-007), nên giữ I3 với so khớp NFC.
+- **Chấm offline**, không cần LLM, thuộc Deterministic Core ("bộ tính điểm", CLAUDE.md §2.1): độ phủ n-gram âm tiết (bigram, trigram) sau chuẩn hoá NFC, theo từng ý tách từ `definition_quote`.
+- **Hiển thị:** "khớp x/y ý" và danh sách ý còn thiếu. KHÔNG có điểm số tuyệt đối.
+- **Giới hạn phải ghi trên UI:** người học diễn đạt khác với tài liệu (đồng nghĩa, đổi trật tự, viết tắt) có thể bị chấm sót ý. Kết quả là gợi ý để tự đối chiếu với trích dẫn, không phải điểm thi.
+- **Khi có LLM:** `AnswerJudge` (ADR-007 mục 5) là nâng cấp tuỳ chọn sau MVP; điểm và kết luận vẫn do code tính.
 
 **Bộ nhập PDF theo tầng** (ADR-008), dùng chung cho tài liệu học (đi vào Vault) và đề thi (đi vào Ingestion Gate, blueprint, twin):
 1. Tầng 1: đọc lớp chữ có sẵn của PDF số.
 2. Tầng 2: OCR cho trang không có chữ (PDF scan), hỗ trợ tốt tiếng Việt có dấu.
 3. Tầng 3: tách bố cục cho bảng và công thức.
-4. Tầng 4: VLM tuỳ chọn, người dùng tự nhập key, chỉ dùng cho trang có độ tin cậy thấp hoặc có hình vẽ.
+4. Tầng 4: VLM tuỳ chọn, người dùng tự nhập key, chỉ dùng cho trang có độ tin cậy thấp hoặc có hình vẽ. Đang park (2026-10-25) vì chưa kiểm gateway hiện có nhận ảnh hay không (R4).
 
-Phân loại (môn, chương, dạng câu, mức nhận thức) do DeepSeek làm trên văn bản đã tách, không dùng VLM. Luôn có màn hình xem lại và sửa trước khi lưu, vì OCR và VLM có thể đọc sai số liệu. Không tự train model.
+Phân loại (môn, chương, dạng câu, mức nhận thức) do LLM đề xuất trên văn bản đã tách khi có cấu hình LLM, không dùng VLM; không có LLM thì người dùng nhập hoặc giữ giá trị mặc định (§5.4, §11.4). Luôn có màn hình xem lại và sửa trước khi lưu, vì OCR và VLM có thể đọc sai số liệu. Không tự train model.
 
 **Môn demo.** Bộ tài liệu demo PHẢI có ít nhất **một PDF scan** và **một PDF có bảng** lấy từ tài liệu thật, để luồng OCR (tầng 2) và tầng 3 được thử trên dữ liệu thật; người làm dự án cung cấp các file này. Phần còn lại có thể do nhóm tự soạn. Tài liệu thật có thể có bản quyền nên chỉ giữ cục bộ trong `eval_data/` (đã nằm trong `.gitignore`), không commit (CLAUDE.md §6); repo chỉ chứa file mẫu tự tạo.
 
@@ -121,9 +145,11 @@ Quyết định ngày 2026-10-24: Kỹ thuật vi xử lý thay Hệ điều hà
 - **G3.** Hiệu năng: sinh một twin tính toán p95 ≤ 3 s, không tính thời gian LLM viết template; Gate phản hồi sau mỗi lần sửa ô p95 ≤ 500 ms. Ngưỡng thời gian cho bộ nhập PDF chốt sau khi đo (ADR-008).
 - **G4.** Tái lập: chạy lại cùng `(template_sha256, seed)` cho kết quả giống từng byte (trừ `twin_id`, `generated_at`, `sandbox_duration_ms`).
 - **G5.** Không có VLM, app vẫn chạy đủ luồng G1. Với PDF scan, điều này cần Tesseract và `vie.traineddata` do người dùng tự cài (ADR-008 mục 8).
+- **G6.** Không có LLM, app vẫn chạy offline lát cắt dọc ở §16 (PDF → Vault → câu lý thuyết MCQ → màn luyện tập); nhãn và cặp khái niệm do người dùng nhập. Tính năng nào cần LLM thì báo không khả dụng qua `RuntimeInfo.capabilities` (§5.12, §11.4), không làm hỏng phần còn lại (đã duyệt 2026-10-25).
 
 **Phi mục tiêu (MVP):**
-- **Chấm câu trả lời tự luận và `AnswerJudge`: sau MVP.** MVP chỉ có câu trắc nghiệm (MCQ4) và câu trả lời số, đều có đáp án xác định. Chấm tự luận cần bộ dữ liệu đánh giá riêng và chưa đo được trong thời hạn hackathon. CLAUDE.md §2.1 giữ chỗ cho `AnswerJudge` trong kiến trúc; thiết kế ở ADR-007.
+- **`AnswerJudge` chấm tự luận bằng LLM: sau MVP.** Cần bộ câu trả lời mẫu có nhãn để đo độ đúng, chưa làm kịp trong thời hạn hackathon. CLAUDE.md §2.1 giữ chỗ cho `AnswerJudge` trong kiến trúc; thiết kế ở ADR-007 mục 5.
+- **Chấm tự luận offline bằng n-gram: MVP nếu còn thời gian** (đã duyệt 2026-10-25, chờ sửa ADR-007 mục 5). Chỉ dạng "Trình bày khái niệm X", chỉ báo "khớp x/y ý" (§5.14). Không làm kịp trước hết ngày 29/10 thì chuyển sang sau MVP.
 - Tự train hoặc fine-tune model.
 - Bắt buộc có VLM; nhận dạng chữ viết tay.
 - Trích dẫn bằng bounding-box pixel (dùng `page_number` + `verbatim_quote`, ADR-003).
@@ -131,13 +157,16 @@ Quyết định ngày 2026-10-24: Kỹ thuật vi xử lý thay Hệ điều hà
 - Người dùng sửa template (D1). Câu phụ thuộc hình vẽ vẫn gắn `non_cloneable`.
 
 **Ràng buộc:**
-- Local-first: không phụ thuộc dịch vụ trả phí ngoài API LLM/VLM do người dùng tự cấp.
-- Lưu trữ: in-memory hiện tại → SQLite (thiết kế ở §5.13; dùng SQLAlchemy hay `sqlite3` của thư viện chuẩn là đề xuất chờ duyệt).
+- Local-first: không phụ thuộc dịch vụ trả phí nào. API LLM/VLM là tuỳ chọn, do người dùng tự cấu hình; khi dùng, dữ liệu rời máy theo §13.1.
+- Lưu trữ: in-memory hiện tại → SQLite bằng `sqlite3` của thư viện chuẩn (thiết kế ở §5.13; D5 đã duyệt 2026-10-25).
 
 ### 1.6 Tầm nhìn sau MVP
 Ghi chú theo yêu cầu người dùng (2026-10-24): sau MVP (khoảng 2026-10-26), dự án sẽ cố gắng làm tiếp các phần đã bị cắt khỏi MVP, liệt kê dưới đây.
 
-- `AnswerJudge` chấm câu trả lời tự luận theo rubric: LLM trả verdict từng ý kèm bằng chứng, code tính điểm (CLAUDE.md §2.1, ADR-007).
+- `AnswerJudge` chấm câu trả lời tự luận theo rubric: LLM trả verdict từng ý kèm bằng chứng, code tính điểm (CLAUDE.md §2.1, ADR-007). Đây là nâng cấp tuỳ chọn của bộ chấm offline (§5.14), chỉ chạy khi có cấu hình LLM.
+- Chấm tự luận offline bằng n-gram (§5.14), nếu không làm kịp trong MVP; các dạng tự luận khác "Trình bày khái niệm X" (so sánh, giải thích, nêu ví dụ), mỗi dạng cần rubric neo vào trích dẫn nguyên văn.
+- Đáp án nhiều giá trị dạng bản ghi cho câu `NUMERICAL` (R10 phương án (a), §8.1), qua một ADR riêng.
+- Trỏ `HOLOCRON_LLM_BASE_URL` tới model chạy local trên máy người dùng (tuỳ chọn; giao thức OpenAI nên không cần đổi contract, §11.2).
 - Tìm kiếm ngữ nghĩa trong Vault bằng embedding chạy offline, bổ sung cho tìm kiếm từ khoá.
 - Thêm dạng bài tính toán qua kho template đã kiểm chứng.
 - Sandbox lớp L4 (nsjail/seccomp trên Linux, AppContainer trên Windows) và bản macOS.
@@ -166,12 +195,16 @@ Ghi chú theo yêu cầu người dùng (2026-10-24): sau MVP (khoảng 2026-10-
 | Page Extraction | Kết quả đọc một trang PDF của bộ nhập theo tầng: các dòng, điểm tin cậy, cờ trang, đối chiếu chéo và lý do cần xem kỹ (§5.7, ADR-008) |
 | Cross-check | Đối chiếu token số và mã giữa lượt đọc chính (Tesseract) và lượt đọc thứ hai (RapidOCR) của cùng trang (ADR-008 mục 11) |
 | Concept Pair | Cặp khái niệm – trích dẫn định nghĩa nguyên văn trong một chunk; nguyên liệu của câu lý thuyết khi đã được người dùng xác nhận (§5.8, ADR-007) |
-| `question_kind` | Nhóm câu hỏi: `computational` (sandbox tính) hoặc `theory` (sinh tất định từ Vault) (ADR-005 mục 1) |
+| `question_kind` | Nhóm câu hỏi, tức câu hỏi lấy từ đâu: `computational` (sandbox tính) hoặc `theory` (sinh tất định từ Vault) (ADR-005 mục 1) |
+| `format` | Hình thức trả lời: `MCQ4`, `NUMERICAL` hoặc `ESSAY` (§1.5, §5.14). Độc lập với `question_kind` |
+| `exam_format` | Hình thức thi của một môn: `mcq`, `essay` hoặc `mixed`; chỉ là mặc định cho slot lý thuyết và để UI hiển thị (§5.14, §6.8) |
+| Ý (essay point) | Một đoạn cắt nguyên văn từ `definition_quote` theo dấu câu, đơn vị để chấm tự luận offline (§5.14) |
+| Capability | Một khả năng của app (OCR, sinh câu lý thuyết, đề xuất cặp khái niệm bằng LLM…) kèm `available` và lý do; `GET /v1/runtime` trả danh sách này (§5.12, §11.4) |
 | Executable Template | Script Python tuân thủ hợp đồng §8, do LLM sinh hoặc pre-computed đã kiểm chứng |
 | Twin Question | Câu hỏi đẳng cấu sinh từ template + seed |
 | Misconception | Lỗi nhận thức có mã (`RR_TREATED_AS_FCFS`…); mỗi phương án nhiễu hiện thành *badge* trên UI |
 | Gantt Segment | Một đoạn CPU chạy một tiến trình trong `[start, end)`; do sandbox sinh. Theo ADR-005 bước 3, sơ đồ Gantt là một `TimelineArtifact` (§5.11) |
-| BYOK | Bring Your Own Key: người dùng tự cấp API key cho LLM tương thích OpenAI |
+| BYOK | Bring Your Own Key: người dùng tự cấu hình API key cho LLM tương thích OpenAI. Key là tuỳ chọn (§11.4); key hiện có do ban tổ chức cấp, đi qua gateway của ban tổ chức (§11.5) |
 
 ## 3. Kiến trúc
 
@@ -188,7 +221,7 @@ flowchart LR
     R[routers/api.py]
     subgraph LLMGate["LLM Gate — KHÔNG tin cậy"]
       EX[services/extraction.py<br/>DocumentExtractor]
-      AU[TemplateAuthor<br/>LLM BYOK]
+      AU[TemplateAuthor<br/>LLM BYOK, tuỳ chọn]
     end
     subgraph Core["Deterministic Core — tin cậy"]
       G[services/ingestion_gate.py<br/>5 tín hiệu]
@@ -196,6 +229,7 @@ flowchart LR
       AST[sandbox/sandbox.py<br/>ASTGuard]
       SB[sandbox/_sandbox_child.py<br/>tiến trình con + giới hạn OS]
       TL[infrastructure/template_library.py<br/>template đã kiểm chứng]
+      EG[Bộ chấm tự luận offline<br/>n-gram, §5.14]
     end
     D[(domain/schemas.py)]
   end
@@ -207,6 +241,7 @@ flowchart LR
   P --> AU
   P --> AST --> SB
   P --> TL
+  R --> EG
   G -.-> D
   P -.-> D
 ```
@@ -221,10 +256,10 @@ flowchart LR
 | Infrastructure | `infrastructure/` | `domain/` | `services/`, `routers/` |
 | Routers | `routers/` | tất cả tầng dưới | — |
 
-Phụ thuộc bên ngoài (VLM, LLM, storage) PHẢI đi qua `Protocol` (`DocumentExtractor`, `TemplateAuthor`, `TemplateRegistry`, `CitationProvider`; sẽ thêm `PdfReader` theo ADR-008 mục 2 và các repository lưu trữ ở §5.13) và được cấp qua `Depends` hoặc tham số, để test thay được mà không gọi mạng.
+Phụ thuộc bên ngoài (VLM, LLM, storage) PHẢI đi qua `Protocol` (`DocumentExtractor`, `TemplateAuthor`, `TemplateRegistry`, `CitationProvider`; sẽ thêm `PdfReader` theo ADR-008 mục 2, các repository lưu trữ ở §5.13 và `ChatCompletionClient` cho adapter LLM ở §11.5) và được cấp qua `Depends` hoặc tham số, để test thay được mà không gọi mạng.
 
 ### 3.3 Ranh giới tin cậy
-- **Không tin cậy:** file người dùng tải lên; mọi output VLM (bảng, stem, phương án); mọi output LLM, kể cả mã template.
+- **Không tin cậy:** file người dùng tải lên; mọi output VLM (bảng, stem, phương án); mọi output LLM, kể cả mã template; câu trả lời tự luận người học gõ vào (chỉ là văn bản để so n-gram, §5.14, không bao giờ được thực thi hay gửi tới LLM khi chưa có `AnswerJudge`).
 - **Tin cậy:** `domain/schemas.py`, ASTGuard, sandbox runner, template `precomputed_verified`, dữ liệu ô có `verified_by_human=true`.
 - Dữ liệu không tin cậy PHẢI đi qua ít nhất một cổng tin cậy trước khi ảnh hưởng tới con số hiển thị: bảng → Ingestion Gate; mã template → ASTGuard + sandbox + validator `TwinQuestion`.
 
@@ -280,13 +315,17 @@ Bước 1–4 đã triển khai ở Tuần 2. Bước 5–7 là contract chốt,
 
 **Luồng nhập tài liệu bằng bộ nhập PDF (contract §6.5, chưa triển khai):** chọn PDF và `subject_code` → `POST /v1/documents` (202) → hỏi trạng thái bằng `GET /v1/documents/{id}` cho tới khi hết trang `pending` → xem lại từng trang (`GET …/pages/{page_number}`), sửa dòng (`PATCH …/lines`) → xác nhận trang hoặc cả tài liệu. Tài liệu học đã xác nhận được cắt chunk vào Vault (§6.6); trang đề đã xác nhận được tạo thành `IngestionItem` và đi tiếp qua bước 2–4 ở trên (§7.4).
 
+**Lát cắt dọc ưu tiên (đã duyệt 2026-10-25, §16):** PDF tài liệu học → Vault → câu lý thuyết MCQ → màn luyện tập. Các bước: nhập và xác nhận PDF (§6.5) → xác nhận cặp khái niệm, do LLM đề xuất nếu có, hoặc người dùng tự bôi (§6.6) → `POST /v1/blueprints` chỉ có `theory_slots` (§6.7) → `POST …/twins` → màn luyện tập. Màn luyện tập cho người học chọn phương án rồi mới hiện đáp án, trích dẫn và badge misconception; đúng hay sai là phép so khoá đã chọn với `correct_key` do backend trả, frontend không tính số nào (I1). Lát cắt này không cần sandbox, template hay LLM. Câu tự luận (nếu làm, §6.9) dùng cùng màn: người học gõ câu trả lời → `POST /v1/twins/{twin_id}/essay-grade` → hiện "khớp x/y ý" và các ý còn thiếu.
+
 ## 5. Data Contracts
 
 Nguồn chân lý là Pydantic; khối mã ở §5.1–§5.6 phản ánh đúng code ở commit chốt spec. Kiểu TypeScript tương ứng nằm trong `holocron/frontend/src/types/holocron.ts` với tên field snake_case giữ nguyên. Field Python `X | None` có default `None` luôn có mặt trong JSON response với giá trị `null`.
 
 **Contract theo ADR-005…008 (§5.7–§5.13, viết 2026-10-24).** Các mục này mô tả contract mục tiêu. Model đã có trong code được chép nguyên văn; chỗ khác code ghi rõ "đổi theo ADR-00x" (đã duyệt cùng ADR) hoặc "đề xuất (chờ duyệt)" (vượt ra ngoài ADR). Mọi model mới kế thừa `StrictModel` (`extra="forbid"`, cắt khoảng trắng). Mỗi field ghi nguồn dữ liệu trong comment: *code* (tính tất định), *sandbox* (I1), *người dùng*, *LLM đề xuất* (luôn qua một cổng kiểm), hoặc *engine đọc* (pypdfium2, Tesseract, RapidOCR, VLM).
 
-**Đánh số trang (đề xuất, chờ duyệt).** Mọi contract (API, JSON, SQLite) dùng `page_number` ≥ 1: `ExtractedTable`, `Citation`, `KnowledgeChunk`, `PageExtraction`, `IngestionItem`. `page_index` 0-based của pypdfium2 chỉ dùng bên trong worker đọc PDF; quy đổi `page_number = page_index + 1` tại ranh giới worker (ADR-008 mục 3, mục 13).
+**Duyệt ngày 2026-10-25.** 14 trong 15 điểm từng ghi "đề xuất (chờ duyệt)" ở v0.5 đã được duyệt và đổi nhãn tại chỗ thành "đã duyệt 2026-10-25"; danh sách ở §17 D7. Điểm thứ 15 ("503 khi thiếu key LLM") bị thay bằng chế độ khả năng (§11.4). Khi một khối được duyệt, các ghi chú "đề xuất" nội dòng bên trong khối đó cũng được duyệt. Ghi chú "đề xuất" nội dòng nằm ngoài các khối này vẫn chờ duyệt (§17 D8). Phần viết mới ở v0.6 ghi rõ "đã duyệt 2026-10-25" hoặc "đề xuất (chờ duyệt)".
+
+**Đánh số trang (đã duyệt 2026-10-25).** Mọi contract (API, JSON, SQLite) dùng `page_number` ≥ 1: `ExtractedTable`, `Citation`, `KnowledgeChunk`, `PageExtraction`, `IngestionItem`. `page_index` 0-based của pypdfium2 chỉ dùng bên trong worker đọc PDF; quy đổi `page_number = page_index + 1` tại ranh giới worker (ADR-008 mục 3, mục 13).
 
 ### 5.1 `ProcessItem` & `CPUSchedulingProblem` (`domain/schemas.py`)
 
@@ -400,17 +439,17 @@ class UploadResponse(BaseModel):
 
 **Thay đổi đã lên kế hoạch cho `IngestionItem` (chưa có trong code):**
 - Đổi theo ADR-005 bước 2: `problem: CPUSchedulingProblem | None` thay bằng `params: dict[str, Any] | None` (nguồn: *code*, chuyển bảng và `solver_inputs` qua `input_schema` của template đã kiểm chứng, §5.10; `null` khi chưa chuyển được). `SolverInputs.quantum` thay bằng các tham số vô hướng khai báo trong `input_schema.scalars`; `solver_inputs` thành `dict[str, int | float]` được kiểm theo `input_schema`. Form field `quantum` của §6.1 bị bỏ cùng bước này.
-- Đề xuất (chờ duyệt): `cross_check: Literal["ok", "mismatch", "unavailable", "not_applicable"] | None = None` (nguồn: *code*, chép từ `PageExtraction.cross_check.status` khi item được tạo từ trang PDF, §7.4). `null` với item tạo qua §6.1 hoặc `POST /v1/ingestion/items`, nên hành vi Gate của các luồng đó không đổi.
-- Đề xuất (chờ duyệt): `labels: ItemLabels` cho các nhãn mà `POST /v1/blueprints` cần (§5.9), sửa qua `PATCH /v1/ingestion/items/{id}/labels` (§6.7):
+- Đã duyệt 2026-10-25: `cross_check: Literal["ok", "mismatch", "unavailable", "not_applicable"] | None = None` (nguồn: *code*, chép từ `PageExtraction.cross_check.status` khi item được tạo từ trang PDF, §7.4). `null` với item tạo qua §6.1 hoặc `POST /v1/ingestion/items`, nên hành vi Gate của các luồng đó không đổi.
+- Đã duyệt 2026-10-25: `labels: ItemLabels` cho các nhãn mà `POST /v1/blueprints` cần (§5.9), sửa qua `PATCH /v1/ingestion/items/{id}/labels` (§6.7):
 
 ```python
 class ItemLabels(StrictModel):
     subject_code: str | None = Field(default=None, pattern=r"^[A-Z]{2,6}[0-9]{2,4}$")
         # người dùng; mặc định chép từ DocumentMeta.subject_code khi item đến từ bộ nhập (§6.5)
     chapter_code: str | None = Field(default=None, pattern=r"^ch[0-9]{1,2}(\.[0-9]{1,2})?$")
-        # LLM đề xuất trên văn bản trang, hoặc chép từ chunk Vault mà VaultCitationProvider chọn cho topic_key; người dùng sửa
+        # LLM đề xuất trên văn bản trang (khi có LLM, §11.4), hoặc chép từ chunk Vault mà VaultCitationProvider chọn cho topic_key; người dùng sửa
     cognitive_level: CognitiveLevel = CognitiveLevel.APPLY
-        # LLM đề xuất; mặc định "apply" khi không có key LLM; người dùng sửa
+        # LLM đề xuất khi có LLM; mặc định "apply" khi không có; người dùng sửa
     mapping_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
         # độ tin cậy LLM trả cho chapter_code/cognitive_level; = 1.0 khi người dùng đã xác nhận hoặc tự nhập
     confirmed_by_human: bool = False
@@ -442,7 +481,7 @@ class TwinQuestion(StrictModel):
 
 Quy tắc MCQ4: `correct_key ∉ distractor_to_misconception_map` và map phủ đúng 3 phương án còn lại (I2). NUMERICAL: không có `options`/`correct_key`, bắt buộc `numerical_answer.tolerance_abs`.
 
-Thay đổi theo ADR-005 (`question_kind`, `artifacts` thay `gantt`) và ADR-007 (câu lý thuyết) ở §5.11.
+Thay đổi theo ADR-005 (`question_kind`, `artifacts` thay `gantt`) và ADR-007 (câu lý thuyết) ở §5.11. `QuestionFormat` thêm `ESSAY` và `TwinQuestion` thêm field `essay` (đã duyệt 2026-10-25; chi tiết đề xuất ở §5.14).
 
 ### 5.6 Bổ sung chốt cho Tuần 2 Ngày 3 (`GanttSegment`, `TwinQuestion.gantt`, `TwinBatchRequest` và `TwinBatch` đã có trong code)
 
@@ -467,7 +506,8 @@ class TwinBatch(BaseModel):
 - `TwinQuestion.gantt` có default `[]`; với topic CPU Scheduling PHẢI không rỗng. Các segment PHẢI sắp theo `start`, không chồng lấn; khoảng CPU rảnh không có segment.
 - `gantt` PHẢI lấy từ khoá `"gantt"` của `solve()` (§8.1), KHÔNG ĐƯỢC tính lại ngoài sandbox (I1).
 - Khi thêm vào code, `holocron/frontend/src/types/holocron.ts` PHẢI cập nhật trong cùng PR.
-- `BlueprintCreate` bản v0.3 (chỉ có `item_ids`) được thay bằng bản ở §5.9. `GanttSegment` và `TwinQuestion.gantt` bị thay bằng `artifacts` theo ADR-005 bước 3 (§5.11). Đề xuất (chờ duyệt) cho `TwinBatch`: thêm `batch_id` và `created_at` để đọc lại batch (§6.7).
+- `BlueprintCreate` bản v0.3 (chỉ có `item_ids`) được thay bằng bản ở §5.9. `GanttSegment` và `TwinQuestion.gantt` bị thay bằng `artifacts` theo ADR-005 bước 3 (§5.11). Đã duyệt 2026-10-25 cho `TwinBatch`: thêm `batch_id` và `created_at` để đọc lại batch (§6.7).
+- `TwinBatchRequest.format` (đề xuất, chờ duyệt): chỉ ghi đè hình thức của slot tính toán và chỉ nhận `MCQ4` hoặc `NUMERICAL`; gửi `ESSAY` trả 422. Hình thức của slot lý thuyết lấy từ `TheorySlotSpec.format` (§5.9, §5.14).
 
 ### 5.7 Bộ nhập PDF: `PageExtraction` (ADR-008 mục 13)
 
@@ -529,9 +569,9 @@ class PageExtraction(StrictModel):
         # min(n_chính, n_phụ) / max(n_chính, n_phụ), n là số dòng; null khi không có lượt thứ hai (đã duyệt 2026-10-24)
     ink_outside_text_ratio: float | None = Field(default=None, ge=0.0, le=1.0)
         # mẫu số: tổng điểm ảnh mực sau nhị phân hoá (đã duyệt 2026-10-24); null khi trang không OCR
-    has_figure: bool = False
-    has_table: bool = False
-    has_formula: bool = False
+    has_figure: bool = False                      # code: cờ trang (ADR-008 mục 6, 9)
+    has_table: bool = False                       # code: cờ trang; KHÔNG lấy thẳng từ pdfplumber.find_tables (ghi chú tầng 3 dưới đây)
+    has_formula: bool = False                     # code: cờ trang (ADR-008 mục 6, 9)
     lines: list[ExtractedLine] = []               # trang OCR: text từ lượt chính; RapidOCR chỉ góp token để đối chiếu
     tables: list[ExtractedTable] = []             # đề xuất: bảng của tầng 3 (§5.2); rỗng khi tầng 3 chưa có
     cross_check: CrossCheck
@@ -544,8 +584,9 @@ class PageExtraction(StrictModel):
 - Validator: `status = "needs_review"` ⇔ `review_reasons` không rỗng và trang chưa `failed`; `failure_reason` có giá trị ⇔ `status = "failed"`; `line_index` liên tục `0..n-1`; mỗi `TokenMismatch.line_index` trỏ tới một dòng có cờ `TOKEN_MISMATCH`.
 - Trang `failed` vì `OCR_ENGINE_MISSING`: màn hình xem lại hiện hướng dẫn cài Tesseract và `vie.traineddata` (ADR-008 mục 8). Người dùng vẫn có thể gõ văn bản cho trang đó (§6.5) rồi xác nhận.
 - Màn hình xem lại cần đúng các dữ liệu trên: ảnh trang (render phía client bằng PDF.js từ file gốc), `lines[].bbox` để đặt dòng lên ảnh, `flags` và `review_reasons` để tô, `cross_check.mismatches` để hiện hai giá trị. Frontend không tự tính điểm hay ngưỡng nào.
+- **Ghi chú cho tầng 3 (đo ngày 2026-10-25 trên slide PDF thật):** `pdfplumber.find_tables` báo bảng ở hầu như mọi trang slide, vì khung viền của slide bị nhận nhầm là bảng. Vì vậy `has_table` PHẢI lọc thêm, không lấy thẳng kết quả `find_tables`. Cách lọc (đề xuất, chờ duyệt): bỏ bảng có đúng một ô, và bỏ bảng có khung bao phủ phần lớn diện tích trang; chỉ bật cờ khi bảng còn lại có ít nhất 2 hàng và 2 cột chứa chữ, đồng thời khớp với lưới toạ độ chữ của tầng 1–2 (ADR-008 mục 6). Ngưỡng là cấu hình (ADR-008 mục 12), hiệu chỉnh trên cùng bộ slide đã đo.
 
-**Tài liệu đã nhập** (đề xuất, chờ duyệt; mở rộng `DocumentMeta` ở §5.8):
+**Tài liệu đã nhập** (đã duyệt 2026-10-25; mở rộng `DocumentMeta` ở §5.8):
 
 ```python
 class PageSummary(StrictModel):
@@ -627,7 +668,7 @@ class ConceptPair(StrictModel):
     chunk_id: str                                # chunk chứa trích dẫn
     subject_code: str = Field(pattern=r"^[A-Z]{2,6}[0-9]{2,4}$")   # chép từ chunk
     chapter_code: str = Field(pattern=r"^ch[0-9]{1,2}(\.[0-9]{1,2})?$")   # chép từ chunk
-    term: str = Field(min_length=1, max_length=120)             # LLM đề xuất; người dùng sửa được
+    term: str = Field(min_length=1, max_length=120)             # LLM đề xuất (khi có LLM) hoặc người dùng nhập; người dùng sửa được
     definition_quote: str = Field(min_length=8, max_length=600)
         # LLM đề xuất hoặc người dùng bôi trong chunk; PHẢI là chuỗi con của chunk.raw_text (NFC + gộp khoảng trắng, I3)
     term_spans: list[tuple[int, int]] = []       # code: vị trí term trong definition_quote (NFC) để che bằng ____
@@ -642,7 +683,12 @@ class ConceptPair(StrictModel):
 - Cặp có trích dẫn không khớp nguyên văn bị loại ngay ở service, không lưu và không hiện cho người dùng (ADR-007 mục 1 bước 2).
 - Chỉ cặp `confirmed` vào nhóm ứng viên và vào `pool_sha256` (ADR-007 mục 2). Sửa `term` hay `definition_quote` của cặp đã xác nhận làm đổi `pool_sha256`, nên câu lý thuyết sinh sau đó đổi theo; twin đã sinh giữ nguyên (trích dẫn là bản chụp, ADR-006 mục 7).
 
-**`CitationProvider.citation_for` (đổi interface nội bộ, đề xuất, chờ duyệt).** ADR-006 mục 6 yêu cầu chọn chunk cùng `subject_code` với blueprint, nhưng chữ ký hiện tại `citation_for(self, slot: BlueprintSlot)` không có `subject_code`. Đề xuất `citation_for(self, subject_code: str, slot: BlueprintSlot) -> Citation | None`; phương án khác là truyền cả `ExamBlueprint`. Đây là `Protocol` trong `services/twin_batch.py`, không đổi API. Hệ quả: stub `FixedCitations` trong `tests/test_twin_batch.py` phải đổi chữ ký theo, tức sửa test sẵn có, cần người dùng đồng ý (CLAUDE.md §7). Slot lý thuyết không gọi `CitationProvider`: trích dẫn là `definition_quote` của cặp đúng (ADR-006 mục 6).
+**`CitationProvider.citation_for` (đổi interface nội bộ, đã duyệt 2026-10-25).** ADR-006 mục 6 yêu cầu chọn chunk cùng `subject_code` với blueprint, nhưng chữ ký hiện tại `citation_for(self, slot: BlueprintSlot)` không có `subject_code`. Chữ ký mới: `citation_for(self, subject_code: str, slot: BlueprintSlot) -> Citation | None`. Đây là `Protocol` trong `services/twin_batch.py`, không đổi API. Người dùng đồng ý (CLAUDE.md §7) cho đúng một thay đổi ở test sẵn có, với ba điều kiện:
+- chỉ sửa chữ ký của stub `FixedCitations` trong `tests/test_twin_batch.py`, không đổi assertion nào;
+- thay đổi đó nằm trong một commit riêng;
+- thêm test mới cho việc lọc theo môn: chunk của môn khác không bao giờ được chọn làm trích dẫn, kể cả khi `topic_keys` khớp.
+
+Slot lý thuyết không gọi `CitationProvider`: trích dẫn là `definition_quote` của cặp đúng (ADR-006 mục 6).
 
 ### 5.9 Blueprint và `question_kind` (ADR-005 mục 1; F11)
 
@@ -668,7 +714,7 @@ class BlueprintSlot(StrictModel):
     slot_index: int = Field(ge=1)                # code: theo thứ tự item_ids rồi theory_slots, từ 1
     source_page_number: int = Field(ge=1)        # item.page_number
         # đề xuất: đổi thành int | None; slot lý thuyết lấy page_number của source_chunk_id, không có thì null
-    format: QuestionFormat                       # item: MCQ4 (item luôn có 4 phương án); lý thuyết: MCQ4
+    format: QuestionFormat                       # item: MCQ4 (item luôn có 4 phương án); lý thuyết: TheorySlotSpec.format (MCQ4 hoặc ESSAY, §5.14)
     chapter_code: str = Field(pattern=r"^ch[0-9]{1,2}(\.[0-9]{1,2})?$")
         # item: item.labels.chapter_code; lý thuyết: TheorySlotSpec.chapter_code (người dùng)
     topic_key: str = Field(pattern=TOPIC_KEY_PATTERN)
@@ -702,24 +748,27 @@ class ExamBlueprint(StrictModel):
 ```
 
 - **Chuyển `is_computational` sang `question_kind` (ADR-005 mục 1):** `is_computational=True` ⇔ `question_kind="computational"`, `False` ⇔ `"theory"`. Không có dữ liệu lưu lâu dài cần chuyển (store in-memory). `examples/exam_blueprint_sample.json` đổi field này khi triển khai; đây là thay đổi có chủ đích, duyệt qua `git diff examples/`.
-- Validator mới: `computational` ⇒ có `topic_key` và `self_solve`; `theory` ⇒ `format = MCQ4`, `distractor_archetypes = []`.
+- Validator mới: `computational` ⇒ có `topic_key` và `self_solve`, `format ∈ {MCQ4, NUMERICAL}`; `theory` ⇒ `format ∈ {MCQ4, ESSAY}` (`ESSAY` thêm ngày 2026-10-25, §5.14), `distractor_archetypes = []`.
 - **`distractor_archetypes` của slot tính toán (đề xuất):** self-solve chạy `make_distractors()` trong sandbox trên `params` của item (đã có trong `SandboxResult.distractors`). Với mỗi trong 3 misconception của template, code so `value` của phương án nhiễu với số đầu tiên trong từng phương án sai của đề gốc, cùng dung sai như self-solve (§7.2 S5). Khớp đúng một phương án thì ghi `observed_option_key`/`observed_option_text` và `reproduction_confidence = 1.0`; không khớp thì để `null` và `0.0`. Code chỉ so sánh, không tính số (I1).
 
 ```python
-class TheorySlotSpec(StrictModel):               # đề xuất
+class TheorySlotSpec(StrictModel):               # đề xuất (§17 D8; lát cắt dọc ở §16 cần model này)
     chapter_code: str = Field(pattern=r"^ch[0-9]{1,2}(\.[0-9]{1,2})?$")   # người dùng
     cognitive_level: Literal["remember", "understand"] = "remember"        # người dùng
     source_chunk_id: str | None = None           # người dùng: chunk gợi ý slot, ví dụ một câu trong đề cương
+    format: Literal["MCQ4", "ESSAY"] | None = None
+        # đề xuất (chờ duyệt), §5.14: người dùng chọn; null ⇒ code lấy mặc định từ Subject.exam_format
+        # (mcq → MCQ4, essay → ESSAY, mixed → MCQ4). Code không bao giờ đổi ESSAY thành MCQ4
 
 class BlueprintCreate(StrictModel):              # thay bản v0.3 ở §5.6
     subject_code: str = Field(pattern=r"^[A-Z]{2,6}[0-9]{2,4}$")   # người dùng; PHẢI khớp labels.subject_code của mọi item
     item_ids: list[str] = Field(default_factory=list, max_length=50)       # mọi item PHẢI approved, không non_cloneable (I5)
-    theory_slots: list[TheorySlotSpec] = Field(default_factory=list, max_length=50)   # đề xuất
+    theory_slots: list[TheorySlotSpec] = Field(default_factory=list, max_length=50)   # người dùng; đề xuất (§17 D8)
     duration_minutes: int | None = Field(default=None, ge=5, le=300)
     # validator: item_ids không trùng; item_ids và theory_slots không cùng rỗng
 ```
 
-**Đề cương làm nguồn blueprint (đề xuất, chờ duyệt).** Đề cương Vi xử lý là danh sách 56 câu hỏi không có đáp án, nên không phải đề thi (không qua Gate, không có phương án để self-solve). Đề xuất: nhập đề cương như một tài liệu Vault với `source_kind = "study_guide"` (§6.5). Mỗi câu trong đề cương nằm trong một chunk; người dùng có thể chọn chunk đó làm `TheorySlotSpec.source_chunk_id`, và `chapter_code` của slot mặc định lấy từ chunk. Câu hỏi sinh ra vẫn đến từ cặp khái niệm đã xác nhận cùng chương (ADR-007); văn bản câu trong đề cương chỉ là gợi ý slot, không thành đáp án.
+**Đề cương làm nguồn blueprint (đã duyệt 2026-10-25).** Đề cương Vi xử lý là danh sách 56 câu hỏi không có đáp án, nên không phải đề thi (không qua Gate, không có phương án để self-solve). Cách làm: nhập đề cương như một tài liệu Vault với `source_kind = "study_guide"` (§6.5). Mỗi câu trong đề cương nằm trong một chunk; người dùng có thể chọn chunk đó làm `TheorySlotSpec.source_chunk_id`, và `chapter_code` của slot mặc định lấy từ chunk. Câu hỏi sinh ra vẫn đến từ cặp khái niệm đã xác nhận cùng chương (ADR-007); văn bản câu trong đề cương chỉ là gợi ý slot, không thành đáp án.
 
 ### 5.10 Template: `QuestionTemplate` và `input_schema` (ADR-005 mục 2, 5)
 
@@ -894,11 +943,13 @@ class TwinQuestion(StrictModel):
     template_id: str                             # đề xuất: str | None, null với câu lý thuyết
     topic_key: str                               # đề xuất: str | None, null với câu lý thuyết
     artifacts: list[SolutionArtifact] = []       # ADR-005 bước 3, thay gantt và validator rẽ nhánh theo topic_key
-    trace: GenerationTrace                       # đề xuất: union theo kind, xem dưới
+    trace: GenerationTrace                       # union theo kind (đã duyệt 2026-10-25), xem dưới
+    essay: EssaySpec | None = None               # code; bắt buộc ⇔ format = ESSAY (§5.14; field đã duyệt 2026-10-25, chi tiết đề xuất)
 ```
 
-- Câu lý thuyết (ADR-007): `format = MCQ4`; `artifacts = []`; `stem`, `options`, `solution_explanation_vi` do code ghép từ `term` và `definition_quote` của các cặp đã xác nhận, LLM không soạn; `citation` là trích dẫn của cặp đúng; mỗi phương án nhiễu mang mã thuộc `THEORY_MISCONCEPTIONS` (I2). Đề xuất: `solution_explanation_vi` là định nghĩa nguyên văn của cặp đúng.
-- **Trace (đề xuất, chờ duyệt; ADR-007 Hệ quả để mở contract này):**
+- Câu lý thuyết MCQ4 (ADR-007): `artifacts = []`; `stem`, `options`, `solution_explanation_vi` do code ghép từ `term` và `definition_quote` của các cặp đã xác nhận, LLM không soạn; `citation` là trích dẫn của cặp đúng; mỗi phương án nhiễu mang mã thuộc `THEORY_MISCONCEPTIONS` (I2). Đề xuất: `solution_explanation_vi` là định nghĩa nguyên văn của cặp đúng.
+- Câu lý thuyết `ESSAY`: quy tắc riêng ở §5.14.
+- **Trace (đã duyệt 2026-10-25; ADR-007 Hệ quả để mở contract này):**
 
 ```python
 class ComputationalTrace(StrictModel):
@@ -920,34 +971,67 @@ GenerationTrace = Annotated[ComputationalTrace | TheoryTrace, Field(discriminato
 
   Hệ quả: `trace` trong `examples/*.json` có thêm `"kind"`; duyệt qua `git diff examples/`.
 
-### 5.12 `RuntimeInfo` (F17; định nghĩa `demo_mode` đã duyệt 2026-10-23, §11.2)
+### 5.12 `RuntimeInfo` (F17; định nghĩa `demo_mode` đã duyệt 2026-10-23; chế độ khả năng đã duyệt 2026-10-25, §11.4)
 
 ```python
-class RuntimeInfo(BaseModel):                    # routers/api.py; chỉ boolean, không lộ key, tên model hay endpoint
-    demo_mode: bool         # đổi: = not llm_configured ("thiếu key LLM"). Code hiện: extractor đang chạy là Mock
-    llm_configured: bool    # HOLOCRON_LLM_API_KEY có giá trị
-    vlm_configured: bool    # đủ ba biến HOLOCRON_VLM_*
+CapabilityName = Literal[
+    "ocr",                          # tầng 2 của bộ nhập: Tesseract + vie.traineddata đủ chữ (ADR-008 mục 8, mục 14 test 1)
+    "ocr_cross_check",              # lượt đọc thứ hai RapidOCR (ADR-008 mục 11)
+    "vault_search",                 # tìm BM25 trong Vault (ADR-006 mục 4; FTS5 hoặc BM25 tự cài)
+    "theory_generation",            # sinh câu lý thuyết tất định từ cặp đã xác nhận (ADR-007)
+    "concept_pair_llm_proposal",    # LLM đề xuất cặp khái niệm (§6.6)
+    "essay_grading_offline",        # chấm tự luận bằng n-gram (§5.14)
+    "essay_grading_llm",            # AnswerJudge (ADR-007 mục 5; sau MVP)
+    "template_authoring_llm",       # TemplateAuthor viết template ứng viên (§10, §11.3)
+    "vlm",                          # tầng 4 và dual-pass VLM (§11.2; đang park)
+]
+CapabilityReason = Literal[        # đề xuất (chờ duyệt): danh sách mã lý do
+    "llm_not_configured",           # thiếu HOLOCRON_LLM_BASE_URL, HOLOCRON_LLM_API_KEY hoặc HOLOCRON_LLM_MODEL_EXTRACT (§11.2)
+    "vlm_not_configured",           # thiếu một trong ba biến HOLOCRON_VLM_*
+    "ocr_engine_missing",           # không chạy được binary Tesseract
+    "ocr_language_missing",         # thiếu vie.traineddata hoặc unicharset thiếu chữ tiếng Việt
+    "secondary_ocr_disabled",       # HOLOCRON_PDF_OCR_SECONDARY rỗng
+    "not_implemented",              # code của khả năng này chưa có trong bản đang chạy
+]
+
+class Capability(StrictModel):
+    name: CapabilityName            # code
+    available: bool                 # code: kiểm lúc khởi động (cấu hình, binary, unicharset); không gọi mạng
+    reason: CapabilityReason | None # code; null ⇔ available = true
+    detail_vi: str | None           # code: câu cố định theo reason, ví dụ hướng dẫn cài Tesseract; KHÔNG chứa giá trị biến,
+                                    # key, tên model hay địa chỉ endpoint
+
+class RuntimeInfo(BaseModel):       # routers/; không lộ key, tên model hay endpoint
+    demo_mode: bool         # đổi: = not llm_configured ("thiếu key LLM", đã duyệt 2026-10-23). Code hiện: extractor đang chạy là Mock
+    llm_configured: bool    # code: đủ các biến LLM bắt buộc ở §11.2 (đề xuất 2026-10-25, chờ duyệt; code hiện chỉ cần HOLOCRON_LLM_API_KEY)
+    vlm_configured: bool    # code: đủ ba biến HOLOCRON_VLM_*
     mock_extractor: bool    # đề xuất: upload đề (§6.1) đang dùng MockDualPassExtractor, tức dữ liệu mẫu, không đọc file thật
-    ocr_available: bool     # đề xuất: worker tìm thấy Tesseract và vie.traineddata đủ chữ (ADR-008 mục 8, mục 14 test 1)
+    capabilities: list[Capability]   # code: đủ 9 phần tử, theo thứ tự khai báo của CapabilityName (đã duyệt 2026-10-25)
 ```
 
+- **Bỏ `ocr_available`** (đề xuất v0.5, chưa có trong code): thông tin này nay là phần tử `name = "ocr"` của `capabilities` (đề xuất, chờ duyệt).
+- Một khả năng có thể `available = true` mà vẫn chạy ở mức thấp hơn, ví dụ `vault_search` dùng BM25 tự cài khi SQLite thiếu FTS5 (§5.13). Mức này không phải lý do không khả dụng nên không có `reason`.
+- Ma trận khả năng ↔ điều kiện ↔ endpoint bị ảnh hưởng ở §11.4.
+
 Frontend PHẢI hiển thị:
-- `demo_mode = true`: băng thông báo cố định trên mọi trang, nói rõ chưa cấu hình key LLM, nên nhãn (môn, chương, mức nhận thức) và cặp khái niệm phải nhập tay, và câu tính toán chỉ dùng template đã kiểm chứng.
+- Mỗi khả năng `available = false`: thông báo ở đúng màn hình dùng khả năng đó, kèm `detail_vi`; nút gọi endpoint cần khả năng đó bị vô hiệu. Không chặn các màn hình khác (G6).
+- `demo_mode = true`: băng thông báo trên mọi trang, nói rõ chưa cấu hình LLM, nên nhãn (môn, chương, mức nhận thức) và cặp khái niệm phải nhập tay, và câu tính toán chỉ dùng template đã kiểm chứng. Đề xuất (chờ duyệt, §17 D10): đổi chữ "chế độ demo" trên UI thành "chạy offline, không có LLM", vì từ 2026-10-25 thiếu LLM là cách dùng bình thường chứ không phải bản demo.
 - `mock_extractor = true` (đề xuất): nhãn ở trang tải đề và trang item, nói rõ bảng và phương án là dữ liệu mẫu, không đọc từ file vừa tải.
-- `ocr_available = false` (đề xuất): cảnh báo ở trang nhập tài liệu rằng trang scan sẽ `failed` nếu không có VLM, kèm hướng dẫn cài Tesseract và `vie.traineddata`.
+- Khả năng `ocr` có `available = false`: cảnh báo ở trang nhập tài liệu rằng trang scan sẽ `failed` (VLM đang park), kèm hướng dẫn cài Tesseract và `vie.traineddata`.
 
 ### 5.13 Lưu trữ SQLite (F14; BE-003)
 
-Toàn bộ mục này là đề xuất (chờ duyệt), trừ chỗ ghi theo ADR. Mục tiêu: thay `IngestionStore` in-memory mà không thêm dependency.
+Toàn bộ mục này đã duyệt 2026-10-25, trừ bảng `subjects` (đề xuất, chờ duyệt, thêm ở v0.6). Mục tiêu: thay `IngestionStore` in-memory mà không thêm dependency.
 
-- **Thư viện:** `sqlite3` của thư viện chuẩn, không SQLAlchemy (khác §1.4 bản v0.4 và comment TODO trong `routers/api.py`, xem §17 D5). Mỗi kết nối bật `PRAGMA foreign_keys = ON`, `journal_mode = WAL`, `busy_timeout = 5000`; ghi trong `BEGIN IMMEDIATE`.
+- **Thư viện:** `sqlite3` của thư viện chuẩn, không SQLAlchemy (D5, đã duyệt 2026-10-25; comment TODO trong `routers/api.py` vẫn ghi SQLAlchemy và sửa cùng nhánh SQLite, §17 D5). Mỗi kết nối bật `PRAGMA foreign_keys = ON`, `journal_mode = WAL`, `busy_timeout = 5000`; ghi trong `BEGIN IMMEDIATE`.
 - **Vị trí file:** `HOLOCRON_DATA_DIR/holocron.sqlite3`; file gốc giữ ở `HOLOCRON_DATA_DIR/files/<sha256>.pdf` (ADR-006 mục 8). Mặc định `HOLOCRON_DATA_DIR`: `%LOCALAPPDATA%\Holocron` trên Windows, `$XDG_DATA_HOME/holocron` (hoặc `~/.local/share/holocron`) trên Linux. Bản Tauri truyền thư mục dữ liệu app qua biến này. Test dùng `:memory:` hoặc thư mục tạm.
 - **Migration:** bảng `schema_version(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`; script SQL thuần `NNNN_<tên>.sql` trong `infrastructure/storage/migrations/` (khai báo package-data). Khi khởi động, chạy lần lượt các script có số lớn hơn version hiện tại, mỗi script trong một giao dịch kèm dòng `schema_version`. Không hỗ trợ hạ version: DB mới hơn code thì từ chối khởi động với thông điệp rõ.
 - **Optimistic locking (BE-003):** mọi bảng sửa được có cột `version INTEGER NOT NULL DEFAULT 1`. Ghi bằng `UPDATE … SET …, version = version + 1 WHERE <khoá> = ? AND version = ?`; `rowcount = 0` mà bản ghi vẫn tồn tại ⇒ 409. Với `ingestion_items`, `version` bằng `table_primary.version` (§6.2).
-- **Interface:** `IngestionStore` được thay bằng các repository sau `Protocol` (CLAUDE.md §2.2), cấp qua `Depends`: `DocumentRepository`, `VaultRepository`, `IngestionRepository`, `BlueprintRepository`, `TwinBatchRepository`, `TemplateRepository`. Bản in-memory giữ lại cho test; bản SQLite ở `infrastructure/storage/`.
+- **Interface:** `IngestionStore` được thay bằng các repository sau `Protocol` (CLAUDE.md §2.2), cấp qua `Depends`: `DocumentRepository`, `VaultRepository`, `IngestionRepository`, `BlueprintRepository`, `TwinBatchRepository`, `TemplateRepository`, và `SubjectRepository` (đề xuất, cho bảng `subjects`). Bản in-memory giữ lại cho test; bản SQLite ở `infrastructure/storage/`.
 
 | Bảng | Khoá chính | Cột chính | Quan hệ | Index |
 |---|---|---|---|---|
+| `subjects` (đề xuất, chờ duyệt; §5.14) | `subject_code` | `display_name`, `exam_format` (`mcq` \| `essay` \| `mixed`), `created_at`, `updated_at`, `version` | Các bảng khác giữ `subject_code` dạng chuỗi, không khoá ngoại tới bảng này, để nhập tài liệu không phụ thuộc thứ tự tạo môn | — |
 | `documents` | `document_id` (`doc_` + sha256[:16]) | `sha256` UNIQUE, `filename`, `media_type`, `size_bytes`, `subject_code` (null với upload đề §6.1), `title`, `source_kind`, `output_language`, `page_count`, `has_text_layer`, `status`, `uploaded_at`, `version` | — | `(subject_code, uploaded_at)` |
 | `pages` | `(document_id, page_number)` | `status`, `extraction_json` (`PageExtraction`), `confirmed`, `updated_at`, `version` | `document_id` → `documents` ON DELETE CASCADE | `(document_id, status)` |
 | `page_audits` | `audit_id` INTEGER AUTOINCREMENT | `document_id`, `page_number`, `from_version`, `to_version`, `editor_id`, `changes_json`, `at` | `(document_id, page_number)` → `pages` ON DELETE CASCADE | `(document_id, page_number, audit_id)` |
@@ -968,14 +1052,137 @@ Toàn bộ mục này là đề xuất (chờ duyệt), trừ chỗ ghi theo ADR
 - Cột `*_json` chứa `model_dump_json()` của model Pydantic tương ứng và được validate lại khi đọc; cột tách riêng chỉ để lọc và làm khoá.
 - **Idempotency 24 h (§6.3):** tra `(blueprint_id, idempotency_key)` với `created_at` trong 24 h. Bản ghi hết hạn được đặt `idempotency_key = NULL` trong cùng giao dịch trước khi ghi bản ghi mới, để giữ index UNIQUE.
 - **Kiểm FTS5:** khi khởi động, đọc `PRAGMA compile_options`; thiếu `ENABLE_FTS5` thì dùng BM25 tự cài trên cùng bộ token (ADR-006 mục 4), không lỗi.
+- **Kết quả chấm tự luận** (§5.14) không được lưu trong MVP (đề xuất, chờ duyệt): chấm lại cùng câu trả lời cho cùng kết quả (tái lập của bộ chấm, §5.14), nên không cần bảng riêng. Lịch sử luyện tập là việc sau MVP.
 - **`templates`:** chỉ lưu template do LLM viết lúc chạy (bậc *ứng viên*, và bậc *đã kiểm chứng* khi người dùng duyệt trong app). Template trong `infrastructure/templates/` của repo vẫn nạp từ file, không chép vào DB, và vẫn là nguồn duy nhất của fallback `precomputed_verified` (§10). Spec chưa định nghĩa các lớp kiểm chứng mà một template ứng viên phải qua trước khi người dùng duyệt (§17 D6).
+
+### 5.14 Hình thức trả lời, môn học và chấm tự luận offline (quyết định 2026-10-25)
+
+**Đã duyệt 2026-10-25:** `ESSAY` trong `QuestionFormat`; `question_kind` giữ `{computational, theory}`; `exam_format ∈ {mcq, essay, mixed}` theo môn; phạm vi "Trình bày khái niệm X" với đáp án tham chiếu là `definition_quote` của cặp đã xác nhận; chấm offline bằng độ phủ n-gram âm tiết (bigram, trigram) sau NFC; hiển thị "khớp x/y ý" và các ý còn thiếu, không có điểm tuyệt đối; các field `matched_points`, `missing_points`, `total_points`, `ngram_coverage` theo từng ý, `grader_version`; cùng đầu vào thì cùng kết quả. **Đề xuất (chờ duyệt):** mọi phần khác của mục này, gồm tên model, nơi lưu `exam_format`, cách tách ý, công thức gộp, ngưỡng và tên endpoint. Toàn bộ phần tự luận là "MVP nếu còn thời gian" (§1.5).
+
+```python
+class QuestionFormat(str, Enum):                 # domain/schemas.py
+    MCQ4 = "MCQ4"; NUMERICAL = "NUMERICAL"
+    ESSAY = "ESSAY"                              # thêm 2026-10-25
+
+class ExamFormat(str, Enum):                     # giá trị đã duyệt; tên enum đề xuất
+    MCQ = "mcq"; ESSAY = "essay"; MIXED = "mixed"
+
+class Subject(StrictModel):                      # đề xuất: nơi lưu exam_format (bảng subjects, §5.13; API §6.8)
+    subject_code: str = Field(pattern=r"^[A-Z]{2,6}[0-9]{2,4}$")   # người dùng
+    display_name: str = Field(min_length=1, max_length=200)        # người dùng; mặc định = subject_code khi tạo ngầm
+    exam_format: ExamFormat = ExamFormat.MIXED   # người dùng; mặc định mixed khi tạo ngầm
+    version: int = Field(default=1, ge=1)        # code: optimistic locking
+    created_at: datetime                         # code
+    updated_at: datetime                         # code
+```
+
+- **Tạo môn:** người dùng tạo qua §6.8, hoặc code tạo ngầm khi `POST /v1/documents` hay `POST /v1/blueprints` gặp `subject_code` chưa có (`display_name = subject_code`, `exam_format = mixed`).
+- **`exam_format` chỉ có hai tác dụng:** làm mặc định cho `TheorySlotSpec.format` khi trường này null (`mcq` → `MCQ4`, `essay` → `ESSAY`, `mixed` → `MCQ4`), và để UI hiển thị. `exam_format` là dữ liệu do người dùng đặt cho môn, không phải tên môn cố định, nên không trái CLAUDE.md §1. Code KHÔNG ĐƯỢC tự đổi `ESSAY` thành `MCQ4`. Đổi `exam_format` không làm đổi blueprint hay twin đã tạo.
+
+**Câu tự luận "Trình bày khái niệm X"** (`TwinQuestion.format = ESSAY`):
+
+```python
+class EssayPoint(StrictModel):
+    point_index: int = Field(ge=0)               # code: thứ tự trong definition_quote, liên tục từ 0
+    text: str = Field(min_length=1, max_length=600)
+        # code: lát cắt liên tục definition_quote[start:end] (NFC) theo quy tắc tách ý dưới đây;
+        # PHẢI là chuỗi con của definition_quote sau NFC + gộp khoảng trắng (cùng quy tắc so khớp với I3)
+    syllable_count: int = Field(ge=1)            # code: số token âm tiết của text
+
+class EssaySpec(StrictModel):                    # TwinQuestion.essay
+    essay_kind: Literal["define_concept"]        # code; MVP chỉ có dạng "Trình bày khái niệm X"
+    pair_id: str                                 # code: cặp đã xác nhận, chọn bằng random.Random(f"{generator_version}:{pool_sha256}:{seed}")
+    term: str                                    # chép từ ConceptPair.term
+    points: list[EssayPoint] = Field(min_length=1, max_length=40)   # code: tách từ ConceptPair.definition_quote
+    splitter_version: str = Field(min_length=1, max_length=32)      # code: phiên bản quy tắc tách ý
+```
+
+- `question_kind = "theory"`; `options`, `correct_key`, `numerical_answer` là `null`; `distractor_to_misconception_map = {}`; `artifacts = []`; `trace` là `TheoryTrace`.
+- `stem` do code ghép từ mẫu cố định, ví dụ "Trình bày khái niệm «`term`».", theo ngôn ngữ người dùng chọn (CLAUDE.md §4.3). LLM không soạn câu.
+- `citation` là trích dẫn của cặp; `solution_explanation_vi` là `definition_quote` nguyên văn, vì đáp án mẫu là trích dẫn, không phải văn bản diễn đạt lại (CLAUDE.md §2.1).
+- **Validator:** `TwinQuestion._format_rules` thêm nhánh `ESSAY` theo các luật trên, và kiểm mọi `essay.points[].text` là chuỗi con của `citation.verbatim_quote` sau NFC và gộp khoảng trắng. Validator này đang cưỡng chế I2, nên các test I2 sẵn có PHẢI xanh mà không sửa (CLAUDE.md §9).
+- **Nguồn đề:** slot `ESSAY` cần ít nhất một cặp đã xác nhận cùng `subject_code` và `chapter_code` với slot; không có thì `ReviewTicket` với lý do "không đủ căn cứ trong Vault" (ADR-007 mục 1).
+- **Tái lập (I4, câu chữ hiện hành cho câu lý thuyết):** cùng `(generator_version, pool_sha256, seed)` ⇒ cùng cặp, cùng `stem`, cùng `points`. Dấu vân tay R6 (§6.3): `generator_version`, dạng câu `"essay_define_concept"` và `[pair_id]`.
+
+**Tách ý từ `definition_quote` (đề xuất, chờ duyệt):**
+1. Đưa `definition_quote` về NFC. Ranh giới ý là các dấu `.` `;` `:` `!` `?` `…` khi theo sau là khoảng trắng hoặc hết chuỗi (nên `3.14` không bị cắt), xuống dòng, và đầu mục liệt kê ở đầu dòng (`•`, `-`, `+`, `*`, `a)`, `1.`, `1)`).
+2. Mỗi đoạn là một lát cắt liên tục của chuỗi gốc, bỏ khoảng trắng và dấu câu ở hai đầu. Đoạn rỗng bị bỏ.
+3. Đoạn có ít hơn `ESSAY_POINT_MIN_SYLLABLES` âm tiết được gộp với đoạn đứng trước (đoạn đầu tiên thì gộp với đoạn sau). Gộp hai đoạn kề nhau cho ra lát cắt từ đầu đoạn trước tới cuối đoạn sau, nên kết quả vẫn là chuỗi con. Lặp tới khi không còn đoạn ngắn hoặc chỉ còn một đoạn.
+4. Đoạn dài hơn `ESSAY_POINT_MAX_SYLLABLES` âm tiết được tách thêm tại dấu phẩy, chỉ khi mọi phần sau khi tách vẫn đủ số âm tiết tối thiểu.
+5. Đếm âm tiết bằng hàm tách token dùng chung với Vault (ADR-006 mục 5: NFC, chuẩn hoá vị trí dấu thanh, `casefold`, tách `\w+`).
+
+**Chấm offline (đề xuất, chờ duyệt về công thức và ngưỡng):**
+1. Câu trả lời của người học được đưa về NFC rồi tách token bằng cùng hàm ở bước 5 trên. `A₂`, `A₃` là tập bigram và trigram liên tiếp của toàn bộ câu trả lời.
+2. Với mỗi ý `p`: `B_p`, `T_p` là tập bigram, trigram của ý. Bỏ các n-gram mà mọi token đều thuộc token của `term`, vì thân câu đã cho sẵn `term`; nếu bỏ xong mà `B_p` rỗng thì giữ tập gốc.
+3. `bigram = |B_p ∩ A₂| / |B_p|`; `trigram = |T_p ∩ A₃| / |T_p|`, hoặc bằng `bigram` khi `T_p` rỗng; `combined = ESSAY_BIGRAM_WEIGHT · bigram + ESSAY_TRIGRAM_WEIGHT · trigram`.
+4. Ý khớp ⇔ `combined ≥ ESSAY_POINT_MATCH_MIN`. Mọi phép tính và so ngưỡng dùng `fractions.Fraction` (ngưỡng đọc từ chuỗi thập phân), để kết quả không phụ thuộc làm tròn số thực; giá trị trả về là `round(float(x), 4)`.
+5. Code thuộc Deterministic Core, chạy trong tiến trình backend, chỉ dùng thư viện chuẩn; không gọi LLM, không gọi mạng. Đây là bộ tính điểm của CLAUDE.md §2.1, không phải template, nên không chạy trong sandbox.
+
+| Ngưỡng (field của model cấu hình ở `infrastructure/`, không phải biến môi trường; đề xuất) | Mặc định | Ghi chú |
+|---|---|---|
+| `ESSAY_POINT_MIN_SYLLABLES` | 4 | Ý ngắn hơn bị gộp |
+| `ESSAY_POINT_MAX_SYLLABLES` | 40 | Ý dài hơn được tách tại dấu phẩy |
+| `ESSAY_BIGRAM_WEIGHT` / `ESSAY_TRIGRAM_WEIGHT` | 0.5 / 0.5 | Tổng PHẢI bằng 1 |
+| `ESSAY_POINT_MATCH_MIN` | 0.5 | **Chưa hiệu chỉnh.** Hiệu chỉnh bằng script đánh giá opt-in trên bộ câu trả lời tự viết (CLAUDE.md §2.2) |
+| `ESSAY_ANSWER_MAX_CHARS` | 5000 | Câu trả lời dài hơn trả 422 |
+
+**Kết quả chấm:**
+
+```python
+class NgramCoverage(StrictModel):                # code
+    bigram: float = Field(ge=0.0, le=1.0)
+    trigram: float = Field(ge=0.0, le=1.0)
+    combined: float = Field(ge=0.0, le=1.0)
+
+class EssayPointResult(StrictModel):
+    point_index: int = Field(ge=0)               # chép từ EssayPoint
+    text: str                                    # chép từ EssayPoint (nguyên văn tài liệu)
+    ngram_coverage: NgramCoverage                # code
+
+class EssayGradingThresholds(StrictModel):       # code: chép giá trị cấu hình lúc chấm
+    point_min_syllables: int
+    point_max_syllables: int
+    bigram_weight: float
+    trigram_weight: float
+    point_match_min: float
+
+class EssayGradeResult(StrictModel):
+    twin_id: str                                 # đường dẫn request
+    grader: Literal["offline_ngram"]             # code; "llm_judge" thêm khi có AnswerJudge (sau MVP)
+    grader_version: str = Field(min_length=1, max_length=32)   # code: phiên bản bộ tách token, n-gram và công thức
+    thresholds: EssayGradingThresholds           # code
+    total_points: int = Field(ge=1)              # code: = len(TwinQuestion.essay.points)
+    matched_count: int = Field(ge=0)             # code: = len(matched_points); đề xuất, để frontend không tự đếm
+    matched_points: list[EssayPointResult]       # code: point_index tăng dần
+    missing_points: list[EssayPointResult]       # code: point_index tăng dần
+    answer_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")   # code: sha256 UTF-8 của câu trả lời sau NFC; không lưu văn bản
+    citation: Citation                           # chép TwinQuestion.citation để UI hiện trích dẫn đối chiếu
+    # validator: matched_count + len(missing_points) = total_points; point_index của hai danh sách
+    # không trùng và phủ đúng 0..total_points-1
+```
+
+- **Tái lập (đã duyệt 2026-10-25):** cùng `grader_version`, `thresholds`, `essay.term`, `essay.points` và câu trả lời (sau NFC) ⇒ `EssayGradeResult` giống từng byte (`model_dump_json`). Câu trả lời gõ ở dạng NFC hay NFD cho cùng kết quả. Model không có field thời gian để giữ tính chất này. Câu chữ I4 ở §0 chưa nhắc bộ chấm; đề xuất sửa §0 nằm ở §17 D11.
+- **Hiển thị (đã duyệt 2026-10-25):** "Khớp `matched_count`/`total_points` ý", danh sách `missing_points` (nguyên văn tài liệu) và trích dẫn `citation`. KHÔNG hiển thị `ngram_coverage` như điểm, KHÔNG quy ra thang điểm. UI PHẢI ghi giới hạn, ví dụ: "Chấm theo mức trùng từ với tài liệu. Nếu bạn diễn đạt khác, ý đúng vẫn có thể bị tính là thiếu; hãy tự đối chiếu với trích dẫn."
+- **Nâng cấp khi có LLM (sau MVP):** `AnswerJudge` (ADR-007 mục 5) trả verdict từng ý kèm bằng chứng; code kiểm bằng chứng (NFC, chuỗi con) rồi tính `matched_points`/`missing_points` cùng dạng kết quả trên với `grader = "llm_judge"`. LLM không trả điểm.
+- **Vị trí code (đề xuất):** hàm tách token dùng chung đặt ở `domain/` (chỉ thư viện chuẩn), bộ tách ý và bộ chấm ở `services/`.
 
 ## 6. API Contracts
 
 ### 6.0 Quy ước chung
 - Base URL backend: `http://127.0.0.1:8000`. Frontend gọi `/api/holocron/*`, được Next.js rewrite sang backend (cùng origin, không cần CORS).
 - Payload JSON UTF-8, field snake_case. Thời gian ISO-8601 UTC.
-- Lỗi luôn có dạng FastAPI `{"detail": ...}`, trong đó `detail` là một trong: chuỗi tiếng Việt; danh sách lỗi validate `[{loc, msg, type}]` (422); hoặc `{"message", "issues": [...]}` (409 khi approve còn BLOCKING).
+- Lỗi luôn có dạng FastAPI `{"detail": ...}`, trong đó `detail` là một trong: chuỗi tiếng Việt; danh sách lỗi validate `[{loc, msg, type}]` (422); `{"message", "issues": [...]}` (409 khi approve còn BLOCKING); `CapabilityError` (409 khi thiếu khả năng, đề xuất, xem dưới); hoặc `{"code": "LLM_UPSTREAM_ERROR", "message"}` (502 khi gọi LLM lỗi, đề xuất, xem dưới).
+- **Mọi endpoint chạy được khi không có LLM, trừ endpoint thực sự cần LLM** (đã duyệt 2026-10-25, §11.4). Quy tắc "503 khi thiếu key" của v0.5 bị bỏ. Endpoint cần một khả năng đang không khả dụng trả mã và `detail` dưới đây (mã và dạng `detail` là đề xuất, chờ duyệt):
+
+```python
+class CapabilityError(StrictModel):              # đề xuất: detail của 409 khi thiếu khả năng
+    code: Literal["CAPABILITY_UNAVAILABLE"]      # code
+    capability: CapabilityName                   # code (§5.12)
+    reason: CapabilityReason                     # code (§5.12)
+    message: str                                 # code: câu tiếng Việt cố định, nêu tên biến cần đặt nếu có; không nêu giá trị
+```
+
+  Lý do chọn 409 thay vì 503: request hợp lệ và backend vẫn chạy bình thường; thứ thiếu là trạng thái cấu hình của app, không tự hết sau một lúc như 503 ngụ ý, và 503 dễ khiến client tự thử lại.
 
 | Mã | Nghĩa trong Holocron |
 |---|---|
@@ -983,14 +1190,17 @@ Toàn bộ mục này là đề xuất (chờ duyệt), trừ chỗ ghi theo ADR
 | 202 | Đã nhận tài liệu, đang đọc bất đồng bộ (`POST /v1/documents`, §6.5) |
 | 204 | Đã xoá (`DELETE /v1/documents/{id}`, §6.5) |
 | 400 | Yêu cầu hợp lệ về cú pháp nhưng vi phạm trạng thái nghiệp vụ (file rỗng; approve item non-cloneable; gắn non-cloneable cho item đã duyệt) |
-| 404 | Không tìm thấy item / blueprint / batch / tài liệu / trang / chunk / cặp khái niệm |
-| 409 | Xung đột trạng thái: `expected_version` lệch; sửa item đã duyệt; approve khi còn BLOCKING; blueprint chứa item chưa duyệt; sửa trang đã xác nhận hoặc đang đọc; xoá tài liệu còn được item tham chiếu |
+| 403 | Đề xuất (§13.1): `Host` không thuộc danh sách cho phép, hoặc thiếu/sai token khi đã đặt `HOLOCRON_REQUIRE_TOKEN`. `detail` là chuỗi cố định, không lặp lại token hay header đã gửi |
+| 404 | Không tìm thấy item / blueprint / batch / tài liệu / trang / chunk / cặp khái niệm / môn / twin |
+| 409 | Xung đột trạng thái: `expected_version` lệch; sửa item đã duyệt; approve khi còn BLOCKING; blueprint chứa item chưa duyệt; sửa trang đã xác nhận hoặc đang đọc; xoá tài liệu còn được item tham chiếu; đề xuất: endpoint cần một khả năng đang không khả dụng (`CapabilityError`) |
 | 413 | File vượt giới hạn của luồng: 10 MiB cho upload đề (§6.1); 50 MiB cho nhập tài liệu (§6.5, ADR-008 mục 4) |
 | 415 | Định dạng file không hỗ trợ, hoặc `Content-Type` khai báo không khớp nội dung |
 | 422 | Lỗi validate dữ liệu (kể cả `quantum` null/ngoài miền, topic chưa hỗ trợ); PDF có mật khẩu, không mở được hoặc quá 300 trang (§6.5) |
-| 503 | Đề xuất: tính năng cần LLM mà chưa cấu hình key (đề xuất cặp khái niệm, §6.6). `detail` nêu tên biến cần đặt, không nêu giá trị |
+| 502 | Đề xuất (chờ duyệt): LLM đã cấu hình nhưng gọi lỗi sau khi hết số lần thử của adapter (timeout, gateway từ chối, JSON không hợp lệ; §11.5). `detail = {"code": "LLM_UPSTREAM_ERROR", "message"}`; không lộ địa chỉ endpoint, tên model hay nội dung phản hồi |
 
-Giới hạn upload theo luồng (đề xuất, chờ duyệt; không đổi hành vi hiện có): upload đề qua Gate (§6.1) giữ 10 MiB cho ảnh và PDF đề; bộ nhập tài liệu (§6.5) nhận PDF tới 50 MiB và 300 trang theo ADR-008. Hai luồng có endpoint, hằng giới hạn và mã lỗi riêng; `tests/test_input_limits.py` và `tests/test_upload.py` tiếp tục khoá hành vi của §6.1.
+Quy tắc "503 khi thiếu key LLM" của v0.5 đã bị bỏ ngày 2026-10-25; Holocron không dùng 503.
+
+Giới hạn upload theo luồng (đã duyệt 2026-10-25; không đổi hành vi hiện có): upload đề qua Gate (§6.1) giữ 10 MiB cho ảnh và PDF đề; bộ nhập tài liệu (§6.5) nhận PDF tới 50 MiB và 300 trang theo ADR-008. Hai luồng có endpoint, hằng giới hạn và mã lỗi riêng; `tests/test_input_limits.py` và `tests/test_upload.py` tiếp tục khoá hành vi của §6.1.
 
 ### 6.1 `POST /v1/ingestion/upload` — đã triển khai
 
@@ -1059,7 +1269,7 @@ Người dùng sửa ô bảng, có optimistic locking.
 
 **Response:** `200 IngestionItem`. **Lỗi:** 404; 409 khi item đã duyệt hoặc `expected_version` lệch (body nêu version hiện tại — client PHẢI tải lại item rồi mới sửa tiếp); 422 khi body sai hoặc cột không tồn tại.
 
-**Giới hạn đã biết:** store in-memory không đảm bảo nguyên tử giữa bước so version và bước ghi. Khi chuyển sang SQLite (Tuần 4) PHẢI so-và-ghi trong một câu `UPDATE … WHERE version = :expected` (BE-003). Bản v0.4 ghi dùng `version_id_col` của SQLAlchemy; §5.13 đề xuất (chờ duyệt) viết thẳng câu `UPDATE` này bằng `sqlite3` của thư viện chuẩn.
+**Giới hạn đã biết:** store in-memory không đảm bảo nguyên tử giữa bước so version và bước ghi. Khi chuyển sang SQLite (Tuần 4) PHẢI so-và-ghi trong một câu `UPDATE … WHERE version = :expected` (BE-003). Bản v0.4 ghi dùng `version_id_col` của SQLAlchemy; từ 2026-10-25 (D5, đã duyệt) câu `UPDATE` này được viết thẳng bằng `sqlite3` của thư viện chuẩn (§5.13).
 
 ### 6.3 `POST /v1/blueprints/{blueprint_id}/twins` — contract chốt, triển khai T2-N3
 
@@ -1077,12 +1287,12 @@ Kích hoạt sandbox sinh bộ Twin Questions cho mọi slot của blueprint.
 - `base_seed` không gửi ⇒ server dùng `int(sha256(blueprint_id)[:15], 16)` để kết quả tái lập được (I4).
 - Header `Idempotency-Key` (tuỳ chọn): cùng key + cùng body trong 24 h PHẢI trả lại đúng `TwinBatch` đã sinh, không chạy lại sandbox.
 
-**Xử lý:** slot lý thuyết đi qua bộ sinh tất định của ADR-007, không gọi sandbox hay `CitationProvider`; đề xuất: `format` của request chỉ ghi đè slot tính toán, slot lý thuyết luôn MCQ4. Với mỗi slot tính toán và mỗi `k ∈ [0, count)`, gọi `produce_twin` với seed gốc của twin k là `seed_k = (base_seed + k·7919·40) mod SEED_SPACE`, trong đó `SEED_SPACE = 2**63` (§10). Mỗi twin nhận `gantt` từ `solve()`; `distractor_to_misconception_map` là nguồn duy nhất cho badge misconception trên UI. Slot không sinh được ⇒ một `ReviewTicket` trong `review_tickets`, không làm hỏng cả batch.
+**Xử lý:** slot lý thuyết đi qua bộ sinh tất định của ADR-007, không gọi sandbox hay `CitationProvider`; đề xuất: `format` của request chỉ ghi đè slot tính toán, slot lý thuyết giữ `format` của slot (`MCQ4` hoặc `ESSAY`, §5.14). Với mỗi slot tính toán và mỗi `k ∈ [0, count)`, gọi `produce_twin` với seed gốc của twin k là `seed_k = (base_seed + k·7919·40) mod SEED_SPACE`, trong đó `SEED_SPACE = 2**63` (§10). Mỗi twin nhận `gantt` từ `solve()`; `distractor_to_misconception_map` là nguồn duy nhất cho badge misconception trên UI. Slot không sinh được ⇒ một `ReviewTicket` trong `review_tickets`, không làm hỏng cả batch.
 
 **Tách dải seed và loại câu trùng (R6, phương án B, người dùng chọn ngày 2026-10-23):**
 - Các lần re-roll của twin k dùng `(seed_k + j·7919) mod SEED_SPACE`, với `j ∈ [0, 40)` (ngân sách re-roll ở §10). Bước giữa hai twin là `7919·40`, đúng bằng độ dài một dải, nên dải seed của các twin không chồng nhau.
 - **Dấu vân tay của câu** (đã duyệt 2026-10-24): `sha256` của JSON chính tắc gồm `template_id` và `params` (kết quả `generate_params()` trả về từ sandbox), serialize bằng `json.dumps({"template_id": …, "params": …}, sort_keys=True, ensure_ascii=False, separators=(",", ":"))` rồi mã hoá UTF-8. Phạm vi so trùng (đã duyệt 2026-10-24): mọi twin đã sinh trong cùng batch.
-- **Câu lý thuyết (đề xuất, chờ duyệt):** dùng cùng cách chia dải seed; dấu vân tay là `sha256` của JSON chính tắc gồm `generator_version`, dạng câu và danh sách `pair_id` theo thứ tự phương án.
+- **Câu lý thuyết (đã duyệt 2026-10-25):** dùng cùng cách chia dải seed; dấu vân tay là `sha256` của JSON chính tắc gồm `generator_version`, dạng câu và danh sách `pair_id` theo thứ tự phương án (câu `ESSAY`: một `pair_id`, §5.14).
 - Câu có dấu vân tay trùng với một twin đã sinh thì re-roll tiếp trong dải của twin đó (j tiếp theo). Câu trùng không tính là `ill_posed` và không trừ lượt LLM. Hết dải mà vẫn trùng thì ghi lý do vào `review_tickets`, KHÔNG ĐƯỢC sinh câu trùng.
 - **Ảnh hưởng tới I4:** cùng `(template_sha256, seed)` vẫn cho cùng câu. Cùng `(blueprint, base_seed)` vẫn cho cùng batch, nhưng batch khác với trước khi sửa. Twin k = 0 không đổi seed, nên `examples/` chỉ đổi nếu walkthrough sinh từ hai twin trở lên; việc này phải được xác nhận ở PR sửa R6. Số đo ở "Vấn đề đã biết" dưới đây là mốc so sánh trước và sau khi sửa.
 
@@ -1131,14 +1341,14 @@ Kích hoạt sandbox sinh bộ Twin Questions cho mọi slot của blueprint.
 | PATCH | `/v1/ingestion/items/{id}/stem` | Sửa LaTeX stem (≥ 10 ký tự), chạy lại Gate | 404, 409 (đã duyệt) |
 | POST | `/v1/ingestion/items/{id}/non-cloneable` | Gắn cờ câu phụ thuộc hình vẽ (`reason` 5–300 ký tự) | 400 (đã duyệt), 404 |
 | POST | `/v1/ingestion/items/{id}/approve` | Duyệt | 400 (non-cloneable), 409 (còn BLOCKING), 404 |
-| PATCH | `/v1/ingestion/items/{id}/labels` | **Chưa triển khai, đề xuất (§6.7):** sửa và xác nhận `ItemLabels` | 404, 422 |
-| GET | `/v1/runtime` | Trạng thái chạy cho UI: `{"demo_mode", "llm_configured", "vlm_configured"}` (chỉ boolean; không lộ khoá API, tên model hay endpoint). Code hiện: `demo_mode` đúng theo extractor đang chạy. Contract mới ở §5.12: `demo_mode` = thiếu key LLM (đã duyệt 2026-10-23), thêm `mock_extractor` và `ocr_available` (đề xuất); làm cùng F17 | — |
+| PATCH | `/v1/ingestion/items/{id}/labels` | **Chưa triển khai, đã duyệt 2026-10-25 (§6.7):** sửa và xác nhận `ItemLabels` | 404, 422 |
+| GET | `/v1/runtime` | Trạng thái chạy cho UI: `{"demo_mode", "llm_configured", "vlm_configured"}` (chỉ boolean; không lộ khoá API, tên model hay endpoint). Code hiện: `demo_mode` đúng theo extractor đang chạy. Contract mới ở §5.12: `demo_mode` = thiếu LLM (đã duyệt 2026-10-23), thêm `capabilities` (đã duyệt 2026-10-25) và `mock_extractor` (đề xuất); làm cùng F17 | — |
 
 ### 6.5 Bộ nhập tài liệu PDF (ADR-008) — contract, chưa triển khai
 
-Tên và đường dẫn endpoint ở mục này là đề xuất (chờ duyệt). MVP chỉ nhận PDF (§1.6).
+Tên và đường dẫn endpoint ở mục này đã duyệt 2026-10-25. MVP chỉ nhận PDF (§1.6).
 
-**Đọc bất đồng bộ (đề xuất).** Tầng 2 tốn 2–7 s/trang (ADR-008, "Kết quả đo"), nên tài liệu 300 trang có thể mất hàng chục phút; request đồng bộ sẽ quá timeout và khoá UI. Phương án đơn giản nhất cho app local: hàng đợi FIFO trong tiến trình backend, đọc một tài liệu mỗi lúc, mỗi trang qua worker có giới hạn (ADR-008 mục 3); client hỏi trạng thái bằng `GET` (khuyến nghị 1–2 s một lần). Không dùng WebSocket hay SSE, không thêm dependency. Khi backend khởi động lại, trang `pending` được xếp lại hàng đợi từ file gốc đã lưu (cần SQLite, §5.13); với store in-memory, tài liệu đang đọc bị mất.
+**Đọc bất đồng bộ (đã duyệt 2026-10-25).** Tầng 2 tốn 2–7 s/trang (ADR-008, "Kết quả đo"), nên tài liệu 300 trang có thể mất hàng chục phút; request đồng bộ sẽ quá timeout và khoá UI. Phương án đơn giản nhất cho app local: hàng đợi FIFO trong tiến trình backend, đọc một tài liệu mỗi lúc, mỗi trang qua worker có giới hạn (ADR-008 mục 3); client hỏi trạng thái bằng `GET` (khuyến nghị 1–2 s một lần). Không dùng WebSocket hay SSE, không thêm dependency. Khi backend khởi động lại, trang `pending` được xếp lại hàng đợi từ file gốc đã lưu (cần SQLite, §5.13); với store in-memory, tài liệu đang đọc bị mất.
 
 #### `POST /v1/documents`
 
@@ -1157,7 +1367,7 @@ Tên và đường dẫn endpoint ở mục này là đề xuất (chờ duyệt
 2. Magic bytes khác `%PDF-` → 415 (ảnh đề đi qua §6.1). `Content-Type` khai báo khác `application/pdf` (trừ rỗng hoặc `application/octet-stream`) → 415.
 3. `document_id = "doc_" + sha256(content)[:16]`. Nếu tài liệu cùng nội dung đã được nhập qua §6.5: cùng `subject_code` → `200 DocumentImport` hiện có, không đọc lại; khác `subject_code` → 409 (đề xuất). Bản ghi chỉ do §6.1 tạo (chưa có `subject_code`) được bổ sung thông tin và đọc như tài liệu mới.
 4. Thử mở trong worker (timeout 5 s, như tầng 1): cần mật khẩu để mở → 422 "PDF có mật khẩu" (không thử phá); không mở được hoặc quá hạn → 422 "không mở được tài liệu"; quá 300 trang → 422. PDF chỉ có mật khẩu chủ vẫn được nhận (ADR-008 mục 4).
-5. Lưu file gốc (§5.13), tạo `page_count` trang `pending`, xếp hàng đợi, trả `202 DocumentImport` (`status = "processing"`) kèm header `Location: /v1/documents/{document_id}`.
+5. Tạo ngầm môn `subject_code` nếu chưa có (§5.14, đề xuất). Lưu file gốc (§5.13), tạo `page_count` trang `pending`, xếp hàng đợi, trả `202 DocumentImport` (`status = "processing"`) kèm header `Location: /v1/documents/{document_id}`.
 
 **Đọc từng trang (ADR-008 mục 3, 6, 8, 9):** tầng 1 (timeout 5 s); tầng 2 khi `text_score < TEXT_LAYER_MIN` (timeout 30 s); cờ trang chọn tầng 3 hoặc 4. Trang quá hạn hoặc lỗi thành `failed` (`PAGE_TIMEOUT`, `PAGE_ERROR`); các trang khác vẫn đọc tiếp. Render tối đa 300 DPI và 25 megapixel mỗi trang.
 
@@ -1208,7 +1418,7 @@ Sửa văn bản của một trang trước khi xác nhận.
 - MVP không có bỏ xác nhận (đề xuất); muốn đọc lại thì xoá tài liệu và nhập lại.
 - Khi mọi trang có văn bản đều đã xác nhận, `DocumentImport.status = "confirmed"`. Tài liệu có `source_kind` khác `past_exam` khi đó được cắt chunk vào Vault (§12.1), rồi LLM đề xuất nhãn và cặp khái niệm nếu đã có key (§6.6). Đề xuất: tài liệu `past_exam` không cắt chunk; trang đã xác nhận được dùng để tạo item (dưới đây).
 
-#### `POST /v1/documents/{document_id}/pages/{page_number}/items` (đề xuất)
+#### `POST /v1/documents/{document_id}/pages/{page_number}/items` (đã duyệt 2026-10-25)
 
 Tạo `IngestionItem` từ một trang đề đã xác nhận, để đi tiếp qua Gate (§7.4).
 
@@ -1229,7 +1439,7 @@ Xoá trang, chunk, chỉ mục tìm kiếm, cặp khái niệm và file gốc (A
 
 ### 6.6 Knowledge Vault (ADR-006, ADR-007) — contract, chưa triển khai
 
-Tên và đường dẫn endpoint là đề xuất (chờ duyệt). Mọi truy vấn bắt buộc lọc theo `subject_code` (ADR-006 mục 4).
+Tên và đường dẫn endpoint đã duyệt 2026-10-25. Mọi truy vấn bắt buộc lọc theo `subject_code` (ADR-006 mục 4). Mọi endpoint của mục này chạy offline, trừ `POST /v1/vault/concept-pairs/propose` (cần khả năng `concept_pair_llm_proposal`, §11.4).
 
 | Method | Path | Request | Response | Lỗi |
 |---|---|---|---|---|
@@ -1251,7 +1461,7 @@ class SearchHit(StrictModel):                    # đề xuất
 
 | Method | Path | Request | Response | Lỗi |
 |---|---|---|---|---|
-| POST | `/v1/vault/concept-pairs/propose` | `{subject_code, chunk_ids}` (1–20 chunk, cùng môn) | `200 {"pairs": list[ConceptPair], "rejected_count": int}`; cặp mới ở trạng thái `proposed` | 404 (chunk), 422, 503 (chưa có key LLM) |
+| POST | `/v1/vault/concept-pairs/propose` | `{subject_code, chunk_ids}` (1–20 chunk, cùng môn) | `200 {"pairs": list[ConceptPair], "rejected_count": int}`; cặp mới ở trạng thái `proposed` | 404 (chunk), 422, 409 `CapabilityError` khi `concept_pair_llm_proposal` không khả dụng (§6.0, thay 503), 502 `LLM_UPSTREAM_ERROR` |
 | POST | `/v1/vault/concept-pairs` | `{editor_id, chunk_id, term, definition_quote}`: người dùng tự tạo bằng cách bôi đoạn trong chunk | `201 ConceptPair` với `proposed_by = "user"`, `status = "confirmed"` | 404, 422 (trích dẫn không khớp nguyên văn) |
 | GET | `/v1/vault/concept-pairs` | query `subject_code` (bắt buộc), `chapter_code`, `status` | `200 list[ConceptPair]`, sắp theo `(chapter_code, term, pair_id)` | 422 |
 | POST | `/v1/vault/concept-pairs/{pair_id}/confirm` | `{editor_id, expected_version, term?, definition_quote?}`; sửa rồi xác nhận | `200 ConceptPair` (`confirmed`) | 404, 409 (version), 422 (trích dẫn không khớp) |
@@ -1259,7 +1469,7 @@ class SearchHit(StrictModel):                    # đề xuất
 
 - **Bất biến I3:** mọi `definition_quote`, do LLM đề xuất hay người dùng bôi, PHẢI là chuỗi con của `raw_text` của chunk sau khi đưa cả hai về NFC và gộp khoảng trắng. Đề xuất của LLM không khớp thì bị loại và chỉ được đếm trong `rejected_count`; trích dẫn người dùng nhập không khớp thì trả 422.
 - **I4 (ADR-007 mục 2):** chỉ cặp `confirmed` cùng `subject_code` với slot vào `pool_sha256`. Xác nhận, sửa hay từ chối một cặp làm đổi câu lý thuyết sinh sau đó của đúng môn đó, không đổi môn khác.
-- `propose` chạy đồng bộ, tối đa 20 chunk mỗi request, mỗi lần gọi LLM có timeout `HOLOCRON_LLM_TIMEOUT_S`. Dữ liệu rời máy: văn bản chunk gửi tới DeepSeek (§13.1).
+- `propose` chạy đồng bộ, tối đa 20 chunk mỗi request, mỗi lần gọi LLM có timeout `HOLOCRON_LLM_TIMEOUT_S`. Dữ liệu rời máy: văn bản chunk gửi tới endpoint LLM đã cấu hình, hiện là gateway của ban tổ chức (§13.1).
 
 ### 6.7 Blueprint và batch twin (F11, F18) — contract, chưa triển khai
 
@@ -1270,18 +1480,19 @@ class SearchHit(StrictModel):                    # đề xuất
 2. Mỗi `item_id`: không tồn tại, chưa `approved` hoặc `non_cloneable` → 409, liệt kê các item lỗi (I5; cùng luật với §6.3).
 3. Item có `labels.subject_code` khác `subject_code` của request, hoặc chưa có `labels.chapter_code` → 422, liệt kê item cần bổ sung nhãn (đề xuất).
 4. `TheorySlotSpec.source_chunk_id` không tồn tại hoặc khác môn → 422.
-5. Dựng slot theo nguồn ở §5.9. Với slot tính toán, chạy lại self-solve trong sandbox trên `params` đã duyệt để lấy `distractors` cho `distractor_archetypes` (I1: code chỉ so sánh).
-6. Lưu blueprint kèm danh sách `item_ids` (để §6.3 kiểm lại I5), trả `201 ExamBlueprint` với header `Location: /v1/blueprints/{blueprint_id}`.
+5. Đề xuất (chờ duyệt, §5.14): tạo ngầm môn nếu chưa có; `TheorySlotSpec.format` null thì lấy mặc định từ `exam_format`. Có slot `ESSAY` mà khả năng `essay_grading_offline` không khả dụng → 409 `CapabilityError`; code không tự đổi slot đó sang `MCQ4`.
+6. Dựng slot theo nguồn ở §5.9. Với slot tính toán, chạy lại self-solve trong sandbox trên `params` đã duyệt để lấy `distractors` cho `distractor_archetypes` (I1: code chỉ so sánh).
+7. Lưu blueprint kèm danh sách `item_ids` (để §6.3 kiểm lại I5), trả `201 ExamBlueprint` với header `Location: /v1/blueprints/{blueprint_id}`.
 
 **Giới hạn:** ≤ 50 item và ≤ 50 slot lý thuyết mỗi blueprint. **Bất biến:** I5 (chỉ item đã duyệt, không non-cloneable); I1 (`distractor_archetypes` lấy từ sandbox).
 
-#### `PATCH /v1/ingestion/items/{item_id}/labels` (đề xuất)
+#### `PATCH /v1/ingestion/items/{item_id}/labels` (đã duyệt 2026-10-25)
 
 ```json
 {"editor_id": "local_user", "subject_code": "ET4010", "chapter_code": "ch3", "cognitive_level": "apply"}
 ```
 
-Đặt các field có trong body vào `IngestionItem.labels`, rồi đặt `confirmed_by_human = true` và `mapping_confidence = 1.0`. Nhãn không ảnh hưởng số liệu hay Gate, nên được sửa cả sau khi item đã duyệt. Khi item được tạo và đã có key LLM, DeepSeek đề xuất `chapter_code` và `cognitive_level` trên văn bản đề; lỗi hoặc không có key thì giữ mặc định (§5.4). **Response:** `200 IngestionItem`. **Lỗi:** 404, 422.
+Đặt các field có trong body vào `IngestionItem.labels`, rồi đặt `confirmed_by_human = true` và `mapping_confidence = 1.0`. Nhãn không ảnh hưởng số liệu hay Gate, nên được sửa cả sau khi item đã duyệt. Khi item được tạo và đã có cấu hình LLM, LLM đề xuất `chapter_code` và `cognitive_level` trên văn bản đề; lỗi hoặc không có LLM thì giữ mặc định (§5.4), không trả lỗi. **Response:** `200 IngestionItem`. **Lỗi:** 404, 422.
 
 #### Đọc blueprint và batch (F18)
 
@@ -1300,7 +1511,7 @@ class BlueprintSummary(StrictModel):             # đề xuất
     created_at: datetime
     batch_count: int                             # code: số batch đã sinh
 
-class TwinBatch(BaseModel):                      # đề xuất: thêm batch_id và created_at vào model hiện có (§5.6)
+class TwinBatch(BaseModel):                      # đã duyệt 2026-10-25: thêm batch_id và created_at vào model hiện có (§5.6)
     batch_id: str = Field(pattern=r"^tb_[0-9a-f]{16}$")   # code: sinh khi tạo batch; phát lại theo Idempotency-Key trả đúng id cũ
     blueprint_id: str
     base_seed: int
@@ -1320,10 +1531,70 @@ class TwinBatchSummary(StrictModel):             # đề xuất
 
 - Các GET chỉ đọc kết quả đã lưu và không chạy sandbox. Twin trả về đã được sinh dưới I5 ở thời điểm `POST …/twins`.
 
+### 6.8 Môn học và `exam_format` (§5.14) — đề xuất (chờ duyệt), chưa triển khai
+
+Nhu cầu "mỗi môn có `exam_format`, kèm endpoint đọc và sửa" đã duyệt 2026-10-25; đường dẫn, body và mã lỗi dưới đây là đề xuất. Mọi endpoint chạy offline.
+
+| Method | Path | Request | Response | Lỗi |
+|---|---|---|---|---|
+| GET | `/v1/subjects` | — | `200 list[Subject]`, sắp theo `subject_code` | — |
+| GET | `/v1/subjects/{subject_code}` | — | `200 Subject` | 404; 422 (`subject_code` sai mẫu) |
+| POST | `/v1/subjects` | `{subject_code, display_name?, exam_format?}` | `201 Subject`, header `Location` | 409 (môn đã có, kể cả môn tạo ngầm); 422 |
+| PATCH | `/v1/subjects/{subject_code}` | `{editor_id, expected_version, display_name?, exam_format?}`; ít nhất một trong hai field sửa | `200 Subject`, `version` tăng 1 | 404; 409 (version lệch); 422 |
+
+- Đổi `exam_format` chỉ đổi mặc định cho blueprint tạo sau đó; blueprint và twin đã có giữ nguyên (§5.14).
+- Không có `DELETE` trong MVP: xoá môn cần quyết định số phận của tài liệu, Vault và blueprint cùng môn.
+
+### 6.9 Câu tự luận: sinh và chấm (§5.14) — MVP nếu còn thời gian, chưa triển khai
+
+Contract đã duyệt 2026-10-25 ở mức field (§5.14); đường dẫn và mã lỗi là đề xuất (chờ duyệt). Cả hai bước chạy offline, không cần LLM. Khi khả năng `essay_grading_offline` không khả dụng (kể cả vì phần tự luận bị chuyển sang sau MVP), các endpoint dưới đây trả 409 `CapabilityError` (§6.0).
+
+**Sinh câu.** Câu tự luận đi cùng đường với câu lý thuyết MCQ4, không có endpoint riêng, để mọi hình thức câu dùng chung blueprint, batch, I5 và R6:
+1. `POST /v1/blueprints` (§6.7) với slot lý thuyết `format = "ESSAY"`, hoặc `format` null trong môn có `exam_format = essay`:
+
+```json
+{"subject_code": "PHI1006", "theory_slots": [{"chapter_code": "ch2", "cognitive_level": "understand", "format": "ESSAY"}]}
+```
+
+2. `POST /v1/blueprints/{blueprint_id}/twins` (§6.3), body `TwinBatchRequest` như hiện nay (`format` của request không ảnh hưởng slot lý thuyết). Response `201 TwinBatch`; mỗi twin của slot `ESSAY` có dạng (rút gọn):
+
+```json
+{
+  "twin_id": "twin_…", "slot_index": 1, "format": "ESSAY", "question_kind": "theory",
+  "stem": "Trình bày khái niệm «vật chất».",
+  "options": null, "correct_key": null, "numerical_answer": null, "distractor_to_misconception_map": {},
+  "essay": {
+    "essay_kind": "define_concept", "pair_id": "cp_…", "term": "vật chất", "splitter_version": "1",
+    "points": [
+      {"point_index": 0, "text": "…đoạn nguyên văn thứ nhất của definition_quote…", "syllable_count": 14},
+      {"point_index": 1, "text": "…đoạn nguyên văn thứ hai…", "syllable_count": 9}
+    ]
+  },
+  "solution_explanation_vi": "…definition_quote nguyên văn…",
+  "citation": {"doc_id": "doc_…", "page_number": 12, "verbatim_quote": "…definition_quote…", "chunk_id": "chk_…"},
+  "trace": {"kind": "theory", "generator_version": "1", "pool_sha256": "…", "seed_rerolls": 0},
+  "review_status": "AUTO_PASS"
+}
+```
+
+   Response chứa sẵn các ý và đáp án mẫu, giống `correct_key` của câu MCQ4. Màn luyện tập PHẢI ẩn `essay.points`, `solution_explanation_vi` và `citation` cho tới khi người học nộp câu trả lời. Đây là app một người dùng để tự ôn, nên không cần giấu đáp án ở phía server.
+
+**Chấm.** `POST /v1/twins/{twin_id}/essay-grade`
+
+```python
+class EssayGradeRequest(StrictModel):
+    answer_text: str = Field(min_length=1)   # người học; độ dài tối đa kiểm theo cấu hình ESSAY_ANSWER_MAX_CHARS (mặc định 5000), không ghi cứng trong model; vượt ⇒ 422
+```
+
+- **Xử lý:** đọc twin đã lưu (§5.13 bảng `twins`; bản in-memory cần tra twin theo `twin_id`), kiểm `format = ESSAY`, chấm theo §5.14 trên `essay.points` đã lưu trong twin, không tách lại ý từ `definition_quote` hiện tại của cặp. Nhờ vậy sửa cặp khái niệm sau khi sinh câu không làm đổi kết quả chấm của twin cũ (trích dẫn là bản chụp, ADR-006 mục 7).
+- **Response:** `200 EssayGradeResult` (§5.14). Không lưu câu trả lời hay kết quả (§5.13).
+- **Lỗi:** 404 (twin); 422 (body sai, câu trả lời rỗng sau khi bỏ khoảng trắng, quá 5000 ký tự, hoặc twin không phải `ESSAY`); 409 `CapabilityError`.
+- **Log** (§14): `twin_id`, `grader_version`, `total_points`, `matched_count`, độ dài câu trả lời; KHÔNG log văn bản câu trả lời.
+
 ## 7. Ingestion Gate
 
 ### 7.1 Trích xuất dual-pass
-- Hai lượt PHẢI độc lập: khác prompt hệ thống hoặc khác nhiệt độ (lượt A `temperature=0`, lượt B `temperature=0.4` với prompt diễn đạt lại). Mỗi ô có `confidence` ∈ [0, 1].
+- Hai lượt PHẢI độc lập: khác prompt hệ thống hoặc khác nhiệt độ (lượt A `temperature=0`, lượt B `temperature=0.4` với prompt diễn đạt lại). Mỗi ô có `confidence` ∈ [0, 1]. Dual-pass VLM đang park (2026-10-25, §11.5); việc đặt nhiệt độ ở đây mâu thuẫn với quy tắc adapter "không đặt `temperature` tuỳ ý" và cần quyết định trước khi bật lại (§17 D10).
 - Hai lượt PHẢI dùng cùng lưới `(row, col)`; ô một lượt không đọc được thì vắng mặt (sinh `MISSING_CELL` hoặc `DUAL_PASS_MISMATCH`).
 
 ### 7.2 Năm tín hiệu
@@ -1384,7 +1655,7 @@ def render_stem(params: Params) -> str             # Markdown + LaTeX
 - Template chạy trong sandbox nên chỉ được import whitelist (§9.1) và chỉ dùng kiểu builtin trong annotation.
 - Đổi theo ADR-005 bước 3 (chưa triển khai): khoá `"gantt"` thay bằng `"artifacts": [{"kind": "timeline" | "table", …}, …]` đúng dạng `SolutionArtifact` (§5.11); template khai báo `required_artifacts` và `input_schema` trong file `.json` đi kèm (§5.10). Sandbox kiểm kiểu artifact theo `kind`.
 
-**Đáp án nhiều giá trị (R10) — chờ người dùng chọn.** Câu Vi xử lý hỏi giá trị thanh ghi và bốn cờ N, Z, C, V của CPSR sau một đoạn lệnh, trong khi hợp đồng hiện tại chỉ có một `value` số. Ba phương án:
+**Đáp án nhiều giá trị (R10) — đã chọn (c) cho MCQ4 ngày 2026-10-25; (a) để sau MVP qua một ADR riêng.** Câu Vi xử lý hỏi giá trị thanh ghi và bốn cờ N, Z, C, V của CPSR sau một đoạn lệnh, trong khi hợp đồng hiện tại chỉ có một `value` số. Ba phương án:
 
 | | (a) `answer` đa hình: `numeric \| record` | (b) Mỗi câu hỏi một giá trị | (c) Mã hoá thành một số |
 |---|---|---|---|
@@ -1397,7 +1668,12 @@ def render_stem(params: Params) -> str             # Markdown + LaTeX
 | Frontend | Thêm cách hiển thị bản ghi và ô nhập nhiều giá trị cho NUMERICAL | Không đổi | Không đổi; dạng NUMERICAL bắt người học nhập số mã hoá, nên chỉ nên dùng MCQ4 |
 | Thay đổi contract | Lớn: `AnswerSpec`, `NumericalAnswer`, `TwinQuestion`, `types/holocron.ts`; cần ADR | Không | Nhỏ (chỉ cách so ở S5) |
 
-Khuyến nghị của người viết spec (2026-10-24, chưa phải quyết định): (c) cho MVP, giới hạn ở MCQ4, vì giữ nguyên I1, I2, I4 và frontend, không cần ADR, và không làm chậm ADR-005 bước 1–3 mà G1 phụ thuộc. Điểm phải xử lý của (c) là cách so ở S5. Sau MVP chuyển sang (a) qua một ADR riêng nếu cần câu NUMERICAL nhiều giá trị. (b) không đạt mục tiêu "giá trị thanh ghi và cờ" ở §1.5 cho MCQ4.
+**Quyết định (đã duyệt 2026-10-25):** (c) cho MVP, giới hạn ở MCQ4, vì giữ nguyên I1, I2, I4 và frontend, không cần ADR, và không làm chậm ADR-005 bước 1–3. Câu Vi xử lý có đáp án mã hoá KHÔNG ĐƯỢC sinh ở dạng NUMERICAL. Sau MVP chuyển sang (a) qua một ADR riêng nếu cần câu NUMERICAL nhiều giá trị. (b) bị loại vì không đạt mục tiêu "giá trị thanh ghi và cờ" ở §1.5 cho MCQ4.
+
+Hệ quả của (c), đề xuất (chờ duyệt):
+- **Cách so ở S5:** `AnswerSpec` thêm `match_mode: Literal["numeric", "display"] = "numeric"`. Với `"display"`, self-solve so `solve()["display"]` với văn bản từng phương án của đề gốc sau chuẩn hoá NFC, gộp khoảng trắng và `casefold`, thay vì lấy số đầu tiên (`_first_number`). Template Vi xử lý khai báo `"display"` trong file `.json` (§5.10); code không rẽ nhánh theo topic. Cùng cách so dùng cho `distractor_archetypes` (§5.9).
+- **`min_option_gap`:** đặt `1` cho đáp án mã hoá nguyên, nên "cách nhau ≥ 1" đúng nghĩa là "khác nhau"; assert `DISTINCT_*` của template vẫn bắt buộc.
+- **Dấu vân tay R6 và I4** không đổi, vì `params` và `value` vẫn là kiểu builtin.
 
 ### 8.2 Quy tắc assert
 - Mỗi `assert` PHẢI có nhãn thuộc một trong bốn nhóm: `VALIDITY_*`, `TIE_*`, `NONDEG_*`, `DISTINCT_*`.
@@ -1456,34 +1732,73 @@ Feedback gửi LLM (một dòng mỗi lỗi): `AST_REJECTED: dòng N: …`, `RUN
 | Viết mã Executable Template | Được — output không tin cậy | Luôn qua ASTGuard + sandbox + validator |
 | Phân loại `topic_key`, gợi ý archetype phương án nhiễu | Được | Chỉ là nhãn, không phải số |
 | Đề xuất nhãn chunk, `chapter_code`, `cognitive_level`, cặp khái niệm (§5.4, §5.8) | Được — output không tin cậy | Người dùng xác nhận; trích dẫn qua kiểm nguyên văn I3 |
+| Chấm câu trả lời tự luận (§5.14) | Chỉ khi có `AnswerJudge` (sau MVP): trả verdict từng ý kèm bằng chứng | Không có LLM thì chấm offline bằng n-gram. Điểm và kết luận luôn do code tính (CLAUDE.md §2.1) |
 | Tính bất kỳ con số nào hiển thị cho người dùng | **KHÔNG ĐƯỢC** | I1 |
 | Viết lời giải chứa số | **KHÔNG ĐƯỢC** | Lời giải là `explanation_vi` do `solve()` sinh |
+
+Mọi việc của LLM ở bảng trên là **tuỳ chọn** (đã duyệt 2026-10-25): thiếu LLM thì việc đó báo không khả dụng (§11.4) hoặc có cách làm offline thay thế, phần còn lại của app vẫn chạy.
 
 ### 11.2 Cấu hình (module `infrastructure/llm_config.py`, T2-N3)
 
 | Biến môi trường | Mặc định | Ý nghĩa |
 |---|---|---|
-| `HOLOCRON_LLM_BASE_URL` | `https://api.deepseek.com/v1` | Endpoint tương thích OpenAI Chat Completions |
-| `HOLOCRON_LLM_API_KEY` | — (bắt buộc khi dùng LLM) | Key do người dùng cấp; KHÔNG ĐƯỢC ghi log, KHÔNG ĐƯỢC trả về client |
-| `HOLOCRON_LLM_MODEL_EXTRACT` | `deepseek-chat` | Prompting, phân loại topic |
-| `HOLOCRON_LLM_MODEL_AUTHOR` | `deepseek-chat` | Viết template; CÓ THỂ đặt `deepseek-coder` nếu nhà cung cấp còn phục vụ model này |
-| `HOLOCRON_VLM_BASE_URL` / `HOLOCRON_VLM_API_KEY` / `HOLOCRON_VLM_MODEL` | — | Model **có thị giác** cho dual-pass (tương thích OpenAI, nhận `image_url`) |
+| `HOLOCRON_LLM_BASE_URL` | — (không có; đổi 2026-10-25) | Địa chỉ gốc kiểu OpenAI, **gồm cả phần version**, giống `base_url` của OpenAI SDK; adapter nối thêm `/chat/completions` (quy ước đề xuất, chờ duyệt). Ví dụ: `https://<gateway>/v1`; DeepSeek (`https://api.deepseek.com/v1`) hay một model local cũng dùng được, chỉ là ví dụ, không phải mặc định |
+| `HOLOCRON_LLM_API_KEY` | — | Key người dùng cấu hình (hiện là key ban tổ chức cấp); KHÔNG ĐƯỢC ghi log, KHÔNG ĐƯỢC trả về client |
+| `HOLOCRON_LLM_MODEL_EXTRACT` | — (không có; đổi 2026-10-25) | Model cho đề xuất nhãn và cặp khái niệm. Ví dụ hiện dùng: `claude-haiku-5-5` qua gateway của ban tổ chức |
+| `HOLOCRON_LLM_MODEL_AUTHOR` | = `HOLOCRON_LLM_MODEL_EXTRACT` (đề xuất) | Model viết template |
+| `HOLOCRON_VLM_BASE_URL` / `HOLOCRON_VLM_API_KEY` / `HOLOCRON_VLM_MODEL` | — | Model **có thị giác** cho dual-pass và tầng 4 (tương thích OpenAI, nhận `image_url`). Đang park: chưa kiểm gateway hiện có nhận ảnh hay không (R4) |
 | `HOLOCRON_LLM_TIMEOUT_S` | `60` | Timeout mỗi request |
+| `HOLOCRON_REQUIRE_TOKEN` | — (không yêu cầu token) | Đã duyệt 2026-10-25 (§13.1): đặt biến này thì mọi request PHẢI mang token. Đề xuất (chờ duyệt): giá trị của biến chính là token, do Tauri sinh ngẫu nhiên mỗi lần khởi động (≥ 32 byte, base64url) và truyền cho sidecar; KHÔNG ĐƯỢC ghi log |
 | `HOLOCRON_PDF_OCR_PRIMARY` | `tesseract` | Engine chính của tầng 2. MVP chỉ nhận `tesseract` (đã duyệt 2026-10-24; ADR-008 mục 12); giá trị khác là `ConfigError` |
 | `HOLOCRON_PDF_OCR_SECONDARY` | `rapidocr` | Lượt đọc thứ hai (model PP-OCRv6 small đóng sẵn trong wheel, đã duyệt 2026-10-24). Rỗng nghĩa là không có lượt thứ hai (`cross_check = unavailable`). Không được cùng họ model với lượt chính |
 | `HOLOCRON_TESSERACT_CMD` | `tesseract` (tìm trong PATH) | Đường dẫn binary Tesseract do người dùng tự cài |
 | `HOLOCRON_TESSDATA_DIR` | thư mục mặc định của bản cài Tesseract | Thư mục chứa `vie.traineddata`, truyền qua `--tessdata-dir` |
-| `HOLOCRON_DATA_DIR` | `%LOCALAPPDATA%\Holocron` (Windows); `$XDG_DATA_HOME/holocron` hoặc `~/.local/share/holocron` (Linux) | Đề xuất (§5.13): thư mục chứa `holocron.sqlite3` và file gốc |
+| `HOLOCRON_DATA_DIR` | `%LOCALAPPDATA%\Holocron` (Windows); `$XDG_DATA_HOME/holocron` hoặc `~/.local/share/holocron` (Linux) | Đã duyệt 2026-10-25 (§5.13): thư mục chứa `holocron.sqlite3` và file gốc |
 | `HOLOCRON_API_URL` | `http://127.0.0.1:8000` | Biến của frontend (`next.config.ts`, đã triển khai): địa chỉ backend cho rewrite `/api/holocron/*` |
 
-- Tên model là cấu hình, KHÔNG ĐƯỢC hard-code trong service.
+- Tên model và địa chỉ endpoint là cấu hình, KHÔNG ĐƯỢC hard-code trong service. **Không có nhà cung cấp mặc định** (đã duyệt 2026-10-25): bỏ mặc định `https://api.deepseek.com/v1` và `deepseek-chat` của bản v0.5; DeepSeek chỉ còn là ví dụ. Code hiện tại (`infrastructure/llm_config.py`) và test `test_defaults_when_nothing_is_configured` (`tests/test_llm_config.py`) vẫn khẳng định hai mặc định này; đổi chúng là sửa test sẵn có, cần người dùng đồng ý riêng (CLAUDE.md §7, §17 D12).
+- **LLM được coi là đã cấu hình** (đề xuất, chờ duyệt) khi đủ `HOLOCRON_LLM_BASE_URL`, `HOLOCRON_LLM_API_KEY` và `HOLOCRON_LLM_MODEL_EXTRACT`. Thiếu một trong ba thì mọi khả năng cần LLM có `reason = "llm_not_configured"` (§11.4), không phải lỗi khởi động. Model local không cần key là việc sau MVP (§1.6).
 - Ngưỡng của bộ nhập (`TEXT_LAYER_MIN=0.85`, `TEXT_SCORE_MIN`, `OCR_SCORE_MIN`, `LINE_CONF_MIN`, `COVERAGE_MIN`, `FIGURE_INK_MIN`, `CROSS_LINE_CER_WARN`) là field có giá trị mặc định của model cấu hình ở `infrastructure/`, không phải biến môi trường (ADR-008 mục 12; tên `TEXT_LAYER_MIN` đã duyệt 2026-10-24).
 - Biến đặt giá trị rỗng hoặc toàn khoảng trắng coi như chưa đặt; `HOLOCRON_LLM_TIMEOUT_S` không phải số dương hữu hạn là lỗi cấu hình (`ConfigError`, thông điệp chỉ nêu tên biến). Mẫu tất cả các biến ở `.env.example` (gốc repo; chỉ placeholder). Backend không tự đọc file `.env`; người dùng nạp biến vào shell trước khi chạy uvicorn.
 - **Code hiện tại (`infrastructure/llm_config.py`):** khi thiếu cấu hình VLM (cần đủ ba biến `HOLOCRON_VLM_*`), hệ thống dùng `MockDualPassExtractor` và `GET /v1/runtime` trả `demo_mode = true`.
-- **Contract mới (định nghĩa đã duyệt 2026-10-23; ghi vào contract 2026-10-24, §5.12; code đổi cùng F17):** theo G5 (§1.5), thiếu VLM không còn là chế độ demo vì bộ nhập PDF vẫn chạy đủ luồng bằng tầng 1–3. `demo_mode` = "thiếu key LLM" (`HOLOCRON_LLM_API_KEY` chưa đặt). Việc upload đề qua §6.1 đang dùng dữ liệu mẫu được báo riêng bằng `mock_extractor` (đề xuất), để UI không bỏ mất nhãn "dữ liệu mẫu" khi `demo_mode` đổi nghĩa.
+- **Contract mới (định nghĩa đã duyệt 2026-10-23; ghi vào contract 2026-10-24, §5.12; code đổi cùng F17):** theo G5 (§1.5), thiếu VLM không còn là chế độ demo vì bộ nhập PDF vẫn chạy đủ luồng bằng tầng 1–3. `demo_mode` = "thiếu LLM" (`llm_configured = false`; v0.5 ghi "`HOLOCRON_LLM_API_KEY` chưa đặt", đổi theo điều kiện đã cấu hình ở trên). Việc upload đề qua §6.1 đang dùng dữ liệu mẫu được báo riêng bằng `mock_extractor` (đề xuất), để UI không bỏ mất nhãn "dữ liệu mẫu" khi `demo_mode` đổi nghĩa.
 
 ### 11.3 Hợp đồng prompt viết template
-System prompt gồm, theo thứ tự: (1) hợp đồng §8 nguyên văn; (2) danh sách import/builtin bị cấm của ASTGuard; (3) một ví dụ đầy đủ — chính file template RR; (4) slot cần sinh (`topic_key`, format, 3 `misconception_code` mục tiêu); (5) feedback lỗi của lượt trước theo định dạng §10. Output PHẢI là JSON khớp `QuestionTemplate` (không có trường `created_at`, `template_id`); JSON sai ⇒ `SCHEMA_INVALID` và trừ một lượt.
+System prompt gồm, theo thứ tự: (1) hợp đồng §8 nguyên văn; (2) danh sách import/builtin bị cấm của ASTGuard; (3) một ví dụ đầy đủ — chính file template RR; (4) slot cần sinh (`topic_key`, format, 3 `misconception_code` mục tiêu); (5) feedback lỗi của lượt trước theo định dạng §10. Output PHẢI là JSON khớp `QuestionTemplate` (không có trường `created_at`, `template_id`); JSON sai ⇒ `SCHEMA_INVALID` và trừ một lượt. Adapter không dựa vào `response_format` của nhà cung cấp để đảm bảo JSON (§11.5).
+
+### 11.4 LLM là tuỳ chọn: chế độ khả năng (đã duyệt 2026-10-25)
+
+Quy tắc "503 khi thiếu key" của v0.5 bị bỏ. Thay vào đó, `GET /v1/runtime` báo từng khả năng kèm `available` và lý do (§5.12). Chỉ endpoint thực sự cần một khả năng mới trả lỗi rõ ràng (409 `CapabilityError`, §6.0, mã là đề xuất); mọi phần còn lại chạy offline. Cột "Khi không khả dụng" là đề xuất (chờ duyệt).
+
+| Khả năng | Cần | Endpoint hoặc luồng bị ảnh hưởng | Khi không khả dụng |
+|---|---|---|---|
+| `ocr` | Tesseract + `vie.traineddata` đủ chữ | Trang scan trong `POST /v1/documents` (§6.5) | Trang scan thành `failed` (`OCR_ENGINE_MISSING`), người dùng gõ tay rồi xác nhận; trang có lớp chữ vẫn đọc ở tầng 1 |
+| `ocr_cross_check` | RapidOCR, `HOLOCRON_PDF_OCR_SECONDARY` khác rỗng | Đối chiếu chéo trang OCR (§7.4) | `cross_check = unavailable` ⇒ WARNING `CROSS_CHECK_UNAVAILABLE`, ô số không AUTO_PASS |
+| `vault_search` | Không gì ngoài code (FTS5 hoặc BM25 tự cài) | `GET /v1/vault/search` (§6.6) | Luôn khả dụng khi đã có code |
+| `theory_generation` | Không gì ngoài code | Slot lý thuyết `MCQ4` trong `POST …/twins` | Luôn khả dụng khi đã có code; thiếu cặp đã xác nhận thì `ReviewTicket` như ADR-007 |
+| `concept_pair_llm_proposal` | LLM đã cấu hình | `POST /v1/vault/concept-pairs/propose` (§6.6) | 409 `CapabilityError`; người dùng tự tạo cặp bằng `POST /v1/vault/concept-pairs` |
+| `essay_grading_offline` | Không gì ngoài code; phần tự luận có trong bản đang chạy | Slot `ESSAY` ở `POST /v1/blueprints`, `POST /v1/twins/{id}/essay-grade` (§6.9) | 409 `CapabilityError` với `reason = "not_implemented"` nếu phần tự luận bị chuyển sang sau MVP |
+| `essay_grading_llm` | LLM đã cấu hình và có `AnswerJudge` (sau MVP) | Chưa có endpoint | Luôn `not_implemented` trong MVP |
+| `template_authoring_llm` | LLM đã cấu hình | Slot tính toán trong `POST …/twins` (§10) | Không trả lỗi: pipeline dùng template đã kiểm chứng làm fallback như hiện nay (`UnconfiguredTemplateAuthor`); không có fallback thì `ReviewTicket` |
+| `vlm` | Đủ ba biến `HOLOCRON_VLM_*` | Tầng 4, dual-pass VLM của §6.1 | Trang "cần xem kỹ" vẫn chờ người dùng xem lại; §6.1 dùng `MockDualPassExtractor` (`mock_extractor = true`) |
+
+- Đề xuất nhãn bằng LLM (`chapter_code`, `cognitive_level`, nhãn chunk) không có khả năng riêng trong danh sách đã duyệt: thiếu LLM thì giữ mặc định và người dùng sửa, không trả lỗi (§5.4, §6.7). Đề xuất (chờ duyệt): thêm khả năng `label_suggestion_llm` để UI báo rõ (§17 D10).
+- Khả năng được tính một lần lúc khởi động, từ cấu hình và kiểm tra cục bộ (binary, unicharset, FTS5); không gọi mạng để kiểm, nên LLM đã cấu hình mà gateway đang lỗi vẫn là `available = true` và lỗi lúc gọi trả 502 (§6.0).
+
+### 11.5 Adapter LLM qua gateway (đã duyệt 2026-10-25)
+
+Key hiện tại do ban tổ chức cấp, đi qua một gateway kiểu OpenAI, model `claude-haiku-5-5`, không phải DeepSeek. Cấu hình vẫn đổi được nhà cung cấp (§11.2). Adapter đặt ở `infrastructure/` sau `Protocol` `ChatCompletionClient` (tên đề xuất), cấp qua `Depends`; test thay bằng stub, không gọi mạng (CLAUDE.md §2.2).
+
+Adapter PHẢI:
+- **Gửi header `User-Agent` riêng**, ví dụ `Holocron/<version>` (giá trị cụ thể là đề xuất). Gateway hiện tại chặn User-Agent mặc định của thư viện HTTP bằng 403 "error code: 1010".
+- **Tự parse và kiểm JSON**, không tin `response_format`. Phản hồi được tách lấy khối JSON, parse bằng thư viện chuẩn, rồi validate bằng model Pydantic của đúng việc đang làm (ví dụ cặp khái niệm, §5.8; template, §11.3). Parse hoặc validate lỗi thì thử lại tối đa `LLM_JSON_RETRY_MAX` lần (đề xuất: 2; field của model cấu hình, không phải biến môi trường), hết lượt thì 502 (§6.0). Riêng việc viết template vẫn theo ngân sách §10 (`SCHEMA_INVALID` trừ một lượt).
+- **Không đặt `temperature` hay `top_p` tuỳ ý.** Adapter không gửi hai tham số này, để model dùng giá trị mặc định của nhà cung cấp. Câu hỏi và đáp án không phụ thuộc tính tất định của LLM, vì mọi đầu ra đều qua cổng kiểm và người dùng xác nhận (§3.3). Dual-pass VLM ở §7.1 đang park; khi bật lại, cách làm cho hai lượt độc lập mà không đặt nhiệt độ cần quyết định riêng (§17 D10).
+- **Ghi số lần thử và tỉ lệ JSON lỗi** cho mỗi loại việc (§14). Không ghi nội dung prompt, phản hồi, key hay địa chỉ endpoint.
+
+Ghi chú:
+- **Dữ liệu gửi LLM đi qua gateway của ban tổ chức** (§13.1).
+- **VLM bị park:** chưa kiểm gateway có nhận ảnh (`image_url`) hay không. Kiểm bằng script đánh giá opt-in (CLAUDE.md §2.2) trước khi bật lại tầng 4.
+- **Model chạy local:** trỏ `HOLOCRON_LLM_BASE_URL` tới một server tương thích OpenAI trên máy người dùng. Tuỳ chọn; MVP chưa làm và chưa kiểm.
 
 ## 12. Knowledge Vault & trích dẫn 1-chạm
 
@@ -1500,7 +1815,7 @@ System prompt gồm, theo thứ tự: (1) hợp đồng §8 nguyên văn; (2) da
 
 ### 12.3 Tìm kiếm và nguồn trích dẫn (ADR-006 mục 4–6)
 - Tìm bằng BM25 trên token âm tiết, lọc theo `subject_code` (và `topic_keys` nếu có); SQLite FTS5 khi có, BM25 tự cài khi không (§5.13). Endpoint ở §6.6. Không dùng embedding trong MVP.
-- `VaultCitationProvider` thay `NoCitationProvider`: slot tính toán lấy chunk `THEORY` cùng `subject_code` có `topic_keys` chứa `topic_key` của slot; hoà điểm thì chọn trang nhỏ nhất rồi `chunk_id` nhỏ nhất; không có thì `ReviewTicket` như hiện nay. Slot lý thuyết lấy trích dẫn từ cặp khái niệm đúng. Chữ ký `citation_for` cần thêm `subject_code` (đề xuất ở §5.8).
+- `VaultCitationProvider` thay `NoCitationProvider`: slot tính toán lấy chunk `THEORY` cùng `subject_code` có `topic_keys` chứa `topic_key` của slot; hoà điểm thì chọn trang nhỏ nhất rồi `chunk_id` nhỏ nhất; không có thì `ReviewTicket` như hiện nay. Slot lý thuyết lấy trích dẫn từ cặp khái niệm đúng. Chữ ký `citation_for` thêm `subject_code` (đã duyệt 2026-10-25, §5.8).
 
 ## 13. Bảo mật & Threat Model
 
@@ -1512,6 +1827,8 @@ System prompt gồm, theo thứ tự: (1) hợp đồng §8 nguyên văn; (2) da
 | Tampering | VLM bị lừa bởi chữ ẩn trong ảnh, đọc sai số | Dual-pass + self-solve mismatch + con người xác nhận (I5) |
 | Repudiation | Không biết ai sửa ô nào | `PatchAudit` cho mọi PATCH |
 | Information disclosure | Lộ API key BYOK | Key chỉ ở biến môi trường backend; không log; không trả về client; Frontend không bao giờ giữ key |
+| Information disclosure | Nội dung tài liệu học rời máy khi dùng LLM | LLM là tuỳ chọn (§11.4); khi dùng, dữ liệu đi qua gateway của ban tổ chức và UI nói rõ điều này (§13.1) |
+| Spoofing | Trang web khác gọi API local (CSRF, DNS rebinding) | Kiểm `Host` luôn bật; token khi đặt `HOLOCRON_REQUIRE_TOKEN` (§13.1) |
 | Denial of service | File lớn; PDF nhiều trang; template vòng lặp vô hạn/memory bomb | Upload đề (§6.1): 10 MiB. Nhập tài liệu (§6.5): 50 MiB, 300 trang, 25 megapixel mỗi trang, timeout 5 s/30 s mỗi trang, RAM worker 2 GiB (ADR-008). Sandbox: wall-clock 2 s; RLIMIT/Job Object |
 | Elevation of privilege | Escape sandbox qua introspection/module graph | Cấm thuộc tính `_*` và các tiền tố frame; proxy module không lộ module con; test bảo mật bắt buộc khi nới whitelist |
 
@@ -1519,15 +1836,24 @@ Backend PHẢI chỉ lắng nghe `127.0.0.1` trong bản local-first.
 
 ### 13.1 Mô hình bảo mật của app local
 - **Không có đăng nhập.** App dành cho một người dùng trên một máy; ranh giới tin cậy là tài khoản hệ điều hành của người dùng. Mọi tiến trình chạy dưới tài khoản đó đều đọc được dữ liệu của app, và đây là rủi ro được chấp nhận.
-- **API chỉ nghe `127.0.0.1`** (đã triển khai). Bản desktop PHẢI chặn thêm hai đường tấn công từ trình duyệt: trang web độc hại gọi `http://127.0.0.1:<port>` (CSRF) và DNS rebinding. Biện pháp: Tauri sinh một token ngẫu nhiên mỗi lần khởi động, truyền cho backend sidecar qua biến môi trường và cho WebView của app; mọi request PHẢI mang token đó trong header; backend chỉ nhận `Host` là `127.0.0.1:<port>` hoặc `localhost:<port>`. Trạng thái: chưa triển khai, làm cùng bước đóng gói Tauri.
-- **API key (BYOK).** Giai đoạn webapp: biến môi trường (danh sách ở §11.2, mẫu ở `.env.example` chỉ chứa placeholder). Backend không tự đọc file `.env` (không có dependency nạp `.env`); nếu người dùng giữ key trong file `.env` cục bộ thì file đó đã nằm trong `.gitignore` và phải được nạp vào shell trước khi chạy backend. Bản desktop: lưu trong kho khoá của hệ điều hành (Windows Credential Manager; Secret Service trên Linux); Tauri đọc ra và truyền cho sidecar qua biến môi trường lúc khởi động. Key KHÔNG ĐƯỢC ghi ra file cấu hình dạng rõ, KHÔNG ĐƯỢC ghi log, KHÔNG ĐƯỢC trả về client (`GET /v1/runtime` chỉ trả boolean, §6.4).
-- **Dữ liệu rời máy.** PDF, Vault và cơ sở dữ liệu nằm trong thư mục dữ liệu ứng dụng của người dùng. Dữ liệu chỉ rời máy ở hai chỗ: văn bản đã tách gửi tới DeepSeek để phân loại và viết template; ảnh trang gửi tới VLM khi người dùng đã cấu hình VLM. UI PHẢI nói rõ hai điểm này ở màn hình cấu hình key.
+- **API chỉ nghe `127.0.0.1`** (đã triển khai). App PHẢI chặn thêm hai đường tấn công từ trình duyệt: trang web độc hại gọi `http://127.0.0.1:<port>` (CSRF) và DNS rebinding. Biện pháp (đã duyệt 2026-10-25):
+  - **Kiểm `Host` luôn bật**, ở mọi chế độ chạy (webapp localhost và Tauri): backend chỉ nhận `Host` là `127.0.0.1:<port>` hoặc `localhost:<port>`, ngược lại trả 403 (§6.0). Danh sách host cho phép được cấp qua `Depends` (đề xuất), để test thay được mà không sửa test sẵn có: `TestClient` của Starlette mặc định gửi `Host: testserver` (§17 D13).
+  - **Token chỉ bắt buộc khi đặt `HOLOCRON_REQUIRE_TOKEN`** (chế độ chạy dưới Tauri, §11.2). Khi đó Tauri sinh token ngẫu nhiên mỗi lần khởi động, truyền cho sidecar qua biến này và cho WebView của app; mọi request PHẢI mang token trong header `X-Holocron-Token` (tên header là đề xuất), so bằng phép so thời gian hằng (`hmac.compare_digest`); thiếu hoặc sai ⇒ 403. Không đặt biến thì không yêu cầu token, như giai đoạn webapp hiện nay.
+  - Trạng thái: chưa triển khai. Kiểm `Host` có thể làm ngay; token làm cùng bước đóng gói Tauri (`docs/tauri-spike-plan.md`).
+- **API key (BYOK).** Giai đoạn webapp: biến môi trường (danh sách ở §11.2, mẫu ở `.env.example` chỉ chứa placeholder). Backend không tự đọc file `.env` (không có dependency nạp `.env`); nếu người dùng giữ key trong file `.env` cục bộ thì file đó đã nằm trong `.gitignore` và phải được nạp vào shell trước khi chạy backend. Bản desktop: lưu trong kho khoá của hệ điều hành (Windows Credential Manager; Secret Service trên Linux); Tauri đọc ra và truyền cho sidecar qua biến môi trường lúc khởi động. Key KHÔNG ĐƯỢC ghi ra file cấu hình dạng rõ, KHÔNG ĐƯỢC ghi log, KHÔNG ĐƯỢC trả về client (`GET /v1/runtime` chỉ trả boolean và mã lý do của từng khả năng, §5.12).
+- **Dữ liệu rời máy.** PDF, Vault và cơ sở dữ liệu nằm trong thư mục dữ liệu ứng dụng của người dùng. Không cấu hình LLM và VLM thì không dữ liệu nào rời máy (G6). Dữ liệu chỉ rời máy ở hai chỗ:
+  - Văn bản đã tách (văn bản chunk, văn bản trang đề) gửi tới endpoint LLM đã cấu hình để đề xuất nhãn, đề xuất cặp khái niệm và viết template. **Với key hiện tại, dữ liệu này đi qua gateway của ban tổ chức hackathon** (đã duyệt 2026-10-25, §11.5), tức bên vận hành gateway và nhà cung cấp model phía sau có thể thấy nội dung. Câu trả lời tự luận của người học không rời máy khi chưa có `AnswerJudge`.
+  - Ảnh trang gửi tới VLM khi người dùng đã cấu hình VLM (đang park).
+
+  UI PHẢI nói rõ hai điểm này ở màn hình cấu hình key, kèm tên bên nhận dữ liệu theo cấu hình đang dùng (ví dụ "gateway của ban tổ chức").
 
 ## 14. Quan sát hệ thống
 - Log có cấu trúc cho mỗi lần sandbox: `template_sha256, seed, status, duration_ms, stage`.
 - Log cho mỗi upload: `document_id, media_type, size_bytes, gate_status, số issue theo mã` (không log nội dung file).
 - Log cho mỗi trang của bộ nhập (§6.5): `document_id, page_number, tier_used, status, review_reasons, failure_reason, duration_ms` (không log văn bản trang).
-- Metrics: tỉ lệ chấp nhận seed theo template; phân bố `assertion_histogram`; tỉ lệ `AUTO_FALLBACK`; tỉ lệ Gate `BLOCKED` theo mã issue; số lần 409 version.
+- Log cho mỗi lần gọi LLM qua adapter (§11.5): loại việc, số lần thử, kết quả (`ok`, `json_invalid`, `schema_invalid`, `http_error`, `timeout`), mã HTTP, thời gian. KHÔNG log prompt, phản hồi, key, tên model hay địa chỉ endpoint.
+- Log cho mỗi lần chấm tự luận (§6.9): `twin_id`, `grader_version`, `total_points`, `matched_count`, độ dài câu trả lời; không log văn bản câu trả lời.
+- Metrics: tỉ lệ chấp nhận seed theo template; phân bố `assertion_histogram`; tỉ lệ `AUTO_FALLBACK`; tỉ lệ Gate `BLOCKED` theo mã issue; số lần 409 version; số lần thử trung bình và tỉ lệ JSON lỗi của LLM theo loại việc (đã duyệt 2026-10-25).
 
 ## 15. Kiểm thử & Định nghĩa "Done"
 
@@ -1543,6 +1869,11 @@ Backend PHẢI chỉ lắng nghe `127.0.0.1` trong bản local-first.
 | Bộ nhập PDF (ADR-008 mục 14) | Unicharset đủ 134 chữ tiếng Việt (trên file mẫu); độ phủ dòng thấp ⇒ `needs_review`; token lệch ⇒ `DUAL_PASS_MISMATCH`; `cross_check = unavailable` ⇒ không AUTO_PASS | `tests/test_pdf_ocr.py` (`test_ocr_charset_covers_vietnamese`, `test_low_line_coverage_marks_page_needs_review`, `test_numeric_token_mismatch_raises_dual_pass_mismatch`, `test_cross_check_unavailable_blocks_auto_pass`) |
 | Bộ nhập PDF | Cờ trang chọn đúng tầng cho PDF số và trang scan | `tests/test_pdf_tiers.py` (`test_page_flags_select_tier`) |
 | Bộ nhập PDF | Magic bytes, số trang, timeout trên file mẫu tự tạo | `tests/test_pdf_input_limits.py` (`test_bad_pdf_limits`) |
+| Lọc trích dẫn theo môn (§5.8, đã duyệt 2026-10-25) | Chunk của môn khác không bao giờ được chọn, kể cả khi `topic_keys` khớp | test mới trong `tests/test_twin_batch.py` hoặc file test của `VaultCitationProvider` (tên đề xuất) |
+| Chấm tự luận offline (§5.14; tên file đề xuất) | Cùng đầu vào cho cùng `EssayGradeResult` từng byte; câu trả lời NFC và NFD cho cùng kết quả; mọi ý là chuỗi con của `definition_quote`; tách ý gộp đoạn ngắn đúng; câu trả lời chép nguyên văn khớp đủ y/y ý; câu trả lời rỗng ý khớp 0 ý; `matched_count + len(missing_points) = total_points` | `tests/test_essay_grader.py` |
+| Chế độ khả năng (§11.4; tên file đề xuất) | Thiếu từng biến LLM ⇒ đúng khả năng bị báo `llm_not_configured`; endpoint cần LLM trả 409 `CapabilityError`; endpoint offline vẫn chạy; `GET /v1/runtime` không lộ key, tên model hay endpoint | `tests/test_runtime_capabilities.py` |
+| Adapter LLM (§11.5; tên file đề xuất) | Có `User-Agent` riêng; không gửi `temperature`/`top_p`; JSON lỗi ⇒ thử lại đúng số lần rồi 502; đếm số lần thử; dùng stub HTTP, không gọi mạng | `tests/test_llm_adapter.py` |
+| Bảo mật app local (§13.1; tên file đề xuất) | `Host` lạ ⇒ 403; có `HOLOCRON_REQUIRE_TOKEN` thì thiếu hoặc sai token ⇒ 403, đúng token ⇒ qua; không đặt biến thì không cần token | `tests/test_local_security.py` |
 | Frontend | `tsc --noEmit` và `next build` sạch | `holocron/frontend` |
 
 "Done" cho một thay đổi: `pytest`, `ruff check .`, `ruff format --check .`, `mypy --strict holocron_core` xanh; frontend `npm run typecheck` và `npm run build` xanh khi chạm `frontend/`; walkthrough sinh lại `examples/*.json` khi đổi đầu ra pipeline.
@@ -1562,11 +1893,25 @@ Backend PHẢI chỉ lắng nghe `127.0.0.1` trong bản local-first.
 | T2-N4 | `POST /v1/blueprints/{id}/twins` | Xong, với nguồn trích dẫn và author mặc định chưa cấu hình (§6.3); twin trong batch còn trùng seed (R6) |
 | T2-N4 | Twin Viewer + Gantt chart trên Frontend | Xong: trang `/blueprints/[blueprintId]` gọi `POST …/twins` và hiển thị 3 twin, badge misconception, trích dẫn, `review_tickets`; chưa nối từ luồng ingestion vì `POST /v1/blueprints` chưa có (§6.3) |
 | T2-N4 | Trả nợ FE-001: cảnh báo Biome ở `TableAuditor.tsx` (ADR-004) | Xong (`5f3b2b4`, `1b9b5c4`) |
-| T2-N5 | Adapter VLM thật cho dual-pass; pool tiến trình sandbox | Kế hoạch |
+| T2-N5 | Adapter VLM thật cho dual-pass; pool tiến trình sandbox | VLM park (2026-10-25, R4); pool tiến trình: kế hoạch |
 | T2-N6/N7 (24–25/10) | Spec v0.4 §1, §0 (I2, I4) và §13.1; ADR-005…008 (*Chấp nhận*); engine OCR ADR-008 (chốt 2026-10-24); spec v0.5 contract cho bộ nhập PDF, Vault, blueprint, SQLite (Đợt 2b) | Xong phần tài liệu |
-| T2-N6/N7 (24–25/10) | Code, theo thứ tự (cập nhật 2026-10-24): (1) sửa R6 theo phương án B (§6.3); (2) ADR-005 bước 1–3: `input_schema` và metadata `.json`, `params` thay `CPUSchedulingProblem`, `artifacts` đa hình thay `gantt`; (3) template Vi xử lý (R10, sau khi chọn phương án §8.1), vì G1 của môn này cần bước 2; (4) bộ nhập PDF tầng 1–2 và màn hình xem lại (§6.5); (5) Vault, cặp khái niệm và `VaultCitationProvider` (§6.6); (6) `POST /v1/blueprints` và các GET (§6.7); (7) walkthrough 3 môn demo (§1.5). Thứ tự cắt khi trễ giữ nguyên: tầng 4 → tầng 3 → F17 → F16 | Đang làm |
-| Tuần 3 | Luồng G1 trên tài liệu thật của 3 môn demo; đo p95 (G3) và thời gian bộ nhập PDF | Kế hoạch |
-| Tuần 4 | SQLite + optimistic locking nguyên tử (§5.13); ADR-005 bước 4 (danh sách topic từ backend, form sinh từ `input_schema`, kiểm tra trong `test_architecture.py`), đóng ARCH-001; đóng gói Tauri và mô hình bảo mật §13.1 | Kế hoạch |
+| 25/10 | Spec v0.6: quyết định ngày 2026-10-24/25 (§1.2, §1.5, §5.12, §5.14, §6.8, §6.9, §11.4, §11.5, §13.1, §16); kế hoạch spike Tauri (`docs/tauri-spike-plan.md`) | Xong phần tài liệu |
+
+**Lịch từ 2026-10-25 (đã duyệt 2026-10-25; thay thứ tự code ghi ngày 2026-10-24):**
+
+| Mốc | Hạng mục | Trạng thái |
+|---|---|---|
+| **Lát cắt dọc, ưu tiên số 1** | PDF → Vault → câu lý thuyết MCQ → màn luyện tập (§4). Gồm: model dùng chung ở `domain/` (Đợt 2c); bộ nhập PDF tầng 1–2 và màn hình xem lại (§6.5); Vault, cặp khái niệm do người dùng bôi (LLM đề xuất nếu có), `VaultCitationProvider` với `citation_for(subject_code, slot)` (§5.8, §6.6); bộ sinh câu lý thuyết và `POST /v1/blueprints` với `theory_slots` (§6.7); màn luyện tập MCQ. Lát cắt không cần LLM, sandbox hay template | Kế hoạch |
+| **Thứ Tư 28/10: MVP cơ bản** | Lát cắt dọc chạy được end-to-end trên ít nhất một môn, trên máy người dùng | Mốc |
+| **Hết 29/10: mốc quyết định tự luận** | Lát cắt chạy được trước hết ngày 29/10 thì làm tự luận (§5.14, §6.9, §6.8); không thì chuyển toàn bộ phần tự luận sang sau MVP (§1.6) | Mốc |
+| **Luồng A, song song** | Bài tính toán: R6 phương án B (§6.3); ADR-005 bước 1–2; template ARM theo R10 phương án (c) (§8.1); template Xác suất thống kê. Luồng A không chặn lát cắt dọc. ADR-005 bước 3, đổi chữ "Gantt" ở I1/I4 và D6 chờ người dùng quyết | Kế hoạch |
+| **1–4/11: đủ phạm vi dự kiến** | Luồng G1 cho ba môn demo (§1.5); SQLite (§5.13); `RuntimeInfo.capabilities` và UI tương ứng (§5.12, §11.4); adapter LLM qua gateway (§11.5); kiểm `Host` và token (§13.1); tầng 3 với pdfplumber nếu kịp; đóng gói Tauri theo kết quả spike | Kế hoạch |
+| **Tới 7/11: dư địa** | Sửa lỗi phát hiện khi ôn thật; `RELEASE_CHECKLIST.md`; đo p95 (G3) và thời gian bộ nhập PDF | Kế hoạch |
+
+- Thứ tự cắt khi trễ giữ nguyên: tầng 4 (đã park) → tầng 3 → F17 → F16. Tự luận theo mốc 29/10 ở trên. Không cắt lát cắt dọc.
+- Đề xuất (chờ duyệt): đưa SQLite (§5.13) lên ngay sau mốc 28/10, vì người dùng đầu tiên ôn thật trên app (§1.2) và store in-memory làm mất Vault cùng cặp khái niệm đã xác nhận mỗi lần tắt backend.
+- **Số đo thật để hiệu chỉnh lịch (2026-10-25):** agent viết spec mất 9–25 phút mỗi đợt; chu kỳ người dùng duyệt một PR mất 1–6 giờ. Thời gian viết code chưa có số đo; điều phối viên bổ sung sau. Ước tính của người viết spec, chưa phải số đo: với chu kỳ duyệt này, mỗi ngày chỉ nên trông vào khoảng 2–4 lần merge, nên các nhánh của lát cắt dọc cần nhỏ và gộp sớm.
+- ADR-005 bước 4 và đóng ARCH-001 không có mốc trong lịch trên; làm sau khi luồng A xong bước 1–3.
 
 ## 17. Rủi ro & quyết định
 
@@ -1575,20 +1920,31 @@ Backend PHẢI chỉ lắng nghe `127.0.0.1` trong bản local-first.
 | R1 | Tỉ lệ chấp nhận seed thấp (RR ≈ 20 %) làm chậm sinh đề | Pool + song song; LLM nhận histogram assert |
 | R2 | Quy ước RR/SJF khác nhau giữa giảng viên | Assert `TIE_*` loại trường hợp mơ hồ |
 | R3 | VLM đọc sai chữ số viết tay | Dual-pass + self-solve mismatch + người dùng xác nhận |
-| R4 | Nhà cung cấp LLM mặc định không có model thị giác | Cấu hình VLM tách riêng (§11.2); fallback mock có nhãn demo |
+| R4 | Chưa biết gateway LLM hiện có (của ban tổ chức) nhận ảnh hay không; trước 2026-10-25 nhà cung cấp mặc định (DeepSeek) không có model thị giác | Cấu hình VLM tách riêng (§11.2); VLM park từ 2026-10-25, kiểm gateway bằng script opt-in trước khi bật lại; app chạy đủ luồng không cần VLM (G5); fallback mock có nhãn (`mock_extractor`) |
 | R5 | Tên model của nhà cung cấp thay đổi/ngừng phục vụ | Tên model là cấu hình, không hard-code |
 | R6 | Các twin trong cùng batch trùng seed (bước `k·7919` trùng bước re-roll `7919`) ⇒ đề trùng nhau. Đo 2026-10-23 (30 batch × 3 twin RR): 29/30 batch có seed trùng, chỉ 45/90 twin khác nhau (§6.3) | **Đã quyết định** (người dùng chọn phương án B ngày 2026-10-23): tách dải seed, `seed_k = (base_seed + k·7919·40) mod SEED_SPACE`, re-roll `seed_k + j·7919` với `j ∈ [0, 40)`; loại câu trùng theo dấu vân tay, hết dải thì vào `review_tickets` (§6.3, §10). Định nghĩa dấu vân tay và phạm vi so trùng đã duyệt 2026-10-24. Số đo 45/90 là mốc so sánh trước và sau khi sửa. Code chưa sửa |
 | R7 | OCR đọc sai dấu tiếng Việt hoặc sai chữ số | Màn hình xem lại bắt buộc trước khi lưu; độ tin cậy theo trang và theo dòng, độ phủ dòng, đối chiếu token số với lượt đọc thứ hai (ADR-008 mục 10–11). Engine chọn ngày 2026-10-24 bằng phép đo trên scan giả lập (ADR-008, mục "Kết quả đo"); phép đo trên scan thật chưa làm |
 | R8 | PDF tiếng Việt dùng font mã cũ (TCVN3, VNI) nên lớp chữ là ký tự rác dù trông bình thường | Tầng 1 phát hiện văn bản rác và hạ độ tin cậy để chuyển trang sang OCR (ADR-008) |
 | R9 | Model OCR và thư viện ảnh làm bộ cài desktop nặng | Không dùng PyTorch; Tesseract do người dùng tự cài nên không nằm trong gói MVP; Docling để sau MVP như worker tuỳ chọn; ghi kích thước gói vào ADR-008 |
-| R10 | Môn demo Kỹ thuật vi xử lý chưa có template tính toán (thanh ghi và cờ N, Z, C, V của CPSR sau một đoạn lệnh) ⇒ rủi ro cho G1 | Viết template mới kèm bộ giải tham chiếu độc lập, test tái lập I4 và property test ≥ 100 seed (§8.4, §15). Lời giải dạng bảng cần `artifacts` đa hình (ADR-005 bước 3). Hợp đồng §8.1 hiện chỉ có một `value` số cho đáp án, nên câu hỏi nhiều giá trị (thanh ghi và bốn cờ) cần quy về một giá trị so sánh được, hoặc đổi contract qua ADR. Ba phương án và khuyến nghị ở §8.1 ("Đáp án nhiều giá trị"), **chờ người dùng chọn** |
+| R10 | Môn demo Kỹ thuật vi xử lý chưa có template tính toán (thanh ghi và cờ N, Z, C, V của CPSR sau một đoạn lệnh) ⇒ rủi ro cho G1 | Viết template mới kèm bộ giải tham chiếu độc lập, test tái lập I4 và property test ≥ 100 seed (§8.4, §15). Lời giải dạng bảng cần `artifacts` đa hình (ADR-005 bước 3). Hợp đồng §8.1 hiện chỉ có một `value` số cho đáp án, nên câu hỏi nhiều giá trị (thanh ghi và bốn cờ) cần quy về một giá trị so sánh được, hoặc đổi contract qua ADR. **Đã chọn (c) cho MCQ4 ngày 2026-10-25** (§8.1); (a) để sau MVP qua một ADR riêng. Template ARM là luồng A, chạy song song và không chặn lát cắt dọc (§16) |
 | R11 | Bản SQLite đi kèm Python trên máy người dùng có thể không bật FTS5 | Kiểm `PRAGMA compile_options` khi khởi động; thiếu thì dùng BM25 tự cài (ADR-006 mục 4, §5.13) |
+| R12 | Gateway của ban tổ chức chặn User-Agent mặc định (403 "error code: 1010"), có thể không tôn trọng `response_format`, và có thể đổi hành vi hay ngừng phục vụ sau hackathon | Adapter gửi User-Agent riêng, tự parse và kiểm JSON, đếm lần thử và tỉ lệ JSON lỗi (§11.5); LLM là tuỳ chọn nên gateway hỏng không làm hỏng lát cắt dọc (G6); nhà cung cấp đổi được bằng cấu hình |
+| R13 | Chấm tự luận bằng n-gram chấm sót ý khi người học diễn đạt khác tài liệu; ngưỡng chưa hiệu chỉnh | Chỉ báo "khớp x/y ý", không có điểm tuyệt đối; UI ghi rõ giới hạn và hiện trích dẫn để tự đối chiếu (§5.14); hiệu chỉnh ngưỡng bằng script opt-in; `AnswerJudge` sau MVP |
+| R14 | Nội dung tài liệu học đi qua gateway của bên thứ ba (ban tổ chức) khi dùng LLM | LLM là tuỳ chọn; UI nói rõ bên nhận dữ liệu (§13.1); không gửi câu trả lời của người học khi chưa có `AnswerJudge` |
+| R15 | Lát cắt dọc chưa xong trước 28/10 do chu kỳ duyệt PR 1–6 giờ | Nhánh nhỏ, gộp sớm; luồng A (bài tính toán) không chặn lát cắt; tự luận chỉ làm khi lát cắt xong trước hết 29/10 (§16) |
 | D1 | Người dùng có được sửa template không? | **Không** trong MVP; chỉ sửa dữ liệu đề qua Gate |
 | D2 | Mã HTTP cho xung đột trạng thái | 409 cho xung đột version/duyệt; 400 cho vi phạm luật non-cloneable (đã chốt ở Tuần 2) |
 | D3 | So khớp trích dẫn nguyên văn (I3) với chữ có dấu ở dạng tổ hợp (NFD) | **Đã duyệt 2026-10-24:** so sau khi đưa cả hai chuỗi về NFC rồi gộp khoảng trắng; chỉ hai chuỗi tương đương chính tắc mới khớp, nên I3 không bị nới. Áp dụng cho `KnowledgeChunk`, `ConceptPair` và bằng chứng verdict của `AnswerJudge` (§0, §5.8, ADR-006) |
 | D4 | 7 điểm "đề xuất" của ADR-008 mục 8–14 và R6 | **Đã duyệt 2026-10-24:** dấu vân tay R6 và phạm vi so trùng (§6.3); `coverage_ratio = min/max` và mẫu số của `ink_outside_text_ratio`; lượt thứ hai dùng PP-OCRv6 small, gọi Tesseract qua stdin/stdout dạng TSV; `HOLOCRON_PDF_OCR_PRIMARY` chỉ nhận `tesseract`, `TEXT_LAYER_MIN=0.85`; tên test và file của 6 test, test 1 kiểm unicharset trên file mẫu; 6 test gắn vào dòng I5 ở CLAUDE.md §9; số dòng tối đa lấy từ `input_schema` thay `MAX_PROCESSES` |
-| D5 | Thư viện truy cập SQLite | **Chờ duyệt.** §1.4 bản v0.4 và comment TODO đã duyệt trong `routers/api.py` ghi `version_id_col` của SQLAlchemy; §5.13 đề xuất `sqlite3` của thư viện chuẩn để không thêm dependency |
+| D5 | Thư viện truy cập SQLite | **Đã duyệt 2026-10-25:** `sqlite3` của thư viện chuẩn, không thêm dependency (§5.13). Comment TODO đã duyệt trong `routers/api.py` vẫn ghi `version_id_col` của SQLAlchemy; sửa cùng nhánh SQLite |
 | D6 | Template LLM viết lúc chạy được coi là *đã kiểm chứng* khi nào? | **Chưa quyết định.** CLAUDE.md §2.1 yêu cầu "qua đủ các lớp kiểm chứng ở SPECIFICATION.md và được người duyệt", nhưng spec chưa liệt kê các lớp đó cho template viết lúc chạy (test tái lập I4 và property test chỉ áp cho template trong repo). Bảng `templates` (§5.13) để sẵn cột `tier`, `verification_json` |
+| D7 | 15 điểm "đề xuất (chờ duyệt)" của v0.5 | **Đã duyệt 2026-10-25, trừ điểm 15:** (1) đánh số trang từ 1 (§5); (2) `IngestionItem.cross_check` (§5.4); (3) `ItemLabels` và `PATCH …/labels` (§5.4, §6.7); (4) `TwinBatch.batch_id`, `created_at` (§5.6, §6.7); (5) `DocumentImport`, `PageSummary` (§5.7); (6) `citation_for(subject_code, slot)` (§5.8); (7) đề cương nhập như tài liệu Vault (§5.9); (8) trace dạng union (§5.11); (9) thiết kế SQLite và `sqlite3` (§5.13, D5), `HOLOCRON_DATA_DIR`; (10) giới hạn upload tách hai luồng (§6.0); (11) dấu vân tay câu lý thuyết (§6.3); (12) tên endpoint và nhập bất đồng bộ 202 với hàng đợi FIFO (§6.5); (13) `POST …/pages/{page_number}/items` (§6.5); (14) tên endpoint Vault (§6.6). Điểm (15) "503 khi thiếu key LLM" bị thay bằng chế độ khả năng (§11.4) |
+| D8 | Ghi chú "đề xuất" nội dòng nằm ngoài các khối của D7, ví dụ `TheorySlotSpec` và `theory_slots` (§5.9), các field nullable của slot và câu lý thuyết (§5.9, §5.11), `label_status`/`mapping_confidence`/`version` của `KnowledgeChunk` (§5.8), `LineEngine "human"`, `bbox`, `conf` của dòng (§5.7), `mock_extractor` (§5.12), `BlueprintSummary`, `TwinBatchSummary` (§6.7) | **Chờ người dùng xác nhận** chúng có thuộc 15 điểm đã duyệt hay không. Lát cắt dọc (§16) cần `TheorySlotSpec`, `theory_slots` và các field nullable của câu lý thuyết |
+| D9 | Quyết định ngày 2026-10-25 lệch câu chữ ADR đã *Chấp nhận* | ADR-006 và ADR-007 ghi "DeepSeek đề xuất", ADR-008 ghi DeepSeek là API do ban tổ chức cấp; ADR-007 mục 5 và tiêu đề ghi chấm tự luận sau MVP; ADR-008 mục 1 ghi pdfplumber "chưa được thêm, duyệt riêng". Spec ghi "chờ sửa ADR-00x"; diff đề xuất nằm trong báo cáo của Đợt này, chờ người dùng duyệt |
+| D10 | Câu hỏi mở về chế độ khả năng và adapter | Đề xuất, chờ duyệt: (a) giữ `demo_mode` nhưng đổi chữ trên UI thành "chạy offline, không có LLM" (§5.12); (b) thêm khả năng `label_suggestion_llm` (§11.4); (c) dual-pass VLM (§7.1) đặt `temperature` cho hai lượt, mâu thuẫn quy tắc adapter "không đặt `temperature` tuỳ ý" (§11.5): cần chọn cách làm hai lượt độc lập trước khi bật lại VLM |
+| D11 | Câu chữ I4 ở §0 chưa nhắc tái lập của bộ chấm tự luận; I3 chưa nhắc các ý của câu tự luận | **Chờ người dùng duyệt** (CLAUDE.md §9; spec-writer không sửa §0). Đề xuất: I4 thêm "Chấm tự luận offline: cùng `grader_version`, ngưỡng, các ý và câu trả lời (sau NFC) ⇒ cùng kết quả chấm", cơ chế `tests/test_essay_grader.py`; I3 thêm vào cơ chế "các ý của câu tự luận là chuỗi con của `definition_quote`". Chỉ cần khi phần tự luận được làm trong MVP |
+| D12 | Bỏ mặc định DeepSeek trong code | Quyết định đã duyệt 2026-10-25 (§11.2), nhưng `test_defaults_when_nothing_is_configured` trong `tests/test_llm_config.py` khẳng định `https://api.deepseek.com/v1` và `deepseek-chat`; các test `GET /v1/runtime` trong cùng file khẳng định đúng ba khoá của response. Đổi code theo §11.2 và §5.12 là sửa test sẵn có, **cần người dùng đồng ý riêng** (CLAUDE.md §7) |
+| D13 | Kiểm `Host` luôn bật và `TestClient` | `TestClient` mặc định gửi `Host: testserver`, nên bật kiểm `Host` làm mọi test API sẵn có trả 403 nếu danh sách host cố định. Đề xuất: danh sách host cho phép cấp qua `Depends`, test override ở `conftest.py` (file test dùng chung, thêm fixture chứ không sửa test); cần người dùng xác nhận cách này không bị coi là sửa test |
 
 ## 18. Phụ lục
 
@@ -1613,6 +1969,6 @@ Sinh bằng `Model.model_json_schema()` cho mọi model ở §5; Frontend PHẢI
 - `docs/adr/003-data-pipeline.md` — Dual-pass + Ingestion Gate; trích dẫn bằng `verbatim_quote` thay vì bounding box.
 - `docs/adr/004-engineering-discipline.md` — Kỷ luật kỹ thuật, quản trị phát hành và sổ nợ kỹ thuật.
 - `docs/adr/005-topic-agnostic-question-pipeline.md` — Pipeline câu hỏi không phụ thuộc topic; kế hoạch trả nợ ARCH-001 (*Chấp nhận*).
-- `docs/adr/006-multi-subject-knowledge-vault.md` — Knowledge Vault đa môn, tách từ tiếng Việt cho BM25 và `CitationProvider` (*Chấp nhận*).
-- `docs/adr/007-theory-questions-and-answer-grading.md` — Câu lý thuyết sinh tất định từ Vault; chấm tự luận sau MVP; câu chữ I2/I4 cho câu lý thuyết (*Chấp nhận*).
-- `docs/adr/008-tiered-pdf-importer.md` — Bộ nhập PDF theo tầng, lựa chọn thư viện và biện pháp an toàn (*Chấp nhận*; engine OCR chốt ngày 2026-10-24: Tesseract `vie` chính, RapidOCR đối chiếu số; các điểm đề xuất ở mục 8–14 duyệt 2026-10-24).
+- `docs/adr/006-multi-subject-knowledge-vault.md` — Knowledge Vault đa môn, tách từ tiếng Việt cho BM25 và `CitationProvider` (*Chấp nhận*; chờ sửa câu chữ "DeepSeek" theo quyết định 2026-10-25, §17 D9).
+- `docs/adr/007-theory-questions-and-answer-grading.md` — Câu lý thuyết sinh tất định từ Vault; chấm tự luận sau MVP; câu chữ I2/I4 cho câu lý thuyết (*Chấp nhận*; chờ sửa mục 5 về chấm tự luận offline và câu chữ "DeepSeek" theo quyết định 2026-10-25, §17 D9).
+- `docs/adr/008-tiered-pdf-importer.md` — Bộ nhập PDF theo tầng, lựa chọn thư viện và biện pháp an toàn (*Chấp nhận*; engine OCR chốt ngày 2026-10-24: Tesseract `vie` chính, RapidOCR đối chiếu số; các điểm đề xuất ở mục 8–14 duyệt 2026-10-24; chờ sửa mục 1 về pdfplumber đã duyệt và câu chữ "DeepSeek" theo quyết định 2026-10-25, §17 D9).

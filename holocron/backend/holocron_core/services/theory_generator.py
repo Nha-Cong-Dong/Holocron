@@ -46,7 +46,7 @@ import hashlib
 import json
 import random
 import unicodedata
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from enum import Enum
 from typing import Literal, NamedTuple
 
@@ -420,10 +420,15 @@ def _definition_explanation(pair: ConceptPair) -> str:
 
 
 def _quote_conflict(anchor: ConceptPair) -> Callable[[ConceptPair, str], bool]:
-    """Cặp có trích dẫn trùng, chứa hoặc nằm trong trích dẫn của cặp đáp án cũng là đáp án đúng: không làm nhiễu."""
+    """Cặp có trích dẫn trùng, chứa hoặc nằm trong trích dẫn của cặp đáp án cũng là đáp án đúng: không làm nhiễu.
+
+    Giống `_overlaps(pair.definition_quote, anchor.definition_quote)`; khoá của trích dẫn đáp án chỉ tính một lần.
+    """
+    anchor_key = _option_key(anchor.definition_quote)
 
     def conflict(pair: ConceptPair, _text: str) -> bool:
-        return _overlaps(pair.definition_quote, anchor.definition_quote)
+        pair_key = _option_key(pair.definition_quote)
+        return pair_key in anchor_key or anchor_key in pair_key
 
     return conflict
 
@@ -484,10 +489,9 @@ def _pool_texts(pool: Sequence[ConceptPair]) -> list[str]:
 
 def _fill_blank_candidates(
     anchors: Sequence[ConceptPair], pool: Sequence[ConceptPair]
-) -> list[tuple[ConceptPair, str]]:
+) -> Iterator[tuple[ConceptPair, str]]:
     """`(cặp chứa trích dẫn, term bị che)`: term là `term` của một khái niệm khác đã xác nhận và xuất hiện trong
-    trích dẫn; mỗi khái niệm chỉ một lần cho mỗi trích dẫn, theo thứ tự chuẩn."""
-    found: list[tuple[ConceptPair, str]] = []
+    trích dẫn; mỗi khái niệm chỉ một lần cho mỗi trích dẫn, theo thứ tự chuẩn. Sinh lười, theo đúng thứ tự đó."""
     for anchor in anchors:
         seen = {_option_key(anchor.term)}
         for other in pool:
@@ -495,8 +499,7 @@ def _fill_blank_candidates(
             if concept in seen or not find_term_spans(other.term, anchor.definition_quote):
                 continue
             seen.add(concept)
-            found.append((anchor, other.term))
-    return found
+            yield anchor, other.term
 
 
 def _term_of(pair: ConceptPair) -> str:
@@ -512,11 +515,15 @@ def _masked_definition(asked_term: str) -> Callable[[ConceptPair], str]:
     return text
 
 
-def _drafts(form: TheoryQuestionForm, anchors: Sequence[ConceptPair], pool: Sequence[ConceptPair]) -> list[_Draft]:
-    """Mọi bản nháp của một dạng câu trên các cặp neo, theo thứ tự chuẩn (chưa kiểm phương án nhiễu)."""
+def _drafts(form: TheoryQuestionForm, anchors: Sequence[ConceptPair], pool: Sequence[ConceptPair]) -> Iterator[_Draft]:
+    """Mọi bản nháp của một dạng câu trên các cặp neo, theo thứ tự chuẩn (chưa kiểm phương án nhiễu).
+
+    Sinh lười: chỉ dựng bản nháp khi được đọc tới, nên kiểm tính khả thi dừng ở bản nháp khả thi đầu tiên và chỉ dạng
+    đã được rút mới dựng đủ mọi bản nháp. Thứ tự và nội dung bản nháp không phụ thuộc cách đọc.
+    """
     if form is TheoryQuestionForm.FILL_BLANK:
         pool_texts = _pool_texts(pool)
-        return [
+        yield from (
             _Draft(
                 anchor=anchor,
                 stem=(
@@ -531,10 +538,10 @@ def _drafts(form: TheoryQuestionForm, anchors: Sequence[ConceptPair], pool: Sequ
                 allow_other_chapters=True,
             )
             for anchor, hidden in _fill_blank_candidates(anchors, pool)
-        ]
-    if form is TheoryQuestionForm.CONCEPT_MATCH:
+        )
+    elif form is TheoryQuestionForm.CONCEPT_MATCH:
         pool_texts = _pool_texts(pool)
-        return [
+        yield from (
             _Draft(
                 anchor=anchor,
                 stem=f"Khái niệm nào ứng với đoạn trích sau?\n\n> {mask_terms(anchor.definition_quote, [anchor.term])}",
@@ -546,20 +553,21 @@ def _drafts(form: TheoryQuestionForm, anchors: Sequence[ConceptPair], pool: Sequ
                 allow_other_chapters=True,
             )
             for anchor in anchors
-        ]
-    return [
-        _Draft(
-            anchor=anchor,
-            stem=f"Phát biểu nào là định nghĩa của «{anchor.term}»?",
-            correct_text=mask_terms(anchor.definition_quote, [anchor.term]),
-            explanation=_definition_explanation(anchor),
-            excluded_concepts=frozenset({_option_key(anchor.term)}),
-            option_text=_masked_definition(anchor.term),
-            also_correct=_quote_conflict(anchor),
-            allow_other_chapters=False,
         )
-        for anchor in anchors
-    ]
+    else:
+        yield from (
+            _Draft(
+                anchor=anchor,
+                stem=f"Phát biểu nào là định nghĩa của «{anchor.term}»?",
+                correct_text=mask_terms(anchor.definition_quote, [anchor.term]),
+                explanation=_definition_explanation(anchor),
+                excluded_concepts=frozenset({_option_key(anchor.term)}),
+                option_text=_masked_definition(anchor.term),
+                also_correct=_quote_conflict(anchor),
+                allow_other_chapters=False,
+            )
+            for anchor in anchors
+        )
 
 
 def _anchors(pool: Sequence[ConceptPair], chapter_code: str | None) -> list[ConceptPair]:
@@ -567,19 +575,26 @@ def _anchors(pool: Sequence[ConceptPair], chapter_code: str | None) -> list[Conc
     return [pair for pair in pool if chapter_code is None or pair.chapter_code == chapter_code]
 
 
-def _form_drafts(anchors: Sequence[ConceptPair], pool: Sequence[ConceptPair]) -> dict[TheoryQuestionForm, list[_Draft]]:
-    return {form: _drafts(form, anchors, pool) for form in FORM_ORDER}
+def _feasible_forms(anchors: Sequence[ConceptPair], pool: Sequence[ConceptPair]) -> tuple[TheoryQuestionForm, ...]:
+    """Các dạng câu có ít nhất một bản nháp đủ 3 phương án nhiễu, theo `FORM_ORDER`.
+
+    Mỗi dạng chỉ dựng bản nháp tới bản khả thi đầu tiên; kết quả giống hệt khi dựng đủ rồi mới kiểm.
+    """
+    return tuple(
+        form for form in FORM_ORDER if any(_is_feasible(draft, pool) for draft in _drafts(form, anchors, pool))
+    )
 
 
-def _feasible_forms(
-    drafts: Mapping[TheoryQuestionForm, Sequence[_Draft]], pool: Sequence[ConceptPair]
-) -> tuple[TheoryQuestionForm, ...]:
-    """Các dạng câu có ít nhất một bản nháp đủ 3 phương án nhiễu, theo `FORM_ORDER`."""
-    return tuple(form for form in FORM_ORDER if any(_is_feasible(draft, pool) for draft in drafts[form]))
+def _feasible_drafts(
+    form: TheoryQuestionForm, anchors: Sequence[ConceptPair], pool: Sequence[ConceptPair]
+) -> list[_Draft]:
+    """Mọi bản nháp khả thi của một dạng câu, theo thứ tự chuẩn; chỉ gọi cho dạng đã được RNG rút."""
+    return [draft for draft in _drafts(form, anchors, pool) if _is_feasible(draft, pool)]
 
 
-def _infeasible_reason(form: TheoryQuestionForm, drafts: Sequence[_Draft]) -> str:
-    if form is TheoryQuestionForm.FILL_BLANK and not drafts:
+def _infeasible_reason(form: TheoryQuestionForm, anchors: Sequence[ConceptPair], pool: Sequence[ConceptPair]) -> str:
+    has_drafts = next(_drafts(form, anchors, pool), None) is not None
+    if form is TheoryQuestionForm.FILL_BLANK and not has_drafts:
         detail = "không có trích dẫn định nghĩa nào chứa thuật ngữ của một khái niệm khác đã xác nhận"
     elif form is TheoryQuestionForm.FILL_BLANK:
         detail = "không chọn được 3 thuật ngữ khác nhau làm phương án nhiễu"
@@ -603,7 +618,7 @@ def feasible_forms(
     Đây đúng là tập mà `generate_theory_question` rút dạng câu từ đó; hàm không dùng RNG.
     """
     pool = candidate_pool(pairs, subject_code)
-    return _feasible_forms(_form_drafts(_anchors(pool, chapter_code), pool), pool)
+    return _feasible_forms(_anchors(pool, chapter_code), pool)
 
 
 def generate_theory_question(
@@ -651,14 +666,13 @@ def generate_theory_question(
         scope = f"chương {chapter_code} của môn {subject_code}" if chapter_code else f"môn {subject_code}"
         return ticket(f"không có cặp khái niệm đã xác nhận nào thuộc {scope}")
 
-    drafts = _form_drafts(anchors, pool)
-    forms = _feasible_forms(drafts, pool)
+    forms = _feasible_forms(anchors, pool)
     if not forms:
-        reasons = "; ".join(_infeasible_reason(form, drafts[form]) for form in FORM_ORDER)
+        reasons = "; ".join(_infeasible_reason(form, anchors, pool) for form in FORM_ORDER)
         return ticket(f"không dạng câu nào khả thi ({reasons})")
 
     form = rng.choice(forms)
-    draft = rng.choice([candidate for candidate in drafts[form] if _is_feasible(candidate, pool)])
+    draft = rng.choice(_feasible_drafts(form, anchors, pool))
     same_chapter, other_chapters = _eligible_distractors(draft, pool)
     rng.shuffle(same_chapter)
     rng.shuffle(other_chapters)

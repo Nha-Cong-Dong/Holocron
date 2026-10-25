@@ -135,7 +135,9 @@ export type GateIssueCode =
   | "MISSING_CELL"
   | "NOT_IN_TEXT_LAYER"
   | "SELF_SOLVE_MISMATCH"
-  | "LATEX_UNBALANCED";
+  | "LATEX_UNBALANCED"
+  /** Ô số của bảng đọc từ trang OCR không có lượt đọc thứ hai (ADR-008 mục 11; spec §7.4); ô đó không được AUTO_PASS. */
+  | "CROSS_CHECK_UNAVAILABLE";
 
 /** Issue gắn với ô khi `row`/`col` khác null; issue cấp bảng/đề (LaTeX, self-solve) có cả hai là null. */
 export interface GateIssue {

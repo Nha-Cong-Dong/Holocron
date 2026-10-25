@@ -25,6 +25,25 @@ describe("normalizeApiBase", () => {
   });
 });
 
+describe("normalizeApiBase: query và fragment", () => {
+  it("từ chối base URL có query hoặc fragment, kể cả rỗng", () => {
+    for (const bad of [
+      "http://127.0.0.1:8000?x=1",
+      "http://127.0.0.1:8000/api?token=abc",
+      "http://127.0.0.1:8000/#frag",
+      "/api/holocron?",
+      "/api/holocron#",
+      "https://localhost:8000/api/?a=1#b",
+    ]) {
+      expect(normalizeApiBase(bad)).toBeNull();
+    }
+  });
+
+  it("object chèn lúc chạy có base URL kèm query thì bị bỏ cả object", () => {
+    expect(parseInjectedRuntime({ apiBase: "http://127.0.0.1:9000/?debug=1", token: "abc" })).toBeNull();
+  });
+});
+
 describe("parseInjectedRuntime", () => {
   it("nhận object đúng dạng, token tuỳ chọn", () => {
     expect(parseInjectedRuntime({ apiBase: "http://127.0.0.1:9000/" })).toEqual({
@@ -75,6 +94,11 @@ describe("resolveApiBase", () => {
   it("biến build sai dạng thì dùng mặc định", () => {
     expect(resolveApiBase(null, "")).toBe(DEFAULT_API_BASE);
     expect(resolveApiBase(null, "localhost:8000")).toBe(DEFAULT_API_BASE);
+  });
+
+  it("base URL có query hoặc fragment thì rơi về mặc định", () => {
+    expect(resolveApiBase(null, "http://127.0.0.1:8000/?x=1")).toBe(DEFAULT_API_BASE);
+    expect(resolveApiBase(null, "/api/holocron#a")).toBe(DEFAULT_API_BASE);
   });
 });
 

@@ -39,11 +39,12 @@ const HEADER_SAFE_TOKEN = /^[\x21-\x7e]{1,512}$/;
 
 /**
  * Chuẩn hoá base URL: nhận URL tuyệt đối `http(s)://…` hoặc đường dẫn bắt đầu bằng một dấu `/`; bỏ `/` cuối.
- * Trả `null` khi giá trị không dùng được (rỗng, có khoảng trắng, đường dẫn tương đối, `//host`, scheme khác).
+ * Trả `null` khi giá trị không dùng được (rỗng, có khoảng trắng, đường dẫn tương đối, `//host`, scheme khác, có query
+ * `?…` hoặc fragment `#…`, vì đường dẫn endpoint được nối ngay sau base).
  */
 export function normalizeApiBase(value: string): string | null {
   const trimmed = value.trim();
-  if (trimmed === "" || /\s/.test(trimmed)) return null;
+  if (trimmed === "" || /[\s?#]/.test(trimmed)) return null;
   const isAbsolute = ABSOLUTE_HTTP_URL.test(trimmed);
   const isRootPath = trimmed.startsWith("/") && !trimmed.startsWith("//");
   if (!isAbsolute && !isRootPath) return null;

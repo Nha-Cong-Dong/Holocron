@@ -1,18 +1,27 @@
-"""Kho in-memory cho item, tài liệu, blueprint và bản ghi idempotency (Tuần 2).
+"""Kho in-memory cho item, tài liệu, blueprint và bản ghi idempotency.
 
-Sẽ được thay bằng các repository sau `Protocol` (SPECIFICATION §5.13); bản in-memory giữ lại cho test.
+Thoả `domain.repositories.AppStore`; dùng cho test và chế độ dev (không đặt `HOLOCRON_DATA_DIR`). Bản lưu lâu dài
+là `infrastructure/storage/` (SQLite, SPECIFICATION §5.13).
 """
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Sequence
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from ..domain.ingestion import IngestionItem, UploadedDocument
+from ..domain.repositories import (
+    IDEMPOTENCY_TTL,
+    ConcurrentUpdateError,
+    RecordNotFoundError,
+    VersionConflictError,
+    same_item_state,
+)
 from ..domain.schemas import ExamBlueprint
 from ..domain.twins import IdempotencyRecord
 
-IDEMPOTENCY_TTL = timedelta(hours=24)
+__all__ = ["IDEMPOTENCY_TTL", "IngestionStore"]
 
 
 class IngestionStore:
@@ -24,6 +33,7 @@ class IngestionStore:
         self._blueprints: dict[str, ExamBlueprint] = {}
         self._blueprint_items: dict[str, tuple[str, ...]] = {}
         self._idempotency: dict[tuple[str, str], IdempotencyRecord] = {}
+        self._lock = threading.Lock()
 
     def get_item(self, item_id: str) -> IngestionItem | None:
         return self._items.get(item_id)
@@ -32,9 +42,35 @@ class IngestionStore:
         self._items[item.item_id] = item
         return item
 
+    def update_item(
+        self, item: IngestionItem, expected_version: int, expected: IngestionItem | None = None
+    ) -> IngestionItem:
+        """So-và-ghi dưới khoá: nguyên tử giữa các luồng của cùng tiến trình (router làm việc trên bản sao).
+
+        Như bản SQLite: so version, rồi so toàn bộ trạng thái đang lưu với `expected` (nếu có) trước khi ghi.
+        """
+        new_version = item.table_primary.version
+        if new_version not in (expected_version, expected_version + 1):
+            raise ValueError(f"version mới {new_version} không hợp lệ so với version mong đợi {expected_version}")
+        with self._lock:
+            current = self._items.get(item.item_id)
+            if current is None:
+                raise RecordNotFoundError("ingestion item", item.item_id)
+            if current.table_primary.version != expected_version:
+                raise VersionConflictError(
+                    "ingestion item", item.item_id, expected_version, current.table_primary.version
+                )
+            if expected is not None and not same_item_state(current, expected):
+                raise ConcurrentUpdateError("ingestion item", item.item_id)
+            self._items[item.item_id] = item
+        return item
+
     def save_document(self, document: UploadedDocument) -> UploadedDocument:
         """Cùng nội dung ⇒ cùng `document_id`: giữ bản ghi đầu tiên (idempotent)."""
         return self._documents.setdefault(document.document_id, document)
+
+    def get_document(self, document_id: str) -> UploadedDocument | None:
+        return self._documents.get(document_id)
 
     def save_blueprint(self, blueprint: ExamBlueprint, item_ids: Sequence[str] = ()) -> ExamBlueprint:
         """Lưu blueprint kèm danh sách item đã được duyệt mà nó được dựng từ (để kiểm lại I5 khi sinh twin)."""

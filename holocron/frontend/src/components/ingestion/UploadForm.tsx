@@ -42,7 +42,7 @@ export function UploadForm() {
     setError(null);
     try {
       const { item } = await api.uploadDocument(file, topicKey, parsedQuantum);
-      router.push(`/ingestion/${encodeURIComponent(item.item_id)}`);
+      router.push(`/ingestion?item=${encodeURIComponent(item.item_id)}`);
     } catch (err) {
       setError(err instanceof ApiError || err instanceof Error ? err.message : "Tải lên thất bại.");
       setSubmitting(false);

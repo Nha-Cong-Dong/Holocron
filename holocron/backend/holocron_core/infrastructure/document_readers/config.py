@@ -1,13 +1,39 @@
-"""Cấu hình bộ nhập PDF (ADR-008 mục 3, 4, 6, 9, 12; SPECIFICATION §5.7, §11.2).
+"""Cấu hình bộ nhập PDF (ADR-008 mục 3, 4, 6, 8, 9, 12; SPECIFICATION §5.7, §11.2).
 
 Mọi ngưỡng và giới hạn là field có giá trị mặc định ở đây; code xử lý không ghi cứng con số nào.
 Các ngưỡng tên viết hoa trong ADR (`TEXT_LAYER_MIN`…) giữ đúng giá trị khởi đầu của ADR; các ngưỡng phụ của
 tầng 1 (ký hiệu toán, bảng, hình) là giá trị khởi đầu chưa hiệu chỉnh bằng phép đo.
+
+Engine OCR (tầng 2) cấu hình bằng biến môi trường `HOLOCRON_PDF_OCR_*`, `HOLOCRON_TESSERACT_CMD`,
+`HOLOCRON_TESSDATA_DIR` (spec §11.2), đọc bằng `load_ocr_settings` thành `OcrSettings`. Bộ đọc không có
+`OcrSettings` thì coi như không có engine OCR: trang cần OCR thành `failed` (`OCR_ENGINE_MISSING`).
 """
 
 from __future__ import annotations
 
+import os
+import shutil
+from collections.abc import Callable, Mapping
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
+
+from ..llm_config import ConfigError
+
+ENV_PDF_OCR_PRIMARY = "HOLOCRON_PDF_OCR_PRIMARY"
+ENV_PDF_OCR_SECONDARY = "HOLOCRON_PDF_OCR_SECONDARY"
+ENV_TESSERACT_CMD = "HOLOCRON_TESSERACT_CMD"
+ENV_TESSDATA_DIR = "HOLOCRON_TESSDATA_DIR"
+
+DEFAULT_TESSERACT_CMD = "tesseract"
+TESSERACT_LANGUAGE = "vie"
+
+# Hướng dẫn hiện trên màn hình xem lại cho trang `failed` vì `OCR_ENGINE_MISSING` (spec §5.7; ADR-008 mục 8).
+OCR_INSTALL_HINT = (
+    "Trang này cần OCR nhưng máy chưa có Tesseract hoặc gói tiếng Việt. Hãy cài Tesseract 5 và tải "
+    "`vie.traineddata` (tessdata_best), rồi đặt HOLOCRON_TESSERACT_CMD trỏ tới file chạy `tesseract` và "
+    "HOLOCRON_TESSDATA_DIR trỏ tới thư mục chứa `vie.traineddata`. Bạn vẫn có thể tự gõ văn bản cho trang này."
+)
 
 MIB = 1024 * 1024
 GIB = 1024 * MIB
@@ -37,6 +63,24 @@ class PdfReaderConfig(BaseModel):
     # giữ bộ nhớ của tiến trình cha ở mức vài chục MiB cho mỗi worker.
     max_message_bytes: int = Field(default=8 * MIB, ge=1024)
 
+    # Tầng 2 (ADR-008 mục 3, 4, 8). Trang cần OCR được tiến trình cha chờ tối đa `ocr_page_timeout_s` (30 s theo
+    # mục 3) sau khi worker báo bắt đầu OCR. Worker có bật OCR nhận hạn CPU `ocr_cpu_seconds_per_page` mỗi trang
+    # thay cho `worker_cpu_seconds_per_page`, vì RapidOCR chạy nhiều luồng trong chính worker (CPU tính cộng dồn).
+    ocr_page_timeout_s: float = Field(default=30.0, gt=0)
+    ocr_cpu_seconds_per_page: int = Field(default=60, ge=1)
+    # Render 300 DPI, tối đa 25 megapixel mỗi trang; trang lớn hơn thì giảm DPI (mục 4).
+    ocr_dpi: int = Field(default=300, ge=36, le=1200)
+    ocr_max_pixels: int = Field(default=25_000_000, ge=10_000)
+    # Kiểm Tesseract khi khởi động worker (`--version`, `--list-langs`) và hạn của một lần nhận dạng trang; hạn này
+    # nhỏ hơn `ocr_page_timeout_s` để còn thời gian cho lượt đọc thứ hai.
+    ocr_probe_timeout_s: float = Field(default=10.0, gt=0)
+    tesseract_timeout_s: float = Field(default=20.0, gt=0)
+    # Nhị phân hoá ảnh xám để đếm điểm ảnh mực (`ink_outside_text_ratio`, mục 9): điểm ảnh tối hơn ngưỡng là mực.
+    ink_threshold: int = Field(default=128, ge=1, le=255)
+    # Ghép dòng hai lượt đọc theo hộp toạ độ (mục 11): hai hộp phải chồng nhau theo chiều dọc ít nhất tỉ lệ này
+    # (tính trên chiều cao của hộp thấp hơn) và có phần chồng theo chiều ngang. Giá trị khởi đầu, chưa hiệu chỉnh.
+    line_match_min_overlap: float = Field(default=0.5, gt=0.0, le=1.0)
+
     # Ngưỡng của ADR-008 mục 6, 10, 11, 12.
     text_layer_min: float = Field(default=0.85, ge=0.0, le=1.0)
     text_score_min: float = Field(default=0.80, ge=0.0, le=1.0)
@@ -63,3 +107,58 @@ class PdfReaderConfig(BaseModel):
     table_min_rows: int = Field(default=3, ge=2)
     table_min_cols: int = Field(default=2, ge=2)
     table_col_tolerance: float = Field(default=0.02, gt=0.0, le=1.0)
+
+
+SecondaryEngine = Literal["rapidocr"]
+
+
+class OcrSettings(BaseModel):
+    """Engine OCR của tầng 2 (ADR-008 mục 8, 12). Chỉ chứa đường dẫn và tên engine, không chứa bí mật.
+
+    `tesseract_cmd` là đường dẫn tuyệt đối khi tìm được trong PATH của tiến trình cha (worker chạy với môi trường
+    tối thiểu, không có PATH). `tessdata_dir` là None thì dùng thư mục mặc định của bản cài Tesseract.
+    `secondary` là None thì không có lượt đọc thứ hai (`cross_check = unavailable`).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tesseract_cmd: str = Field(min_length=1)
+    tessdata_dir: str | None = None
+    secondary: SecondaryEngine | None = "rapidocr"
+
+
+def _read_env(env: Mapping[str, str], name: str) -> str | None:
+    """Giá trị đã cắt khoảng trắng; chuỗi rỗng coi như chưa đặt (spec §11.2)."""
+    value = env.get(name, "").strip()
+    return value or None
+
+
+def load_ocr_settings(
+    env: Mapping[str, str] | None = None,
+    which: Callable[[str], str | None] = shutil.which,
+) -> OcrSettings:
+    """Đọc cấu hình OCR từ `env` (mặc định `os.environ`); giá trị sai là `ConfigError` chỉ nêu tên biến.
+
+    - `HOLOCRON_PDF_OCR_PRIMARY`: MVP chỉ nhận `tesseract` (mặc định).
+    - `HOLOCRON_PDF_OCR_SECONDARY`: chưa đặt thì là `rapidocr`; ĐẶT RỖNG thì không có lượt thứ hai (spec §11.2 ghi
+      riêng cho biến này, ưu tiên hơn quy tắc chung "rỗng coi như chưa đặt"); giá trị khác là `ConfigError`.
+    - `HOLOCRON_TESSERACT_CMD`: mặc định `tesseract`, tìm trong PATH của tiến trình cha bằng `which`; không tìm
+      thấy thì giữ nguyên, worker sẽ không chạy được binary và coi như thiếu engine.
+    """
+    source = os.environ if env is None else env
+    primary = _read_env(source, ENV_PDF_OCR_PRIMARY) or "tesseract"
+    if primary != "tesseract":
+        raise ConfigError(f"{ENV_PDF_OCR_PRIMARY} không hợp lệ: MVP chỉ nhận 'tesseract'")
+    secondary: SecondaryEngine | None = "rapidocr"
+    if ENV_PDF_OCR_SECONDARY in source:
+        raw_secondary = _read_env(source, ENV_PDF_OCR_SECONDARY)
+        if raw_secondary is None:
+            secondary = None
+        elif raw_secondary != "rapidocr":
+            raise ConfigError(f"{ENV_PDF_OCR_SECONDARY} không hợp lệ: chỉ nhận 'rapidocr' hoặc để rỗng")
+    command = _read_env(source, ENV_TESSERACT_CMD) or DEFAULT_TESSERACT_CMD
+    return OcrSettings(
+        tesseract_cmd=which(command) or command,
+        tessdata_dir=_read_env(source, ENV_TESSDATA_DIR),
+        secondary=secondary,
+    )

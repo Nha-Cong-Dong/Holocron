@@ -5,7 +5,8 @@ lấy từ nó được kiểm bằng `isinstance` rồi chuyển sang kiểu c�
 Chỉ chạy trong worker có giới hạn (`_pdf_worker.py`), không bao giờ trong tiến trình FastAPI.
 
 An toàn: không gọi `init_forms()` (không khởi tạo form), wheel PDFium không có V8/XFA nên không chạy JavaScript,
-không đọc file đính kèm, liên kết hay nội dung nhúng; chỉ đọc lớp chữ và khung bao của đối tượng trang.
+không đọc file đính kèm, liên kết hay nội dung nhúng; chỉ đọc lớp chữ và khung bao của đối tượng trang, và render
+trang ra ảnh xám cho OCR (tầng 2, không vẽ form và annotation; không giải nén ảnh nhúng trực tiếp).
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from types import ModuleType
 from typing import Literal, Self
 
 from .protocol import RawPdfPage
+from .raster import POINTS_PER_INCH, GrayImage, pack_rows, render_scale
 from .text_layer import PdfBox, PdfChar, group_lines
 
 OpenFailure = Literal["PASSWORD_REQUIRED", "OPEN_FAILED"]
@@ -120,6 +122,23 @@ class PdfiumDocument:
             path_area_ratio=_area_ratio(path_boxes, page_box),
         )
 
+    def render_gray(self, index: int, dpi: int, max_pixels: int) -> GrayImage:
+        """Render trang theo hướng hiển thị ra ảnh xám 8 bit, `dpi` giảm dần khi vượt `max_pixels` (ADR-008 mục 4)."""
+        backend = self._backend
+        page = backend.call(self._handle, "get_page", index)
+        try:
+            size = backend.call(page, "get_size")
+            if not isinstance(size, tuple | list) or len(size) != 2:
+                raise PdfiumDataError("get_size phải trả (width, height)")
+            scale = render_scale(_as_float(size[0]), _as_float(size[1]), dpi, max_pixels)
+            bitmap = backend.call(page, "render", scale=scale, grayscale=True, may_draw_forms=False, draw_annots=False)
+            try:
+                return backend.gray_image(bitmap, scale * POINTS_PER_INCH, max_pixels)
+            finally:
+                backend.call(bitmap, "close")
+        finally:
+            backend.call(page, "close")
+
     def _read_chars(self, page: object) -> list[PdfChar]:
         backend = self._backend
         textpage = backend.call(page, "get_textpage")
@@ -160,18 +179,34 @@ class PdfiumBackend:
         self.password_error_code = _as_int(getattr(raw, "FPDF_ERR_PASSWORD", None))
         self.image_object_type = _as_int(getattr(raw, "FPDF_PAGEOBJ_IMAGE", None))
         self.path_object_type = _as_int(getattr(raw, "FPDF_PAGEOBJ_PATH", None))
+        self.gray_bitmap_format = _as_int(getattr(raw, "FPDFBitmap_Gray", None))
 
     @classmethod
     def load(cls) -> PdfiumBackend:
         return cls(importlib.import_module("pypdfium2"), importlib.import_module("pypdfium2.raw"))
 
-    def call(self, target: object, method: str, *args: object) -> object:
+    def call(self, target: object, method: str, *args: object, **kwargs: object) -> object:
         """Gọi một method của đối tượng pypdfium2; kết quả là `object`, người gọi phải tự kiểm kiểu."""
         fn = getattr(target, method)
         if not callable(fn):
             raise PdfiumDataError(f"{method} không gọi được")
-        result: object = fn(*args)
+        result: object = fn(*args, **kwargs)
         return result
+
+    def gray_image(self, bitmap: object, dpi: float, max_pixels: int) -> GrayImage:
+        """Chép điểm ảnh của `PdfBitmap` xám (1 byte mỗi điểm ảnh) ra bytes, bỏ phần đệm cuối dòng."""
+        width = _as_int(getattr(bitmap, "width", None))
+        height = _as_int(getattr(bitmap, "height", None))
+        stride = _as_int(getattr(bitmap, "stride", None))
+        if _as_int(getattr(bitmap, "format", None)) != self.gray_bitmap_format:
+            raise PdfiumDataError("bitmap không phải ảnh xám")
+        if width < 1 or height < 1 or width * height > max_pixels or stride < width:
+            raise PdfiumDataError("kích thước bitmap ngoài giới hạn")
+        buffer = getattr(bitmap, "buffer", None)
+        if not isinstance(buffer, ctypes.Array):
+            raise PdfiumDataError("bitmap không có vùng nhớ điểm ảnh")
+        data = ctypes.string_at(ctypes.addressof(buffer), min(ctypes.sizeof(buffer), stride * height))
+        return GrayImage(pixels=pack_rows(data, width, height, stride), width=width, height=height, dpi=dpi)
 
     def open(self, data: bytes) -> PdfiumDocument | OpenFailure:
         """Mở tài liệu từ bytes (không giữ file); cần mật khẩu ⇒ "PASSWORD_REQUIRED", không thử phá."""

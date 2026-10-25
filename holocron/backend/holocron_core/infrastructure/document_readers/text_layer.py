@@ -206,6 +206,15 @@ def text_score(text: str, config: PdfReaderConfig) -> float:
     return _clamp(score)
 
 
+def page_text(lines: Sequence[RawTextLine]) -> str:
+    return "\n".join(line.text for line in lines)
+
+
+def needs_ocr(lines: Sequence[RawTextLine], config: PdfReaderConfig) -> bool:
+    """Lớp chữ không đủ tốt (`text_score < TEXT_LAYER_MIN`) ⇒ trang cần OCR (ADR-008 mục 6)."""
+    return text_score(page_text(lines), config) < config.text_layer_min
+
+
 # --------------------------------------------------------------------------- #
 # Cờ trang (ADR-008 mục 6, 9)
 # --------------------------------------------------------------------------- #

@@ -1,8 +1,12 @@
-"""Bộ đọc PDF sau `Protocol` `PdfReader` (CLAUDE.md §2.2; ADR-008 mục 2, 3, 4).
+"""Bộ đọc PDF sau `Protocol` `PdfReader` (CLAUDE.md §2.2; ADR-008 mục 2, 3, 4, 8).
 
 File PDF là đầu vào KHÔNG tin cậy: tiến trình này chỉ kiểm kích thước và magic bytes; việc mở và đọc nội dung luôn
 chạy trong worker (`_pdf_worker.py`) có giới hạn OS. Tiến trình cha giữ wall-clock timeout theo trang; quá hạn thì
-kill worker, đánh dấu trang `failed` (`PAGE_TIMEOUT`) và dựng worker mới cho các trang còn lại.
+kill worker, đánh dấu trang `failed` (`PAGE_TIMEOUT`) và dựng worker mới cho các trang còn lại. Trang cần OCR
+(worker báo `ocr_started`) được chờ theo hạn của tầng 2 (`ocr_page_timeout_s`) thay cho hạn của tầng 1.
+
+`WorkerPdfReader` không có `OcrSettings` thì không có engine OCR: trang cần OCR thành `failed`
+(`OCR_ENGINE_MISSING`). Cấu hình OCR của app đọc từ biến môi trường bằng `config.load_ocr_settings`.
 
 Tiến trình cha không có giới hạn OS, nên stdout của worker được đọc theo khối với giới hạn byte mỗi thông điệp
 (`PdfReaderConfig.max_message_bytes`) và hàng đợi có kích thước cố định: worker xả dòng quá dài, byte không phải
@@ -26,8 +30,9 @@ from typing import Literal, Protocol, Self
 from pydantic import ValidationError
 
 from ...domain.documents import FailureReason, PageExtraction
-from .config import PdfReaderConfig
+from .config import OcrSettings, PdfReaderConfig
 from .protocol import (
+    OcrStartedMessage,
     OpenedMessage,
     OpenFailedMessage,
     PageErrorMessage,
@@ -305,13 +310,17 @@ class WorkerSession:
 
 
 class WorkerPdfReader:
-    """`PdfReader` tầng 1: mỗi tài liệu đọc qua worker có giới hạn; trang quá hạn được thay worker mới."""
+    """`PdfReader` tầng 1–2: mỗi tài liệu đọc qua worker có giới hạn; trang quá hạn được thay worker mới.
 
-    def __init__(self, config: PdfReaderConfig | None = None) -> None:
+    `ocr` là None ⇒ không có engine OCR (chỉ tầng 1).
+    """
+
+    def __init__(self, config: PdfReaderConfig | None = None, ocr: OcrSettings | None = None) -> None:
         self.config = config or PdfReaderConfig()
+        self.ocr = ocr
 
     def _start(self, path: Path, page_budget: int) -> tuple[WorkerSession, int]:
-        request = WorkerRequest(path=str(path.resolve()), page_budget=page_budget, config=self.config)
+        request = WorkerRequest(path=str(path.resolve()), page_budget=page_budget, config=self.config, ocr=self.ocr)
         session = WorkerSession(request)
         try:
             return session, self._open(session)
@@ -347,18 +356,26 @@ class WorkerPdfReader:
         return page_count
 
     def _next_page(
-        self, session: WorkerSession, index: int, document_id: str, timeout_s: float | None = None
+        self,
+        session: WorkerSession,
+        index: int,
+        document_id: str,
+        timeout_s: float | None = None,
+        ocr_timeout_s: float | None = None,
     ) -> tuple[PageExtraction, bool]:
         """Đọc một trang; phần tử thứ hai là False khi worker đã bị kill và cần dựng worker mới.
 
-        `timeout_s` mặc định là `text_layer_page_timeout_s`; `read_pages` truyền giá trị nhỏ hơn khi hạn tổng của
-        tài liệu sắp hết.
+        `timeout_s` mặc định là `text_layer_page_timeout_s`; sau thông điệp `ocr_started` của đúng trang này, hạn
+        chờ kết quả là `ocr_timeout_s` (mặc định `ocr_page_timeout_s`). `read_pages` truyền giá trị nhỏ hơn khi hạn
+        tổng của tài liệu sắp hết.
         """
         page_number = index + 1
         session.request_page(index)
         failure: FailureReason = "PAGE_ERROR"
         try:
             message = session.receive(self.config.text_layer_page_timeout_s if timeout_s is None else timeout_s)
+            if isinstance(message, OcrStartedMessage) and message.page_index == index:
+                message = session.receive(self.config.ocr_page_timeout_s if ocr_timeout_s is None else ocr_timeout_s)
         except TimeoutError:
             message, failure = None, "PAGE_TIMEOUT"
         except (ValidationError, WorkerProtocolError):
@@ -398,7 +415,8 @@ class WorkerPdfReader:
                     page = failed_page(document_id, index + 1, "PAGE_ERROR")
                 else:
                     page_timeout = min(self.config.text_layer_page_timeout_s, remaining)
-                    page, healthy = self._next_page(session, index, document_id, page_timeout)
+                    ocr_timeout = min(self.config.ocr_page_timeout_s, remaining)
+                    page, healthy = self._next_page(session, index, document_id, page_timeout, ocr_timeout)
                 yielded_at = time.monotonic()
                 yield page
                 deadline += time.monotonic() - yielded_at  # thời gian nơi gọi xử lý trang không tính vào hạn

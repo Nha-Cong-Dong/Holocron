@@ -1,4 +1,6 @@
-"""API bộ nhập tài liệu, phần 1 (SPECIFICATION §6.5): `POST /v1/documents`, `GET` trạng thái/trang, `DELETE`.
+"""API bộ nhập tài liệu (SPECIFICATION §6.5): `POST /v1/documents`, `GET` trạng thái/trang, `DELETE`.
+
+Sửa dòng và xác nhận: `tests/test_document_review_api.py`.
 
 Chạy trên cả ba loại kho (`tests/vault_support.py`); `PdfReader` giả (`tests/document_import_support.py`), hàng đợi
 đọc chạy đồng bộ, file gốc ghi vào `tmp_path`.
@@ -14,12 +16,13 @@ from fastapi.testclient import TestClient
 from holocron_core.domain.documents import DocumentImport, DocumentSummary, PageExtraction
 from holocron_core.domain.ingestion import IngestionItem, UploadedDocument
 from holocron_core.infrastructure.document_readers.config import PdfReaderConfig
-from holocron_core.infrastructure.document_readers.pdf_reader import PdfInputErrorCode, PdfWorkerError
+from holocron_core.infrastructure.document_readers.pdf_reader import PdfInputError, PdfInputErrorCode, PdfWorkerError
 from holocron_core.routers import deps
 from holocron_core.routers.api import app
+from holocron_core.routers.documents import WORKER_UNAVAILABLE_DETAIL
 from holocron_core.services.document_import import SynchronousImportQueue
 from holocron_core.services.ingestion_gate import recompute_item
-from tests.document_import_support import FakePdfReader, ImportEnv, install, pdf_bytes
+from tests.document_import_support import FakePdfReader, HoldingQueue, ImportEnv, install, pdf_bytes
 from tests.test_api_item_state import _body
 from tests.vault_support import NOW, STORE_KINDS, open_store
 
@@ -30,6 +33,9 @@ DOCUMENT_PATHS = [
     ("/v1/documents/{document_id}", "get"),
     ("/v1/documents/{document_id}", "delete"),
     ("/v1/documents/{document_id}/pages/{page_number}", "get"),
+    ("/v1/documents/{document_id}/pages/{page_number}/lines", "patch"),
+    ("/v1/documents/{document_id}/pages/{page_number}/confirm", "post"),
+    ("/v1/documents/{document_id}/confirm", "post"),
 ]
 
 
@@ -48,11 +54,11 @@ def _stored_files(env: ImportEnv) -> list[str]:
     return sorted(path.name for path in env.files.root.iterdir())
 
 
-def test_openapi_lists_the_document_routes_and_nothing_of_part_two() -> None:
+def test_openapi_lists_the_document_routes_without_page_items() -> None:
     paths = app.openapi()["paths"]
     for path, method in DOCUMENT_PATHS:
         assert method in paths.get(path, {}), (path, method)
-    assert not [p for p in paths if p.startswith("/v1/documents") and ("lines" in p or "confirm" in p or "items" in p)]
+    assert not [p for p in paths if p.startswith("/v1/documents") and "items" in p], "POST …/items chưa làm"
 
 
 def test_post_accepts_a_pdf_and_reads_it_in_the_background(env: ImportEnv) -> None:
@@ -162,10 +168,11 @@ def test_worker_start_failure_is_a_server_error_and_leaves_nothing_behind(env: I
     env.reader.probe_exception = PdfWorkerError("worker đọc PDF không khởi động được")
     response = TestClient(app, raise_server_exceptions=False).post(
         "/v1/documents",
-        data={"subject_code": "ET4010", "source_kind": "textbook"},
+        data={"subject_code": "ET4010", "source_kind": "textbook", "chapter_code": "ch3"},
         files={"file": ("a.pdf", pdf_bytes("w"), "application/pdf")},
     )
     assert response.status_code == 500
+    assert response.json() == {"detail": WORKER_UNAVAILABLE_DETAIL}, "500 có detail tiếng Việt (§6.0), không 500 trần"
     assert _stored_files(env) == [] and env.queue.submitted == []
 
 
@@ -250,7 +257,7 @@ def test_exam_only_upload_is_not_an_imported_document(env: ImportEnv) -> None:
 
 
 def test_reader_that_cannot_reopen_the_document_marks_it_failed(env: ImportEnv) -> None:
-    env.reader.read_error = PdfWorkerError("worker đọc PDF không khởi động được")
+    env.reader.read_error = PdfInputError("OPEN_FAILED")
     content = pdf_bytes("reopen")
     assert env.post(content).status_code == 202
     body = DocumentImport.model_validate(env.client.get(f"/v1/documents/{_doc_id(content)}").json())
@@ -274,8 +281,8 @@ def test_delete_removes_the_document_its_pages_and_the_original_file(env: Import
 
 
 def test_delete_while_reading_is_409(env: ImportEnv) -> None:
-    idle = SynchronousImportQueue(run=lambda job: None)  # việc đọc chưa chạy: tài liệu giữ `processing`
-    busy = install(env.store, env.files.root, idle, env.reader)
+    held = HoldingQueue()  # việc đọc còn nằm trong hàng đợi: tài liệu giữ `processing`
+    busy = install(env.store, env.files.root, SynchronousImportQueue(), env.reader, runtime_queue=held)
     content = pdf_bytes("busy")
     assert busy.post(content).status_code == 202
     response = busy.client.delete(f"/v1/documents/{_doc_id(content)}")

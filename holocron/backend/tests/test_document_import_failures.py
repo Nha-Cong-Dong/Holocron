@@ -142,13 +142,16 @@ class RefusingQueue:
     def close(self, timeout_s: float = 0.0) -> bool:
         return True
 
+    def is_active(self, document_id: str) -> bool:
+        return False
+
 
 def test_rejected_submit_undoes_the_import(env: ImportEnv) -> None:
     refusing = install(env.store, env.files.root, env.queue, env.reader, runtime_queue=RefusingQueue())
     content = pdf_bytes("tu-choi")
     response = TestClient(app).post(
         "/v1/documents",
-        data={"subject_code": "ET4010", "source_kind": "textbook"},
+        data={"subject_code": "ET4010", "source_kind": "textbook", "chapter_code": "ch3"},
         files={"file": ("a.pdf", content, "application/pdf")},
     )
     assert response.status_code == 500 and response.json() == {"detail": IMPORT_UNAVAILABLE_DETAIL}
@@ -157,19 +160,23 @@ def test_rejected_submit_undoes_the_import(env: ImportEnv) -> None:
     assert _stored_files(refusing.files) == []
 
 
-def test_rejected_submit_keeps_a_document_still_referenced_by_an_item(
-    env: ImportEnv, caplog: pytest.LogCaptureFixture
-) -> None:
-    """Bản ghi do upload đề tạo, còn item tham chiếu: không huỷ được, giữ `processing` để xếp lại khi khởi động."""
+def test_rejected_submit_keeps_the_exam_upload_record_and_its_item(env: ImportEnv) -> None:
+    """Bản ghi do upload đề §6.1 tạo trước, còn item tham chiếu: chỉ gỡ phần do lần nhập này thêm."""
     content = pdf_bytes("de-cu")
-    env.store.save_document(UploadedDocument.from_content(content, filename="de.pdf", media_type="application/pdf"))
+    upload = UploadedDocument.from_content(content, filename="de.pdf", media_type="application/pdf")
+    env.store.save_document(upload)
     item = IngestionItem(item_id="ing_cu", **{**_body({"quantum": 4}), "source_doc_id": _doc_id(content)})
     env.store.save_item(recompute_item(item, deps.REGISTRY))
     refusing = install(env.store, env.files.root, env.queue, env.reader, runtime_queue=RefusingQueue())
-    with caplog.at_level(logging.WARNING, logger=document_import.__name__):
-        assert refusing.post(content).status_code == 500
-    assert _status(env.store, _doc_id(content)) == "processing" and caplog.records
-    assert _stored_files(env.files) == [f"{hashlib.sha256(content).hexdigest()}.pdf"], "file gốc giữ cho lần đọc sau"
+    response = refusing.post(content, filename="tai_lieu_khac_ten.pdf")
+    assert response.status_code == 500 and response.json() == {"detail": IMPORT_UNAVAILABLE_DETAIL}
+    assert env.store.get_imported_document(_doc_id(content)) is None, "không kẹt processing"
+    assert env.store.get_document(_doc_id(content)) == upload, "dòng của upload đề giữ nguyên như trước lần nhập"
+    assert env.store.get_item("ing_cu") is not None
+    assert env.store.list_pages(_doc_id(content), PageExtraction) == []
+    assert _stored_files(env.files) == []
+    accepting = install(env.store, env.files.root, SynchronousImportQueue(), env.reader)
+    assert accepting.post(content).status_code == 202, "nhập lại được như tài liệu mới"
 
 
 def test_closed_gate_refuses_before_writing_anything(env: ImportEnv) -> None:
@@ -199,6 +206,7 @@ class RacingReader(FakePdfReader):
                 declared_type="application/pdf",
                 subject_code=self.subject_code,
                 source_kind=SourceKind.TEXTBOOK,
+                chapter_code="ch3",
             ),
             store=self.store,
             runtime=ImportRuntime(files=self.files, queue=SynchronousImportQueue(run=lambda job: None)),
@@ -323,6 +331,7 @@ def _accept_idle(store: AppStore, files: OriginalFileStore, tag: str, page_count
             declared_type="application/pdf",
             subject_code="ET4010",
             source_kind=SourceKind.TEXTBOOK,
+            chapter_code="ch3",
         ),
         store=store,
         runtime=ImportRuntime(files=files, queue=SynchronousImportQueue(run=lambda job: None)),
@@ -411,7 +420,7 @@ def test_shutdown_while_reading_keeps_the_temp_dir_and_the_thread_stops_cleanly(
             store = deps.get_store()
             response = client.post(
                 "/v1/documents",
-                data={"subject_code": "ET4010", "source_kind": "textbook"},
+                data={"subject_code": "ET4010", "source_kind": "textbook", "chapter_code": "ch3"},
                 files={"file": ("a.pdf", content, "application/pdf")},
             )
             assert response.status_code == 202

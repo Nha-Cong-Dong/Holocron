@@ -3,10 +3,11 @@ khái niệm, và `POST /v1/vault/concept-pairs/propose` (LLM đề xuất cặp
 
 Mọi truy vấn bắt buộc lọc theo `subject_code` (ADR-006 mục 4). Lỗi: 404 không có chunk/cặp; 409 lệch
 `expected_version`; 422 body sai hoặc `definition_quote` không khớp nguyên văn văn bản chunk (I3).
-`propose` (spec v0.6 §6.0, §6.6, §11.4): thiếu một trong ba biến LLM bắt buộc hoặc cấu hình LLM không hợp lệ
-(`ConfigError`) ⇒ 409 `CapabilityError` (`reason = "llm_not_configured"`, thông điệp chỉ nêu tên biến), không gọi
-mạng; chunk khác môn ⇒ 422; gọi LLM lỗi, phản hồi không parse được sau mọi lần thử hoặc hết hạn thời gian tổng
-(`LlmTaskLimits.deadline_s`) ⇒ 502 `{"code": "LLM_UPSTREAM_ERROR", "message"}`, không lộ endpoint, tên model hay nội
+`propose` (spec v0.6 §6.0, §6.6, §11.4): thiếu một trong ba biến LLM bắt buộc hoặc cấu hình LLM không hợp lệ (biến
+sai khi nạp được `get_runtime_config` coi như chưa đặt; `ConfigError` khi dựng client) ⇒ 409 `CapabilityError`
+(`reason = "llm_not_configured"`, thông điệp chỉ nêu tên biến), không gọi mạng; chunk khác môn ⇒ 422; gọi LLM lỗi,
+phản hồi không parse được sau mọi lần thử hoặc hết hạn thời gian tổng (`LlmTaskLimits.deadline_s`, áp dụng cả cho
+từng request HTTP của client) ⇒ 502 `{"code": "LLM_UPSTREAM_ERROR", "message"}`, không lộ endpoint, tên model hay nội
 dung phản hồi. Client LLM cấp qua `Depends(get_chat_client)`, đồng hồ đơn điệu đo hạn qua `Depends(get_monotonic)`;
 test thay bằng stub.
 
@@ -66,7 +67,8 @@ def get_chat_client(config: RuntimeConfigDep) -> ChatCompletionClient:
     """Client LLM cho đề xuất cặp khái niệm, dùng model `HOLOCRON_LLM_MODEL_EXTRACT` (§11.2).
 
     Khả năng `concept_pair_llm_proposal` không khả dụng, hoặc cấu hình LLM không dựng được client (`ConfigError`) ⇒
-    409 `CapabilityError` (spec v0.6 §11.4). Không gửi gì ra mạng ở đây.
+    409 `CapabilityError` (spec v0.6 §11.4). Không gửi gì ra mạng ở đây. Client dựng mỗi request nên cận tổng
+    `LlmTaskLimits.deadline_s` của nó (tính từ lúc dựng) trùng với hạn của lần đề xuất.
     """
     error = unavailable_error(compute_capabilities(config), "concept_pair_llm_proposal")
     if error is not None:

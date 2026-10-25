@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from holocron_core.domain.capabilities import CAPABILITY_NAMES, Capability
-from holocron_core.infrastructure.llm_config import load_runtime_config
+from holocron_core.infrastructure.llm_config import load_runtime_config, load_runtime_config_lenient
 from holocron_core.services.capabilities import (
     IMPLEMENTED_CAPABILITIES,
     REASON_DETAILS_VI,
@@ -146,3 +146,22 @@ def test_unavailable_error_is_the_409_detail_naming_the_variable_only() -> None:
 def test_capability_reason_is_null_iff_available(available: bool, reason: str | None) -> None:
     with pytest.raises(ValidationError, match="reason"):
         Capability(name="ocr", available=available, reason=reason, detail_vi=None)
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        {"HOLOCRON_LLM_API_KEY": "sk-test 0123"},
+        {"HOLOCRON_LLM_BASE_URL": "http://gateway.example.test/v1"},
+    ],
+    ids=["key-with-space", "plain-http"],
+)
+def test_invalid_llm_or_vlm_configuration_counts_as_not_configured(broken: dict[str, str]) -> None:
+    """Cách `routers/deps.get_runtime_config` nạp cấu hình: nhóm có biến sai coi như chưa cấu hình, không ném lỗi."""
+    config = load_runtime_config_lenient({**LLM_ENV, **broken, **VLM_ENV, "HOLOCRON_VLM_API_KEY": "abc def"})
+    capabilities = _by_name(compute_capabilities(config, implemented=CAPABILITY_NAMES))
+    for name in ("concept_pair_llm_proposal", "essay_grading_llm", "template_authoring_llm"):
+        assert capabilities[name].reason == "llm_not_configured"
+    assert capabilities["vlm"].reason == "vlm_not_configured"
+    error = unavailable_error(list(capabilities.values()), "concept_pair_llm_proposal")
+    assert error is not None and "0123" not in error.message and "abc def" not in error.message

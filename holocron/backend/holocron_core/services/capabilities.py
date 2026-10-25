@@ -2,7 +2,9 @@
 
 LLM "đã cấu hình" khi đủ ba biến `HOLOCRON_LLM_BASE_URL`, `HOLOCRON_LLM_API_KEY`, `HOLOCRON_LLM_MODEL_EXTRACT`
 (`RuntimeConfig.llm_configured`, spec v0.6 §11.2; không có nhà cung cấp mặc định). LLM đã cấu hình mà gateway đang lỗi
-vẫn là `available = true`; lỗi lúc gọi trả 502 (§6.0). Chưa nối vào `GET /v1/runtime` (việc đó sửa
+vẫn là `available = true`; lỗi lúc gọi trả 502 (§6.0). Cấu hình có biến sai (khoá có khoảng trắng, base URL không phải
+https…) được `routers/deps.get_runtime_config` nạp như chưa cấu hình, nên khả năng tương ứng có lý do
+`llm_not_configured` / `vlm_not_configured` thay vì làm request lỗi 500. Chưa nối vào `GET /v1/runtime` (việc đó sửa
 `routers/runtime.py` và `tests/test_llm_config.py` theo §17 D12, làm ở một thay đổi riêng).
 
 Thứ tự xét lý do cho mỗi khả năng: chưa có code trong bản đang chạy (`not_implemented`) → thiếu cấu hình LLM/VLM →

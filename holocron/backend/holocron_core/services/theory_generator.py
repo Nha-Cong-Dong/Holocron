@@ -19,12 +19,15 @@ Thuộc Deterministic Core: hàm thuần, không gọi LLM, không gọi mạng,
   tự cố định `FORM_ORDER`; RNG trên rút một dạng trong số đó. Nhờ vậy `(generator_version, pool_sha256, seed)` cùng
   chương của slot đủ để tái lập câu.
 - **Đúng một đáp án:** cặp có `definition_quote` trùng, chứa hoặc nằm trong trích dẫn của cặp đáp án (so sau NFC, gộp
-  khoảng trắng, không phân biệt hoa thường) không bao giờ làm phương án nhiễu, vì nó cũng là một đáp án đúng. Dạng điền
-  khuyết còn loại thuật ngữ trùng, chứa hoặc nằm trong thuật ngữ bị che, và thuật ngữ mà khi điền vào chỗ trống cho ra
-  một đoạn nằm trong `definition_quote` của một cặp thuộc nhóm ứng viên. Luật này chỉ đọc dữ liệu đã nằm trong
-  `pool_sha256` (I4): `raw_text` của chunk không được dùng, nên thêm hay sửa chunk cùng môn mà không đổi cặp nào thì
-  câu không đổi. Câu điền khuyết vẫn có thể có đáp án đúng thứ hai nằm trong một chunk chưa có cặp xác nhận; người dùng
-  giảm rủi ro này bằng cách xác nhận thêm cặp cho đoạn văn đó.
+  khoảng trắng, không phân biệt hoa thường) không bao giờ làm phương án nhiễu, vì nó cũng là một đáp án đúng. Hai dạng
+  có phương án là thuật ngữ (ghép khái niệm, điền khuyết) còn loại thuật ngữ mà khi điền vào chỗ `____` của thân câu
+  cho ra một đoạn nằm trong `definition_quote` của một cặp thuộc nhóm ứng viên (ví dụ câu ghép khái niệm hỏi "Không
+  gian" với "____ là hình thức tồn tại của vật chất." không nhận "Thời gian" làm phương án nhiễu khi "Thời gian là hình
+  thức tồn tại của vật chất." cũng là trích dẫn trong nhóm ứng viên); dạng điền khuyết còn loại thuật ngữ trùng, chứa
+  hoặc nằm trong thuật ngữ bị che. Luật này chỉ đọc dữ liệu đã nằm trong `pool_sha256` (I4): `raw_text` của chunk
+  không được dùng, nên thêm hay sửa chunk cùng môn mà không đổi cặp nào thì câu không đổi. Câu vẫn có thể có đáp án
+  đúng thứ hai nằm trong một chunk chưa có cặp xác nhận; người dùng giảm rủi ro này bằng cách xác nhận thêm cặp cho
+  đoạn văn đó.
 - **Không đủ căn cứ:** không dạng câu nào chọn được 3 phương án nhiễu khác nhau thì trả `ReviewTicket`, không bịa
   phương án. Phương án nhiễu hợp lệ được lấy theo thứ tự chuẩn, bỏ cặp trùng khái niệm hoặc trùng văn bản với một cặp
   đứng trước, nên tính khả thi không phụ thuộc RNG.
@@ -83,7 +86,8 @@ __all__ = [
 GENERATOR_VERSION = "theory_mcq4_v2"
 """Phiên bản luật chọn của bộ sinh; tăng khi đổi luật chọn dạng câu, cặp, phương án hay thứ tự (ADR-007 mục 2).
 
-`v2`: dạng câu do RNG chọn trong các dạng khả thi thay vì do người gọi truyền vào."""
+`v2`: dạng câu do RNG chọn trong các dạng khả thi thay vì do người gọi truyền vào; dạng ghép khái niệm loại thuật ngữ
+mà khi điền vào chỗ trống của thân câu cho ra một trích dẫn của nhóm ứng viên (gộp vào `v2` khi nhánh chưa merge)."""
 
 THEORY_SAME_CHAPTER_CONCEPT = "THEORY_SAME_CHAPTER_CONCEPT"
 THEORY_SAME_SUBJECT_CONCEPT = "THEORY_SAME_SUBJECT_CONCEPT"
@@ -424,6 +428,33 @@ def _quote_conflict(anchor: ConceptPair) -> Callable[[ConceptPair, str], bool]:
     return conflict
 
 
+def _fills_pool_text(quote: str, hidden: str, text: str, pool_texts: Sequence[str]) -> bool:
+    """Điền `text` vào mọi chỗ che `hidden` trong `quote` cho ra một đoạn nằm trong một phần tử của `pool_texts`
+    (trích dẫn của nhóm ứng viên, đã qua `_option_key`): khi đó `text` cũng là một đáp án đúng."""
+    filled = _option_key(_replace_terms(quote, [hidden], text))
+    return any(filled in pool_text for pool_text in pool_texts)
+
+
+def _concept_match_conflict(anchor: ConceptPair, pool_texts: Sequence[str]) -> Callable[[ConceptPair, str], bool]:
+    """Quy tắc "đúng một đáp án" của dạng ghép khái niệm.
+
+    Loại cặp có trích dẫn lồng với trích dẫn đáp án, và thuật ngữ mà khi điền vào chỗ `____` của thân câu (chỗ che
+    `anchor.term` trong `anchor.definition_quote`) cho ra một đoạn có trong `pool_texts`, cùng cách so như dạng điền
+    khuyết. Ví dụ: "Không gian là hình thức tồn tại của vật chất." và "Thời gian là hình thức tồn tại của vật chất."
+    đều trong nhóm ứng viên thì "Thời gian" cũng điền đúng chỗ trống của câu hỏi về "Không gian". Trích dẫn không
+    chứa `anchor.term` (thân câu không có chỗ che, xem giới hạn che tên khái niệm) thì chỉ áp luật trích dẫn lồng nhau.
+    """
+    quote_conflict = _quote_conflict(anchor)
+    has_blank = bool(find_term_spans(anchor.term, anchor.definition_quote))
+
+    def conflict(pair: ConceptPair, text: str) -> bool:
+        if quote_conflict(pair, text):
+            return True
+        return has_blank and _fills_pool_text(anchor.definition_quote, anchor.term, text, pool_texts)
+
+    return conflict
+
+
 def _fill_blank_conflict(
     anchor: ConceptPair, hidden: str, pool_texts: Sequence[str]
 ) -> Callable[[ConceptPair, str], bool]:
@@ -437,14 +468,14 @@ def _fill_blank_conflict(
     def conflict(pair: ConceptPair, text: str) -> bool:
         if quote_conflict(pair, text) or _overlaps(text, hidden):
             return True
-        filled = _option_key(_replace_terms(anchor.definition_quote, [hidden], text))
-        return any(filled in pool_text for pool_text in pool_texts)
+        return _fills_pool_text(anchor.definition_quote, hidden, text, pool_texts)
 
     return conflict
 
 
 def _pool_texts(pool: Sequence[ConceptPair]) -> list[str]:
-    """Văn bản dùng để nhận ra đáp án đúng thứ hai của dạng điền khuyết: chỉ `definition_quote` của các cặp trong nhóm
+    """Văn bản dùng để nhận ra đáp án đúng thứ hai của dạng ghép khái niệm và điền khuyết (thuật ngữ điền vào chỗ trống
+    cho ra một đoạn có trong văn bản này): chỉ `definition_quote` của các cặp trong nhóm
     ứng viên, tức đúng dữ liệu đã nằm trong `pool_sha256`. `raw_text` của chunk không được dùng: chunk không thuộc
     `pool_sha256`, nên nếu dùng thì thêm một chunk cùng môn sẽ làm câu đổi dù `(generator_version, pool_sha256, seed)`
     giữ nguyên (I4)."""
@@ -502,6 +533,7 @@ def _drafts(form: TheoryQuestionForm, anchors: Sequence[ConceptPair], pool: Sequ
             for anchor, hidden in _fill_blank_candidates(anchors, pool)
         ]
     if form is TheoryQuestionForm.CONCEPT_MATCH:
+        pool_texts = _pool_texts(pool)
         return [
             _Draft(
                 anchor=anchor,
@@ -510,7 +542,7 @@ def _drafts(form: TheoryQuestionForm, anchors: Sequence[ConceptPair], pool: Sequ
                 explanation=_definition_explanation(anchor),
                 excluded_concepts=frozenset({_option_key(anchor.term)}),
                 option_text=_term_of,
-                also_correct=_quote_conflict(anchor),
+                also_correct=_concept_match_conflict(anchor, pool_texts),
                 allow_other_chapters=True,
             )
             for anchor in anchors

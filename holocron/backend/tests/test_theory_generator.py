@@ -693,6 +693,7 @@ def test_vault_backed_generation_matches_the_pure_function() -> None:
 # --------------------------------------------------------------------------- #
 
 OVERLAP_SEEDS = range(300)
+MIN_OVERLAP_PER_FORM = 60
 
 OVERLAP_CH1_LINES = [
     "Vật chất là phạm trù triết học dùng để chỉ thực tại khách quan.",
@@ -784,19 +785,46 @@ OVERLAP_PAIRS = _pairs_in(OVERLAP_CHUNKS["chk_overlap_ch1"], OVERLAP_CH1_DEFINIT
 )
 
 
+# Đúng 5 khái niệm: hỏi "Không gian" ở dạng ghép khái niệm thì chỉ còn đúng 3 phương án nhiễu hợp lệ, nên nếu "Thời
+# gian" không bị loại thì nó nằm trong 3 phương án nhiễu ở phần lớn các seed.
+SPACE_TIME_PAIRS = [
+    pair for pair in OVERLAP_PAIRS if pair.term in {"Vật chất", "Vận động", "Không gian", "Thời gian", "Ý thức"}
+]
+
+
+def _space_time_question(seed: int) -> TheoryQuestion | ReviewTicket:
+    return generate_theory_question(SPACE_TIME_PAIRS, OVERLAP_CHUNKS, subject_code=SUBJECT, seed=seed, **TICKET_CONTEXT)
+
+
 def _overlap(first: str, second: str) -> bool:
     first_key, second_key = normalize_quote(first).casefold(), normalize_quote(second).casefold()
     return first_key in second_key or second_key in first_key
 
 
+def _in_pool_quotes(text: str) -> bool:
+    """`text` (sau NFC, gộp khoảng trắng, không phân biệt hoa thường) nằm trong trích dẫn của một cặp của fixture."""
+    key = normalize_quote(text).casefold()
+    return any(key in normalize_quote(p.definition_quote).casefold() for p in OVERLAP_PAIRS)
+
+
 def _vault_correct_keys(question: TheoryQuestion) -> set[OptionKey]:
-    """Các phương án đúng theo dữ liệu Vault (không dựa vào `correct_key` do bộ sinh ghi)."""
+    """Các phương án đúng theo dữ liệu Vault (không dựa vào `correct_key` do bộ sinh ghi).
+
+    Định nghĩa độc lập với code: với hai dạng có phương án là thuật ngữ, một phương án là đúng nếu thay nó vào chỗ
+    `____` của thân câu ra một đoạn nằm trong trích dẫn của một cặp (dạng điền khuyết: trong văn bản chunk, rộng hơn),
+    hoặc nếu nó gắn với một trích dẫn trùng hay lồng với trích dẫn đáp án; với dạng chọn định nghĩa, một phương án là
+    đúng nếu nguồn của nó trùng hay lồng với trích dẫn đáp án.
+    """
     cited = question.citation.verbatim_quote
     correct: set[OptionKey] = set()
     for key, text in question.options.items():
         if question.form is TheoryQuestionForm.CONCEPT_MATCH:
-            # Đúng nếu có cặp mang thuật ngữ này mà trích dẫn trùng hoặc lồng với đoạn trích ở thân câu.
-            hit = any(_same_concept(p.term, text) and _overlap(p.definition_quote, cited) for p in OVERLAP_PAIRS)
+            # Đúng nếu điền thuật ngữ vào chỗ trống của đoạn trích ra một trích dẫn của Vault, hoặc có cặp mang thuật
+            # ngữ này mà trích dẫn trùng hay lồng với đoạn trích ở thân câu.
+            masked = question.stem.split("> ", 1)[1]
+            fills = BLANK in masked and _in_pool_quotes(masked.replace(BLANK, text))
+            nested = any(_same_concept(p.term, text) and _overlap(p.definition_quote, cited) for p in OVERLAP_PAIRS)
+            hit = fills or nested
         elif question.form is TheoryQuestionForm.DEFINITION_CHOICE:
             # Đúng nếu định nghĩa nằm ở phương án này thuộc về một trích dẫn trùng hoặc lồng với trích dẫn đáp án.
             source = cited if key is question.correct_key else question.distractor_citations[key].verbatim_quote
@@ -819,18 +847,37 @@ def _overlap_question(seed: int, *, chapter_code: str | None = None) -> TheoryQu
 
 @pytest.mark.parametrize("chapter_code", CHAPTERS)
 def test_overlapping_quotes_never_give_two_correct_answers(chapter_code: str | None) -> None:
-    seen: set[TheoryQuestionForm] = set()
+    """Mọi câu sinh trên fixture chồng lấn có đúng một phương án đúng theo định nghĩa độc lập `_vault_correct_keys`;
+    mỗi dạng khả thi xuất hiện ít nhất `MIN_OVERLAP_PER_FORM` lần trên `OVERLAP_SEEDS`, để kiểm tra không rỗng."""
+    counts: Counter[TheoryQuestionForm] = Counter()
     for seed in OVERLAP_SEEDS:
         result = _overlap_question(seed, chapter_code=chapter_code)
         if isinstance(result, ReviewTicket):
             _assert_ticket(result)
             continue
-        seen.add(result.form)
+        counts[result.form] += 1
         assert _vault_correct_keys(result) == {result.correct_key}, (seed, result.stem, result.options)
         for citation in result.distractor_citations.values():
             assert not _overlap(citation.verbatim_quote, result.citation.verbatim_quote)
-    assert seen == set(feasible_forms(OVERLAP_PAIRS, SUBJECT, chapter_code=chapter_code))
-    assert seen
+    assert set(counts) == set(feasible_forms(OVERLAP_PAIRS, SUBJECT, chapter_code=chapter_code))
+    assert counts
+    assert min(counts.values()) >= MIN_OVERLAP_PER_FORM, counts
+
+
+def test_concept_match_skips_a_term_that_also_fills_the_blank() -> None:
+    """Hỏi "Không gian" với "____ là hình thức tồn tại của vật chất.": "Thời gian" điền vào chỗ trống ra một trích
+    dẫn của nhóm ứng viên nên không được làm phương án nhiễu (và ngược lại)."""
+    swapped = {"Không gian": "Thời gian", "Thời gian": "Không gian"}
+    assert len(SPACE_TIME_PAIRS) == 5
+    seen: Counter[str] = Counter()
+    for seed in OVERLAP_SEEDS:
+        result = _space_time_question(seed)
+        assert isinstance(result, TheoryQuestion)
+        answer = result.options[result.correct_key]
+        if result.form is TheoryQuestionForm.CONCEPT_MATCH and answer in swapped:
+            seen[answer] += 1
+            assert swapped[answer] not in result.options.values(), (seed, result.options)
+    assert set(seen) == set(swapped), seen
 
 
 def test_only_duplicate_or_nested_quotes_give_a_review_ticket() -> None:
@@ -1060,6 +1107,25 @@ def test_pinned_question_for_version_pool_and_seed(seed: int, chapter_code: str 
         "citation": question.citation.verbatim_quote,
     }
     assert actual == PINNED_QUESTIONS[(seed, chapter_code)]
+
+
+PINNED_SPACE_TIME_SEED = 2031
+PINNED_SPACE_TIME_POOL_SHA256 = "96a42b4de11c135363c4e52404cdfdb5de71135cf916778778e38d92d51be1f5"
+
+
+def test_pinned_concept_match_without_a_term_that_fills_the_blank() -> None:
+    """Ghim luật ghép khái niệm của `theory_mcq4_v2`: hỏi "Không gian" thì "Thời gian" không làm phương án nhiễu."""
+    question = _space_time_question(PINNED_SPACE_TIME_SEED)
+    assert isinstance(question, TheoryQuestion)
+    assert question.generator_version == "theory_mcq4_v2"
+    assert question.pool_sha256 == PINNED_SPACE_TIME_POOL_SHA256
+    assert question.form is TheoryQuestionForm.CONCEPT_MATCH
+    assert question.stem == "Khái niệm nào ứng với đoạn trích sau?\n\n> ____ là hình thức tồn tại của vật chất."
+    assert [question.options[key] for key in OptionKey] == ["Vật chất", "Vận động", "Không gian", "Ý thức"]
+    assert question.correct_key is OptionKey.C
+    assert question.citation.verbatim_quote == "Không gian là hình thức tồn tại của vật chất."
+    codes = {key.value: ref.misconception_code for key, ref in question.distractor_to_misconception_map.items()}
+    assert codes == dict.fromkeys("ABD", THEORY_SAME_CHAPTER_CONCEPT)
 
 
 # --------------------------------------------------------------------------- #

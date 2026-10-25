@@ -50,7 +50,7 @@ class FixedCitations:
     def __init__(self, citation: Citation | None) -> None:
         self._citation = citation
 
-    def citation_for(self, slot: BlueprintSlot) -> Citation | None:
+    def citation_for(self, subject_code: str, slot: BlueprintSlot) -> Citation | None:
         return self._citation
 
 

@@ -1,22 +1,41 @@
+/*
+ * Hệ thiết kế "kho lưu trữ học thuật" (kế hoạch UI mục 5): nền giấy ngà, chữ mực, một màu nhấn trầm, đường kẻ mảnh,
+ * bo góc nhỏ, không đổ bóng dày, không gradient. Sáng/tối theo hệ điều hành, không có nút đổi tay.
+ * Font chỉ lấy từ máy, đặt font đủ dấu tiếng Việt trước `system-ui`.
+ * Chuyển động (chỉ `opacity`/`transform`, tối đa 150 ms) khai báo trong từng CSS Module, bọc trong
+ * `@media (prefers-reduced-motion: no-preference)` hoặc tắt dưới `prefers-reduced-motion: reduce`.
+ */
+
 :root {
   color-scheme: light;
-  --bg: #f6f7f9;
-  --surface: #ffffff;
-  --surface-raised: #fbfbfc;
-  --border: #d9dce3;
-  --text: #1b1f27;
-  --text-muted: #5c6370;
-  --accent: #2f5bd3;
+
+  --bg: #f5f3ee;
+  --surface: #fffdf9;
+  --surface-sunken: #ece8df;
+  --border: #d8d2c4;
+  --text: #1f1d1a;
+  --text-muted: #5f5a50;
+  --accent: #1f4e5f;
   --accent-contrast: #ffffff;
-  --neutral: #8a93a3;
-  --neutral-soft: #eef0f4;
-  --danger: #c22a2a;
-  --danger-soft: #fdecec;
-  --danger-glow: rgba(194, 42, 42, 0.28);
-  --warning: #9a5b00;
-  --warning-soft: #fff4e0;
-  --success: #1d7a46;
-  --success-soft: #e6f5ec;
+  --accent-soft: #e1ecef;
+  --quote-rule: #8a6d3b;
+  --quote-bg: #faf6ec;
+  --danger: #a4262c;
+  --danger-soft: #f8e6e6;
+  --warning: #8a5a00;
+  --warning-soft: #fbf0da;
+  --success: #2d6a3e;
+  --success-soft: #e5f2e8;
+  --info: #2c5d8a;
+  --info-soft: #e4edf6;
+
+  /* Tên cũ còn dùng trong các component có sẵn, trỏ về bộ token mới. */
+  --surface-raised: var(--surface-sunken);
+  --neutral: #8a8478;
+  --neutral-soft: var(--surface-sunken);
+  --danger-glow: rgba(164, 38, 44, 0.28);
+
+  /* Giữ cho tới khi ADR-005 bước 3 thay Gantt bằng `TimelineArtifact`. */
   --gantt-1: #2f5bd3;
   --gantt-2: #1d7a46;
   --gantt-3: #b4540a;
@@ -24,28 +43,61 @@
   --gantt-5: #0e7490;
   --gantt-6: #a3264f;
   --gantt-ink: #ffffff;
+
+  --font-sans: "Segoe UI", "Noto Sans", "DejaVu Sans", "Liberation Sans", system-ui, sans-serif;
+  --font-serif: "Cambria", "Noto Serif", "DejaVu Serif", "Times New Roman", serif;
+  --font-mono: "Cascadia Mono", "Consolas", "Noto Sans Mono", "DejaVu Sans Mono", monospace;
+
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-md: 14px;
+  --text-body: 15px;
+  --text-lg: 17px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  --radius: 3px;
+  --sidebar-width: 200px;
+  --statusbar-height: 28px;
+  --content-max: 880px;
+  --motion-fast: 150ms;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
-    --bg: #12151b;
-    --surface: #1a1e26;
-    --surface-raised: #20252f;
-    --border: #343a47;
-    --text: #e7eaf0;
-    --text-muted: #a2a9b6;
-    --accent: #7c9cff;
-    --accent-contrast: #0f1320;
-    --neutral: #7d8696;
-    --neutral-soft: #262b35;
-    --danger: #ff7b7b;
+
+    --bg: #161513;
+    --surface: #1e1c19;
+    --surface-sunken: #121110;
+    --border: #3a362f;
+    --text: #ece7dd;
+    --text-muted: #a59e90;
+    --accent: #7fb3c4;
+    --accent-contrast: #0f1416;
+    --accent-soft: #1d2c31;
+    --quote-rule: #c8a76a;
+    --quote-bg: #221f1a;
+    --danger: #f08080;
     --danger-soft: #3a1d20;
-    --danger-glow: rgba(255, 123, 123, 0.3);
-    --warning: #f2b45a;
+    --warning: #e0b25c;
     --warning-soft: #3a2c16;
-    --success: #6fd39a;
+    --success: #7cc492;
     --success-soft: #17301f;
+    --info: #8db8e8;
+    --info-soft: #1a2633;
+
+    --neutral: #7d776b;
+    --danger-glow: rgba(240, 128, 128, 0.3);
+
     --gantt-1: #7c9cff;
     --gantt-2: #6fd39a;
     --gantt-3: #f2b45a;
@@ -56,7 +108,9 @@
   }
 }
 
-* {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
@@ -64,28 +118,93 @@ html,
 body {
   margin: 0;
   padding: 0;
+  height: 100%;
 }
 
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
   line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
 }
 
-main {
-  display: grid;
-  gap: 24px;
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 32px 16px 64px;
+h1,
+h2,
+h3 {
+  margin: 0;
+  line-height: 1.3;
+  font-weight: 600;
 }
 
 h1 {
+  font-size: var(--text-xl);
+}
+
+h2 {
+  font-size: var(--text-lg);
+}
+
+h3 {
+  font-size: var(--text-body);
+}
+
+p {
   margin: 0;
-  font-size: 1.5rem;
 }
 
 a {
   color: var(--accent);
+  text-underline-offset: 2px;
+}
+
+code,
+kbd,
+samp {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
+kbd {
+  display: inline-block;
+  min-width: 1.6em;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  text-align: center;
+  line-height: 1.5;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+/* Focus luôn thấy: viền 2 px màu nhấn thay cho outline mặc định. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }

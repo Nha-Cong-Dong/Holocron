@@ -1,3 +1,4 @@
+import { VerbatimQuote } from "@/components/common/VerbatimQuote";
 import {
   formatNumericalAnswer,
   groupTwinsBySlot,
@@ -89,12 +90,7 @@ function TwinCard({ twin, position }: { twin: TwinQuestion; position: number }) 
           ))}
       </details>
 
-      <blockquote className={styles.citation}>
-        <p>{twin.citation.verbatim_quote}</p>
-        <footer>
-          Trích dẫn: trang {twin.citation.page_number} — <code>{twin.citation.doc_id}</code>
-        </footer>
-      </blockquote>
+      <VerbatimQuote citation={twin.citation} />
 
       <p className={styles.trace}>
         Seed {twin.seed} · {PROVENANCE_LABELS[twin.trace.provenance]} (

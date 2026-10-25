@@ -30,7 +30,7 @@ Dự án có năm bất biến cần giữ qua nhiều tuần phát triển và 
 | FE-001 | 7 cảnh báo Biome ở `TableAuditor.tsx` (`noAutofocus`, `useSemanticElements`, `noArrayIndexKey`) | **Đã trả 2026-10-23** (`5f3b2b4`, `1b9b5c4`, gộp qua PR #29): key React ổn định từ `lib/gate.ts` (có test), `fieldset` thay `role="group"`, focus bằng callback ref khi mở ô; ba quy tắc nâng lên `error` |
 | BE-001 | `tests/` và `scripts/` chưa gõ kiểu: 29 lỗi `mypy --strict` | Không nằm trong cổng mypy hiện tại |
 | BE-002 | Ruleset ruff mở rộng: 27 (core + scripts) / 45 (cả tests) vi phạm | PR riêng |
-| BE-003 | Optimistic locking nguyên tử | Tuần 4, TODO đã duyệt trong `routers/api.py` |
+| BE-003 | Optimistic locking nguyên tử | Tuần 4, TODO đã duyệt trong `routers/ingestion.py` (trước khi tách router: `routers/api.py`; cập nhật đường dẫn, duyệt 2026-10-25) |
 | BE-004 | Spawn tiến trình cho mỗi lần chạy sandbox | Pool tiến trình dựng sẵn và chạy song song seed |
 | ARCH-001 | Gắn cứng CPU Scheduling ngoài `infrastructure/templates/` và test (CLAUDE.md §1, ADR-005 *Chấp nhận*) | Danh sách file ở dưới; gỡ theo ADR-005, sau đó thêm kiểm tra vào `tests/test_architecture.py` |
 | PKG-001 | Wheel `opencv-python-headless` (phụ thuộc bắc cầu của `rapidocr`, ADR-008) đóng kèm FFmpeg theo LGPL-2.1 (`cv2/opencv_videoio_ffmpeg*.dll` trên Windows). Vẫn còn sau quyết định engine OCR ngày 2026-10-24, vì RapidOCR vẫn làm lượt đọc thứ hai. Thêm 2026-10-24: wheel `tesserocr` kèm libiconv (LGPL-2.1) trên Windows và libjbig (GPL-2.0+) trên manylinux | Khi đóng gói Tauri: bỏ file plugin `opencv_videoio_ffmpeg*.dll` khỏi gói, chạy lại test OCR để xác nhận OCR không dùng tới; kiểm wheel Linux và macOS xem có thư viện FFmpeg hay Qt đi kèm không; cập nhật `THIRD_PARTY_NOTICES` theo kết quả. `tesserocr`: cách tránh đã chọn (ADR-008 mục 8) là không dùng wheel này, gọi binary `tesseract` do người dùng tự cài qua subprocess với ảnh PNG do pypdfium2 render. Khi đóng gói Tesseract cùng app (sau MVP) phải kiểm giấy phép của bản build |
@@ -40,7 +40,7 @@ Chi tiết ARCH-001, lập ngày 2026-10-23 bằng `grep -rinE 'cpu_?sched|CPUSc
 - `holocron_core/domain/schemas.py`: hằng `CPU_SCHEDULING_TOPIC_PREFIX` và validator của `TwinQuestion` rẽ nhánh `topic_key.startswith(...)` để bắt buộc `gantt`; model riêng `SchedulingAlgorithm`, `ProcessItem`, `CPUSchedulingProblem`; `SolverInputs.quantum`.
 - `holocron_core/services/ingestion_gate.py`: `TABLE_SCHEMAS` và `TOPIC_ALGORITHMS` khoá theo `os.cpu_sched.rr.avg_waiting_time` (cột tiến trình/arrival/burst cố định); `table_to_problem` trả `CPUSchedulingProblem`.
 - `holocron_core/services/extraction.py`: `MockDualPassExtractor` chỉ hỗ trợ topic RR, header và đề RR mẫu; `DualPassExtraction.quantum`.
-- `holocron_core/routers/api.py`: `IngestionItem.problem: CPUSchedulingProblem`; form field `quantum` của upload.
+- `holocron_core/domain/ingestion.py:144`: `IngestionItem.problem: CPUSchedulingProblem`; `holocron_core/routers/ingestion.py`: form field `quantum` của upload (trước khi tách router cả hai ở `routers/api.py`; cập nhật đường dẫn, duyệt 2026-10-25).
 - `holocron_core/infrastructure/template_library.py`: hằng `RR_TOPIC`, `SJF_TOPIC` và metadata hai template (biến, assert, misconception) viết trong code thay vì dữ liệu.
 - `holocron_core/sandbox/_sandbox_child.py`: `_gantt_ok` kiểm khoá `gantt` riêng của dạng bài lập lịch trong kết quả `solve()`.
 - `holocron_core/services/pipeline.py`: ánh xạ khoá `gantt` của `solve()` sang `TwinQuestion.gantt` (field riêng cho một dạng bài thay vì artifact đa hình).
@@ -51,11 +51,11 @@ Chi tiết ARCH-001, lập ngày 2026-10-23 bằng `grep -rinE 'cpu_?sched|CPUSc
 
 Bổ sung ngày 2026-10-24 (số dòng theo `777c521`), các chỗ còn thiếu trong danh sách trên:
 
-- `holocron_core/domain/schemas.py:240` và `holocron_core/routers/api.py:220`: hằng `MAX_PROCESSES`; thông điệp "tiến trình" khi bảng quá số dòng ở `holocron_core/services/ingestion_gate.py:218-226`.
+- `holocron_core/domain/schemas.py:240` và `holocron_core/services/ingestion_gate.py:400` (trước khi tách router: `routers/api.py:220`; cập nhật đường dẫn, duyệt 2026-10-25): hằng `MAX_PROCESSES`; thông điệp "tiến trình" khi bảng quá số dòng ở `holocron_core/services/ingestion_gate.py:218-226`.
 - `holocron_core/domain/schemas.py:269-278`: `to_template_params` với các khoá `names`, `arrivals`, `bursts` riêng của dạng bài lập lịch.
 - `holocron_core/domain/schemas.py:495` (`GanttSegment`) và `:527` (`TwinQuestion.gantt`).
 - `holocron_core/services/ingestion_gate.py:393-397`: `table_to_params` gắn cứng khoá `"quantum"`.
-- `holocron_core/routers/api.py:328`: `create_item` kiểm `TOPIC_ALGORITHMS`.
+- `holocron_core/routers/ingestion.py:113` (trước khi tách router: `routers/api.py:328`; cập nhật đường dẫn, duyệt 2026-10-25): `create_item` kiểm `TOPIC_ALGORITHMS`.
 - `holocron_core/infrastructure/template_library.py:113`: `theory_chunk_ids=["chk_os05_rr_definition"]`.
 - `holocron/frontend/src/types/holocron.ts:226`: `IngestionItem.problem: CPUSchedulingProblem | null`.
 - `holocron/frontend/src/app/layout.tsx:8`: mô tả trang ghi "môn Hệ điều hành".

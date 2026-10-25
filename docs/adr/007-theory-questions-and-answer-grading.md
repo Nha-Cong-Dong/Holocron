@@ -1,7 +1,7 @@
-# ADR 007: Câu lý thuyết sinh tất định từ Vault; chấm tự luận sau MVP
+# ADR 007: Câu lý thuyết sinh tất định từ Vault; chấm tự luận offline (MVP nếu còn thời gian); AnswerJudge sau MVP
 
-- Trạng thái: Chấp nhận (2026-10-23), gồm câu chữ I2 và I4 ở mục 4
-- Ngày: 2026-10-23
+- Trạng thái: Chấp nhận (2026-10-23), gồm câu chữ I2 và I4 ở mục 4. Sửa ngày 2026-10-25 theo quyết định của người dùng: tiêu đề, nhà cung cấp LLM ở mục 1 và 3, khoá sắp xếp `pool_sha256` ở mục 2, mục 5 tách thành 5a (chấm offline) và 5b (`AnswerJudge` sau MVP), phần Hệ quả.
+- Ngày: 2026-10-23; cập nhật 2026-10-25
 
 ## Bối cảnh
 
@@ -16,7 +16,7 @@ CLAUDE.md §2.1 đã xếp "bộ sinh câu hỏi tất định (điền khuyết
 Nguyên liệu là các **cặp khái niệm – định nghĩa** (`ConceptPair`). Mỗi cặp gồm `term` (tên khái niệm), `definition_quote` (trích dẫn định nghĩa), `chunk_id`, `subject_code`, `chapter_code` và trạng thái xác nhận.
 
 **Nguồn của cặp, theo đúng thứ tự:**
-1. **DeepSeek đề xuất** cặp từ một chunk đã nằm trong Vault (ADR-006), tức từ văn bản người dùng đã xác nhận ở màn hình xem lại của bộ nhập.
+1. **LLM đề xuất** cặp từ một chunk đã nằm trong Vault (ADR-006), tức từ văn bản người dùng đã xác nhận ở màn hình xem lại của bộ nhập. LLM là tuỳ chọn; nhà cung cấp do cấu hình quyết định (hiện là gateway kiểu OpenAI của ban tổ chức, model `claude-haiku-5-5`); DeepSeek, Anthropic gốc là lựa chọn khác qua cùng `Protocol`. Không có LLM thì người dùng tự tạo cặp bằng cách bôi đoạn văn trong chunk (duyệt 2026-10-25); cặp đó vẫn qua bước 2.
 2. **Code kiểm nguyên văn:** `definition_quote` PHẢI là chuỗi con (đã chuẩn hoá NFC và khoảng trắng, ADR-006 mục 9, duyệt 2026-10-24) của văn bản chunk đó (I3). Không khớp thì cặp bị loại ngay, không sửa hộ và không hiện cho người dùng.
 3. **Người dùng xác nhận** cặp ở màn hình xem lại; có thể sửa `term`, hoặc chọn lại trích dẫn bằng cách bôi đúng đoạn văn trong chunk (đoạn được chọn vẫn qua bước 2).
 
@@ -41,14 +41,14 @@ Ba dạng câu MCQ4, đều do code sinh; LLM không soạn thân câu, phương
 - **Phạm vi của `pool_sha256`:** chỉ gồm các cặp **đã xác nhận** có **cùng `subject_code` với slot**, không phải toàn Vault. Thêm, sửa hay xoá dữ liệu của môn khác không làm đổi câu hỏi của môn này.
 - **Cách tính `pool_sha256`:**
   1. Mỗi cặp lấy đúng năm trường `subject_code`, `chapter_code`, `term`, `definition_quote`, `chunk_id`; mỗi trường chuỗi được chuẩn hoá Unicode NFC.
-  2. Sắp danh sách cặp theo `(chapter_code, term, chunk_id)` sau khi chuẩn hoá.
+  2. Sắp danh sách cặp theo `(chapter_code, term, chunk_id, definition_quote)` sau khi chuẩn hoá; khoá cuối dùng để phân xử khi hoà, nhờ đó hash không phụ thuộc thứ tự đầu vào (duyệt 2026-10-25; làm I4 chặt hơn, không nới).
   3. Serialize danh sách bằng `json.dumps(..., sort_keys=True, ensure_ascii=False, separators=(",", ":"))`, mã hoá UTF-8.
   4. `pool_sha256` là chuỗi hex của sha256 trên dãy byte đó.
 - **Misconception:** bộ sinh khai báo cố định hai mã, `THEORY_SAME_CHAPTER_CONCEPT` và `THEORY_SAME_SUBJECT_CONCEPT` (danh sách `THEORY_MISCONCEPTIONS`). Mỗi phương án nhiễu nhận đúng một mã tuỳ theo nguồn chọn; dạng "chọn định nghĩa đúng" chỉ dùng `THEORY_SAME_CHAPTER_CONCEPT`. Như vậy luật "map phủ đúng 3 phương án sai" của `TwinQuestion` vẫn giữ.
 
 ### 3. LLM chỉ đề xuất cặp khái niệm
 
-DeepSeek chỉ đề xuất cặp `(term, definition_quote)` theo đúng thứ tự ở mục 1: đề xuất, code kiểm nguyên văn, người dùng xác nhận. LLM không soạn thân câu, không soạn phương án, không viết giải thích.
+LLM (tuỳ chọn; nhà cung cấp do cấu hình quyết định, hiện qua gateway của ban tổ chức; duyệt 2026-10-25) chỉ đề xuất cặp `(term, definition_quote)` theo đúng thứ tự ở mục 1: đề xuất, code kiểm nguyên văn, người dùng xác nhận. LLM không soạn thân câu, không soạn phương án, không viết giải thích.
 
 ### 4. Câu chữ bất biến I2 và I4 (đã duyệt 2026-10-23)
 
@@ -63,15 +63,29 @@ Chỉ sửa câu chữ và cơ chế cưỡng chế trong bảng §0 của spec;
 
 Test cưỡng chế được ghi vào bảng CLAUDE.md §9 và thêm cùng bộ sinh câu lý thuyết ở Giai đoạn 4.
 
-### 5. Chấm câu trả lời tự luận và `AnswerJudge`: sau MVP (đã duyệt 2026-10-23)
+Ghi chú 2026-10-25: câu chữ §0 được sửa tiếp theo quyết định của người dùng ("Gantt" thành "artifact lời giải theo `kind`" ở I1/I4, ADR-005 bước 3; I4 thêm tái lập của chấm tự luận offline; cơ chế I3 thêm các ý của câu ESSAY; I1 thêm ngoại lệ cho bộ tính điểm chấm câu trả lời của người học). Bảng trên giữ nguyên làm lịch sử của lần duyệt 2026-10-23; câu chữ hiện hành ở spec §0.
 
-Thiết kế giữ theo CLAUDE.md §2.1, chưa triển khai:
+### 5. Chấm câu trả lời tự luận
+
+#### 5a. Chấm offline bằng n-gram: MVP nếu còn thời gian (duyệt 2026-10-25)
+
+Chỉ dạng "Trình bày khái niệm X", đáp án tham chiếu là `definition_quote` của một cặp đã xác nhận (mục 1). Contract ở spec §5.14 và §6.9.
+
+- Code chấm offline, không cần LLM, thuộc Deterministic Core (bộ tính điểm, CLAUDE.md §2.1): độ phủ n-gram âm tiết (bigram, trigram) sau chuẩn hoá NFC, theo từng ý tách nguyên văn từ `definition_quote`. Các ý là chuỗi con (sau NFC) của `definition_quote` (I3).
+- Kết quả chỉ báo "khớp x/y ý" kèm danh sách ý còn thiếu; KHÔNG có điểm số tuyệt đối. UI ghi rõ giới hạn: người học diễn đạt khác tài liệu thì có thể bị chấm sót ý.
+- Cùng `grader_version`, ngưỡng, các ý và câu trả lời (NFC) thì cùng kết quả (I4, spec §0).
+- Tham số (tách ý theo dấu câu, tối thiểu 4 âm tiết mỗi ý; trọng số bigram/trigram 0.5/0.5; ngưỡng khớp ý 0.5) đã duyệt hướng, **chưa hiệu chỉnh**; hiệu chỉnh bằng script đánh giá opt-in (CLAUDE.md §2.2).
+- Chỉ làm nếu lát cắt dọc của spec §16 chạy được trước hết ngày 29/10; không thì chuyển sang sau MVP.
+
+#### 5b. `AnswerJudge`: sau MVP (đã duyệt 2026-10-23)
+
+`AnswerJudge` là nâng cấp tuỳ chọn của 5a, chỉ chạy khi có cấu hình LLM. Thiết kế giữ theo CLAUDE.md §2.1, chưa triển khai:
 
 - Rubric gồm các ý, mỗi ý neo vào một trích dẫn nguyên văn. Đáp án mẫu là trích dẫn, không phải văn bản LLM diễn đạt lại.
 - LLM chỉ trả verdict cho từng ý (`đạt` / `thiếu` / `sai`) kèm bằng chứng. Bằng chứng phải là chuỗi con (đã chuẩn hoá NFC và khoảng trắng, ADR-006 mục 9) của câu trả lời người học hoặc của tài liệu nguồn; verdict không có bằng chứng hợp lệ bị loại và ý đó chuyển sang "cần người xem".
 - Điểm và kết luận đúng/sai do code tính từ verdict. LLM không trả điểm.
 
-Lý do để sau MVP: chấm tự luận cần một bộ câu trả lời mẫu có nhãn để đo độ đúng (script đánh giá opt-in, CLAUDE.md §2.2), và việc này không làm kịp trong thời hạn hackathon. MVP chỉ có câu có đáp án xác định (MCQ4, câu trả lời số).
+Lý do để `AnswerJudge` sau MVP: chấm tự luận bằng LLM cần một bộ câu trả lời mẫu có nhãn để đo độ đúng (script đánh giá opt-in, CLAUDE.md §2.2), và việc này không làm kịp trong thời hạn hackathon. MVP có câu có đáp án xác định (MCQ4, câu trả lời số) và câu ESSAY chấm offline theo 5a (nếu kịp mốc 29/10; duyệt 2026-10-25).
 
 ## Hệ quả
 
@@ -79,7 +93,8 @@ Lý do để sau MVP: chấm tự luận cần một bộ câu trả lời mẫu
 - Câu lý thuyết MVP chỉ kiểm tra **nhận biết khái niệm** (mức `remember`/`understand`), chưa kiểm tra lập luận. Đây là giới hạn có chủ đích.
 - Chất lượng câu hỏi phụ thuộc chất lượng cặp khái niệm, nên màn hình xem lại của Vault phải cho sửa và xoá cặp.
 - **Chạm bất biến I2 và I4:** câu chữ cũ của I2 ("mã đã khai báo trong template") và I4 ("`(template_sha256, seed)`") chỉ nói về câu có template. Người làm dự án đã duyệt câu chữ mới ngày 2026-10-23 (mục 4); spec §0 và bảng CLAUDE.md §9 đã cập nhật theo (CLAUDE.md §9).
-- Contract (`question_kind`, model `ConceptPair`, trace cho câu không có template) được viết ở spec §5.8, §5.9, §5.11 và §6.6 (Đợt 2b, 2026-10-24); trace cho câu lý thuyết và các field nullable của câu không có template là đề xuất, chờ duyệt.
+- MVP có câu có đáp án xác định và câu ESSAY chấm offline (nếu kịp mốc 29/10; mục 5a, duyệt 2026-10-25).
+- Contract (`question_kind`, model `ConceptPair`, trace cho câu không có template) được viết ở spec §5.8, §5.9, §5.11 và §6.6 (Đợt 2b, 2026-10-24). Đã duyệt 2026-10-25: `TheoryTrace`, `TwinQuestion.template_id` và `topic_key` nullable, `MisconceptionRef.citation` (spec §5.11); các field nullable của `BlueprintSlot` vẫn là đề xuất, chờ duyệt (spec §17 D8).
 - Kiểm chứng: test cho thấy cặp có trích dẫn không nguyên văn bị loại; cặp chưa xác nhận không bao giờ được dùng và không làm đổi `pool_sha256`; Vault ít hơn 4 khái niệm đã xác nhận thì vào `review_tickets`; dạng "chọn định nghĩa đúng" chỉ lấy phương án nhiễu cùng chương; cùng `(generator_version, pool_sha256, seed)` thì câu hỏi giống từng byte; cùng nội dung nhập ở dạng NFC hay NFD cho cùng `pool_sha256`; thêm cặp ở môn khác không làm đổi `pool_sha256` của môn này; mọi phương án nhiễu đều có mã thuộc `THEORY_MISCONCEPTIONS`.
 
 ## Phương án đã loại

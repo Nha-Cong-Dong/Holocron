@@ -1,6 +1,6 @@
 # ADR 005: Pipeline câu hỏi không phụ thuộc topic
 
-- Trạng thái: Chấp nhận (2026-10-23). F16 (SJF ở Ingestion Gate) làm theo bước 1 của thứ tự trả nợ bên dưới, không thêm vào `TABLE_SCHEMAS`. Việc đổi câu chữ I1 ("sơ đồ Gantt" thành "artifact lời giải") ở bước 3 vẫn cần người làm dự án đồng ý riêng (CLAUDE.md §9).
+- Trạng thái: Chấp nhận (2026-10-23). F16 (SJF ở Ingestion Gate) làm theo bước 1 của thứ tự trả nợ bên dưới, không thêm vào `TABLE_SCHEMAS`. Việc đổi câu chữ I1 và I4 ("Gantt" thành "artifact lời giải theo `kind`") ở bước 3 được người làm dự án đồng ý ngày 2026-10-25, có điều kiện: khi đổi code ở bước 3, `tests/test_sandbox_security.py` phải xanh nguyên vẹn (CLAUDE.md §9; spec §0 đã sửa, duyệt 2026-10-25).
 - Ngày: 2026-10-23
 
 ## Bối cảnh
@@ -44,8 +44,9 @@ Tri thức riêng của từng dạng bài chuyển hết vào **template và d�
 
 - Thêm dạng bài tính toán mới chỉ cần thêm cặp `.py` + `.json` (viết tay, hoặc LLM viết rồi được kiểm chứng và người duyệt), không sửa code.
 - **Thay đổi không tương thích (⚠️):** `TwinQuestion.gantt`, `IngestionItem.problem`, field `quantum` của upload và các kiểu TypeScript tương ứng. Bước 3 làm đổi `examples/*.json` (`gantt` thành `artifacts`), là thay đổi có chủ đích và phải được duyệt khi xem `git diff examples/`.
-- **Chạm bất biến I1:** câu chữ của I1 trong spec §0 nhắc "sơ đồ Gantt". Bản chất không đổi (mọi artifact vẫn do sandbox sinh), nhưng câu chữ cần đổi thành "artifact lời giải". Theo CLAUDE.md §9, việc này cần người dùng đồng ý.
-- **Chạm sandbox:** bước 3 thay `_gantt_ok` bằng kiểm tra artifact chung trong `_sandbox_child.py`. Đây là kiểm tra đầu ra, không nới whitelist hay giới hạn, nhưng vẫn thuộc nhóm DỪNG VÀ HỎI ở CLAUDE.md §3 và cần thêm test trong `tests/test_sandbox_security.py`.
+- **Chạm bất biến I1:** câu chữ của I1 (và I4) trong spec §0 nhắc "sơ đồ Gantt". Bản chất không đổi (mọi artifact vẫn do sandbox sinh), nhưng câu chữ cần đổi thành "artifact lời giải". Theo CLAUDE.md §9, việc này cần người dùng đồng ý. **Đã đồng ý ngày 2026-10-25** (duyệt có điều kiện, xem phần Trạng thái); spec §0 nay ghi "artifact lời giải theo `kind`".
+- **Chạm sandbox:** bước 3 thay `_gantt_ok` bằng kiểm tra artifact chung trong `_sandbox_child.py`. Đây là kiểm tra đầu ra, không nới whitelist hay giới hạn, nhưng vẫn thuộc nhóm DỪNG VÀ HỎI ở CLAUDE.md §3 và cần thêm test trong `tests/test_sandbox_security.py`. Điều kiện duyệt ngày 2026-10-25: các test sẵn có của `tests/test_sandbox_security.py` phải xanh nguyên vẹn (không sửa, không xoá); chỉ được thêm test mới.
+- `format` (hình thức trả lời) độc lập với `question_kind`; thêm `ESSAY` (spec §5.14, duyệt 2026-10-25). `question_kind` giữ hai giá trị `computational`, `theory`.
 - Lỗi miền giá trị (ví dụ RR thiếu quantum) hiện bị bắt ở Pydantic với thông điệp riêng. Sau bước 2 lỗi này đến từ nhãn assert, nên thông điệp tiếng Việt phải lấy từ `description` của assert trong metadata.
 - Kiểm chứng: `test_architecture.py` (bước 4); test hiện có của RR/SJF giữ nguyên hành vi; property test ≥ 100 seed vẫn chạy cho mọi template.
 

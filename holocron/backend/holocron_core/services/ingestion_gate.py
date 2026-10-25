@@ -11,12 +11,20 @@ Năm tín hiệu độc lập, mỗi tín hiệu sinh GateIssue gắn toạ đ�
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
-from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
+from ..domain.ingestion import (
+    ExtractedCell,
+    ExtractedTable,
+    GateIssue,
+    GateReport,
+    GateStatus,
+    IngestionItem,
+    PatchAudit,
+    Severity,
+)
 from ..domain.schemas import (
     MAX_PROCESSES,
     CPUSchedulingProblem,
@@ -27,6 +35,31 @@ from ..domain.schemas import (
     SelfSolveResult,
 )
 from ..sandbox.sandbox import SandboxStatus, run_template
+from .pipeline import TemplateRegistry
+
+# Model dữ liệu của Gate đã chuyển về `domain/ingestion.py`; tên cũ vẫn import được từ module này.
+__all__ = [
+    "CELL_CONFIDENCE_MIN",
+    "TABLE_SCHEMAS",
+    "TOPIC_ALGORITHMS",
+    "CellPatch",
+    "ColumnSpec",
+    "ExtractedCell",
+    "ExtractedTable",
+    "GateIssue",
+    "GateReport",
+    "GateStatus",
+    "PatchAudit",
+    "Severity",
+    "apply_patches",
+    "check_table",
+    "gate_status",
+    "latex_issues",
+    "recompute_item",
+    "rerun_self_solve",
+    "table_to_params",
+    "table_to_problem",
+]
 
 CELL_CONFIDENCE_MIN = 0.85
 
@@ -58,93 +91,10 @@ TABLE_SCHEMAS: dict[str, tuple[ColumnSpec, ...]] = {
 }
 
 
-class Severity(str, Enum):
-    INFO = "info"
-    WARNING = "warning"
-    BLOCKING = "blocking"
-
-
-class ExtractedCell(BaseModel):
-    row: int = Field(ge=0)
-    col: int = Field(ge=0)
-    text: str
-    confidence: float = Field(ge=0.0, le=1.0)
-    verified_by_human: bool = False
-
-
-class ExtractedTable(BaseModel):
-    table_id: str
-    page_number: int = Field(ge=1)
-    version: int = Field(default=1, ge=1)
-    headers: list[str]
-    cells: list[ExtractedCell]
-
-    @model_validator(mode="after")
-    def _grid(self) -> ExtractedTable:
-        coords = {(c.row, c.col) for c in self.cells}
-        if len(coords) != len(self.cells):
-            raise ValueError("trùng toạ độ ô")
-        if any(c.col >= len(self.headers) for c in self.cells):
-            raise ValueError("ô vượt số cột header")
-        return self
-
-    @property
-    def n_rows(self) -> int:
-        return 1 + max((c.row for c in self.cells), default=-1)
-
-    def cell(self, row: int, col: int) -> ExtractedCell | None:
-        for c in self.cells:
-            if c.row == row and c.col == col:
-                return c
-        return None
-
-
-class GateIssue(BaseModel):
-    code: Literal[
-        "DUAL_PASS_MISMATCH",
-        "LOW_CONFIDENCE",
-        "HEADER_MISMATCH",
-        "NOT_A_NUMBER",
-        "OUT_OF_RANGE",
-        "DUPLICATE_LABEL",
-        "MISSING_CELL",
-        "NOT_IN_TEXT_LAYER",
-        "SELF_SOLVE_MISMATCH",
-        "LATEX_UNBALANCED",
-    ]
-    severity: Severity
-    message_vi: str
-    row: int | None = None
-    col: int | None = None
-    alternatives: list[str] = Field(default_factory=list)
-
-
-class GateStatus(str, Enum):
-    AUTO_PASS = "AUTO_PASS"
-    NEEDS_REVIEW = "NEEDS_REVIEW"
-    BLOCKED = "BLOCKED"
-
-
-class GateReport(BaseModel):
-    table_id: str
-    table_version: int
-    status: GateStatus
-    issues: list[GateIssue]
-
-
 class CellPatch(BaseModel):
     row: int = Field(ge=0)
     col: int = Field(ge=0)
     new_text: str = Field(max_length=64)
-
-
-class PatchAudit(BaseModel):
-    table_id: str
-    from_version: int
-    to_version: int
-    editor_id: str
-    changes: list[dict[str, Any]]
-    at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 def _norm(s: str) -> str:
@@ -430,3 +380,53 @@ def rerun_self_solve(
     return SelfSolveResult(
         status="NO_MATCH", solved_answer_display=display, solver_confidence=1.0, solver_template_id=solver.template_id
     )
+
+
+def recompute_item(item: IngestionItem, registry: TemplateRegistry) -> IngestionItem:
+    """Chuẩn hoá bảng, tự giải lại trong sandbox và quét lại toàn bộ Gate cho `item` (sửa tại chỗ rồi trả lại)."""
+    solver = registry.get_verified(item.topic_key)
+    pre_issues: list[GateIssue] = []
+    item.problem = None
+    if solver is None:
+        # Phòng thủ chiều sâu (I5): topic chưa có template đã kiểm chứng thì không thể tự giải ⇒ không được AUTO_PASS.
+        item.self_solve = None
+        pre_issues.append(
+            GateIssue(
+                code="SELF_SOLVE_MISMATCH",
+                severity=Severity.BLOCKING,
+                message_vi=f"Chưa có template đã kiểm chứng cho topic {item.topic_key}, không thể tự giải để đối chiếu.",
+            )
+        )
+    elif item.table_primary.n_rows > MAX_PROCESSES:
+        # Không tự giải được; check_table đã báo OUT_OF_RANGE nên không thêm issue (tránh gắn nhầm NOT_A_NUMBER).
+        item.self_solve = SelfSolveResult(status="SKIPPED", solver_confidence=0.0)
+    else:
+        try:
+            item.problem = table_to_problem(item.topic_key, item.table_primary, item.solver_inputs.quantum)
+            item.self_solve = rerun_self_solve(solver, item.problem.to_template_params(), item.options)
+            if item.self_solve.status == "SKIPPED":
+                pre_issues.append(
+                    GateIssue(
+                        code="SELF_SOLVE_MISMATCH",
+                        severity=Severity.BLOCKING,
+                        message_vi="Sandbox không tính được đáp án để đối chiếu (SKIPPED: lỗi, quá thời gian hoặc sai hợp đồng).",
+                    )
+                )
+        except ValueError as exc:
+            item.problem = None
+            item.self_solve = SelfSolveResult(status="SKIPPED", solver_confidence=0.0)
+            pre_issues.append(
+                GateIssue(code="NOT_A_NUMBER", severity=Severity.BLOCKING, message_vi=f"Chưa thể tự giải: {exc}")
+            )
+    issues = (
+        pre_issues
+        + check_table(item.topic_key, item.table_primary, item.table_secondary, item.page_text_layer, item.self_solve)
+        + latex_issues(item.stem_latex)
+    )
+    item.report = GateReport(
+        table_id=item.table_primary.table_id,
+        table_version=item.table_primary.version,
+        status=gate_status(issues),
+        issues=issues,
+    )
+    return item

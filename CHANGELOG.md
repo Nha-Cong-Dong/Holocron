@@ -37,6 +37,7 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 - Thêm `.env.example` ở gốc repo (chỉ placeholder) cho mọi biến `HOLOCRON_*`; spec §11.2 bổ sung biến của ADR-008, `HOLOCRON_DATA_DIR` (đề xuất) và `HOLOCRON_API_URL`.
 - `RELEASE_CHECKLIST.md`: mục 8 theo định nghĩa `demo_mode` mới; mục 9 đổi "Golden Path RR/SJF" thành luồng G1 cho ba môn demo; ghi chú trạng thái bỏ ý "chưa có template SJF".
 - Tài liệu: báo cáo review tiến độ tuần 19–23/10 (`docs/progress-review-2026-10-23.md`) với danh sách thiếu sót F1–F18 và kết quả cổng kiểm tra chạy lại trên `903b954`.
+- Backend, refactor không đổi hành vi (Đợt 2c): model dùng chung (`IngestionItemCreate`, `IngestionItem`, `UploadedDocument`, bảng trích xuất và `GateReport`, `PatchAudit`, `AttemptLog`, `ReviewTicket`, `TwinBatchRequest`, `TwinBatch`, `IdempotencyRecord`) chuyển về `domain/ingestion.py` và `domain/twins.py`; `routers/api.py` tách thành `deps.py`, `runtime.py`, `ingestion.py`, `blueprints.py`, chỉ còn tạo `app` và re-export tên cũ; logic quét lại Gate thành `services.ingestion_gate.recompute_item` (registry truyền qua tham số); `IngestionStore` chuyển sang `infrastructure/memory_store.py`. OpenAPI, response, mã lỗi và `examples/` không đổi.
 
 ### 🐛 Sửa lỗi
 

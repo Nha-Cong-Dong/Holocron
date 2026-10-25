@@ -464,7 +464,9 @@ class WorkerPdfReader:
                 raise ValueError(f"tài liệu chỉ có {page_count} trang")
             while pending:
                 index = pending.pop(0)
-                remaining = deadline - time.monotonic()
+                # Kẹp bằng hạn tổng: `deadline` cộng rồi trừ trên số thực lớn có thể cho dư một chút (vài ULP) khi
+                # đồng hồ chưa nhích, và phần hạn còn lại không bao giờ được vượt chính hạn tổng.
+                remaining = min(self.config.document_timeout_s, deadline - time.monotonic())
                 healthy = True
                 if document_expired or remaining <= 0:
                     page = failed_page(document_id, index + 1, "PAGE_TIMEOUT")

@@ -11,6 +11,11 @@ kill worker, đánh dấu trang `failed` (`PAGE_TIMEOUT`) và dựng worker mớ
 Tiến trình cha không có giới hạn OS, nên stdout của worker được đọc theo khối với giới hạn byte mỗi thông điệp
 (`PdfReaderConfig.max_message_bytes`) và hàng đợi có kích thước cố định: worker xả dòng quá dài, byte không phải
 UTF-8 hay quá nhiều dòng lạ thì bị kill, trang đang đọc thành `PAGE_ERROR`.
+
+Kill worker là kill cả cây tiến trình của nó (Tesseract là tiến trình con của worker): trên Unix worker chạy trong
+nhóm tiến trình riêng (`start_new_session=True`) và bị kill bằng `os.killpg`, nên Tesseract không thành mồ côi;
+trên Windows Job Object `KILL_ON_JOB_CLOSE` do worker tự tạo (`sandbox/os_limits.py`) kill mọi tiến trình trong job
+khi worker chết.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ from __future__ import annotations
 import contextlib
 import os
 import queue
+import signal
 import subprocess
 import sys
 import tempfile
@@ -194,6 +200,7 @@ class WorkerSession:
             cwd=self._workdir.name,
             env=_worker_env(),
             close_fds=True,
+            start_new_session=sys.platform != "win32",
         )
         self._lines: queue.Queue[bytes | StreamEvent] = queue.Queue(maxsize=QUEUE_LINES)
         self._closing = threading.Event()
@@ -269,6 +276,14 @@ class WorkerSession:
                 raise WorkerProtocolError("worker ghi quá nhiều dòng không thuộc giao thức")
 
     def kill(self) -> None:
+        """Kill worker và mọi tiến trình con của nó (xem docstring của module), rồi chờ worker thoát.
+
+        Trên Unix, `killpg` chạy khi worker chưa được thu hồi (`returncode` còn None): PID của worker (cũng là mã
+        nhóm) khi đó chưa thể bị tiến trình khác dùng lại, kể cả khi worker đã thoát và còn ở trạng thái zombie.
+        """
+        if sys.platform != "win32" and self.process.returncode is None:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(self.process.pid, signal.SIGKILL)
         if self.process.poll() is None:
             self.process.kill()
         self.process.wait()

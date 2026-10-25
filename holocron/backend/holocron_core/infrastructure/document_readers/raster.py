@@ -12,6 +12,8 @@ import zlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from .config import DEFAULT_RENDER_SHRINK_FACTOR
+
 POINTS_PER_INCH = 72.0
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -32,17 +34,26 @@ class GrayImage:
             raise ValueError("kích thước ảnh không khớp số byte")
 
 
-def render_scale(width_pt: float, height_pt: float, dpi: int, max_pixels: int) -> float:
+def render_scale(
+    width_pt: float,
+    height_pt: float,
+    dpi: int,
+    max_pixels: int,
+    *,
+    shrink_factor: float = DEFAULT_RENDER_SHRINK_FACTOR,
+) -> float:
     """Hệ số điểm ảnh trên point: `dpi / 72`, giảm dần khi ảnh vượt `max_pixels` (ADR-008 mục 4).
 
-    Kích thước ảnh của PDFium là `ceil(cạnh × hệ số)`, nên hệ số được giảm tiếp cho tới khi tích hai cạnh đã làm
-    tròn lên không vượt `max_pixels`.
+    Kích thước ảnh của PDFium là `ceil(cạnh × hệ số)`, nên hệ số được nhân tiếp với `shrink_factor`
+    (`PdfReaderConfig.render_shrink_factor`) cho tới khi tích hai cạnh đã làm tròn lên không vượt `max_pixels`.
     """
     if width_pt <= 0 or height_pt <= 0:
         raise ValueError("khổ trang phải dương")
+    if not 0.0 < shrink_factor < 1.0:
+        raise ValueError("shrink_factor phải nằm trong (0, 1)")
     scale = min(dpi / POINTS_PER_INCH, math.sqrt(max_pixels / (width_pt * height_pt)))
     while math.ceil(width_pt * scale) * math.ceil(height_pt * scale) > max_pixels:
-        scale *= 0.995
+        scale *= shrink_factor
     return scale
 
 

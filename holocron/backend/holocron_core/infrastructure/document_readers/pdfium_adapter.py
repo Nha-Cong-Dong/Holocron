@@ -17,6 +17,7 @@ from collections.abc import Iterable
 from types import ModuleType
 from typing import Literal, Self
 
+from .config import DEFAULT_RENDER_SHRINK_FACTOR
 from .protocol import RawPdfPage
 from .raster import POINTS_PER_INCH, GrayImage, pack_rows, render_scale
 from .text_layer import PdfBox, PdfChar, group_lines
@@ -122,7 +123,9 @@ class PdfiumDocument:
             path_area_ratio=_area_ratio(path_boxes, page_box),
         )
 
-    def render_gray(self, index: int, dpi: int, max_pixels: int) -> GrayImage:
+    def render_gray(
+        self, index: int, dpi: int, max_pixels: int, *, shrink_factor: float = DEFAULT_RENDER_SHRINK_FACTOR
+    ) -> GrayImage:
         """Render trang theo hướng hiển thị ra ảnh xám 8 bit, `dpi` giảm dần khi vượt `max_pixels` (ADR-008 mục 4)."""
         backend = self._backend
         page = backend.call(self._handle, "get_page", index)
@@ -130,7 +133,7 @@ class PdfiumDocument:
             size = backend.call(page, "get_size")
             if not isinstance(size, tuple | list) or len(size) != 2:
                 raise PdfiumDataError("get_size phải trả (width, height)")
-            scale = render_scale(_as_float(size[0]), _as_float(size[1]), dpi, max_pixels)
+            scale = render_scale(_as_float(size[0]), _as_float(size[1]), dpi, max_pixels, shrink_factor=shrink_factor)
             bitmap = backend.call(page, "render", scale=scale, grayscale=True, may_draw_forms=False, draw_annots=False)
             try:
                 return backend.gray_image(bitmap, scale * POINTS_PER_INCH, max_pixels)

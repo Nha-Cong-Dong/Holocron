@@ -16,7 +16,7 @@ import shutil
 from collections.abc import Callable, Mapping
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..llm_config import ConfigError
 
@@ -40,6 +40,9 @@ GIB = 1024 * MIB
 
 # Giá trị mặc định dùng chung giữa field của `PdfReaderConfig` và tham số mặc định của các hàm cấp thấp (gọi được
 # riêng trong test hay script), để mỗi con số chỉ ghi ở một chỗ.
+DEFAULT_OCR_KILL_GRACE_S = 5.0
+DEFAULT_OCR_PROBE_MAX_BYTES = 64 * 1024
+DEFAULT_RENDER_SHRINK_FACTOR = 0.995
 DEFAULT_CROSS_CHECK_MAX_LINES = 5000
 DEFAULT_CROSS_CHECK_MAX_LINE_TOKENS = 512
 DEFAULT_CROSS_CHECK_MAX_LINE_PAIRS = 200_000
@@ -82,6 +85,13 @@ class PdfReaderConfig(BaseModel):
     # nhỏ hơn `ocr_page_timeout_s` để còn thời gian cho lượt đọc thứ hai.
     ocr_probe_timeout_s: float = Field(default=10.0, gt=0)
     tesseract_timeout_s: float = Field(default=20.0, gt=0)
+    # Đầu ra tối đa (byte) của `--version` và `--list-langs` khi kiểm Tesseract.
+    ocr_probe_max_bytes: int = Field(default=DEFAULT_OCR_PROBE_MAX_BYTES, ge=1024)
+    # Sau khi kill Tesseract (quá hạn, đầu ra quá lớn), thời gian chờ tối đa để pipe đóng và tiến trình thoát hẳn;
+    # quá mức này thì worker thôi chờ (luồng đọc là daemon), nên một tiến trình con treo không giữ worker mãi.
+    ocr_kill_grace_s: float = Field(default=DEFAULT_OCR_KILL_GRACE_S, gt=0)
+    # Hệ số giảm dần tỉ lệ render khi ảnh làm tròn lên vẫn vượt `ocr_max_pixels` (mục 4).
+    render_shrink_factor: float = Field(default=DEFAULT_RENDER_SHRINK_FACTOR, gt=0.0, lt=1.0)
     # Nhị phân hoá ảnh xám để đếm điểm ảnh mực (`ink_outside_text_ratio`, mục 9): điểm ảnh tối hơn ngưỡng là mực.
     ink_threshold: int = Field(default=128, ge=1, le=255)
     # Ghép dòng hai lượt đọc theo hộp toạ độ (mục 11): hai hộp phải chồng nhau theo chiều dọc ít nhất tỉ lệ này
@@ -124,6 +134,13 @@ class PdfReaderConfig(BaseModel):
     table_min_rows: int = Field(default=3, ge=2)
     table_min_cols: int = Field(default=2, ge=2)
     table_col_tolerance: float = Field(default=0.02, gt=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _tesseract_fits_in_page(self) -> PdfReaderConfig:
+        """Hạn của một lần chạy Tesseract phải nhỏ hơn hạn của cả trang OCR, để còn thời gian cho lượt thứ hai."""
+        if self.tesseract_timeout_s >= self.ocr_page_timeout_s:
+            raise ValueError("tesseract_timeout_s phải nhỏ hơn ocr_page_timeout_s")
+        return self
 
 
 SecondaryEngine = Literal["rapidocr"]

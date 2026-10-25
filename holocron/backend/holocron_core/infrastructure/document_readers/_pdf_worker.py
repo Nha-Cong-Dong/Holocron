@@ -13,6 +13,7 @@ giới hạn OS) rồi RapidOCR, và gửi kết quả trong `RawPdfPage.ocr`. M
 
 from __future__ import annotations
 
+import functools
 import io
 import sys
 from collections.abc import Callable, Iterable
@@ -90,11 +91,17 @@ class OcrRunner:
 def build_ocr(
     settings: OcrSettings,
     config: PdfReaderConfig,
-    run: Runner = run_bounded,
+    run: Runner | None = None,
     load_secondary: Callable[[], SecondaryOcr | None] = RapidOcrBackend.load,
 ) -> OcrRunner | None:
-    """Kiểm Tesseract và nạp lượt thứ hai; thiếu binary hoặc thiếu `vie` ⇒ None (coi như không có engine OCR)."""
-    primary = TesseractEngine.probe(settings, config.ocr_probe_timeout_s, run)
+    """Kiểm Tesseract và nạp lượt thứ hai; thiếu binary hoặc thiếu `vie` ⇒ None (coi như không có engine OCR).
+
+    `run` mặc định là `run_bounded` với thời gian chờ sau khi kill lấy từ `config.ocr_kill_grace_s`.
+    """
+    runner = run if run is not None else functools.partial(run_bounded, kill_grace_s=config.ocr_kill_grace_s)
+    primary = TesseractEngine.probe(
+        settings, config.ocr_probe_timeout_s, runner, max_output_bytes=config.ocr_probe_max_bytes
+    )
     if primary is None:
         return None
     secondary = load_secondary() if settings.secondary == "rapidocr" else None
@@ -147,7 +154,9 @@ def _read_one(
         raw = document.read_page(index)
         if ocr is not None and needs_ocr(raw.lines, config):
             emit(OcrStartedMessage(page_index=index))
-            image = document.render_gray(index, config.ocr_dpi, config.ocr_max_pixels)
+            image = document.render_gray(
+                index, config.ocr_dpi, config.ocr_max_pixels, shrink_factor=config.render_shrink_factor
+            )
             raw = _with_ocr(raw, ocr.read(image, config))
         return PageMessage(page=raw)
     except PAGE_ERRORS as exc:

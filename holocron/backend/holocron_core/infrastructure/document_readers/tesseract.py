@@ -25,12 +25,17 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import IO, Literal
 
-from .config import TESSERACT_LANGUAGE, OcrSettings, PdfReaderConfig
+from .config import (
+    DEFAULT_OCR_KILL_GRACE_S,
+    DEFAULT_OCR_PROBE_MAX_BYTES,
+    TESSERACT_LANGUAGE,
+    OcrSettings,
+    PdfReaderConfig,
+)
 from .protocol import MAX_PAGE_LINES, MAX_PAGE_WORDS, MAX_RAW_LINE_CHARS, RawOcrLine, RawWord, UnitBBox
 from .raster import GrayImage, PixelBox
 
 READ_CHUNK_BYTES = 64 * 1024
-KILL_GRACE_S = 5.0
 TSV_COLUMNS = 12
 TSV_WORD_LEVEL = 5
 
@@ -67,11 +72,37 @@ def _feed(stdin: IO[bytes] | None, data: bytes) -> None:
         stdin.close()
 
 
-def run_bounded(args: Sequence[str], stdin_data: bytes, timeout_s: float, max_output_bytes: int) -> RunResult:
+def _reap(process: subprocess.Popen[bytes], grace_s: float) -> int | None:
+    """Chờ tiến trình con thoát tối đa `grace_s`; quá hạn thì kill rồi chờ thêm `grace_s`. Vẫn chưa thoát ⇒ None.
+
+    `wait()` không có hạn có thể treo worker mãi (tiến trình con đã đóng stdout nhưng không thoát); worker có hạn
+    CPU chứ không có hạn wall-clock, nên mọi lần chờ ở đây đều có hạn.
+    """
+    try:
+        return process.wait(timeout=grace_s)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(OSError):
+            process.kill()
+    try:
+        return process.wait(timeout=grace_s)
+    except subprocess.TimeoutExpired:
+        return None
+
+
+def run_bounded(
+    args: Sequence[str],
+    stdin_data: bytes,
+    timeout_s: float,
+    max_output_bytes: int,
+    *,
+    kill_grace_s: float = DEFAULT_OCR_KILL_GRACE_S,
+) -> RunResult:
     """Chạy `args` (không qua shell), ghi `stdin_data` vào stdin, đọc stdout tối đa `max_output_bytes` byte.
 
     Quá hạn ⇒ "timeout"; stdout vượt giới hạn ⇒ "overflow"; mã thoát khác 0 hoặc không chạy được ⇒ "failed".
-    Trường hợp nào tiến trình con cũng bị kill trước khi hàm trả về.
+    Trường hợp nào tiến trình con cũng bị kill trước khi hàm trả về; sau khi kill, mỗi lần chờ (luồng đọc/ghi, tiến
+    trình thoát) tối đa `kill_grace_s` (`PdfReaderConfig.ocr_kill_grace_s`). Tiến trình không thoát trong hạn đó
+    cũng bị kill và kết quả là "timeout".
     """
     try:
         process = subprocess.Popen(
@@ -120,14 +151,14 @@ def run_bounded(args: Sequence[str], stdin_data: bytes, timeout_s: float, max_ou
         process.kill()
     # Sau khi kill, pipe đóng và hai luồng kết thúc ngay; hạn chờ chỉ để không treo nếu một tiến trình cháu (nếu
     # có) còn giữ pipe. Luồng là daemon nên không giữ worker lại.
-    reader.join(KILL_GRACE_S)
-    feeder.join(KILL_GRACE_S)
-    returncode = process.wait()
+    reader.join(kill_grace_s)
+    feeder.join(kill_grace_s)
+    returncode = _reap(process, kill_grace_s)
     if process.stdout is not None:
         process.stdout.close()
     if overflow.is_set():
         return RunResult(status="overflow")
-    if timed_out or reader.is_alive():
+    if timed_out or reader.is_alive() or returncode is None:
         return RunResult(status="timeout")
     if returncode != 0:
         return RunResult(status="failed")
@@ -309,10 +340,20 @@ class TesseractEngine:
         return [] if self.tessdata_dir is None else ["--tessdata-dir", self.tessdata_dir]
 
     @classmethod
-    def probe(cls, settings: OcrSettings, timeout_s: float, run: Runner = run_bounded) -> TesseractEngine | None:
-        """Kiểm có binary (`--version`) và có ngôn ngữ `vie` (`--list-langs`); thiếu một trong hai ⇒ None."""
+    def probe(
+        cls,
+        settings: OcrSettings,
+        timeout_s: float,
+        run: Runner = run_bounded,
+        *,
+        max_output_bytes: int = DEFAULT_OCR_PROBE_MAX_BYTES,
+    ) -> TesseractEngine | None:
+        """Kiểm có binary (`--version`) và có ngôn ngữ `vie` (`--list-langs`); thiếu một trong hai ⇒ None.
+
+        Đầu ra của mỗi lệnh kiểm đọc tối đa `max_output_bytes` (`PdfReaderConfig.ocr_probe_max_bytes`).
+        """
         engine = cls(command=settings.tesseract_cmd, tessdata_dir=settings.tessdata_dir, run=run)
-        limit = 64 * 1024
+        limit = max_output_bytes
         if run([engine.command, "--version"], b"", timeout_s, limit).status != "ok":
             return None
         listing = run([engine.command, "--list-langs", *engine._tessdata_args()], b"", timeout_s, limit)

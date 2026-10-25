@@ -149,6 +149,7 @@ class PageExtraction(StrictModel):
 DocumentStatus = Literal["processing", "review", "confirmed", "failed"]
 OutputLanguage = Literal["vi", "en"]
 DOCUMENT_ID_PATTERN = r"^doc_[0-9a-f]{16}$"
+CHAPTER_CODE_PATTERN = r"^ch[0-9]{1,2}(\.[0-9]{1,2})?$"  # cùng mẫu với `KnowledgeChunk.chapter_code` (§5.8)
 
 
 class PageSummary(StrictModel):
@@ -224,3 +225,67 @@ class PageEditAudit(StrictModel):
         if self.to_version != self.from_version + 1:
             raise ValueError("to_version phải bằng from_version + 1")
         return self
+
+
+# --------------------------------------------------------------------------- #
+# Sửa dòng và xác nhận (SPECIFICATION §6.5)
+# --------------------------------------------------------------------------- #
+
+MAX_APPENDED_LINES = 500
+MAX_EDITOR_ID_CHARS = 128
+
+
+def _nfc_line(value: str) -> str:
+    """Chuẩn hoá NFC; dài quá `MAX_LINE_CHARS` sau chuẩn hoá ⇒ `ValueError`."""
+    normalized = unicodedata.normalize("NFC", value)
+    if len(normalized) > MAX_LINE_CHARS:
+        raise ValueError(f"dòng dài quá {MAX_LINE_CHARS} ký tự sau chuẩn hoá NFC")
+    return normalized
+
+
+class LineEdit(StrictModel):
+    """Một dòng sửa trong `PATCH …/lines`; `text` rỗng nghĩa là dòng không vào văn bản xác nhận (§6.5)."""
+
+    line_index: int = Field(ge=0)
+    text: str = Field(max_length=MAX_LINE_CHARS)
+
+    @field_validator("text")
+    @classmethod
+    def _nfc(cls, value: str) -> str:
+        return _nfc_line(value)
+
+
+class PageLinesPatch(StrictModel):
+    """Body của `PATCH /v1/documents/{document_id}/pages/{page_number}/lines` (§6.5)."""
+
+    editor_id: str = Field(min_length=1, max_length=MAX_EDITOR_ID_CHARS)
+    expected_version: int = Field(ge=1)
+    edits: list[LineEdit] = Field(default_factory=list)
+    appended_lines: list[str] = Field(default_factory=list, max_length=MAX_APPENDED_LINES)
+
+    @field_validator("appended_lines")
+    @classmethod
+    def _nfc_appended(cls, value: list[str]) -> list[str]:
+        return [_nfc_line(line) for line in value]
+
+    @model_validator(mode="after")
+    def _not_empty_and_unique(self) -> PageLinesPatch:
+        if not self.edits and not self.appended_lines:
+            raise ValueError("edits và appended_lines không được cùng rỗng")
+        indexes = [edit.line_index for edit in self.edits]
+        if len(indexes) != len(set(indexes)):
+            raise ValueError("line_index trong edits không được trùng")
+        return self
+
+
+class PageConfirmRequest(StrictModel):
+    """Body của `POST /v1/documents/{document_id}/pages/{page_number}/confirm` (§6.5)."""
+
+    editor_id: str = Field(min_length=1, max_length=MAX_EDITOR_ID_CHARS)
+    expected_version: int = Field(ge=1)
+
+
+class DocumentConfirmRequest(StrictModel):
+    """Body của `POST /v1/documents/{document_id}/confirm` (§6.5)."""
+
+    editor_id: str = Field(min_length=1, max_length=MAX_EDITOR_ID_CHARS)

@@ -36,3 +36,40 @@ Wheel đóng kèm bản build PDFium 156.0.8076.0 của dự án pdfium-binaries
   zlib              Zlib License
 
 Không thành phần nào ở trên theo GPL/AGPL. Wheel mặc định không có V8/XFA (`PDFIUM_INFO.flags` rỗng).
+
+
+rapidocr 3.10.0
+---------------
+Dùng cho: lượt đọc thứ hai của tầng 2 (chỉ đối chiếu token số và mã), chạy trong worker có giới hạn.
+Nguồn: https://github.com/RapidAI/RapidOCR
+Giấy phép (trường `License-Expression` trong metadata của gói): Apache-2.0.
+File giấy phép trong gói: LICENSE, MODEL_LICENSES.md (thư mục `rapidocr-3.10.0.dist-info/licenses/`).
+
+
+Model PP-OCRv6 small (đóng sẵn trong wheel rapidocr 3.10.0)
+-----------------------------------------------------------
+Dùng cho: phát hiện và nhận dạng dòng chữ của lượt đọc thứ hai (`PP-OCRv6_det_small.onnx`,
+`PP-OCRv6_rec_small.onnx`; `ch_ppocr_mobile_v2.0_cls_mobile.onnx` đi kèm wheel nhưng không được dùng).
+Nguồn: dự án PaddleOCR (https://github.com/PaddlePaddle/PaddleOCR), bản ONNX do RapidOCR phân phối.
+Giấy phép: Apache-2.0. Bản quyền trọng số model thuộc Baidu và/hoặc các chủ sở hữu PaddleOCR liên quan; ghi
+công và nguồn gốc theo `MODEL_LICENSES.md` của wheel rapidocr.
+
+
+onnxruntime 1.31.0
+------------------
+Dùng cho: chạy model ONNX của RapidOCR trên CPU.
+Nguồn: https://github.com/microsoft/onnxruntime
+Giấy phép (trường `License` trong metadata của gói): MIT License ("Copyright (c) Microsoft Corporation").
+File trong gói: onnxruntime/LICENSE, onnxruntime/ThirdPartyNotices.txt.
+
+
+opencv-python-headless 5.0.0.93
+-------------------------------
+Dùng cho: phụ thuộc của rapidocr (xử lý ảnh trước khi nhận dạng).
+Nguồn: https://github.com/opencv/opencv-python
+Giấy phép (trường `License` trong metadata của gói): Apache 2.0.
+File giấy phép trong gói: LICENSE.txt, LICENSE-3RD-PARTY.txt.
+
+Wheel `win_amd64` đóng kèm plugin video FFmpeg `cv2/opencv_videoio_ffmpeg500_64.dll` theo LGPL-2.1 (đã kiểm ngày
+2026-10-23, ADR-008 phần "Hệ quả"). OCR không dùng plugin này. Việc bỏ plugin khi đóng gói và kiểm wheel Linux,
+macOS là nợ PKG-001 (docs/adr/004-engineering-discipline.md).

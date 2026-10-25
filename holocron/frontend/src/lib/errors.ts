@@ -3,7 +3,9 @@
  *
  * Thân lỗi đọc như `unknown` và kiểm từng dạng `detail` của spec §6.0 bằng type guard: chuỗi, danh sách lỗi validate
  * (422), `{message, issues}` (409 khi approve còn BLOCKING), `CapabilityError` (409) và `LLM_UPSTREAM_ERROR` (502).
- * Thông điệp hiển thị là câu cố định theo loại lỗi: không lộ mã HTTP, tên field hay câu chữ nội bộ của backend.
+ * `CapabilityError` và `LLM_UPSTREAM_ERROR` nhận diện theo `code` trước; `capability`/`reason` lạ vẫn là lỗi "chưa
+ * cấu hình", chỉ đổi sang thông điệp chung. Thông điệp hiển thị là câu cố định theo loại lỗi và luồng gọi
+ * (`ClassifyOptions.context`): không lộ mã HTTP, tên field hay câu chữ nội bộ của backend.
  * Ngoại lệ duy nhất: danh sách `issues` của 409 BLOCKING là thông điệp Gate viết cho người dùng.
  */
 
@@ -41,13 +43,18 @@ export interface UiError {
   action: ErrorAction;
   /** Chỉ có với `kind = "blocking"`: thông điệp của các issue BLOCKING do Gate trả. */
   issues: string[];
-  /** Chỉ có với `kind = "capability"`. */
-  capability: { name: CapabilityName; reason: CapabilityReason } | null;
+  /** Chỉ có với `kind = "capability"`; `name`/`reason` là `null` khi backend trả mã frontend chưa biết. */
+  capability: { name: CapabilityName | null; reason: CapabilityReason | null } | null;
 }
+
+/** Luồng gọi API, để chọn câu riêng cho 400/413/415/422 thay vì câu chung. */
+export type ErrorContext = "exam_upload" | "document_upload" | "table_edit" | "item_review" | "twin_generation";
 
 export interface ClassifyOptions {
   /** Request có gửi `expected_version`: 409 dạng chuỗi được hiểu là bản đã đổi ở nơi khác. */
   versioned?: boolean;
+  /** Luồng gọi; không truyền thì dùng câu chung theo loại lỗi. */
+  context?: ErrorContext;
 }
 
 /** Gợi ý ngắn theo mã lý do; không nêu tên khả năng nội bộ hay giá trị cấu hình. */
@@ -59,6 +66,10 @@ const CAPABILITY_REASON_HINT_VI: Record<CapabilityReason, string> = {
   secondary_ocr_disabled: "lượt đọc thứ hai đang tắt trong cấu hình backend.",
   not_implemented: "bản đang chạy chưa có tính năng này.",
 };
+
+/** Câu chung khi `CapabilityError` mang mã lý do frontend chưa biết. */
+const CAPABILITY_GENERIC_VI =
+  "Tính năng này chưa sẵn sàng: backend chưa được cấu hình hoặc máy còn thiếu thành phần cần thiết. Xem màn Bắt đầu để biết khả năng nào đang tắt.";
 
 const MESSAGES: Record<Exclude<ErrorKind, "network" | "capability" | "blocking">, string> = {
   server: "Không kết nối được backend, hoặc backend vừa gặp lỗi. Kiểm tra backend đang chạy rồi thử lại.",
@@ -74,6 +85,42 @@ const MESSAGES: Record<Exclude<ErrorKind, "network" | "capability" | "blocking">
   busy: "Kho dữ liệu đang bận. Thử lại sau giây lát.",
   unknown: "Đã có lỗi không mong muốn. Thử lại sau.",
 };
+
+type ContextualKind = "bad_request" | "too_large" | "unsupported_media" | "validation";
+
+/**
+ * Câu riêng theo luồng (§6.0, §6.1, §6.5). Không chép `detail` của backend; một câu nêu mọi nguyên nhân có thể của mã
+ * đó trong luồng, kèm việc người dùng làm tiếp.
+ */
+const CONTEXT_MESSAGES: Record<ErrorContext, Partial<Record<ContextualKind, string>>> = {
+  exam_upload: {
+    bad_request: "File đề rỗng. Chọn lại file có nội dung.",
+    too_large: "File đề vượt 10 MB. Chọn ảnh nhỏ hơn hoặc PDF ít trang hơn.",
+    unsupported_media: "Chỉ nhận ảnh PNG, JPEG, WebP hoặc PDF, và nội dung file phải đúng định dạng đó.",
+    validation: "Không xử lý được đề với lựa chọn hiện tại. Kiểm tra dạng bài và quantum (số nguyên 1–20) rồi thử lại.",
+  },
+  document_upload: {
+    bad_request: "File tài liệu rỗng. Chọn lại file có nội dung.",
+    too_large: "Tài liệu vượt 50 MB. Tách thành nhiều file nhỏ hơn rồi nhập lại.",
+    unsupported_media: "Chỉ nhận file PDF, và nội dung file phải đúng là PDF.",
+    validation:
+      "Không mở được tài liệu: PDF có mật khẩu, dài quá 300 trang, bị hỏng, hoặc tên file dài quá 255 ký tự. Gỡ mật khẩu, tách nhỏ hoặc đổi tên file rồi nhập lại.",
+  },
+  table_edit: {
+    validation: "Giá trị vừa nhập không hợp lệ. Kiểm tra lại ô vừa sửa.",
+  },
+  item_review: {
+    bad_request: "Đề này đã được duyệt hoặc đã bị đánh dấu không nhân bản được, nên không làm được thao tác này.",
+  },
+  twin_generation: {
+    validation: "Yêu cầu sinh câu không hợp lệ. Số câu mỗi lần phải từ 1 đến 10.",
+  },
+};
+
+function contextual(kind: ContextualKind, options: ClassifyOptions): UiError {
+  const message = options.context === undefined ? undefined : CONTEXT_MESSAGES[options.context][kind];
+  return build(kind, message ?? MESSAGES[kind]);
+}
 
 const ACTIONS: Record<ErrorKind, ErrorAction> = {
   network: "retry",
@@ -120,6 +167,11 @@ export function isCapabilityError(detail: unknown): detail is CapabilityError {
   );
 }
 
+/** `detail` mang `code` của `CapabilityError`, bất kể `capability`/`reason` có thuộc enum frontend biết hay không. */
+function hasCapabilityCode(detail: unknown): detail is Record<string, unknown> {
+  return isRecord(detail) && detail.code === "CAPABILITY_UNAVAILABLE";
+}
+
 function isLlmUpstreamError(detail: unknown): boolean {
   return isRecord(detail) && detail.code === "LLM_UPSTREAM_ERROR";
 }
@@ -138,10 +190,12 @@ export function extractDetail(body: unknown): unknown {
 export function classifyHttpError(status: number, body: unknown, options: ClassifyOptions = {}): UiError {
   const detail = extractDetail(body);
 
-  if (isCapabilityError(detail)) {
-    return build("capability", `Tính năng này chưa sẵn sàng: ${CAPABILITY_REASON_HINT_VI[detail.reason]}`, {
-      capability: { name: detail.capability, reason: detail.reason },
-    });
+  if (hasCapabilityCode(detail)) {
+    const name = isCapabilityName(detail.capability) ? detail.capability : null;
+    const reason = isCapabilityReason(detail.reason) ? detail.reason : null;
+    const message =
+      reason === null ? CAPABILITY_GENERIC_VI : `Tính năng này chưa sẵn sàng: ${CAPABILITY_REASON_HINT_VI[reason]}`;
+    return build("capability", message, { capability: { name, reason } });
   }
   if (isLlmUpstreamError(detail)) {
     return build("llm_upstream", MESSAGES.llm_upstream);
@@ -149,7 +203,7 @@ export function classifyHttpError(status: number, body: unknown, options: Classi
 
   switch (status) {
     case 400:
-      return build("bad_request", MESSAGES.bad_request);
+      return contextual("bad_request", options);
     case 403:
       return build("forbidden", MESSAGES.forbidden);
     case 404:
@@ -163,11 +217,11 @@ export function classifyHttpError(status: number, body: unknown, options: Classi
       return build(kind, MESSAGES[kind]);
     }
     case 413:
-      return build("too_large", MESSAGES.too_large);
+      return contextual("too_large", options);
     case 415:
-      return build("unsupported_media", MESSAGES.unsupported_media);
+      return contextual("unsupported_media", options);
     case 422:
-      return build("validation", MESSAGES.validation);
+      return contextual("validation", options);
     case 503:
       // 503 chỉ dùng khi kho SQLite bận (§6.0); thân không phải JSON nghĩa là proxy không tới được backend.
       return detail === undefined ? build("server", MESSAGES.server) : build("busy", MESSAGES.busy);
@@ -191,6 +245,14 @@ export function invalidResponseError(): UiError {
 /** Lỗi không rõ nguồn (không phải `ApiError`). */
 export function unknownError(): UiError {
   return build("unknown", MESSAGES.unknown);
+}
+
+/** Lỗi khi một màn hình không hiển thị được (dùng ở `app/error.tsx`); không nêu chi tiết kỹ thuật. */
+export function renderError(): UiError {
+  return build(
+    "unknown",
+    "Màn hình này gặp lỗi khi hiển thị. Bấm “Thử lại”; nếu vẫn lỗi, chuyển sang màn khác hoặc khởi động lại ứng dụng.",
+  );
 }
 
 /** Một dòng thông điệp đầy đủ, ghép cả danh sách issue BLOCKING nếu có. */

@@ -7,10 +7,12 @@ import {
   classifyHttpError,
   classifyNetworkError,
   describeUiError,
+  type ErrorContext,
   type ErrorKind,
   extractDetail,
   invalidResponseError,
   isCapabilityError,
+  renderError,
 } from "./errors";
 
 /** Thông điệp hiển thị không được lộ mã HTTP hay tên field/nhận dạng nội bộ của backend. */
@@ -145,5 +147,84 @@ describe("invalidResponseError và actionLabel", () => {
     expect(actionLabel("reload")).toBe("Tải lại bản mới nhất");
     expect(actionLabel("retry")).toBe("Thử lại");
     expect(actionLabel("none")).toBeNull();
+  });
+});
+
+describe("CapabilityError nhận diện theo code trước", () => {
+  it("capability và reason lạ vẫn là chưa cấu hình, với thông điệp chung", () => {
+    const body = {
+      detail: { code: "CAPABILITY_UNAVAILABLE", capability: "cloud_sync", reason: "quota_exhausted", message: "x" },
+    };
+    const error = classifyHttpError(409, body);
+    expect(error.kind).toBe("capability");
+    expect(error.action).toBe("none");
+    expect(error.capability).toEqual({ name: null, reason: null });
+    expect(error.message).toContain("chưa sẵn sàng");
+    expect(error.message).not.toMatch(/cloud_sync|quota_exhausted/);
+    expectUserFacing(error.message);
+  });
+
+  it("tên đã biết nhưng reason lạ: giữ tên, thông điệp chung", () => {
+    const body = { detail: { ...CAPABILITY_ERROR_BODY.detail, reason: "quota_exhausted" } };
+    const error = classifyHttpError(409, body);
+    expect(error.kind).toBe("capability");
+    expect(error.capability).toEqual({ name: "concept_pair_llm_proposal", reason: null });
+    expect(error.message).not.toContain("quota_exhausted");
+  });
+
+  it("thiếu message hay capability không phải chuỗi vẫn không ném lỗi và vẫn là capability", () => {
+    const error = classifyHttpError(409, { detail: { code: "CAPABILITY_UNAVAILABLE", capability: 3 } });
+    expect(error.kind).toBe("capability");
+    expect(error.capability).toEqual({ name: null, reason: null });
+  });
+});
+
+describe("câu riêng theo luồng cho 400/413/415/422", () => {
+  const contexts: ErrorContext[] = ["exam_upload", "document_upload", "table_edit", "item_review", "twin_generation"];
+
+  it("tải đề và tải tài liệu có câu riêng, khác câu chung", () => {
+    const generic400 = classifyHttpError(400, { detail: "file rỗng" }).message;
+    const generic422 = classifyHttpError(422, { detail: [] }).message;
+    const exam400 = classifyHttpError(400, { detail: "file rỗng" }, { context: "exam_upload" });
+    expect(exam400.kind).toBe("bad_request");
+    expect(exam400.message).toContain("rỗng");
+    expect(exam400.message).not.toBe(generic400);
+
+    const doc422 = classifyHttpError(422, { detail: "PDF có mật khẩu" }, { context: "document_upload" });
+    expect(doc422.kind).toBe("validation");
+    expect(doc422.message).toContain("mật khẩu");
+    expect(doc422.message).toContain("300 trang");
+    expect(doc422.message).toContain("Không mở được");
+    expect(doc422.message).not.toBe(generic422);
+
+    expect(classifyHttpError(413, null, { context: "exam_upload" }).message).toContain("10 MB");
+    expect(classifyHttpError(413, null, { context: "document_upload" }).message).toContain("50 MB");
+    expect(classifyHttpError(415, null, { context: "document_upload" }).message).toContain("PDF");
+  });
+
+  it("luồng không có câu riêng cho mã đó thì dùng câu chung; mọi câu không lộ thuật ngữ backend", () => {
+    expect(classifyHttpError(413, null, { context: "table_edit" }).message).toBe(classifyHttpError(413, null).message);
+    for (const context of contexts) {
+      for (const status of [400, 413, 415, 422]) {
+        const error = classifyHttpError(status, { detail: "chi tiết nội bộ" }, { context });
+        expectUserFacing(error.message);
+        expect(error.message).not.toContain("chi tiết nội bộ");
+        expect(error.action).toBe("none");
+      }
+    }
+  });
+
+  it("ngữ cảnh không đổi phân loại 409 có phiên bản", () => {
+    const error = classifyHttpError(409, { detail: "x" }, { versioned: true, context: "table_edit" });
+    expect(error.kind).toBe("version_conflict");
+  });
+});
+
+describe("renderError", () => {
+  it("lỗi hiển thị màn hình: câu tiếng Việt, có nút thử lại", () => {
+    const error = renderError();
+    expect(error.action).toBe("retry");
+    expect(actionLabel(error.action)).toBe("Thử lại");
+    expectUserFacing(error.message);
   });
 });

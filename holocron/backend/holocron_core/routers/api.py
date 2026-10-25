@@ -7,6 +7,9 @@ từ `holocron_core.routers.api` không phải đổi; hàm DI re-export là đ�
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from ..domain.ingestion import IngestionItem, IngestionItemCreate
@@ -86,7 +89,15 @@ __all__ = [
     "upload_document",
 ]
 
-app = FastAPI(title="Holocron Ingestion Gate", version="0.1.0a0")
+
+@asynccontextmanager
+async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
+    """Mở kho ngay khi khởi động: DB SQLite mới hơn code thì app từ chối khởi động (SPECIFICATION §5.13)."""
+    get_store()
+    yield
+
+
+app = FastAPI(title="Holocron Ingestion Gate", version="0.1.0a0", lifespan=_lifespan)
 app.include_router(runtime.router)
 app.include_router(ingestion.router)
 app.include_router(blueprints.router)

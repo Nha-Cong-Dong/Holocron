@@ -9,8 +9,8 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from ..domain.ingestion import GateStatus, IngestionItem, IngestionItemCreate, Severity, UploadedDocument
+from ..domain.repositories import AppStore, MissingReferenceError, RecordNotFoundError, VersionConflictError
 from ..domain.schemas import SolverInputs
-from ..infrastructure.memory_store import IngestionStore
 from ..services.extraction import UnsupportedTopicError, sniff_media_type
 from ..services.ingestion_gate import TABLE_SCHEMAS, TOPIC_ALGORITHMS, CellPatch, apply_patches, recompute_item
 from .deps import REGISTRY, ExtractorDep, StoreDep
@@ -46,16 +46,30 @@ def _recompute(item: IngestionItem) -> IngestionItem:
     return recompute_item(item, REGISTRY)
 
 
-def _get(store: IngestionStore, item_id: str) -> IngestionItem:
+def _get(store: AppStore, item_id: str) -> IngestionItem:
+    """Bản sao của item đang lưu: router sửa trên bản sao rồi ghi có điều kiện, không sửa thẳng vào kho."""
     item = store.get_item(item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="không tìm thấy ingestion item")
-    return item
+    return item.model_copy(deep=True)
 
 
-def _create(store: IngestionStore, body: IngestionItemCreate) -> IngestionItem:
+def _create(store: AppStore, body: IngestionItemCreate) -> IngestionItem:
     item = IngestionItem(item_id=f"ing_{uuid4().hex[:12]}", **body.model_dump(exclude_unset=True))
-    return store.save_item(_recompute(item))
+    try:
+        return store.save_item(_recompute(item))
+    except MissingReferenceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _update(store: AppStore, item: IngestionItem, expected_version: int) -> IngestionItem:
+    """Ghi nguyên tử: chỉ thành công khi version đang lưu vẫn là `expected_version` (BE-003, §6.2)."""
+    try:
+        return store.update_item(item, expected_version)
+    except VersionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RecordNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="không tìm thấy ingestion item") from exc
 
 
 @router.post("/v1/ingestion/upload", response_model=UploadResponse, status_code=201)
@@ -125,7 +139,6 @@ def patch_table(store: StoreDep, item_id: str, body: TablePatchRequest) -> Inges
     item = _get(store, item_id)
     if item.approved:
         raise HTTPException(status_code=409, detail="item đã approve, không sửa được")
-    # TODO (Week 4): Implement atomic optimistic locking using SQLAlchemy version_id_col when migrating to database.
     if body.expected_version != item.table_primary.version:
         raise HTTPException(status_code=409, detail=f"version lệch: hiện tại {item.table_primary.version}")
     try:
@@ -134,7 +147,7 @@ def patch_table(store: StoreDep, item_id: str, body: TablePatchRequest) -> Inges
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     item.table_primary = new_table
     item.audits.append(audit)
-    return store.save_item(_recompute(item))
+    return _update(store, _recompute(item), body.expected_version)
 
 
 @router.patch("/v1/ingestion/items/{item_id}/stem", response_model=IngestionItem)
@@ -142,8 +155,9 @@ def patch_stem(store: StoreDep, item_id: str, body: StemPatchRequest) -> Ingesti
     item = _get(store, item_id)
     if item.approved:
         raise HTTPException(status_code=409, detail="item đã approve, không sửa được")
+    version = item.table_primary.version
     item.stem_latex = body.stem_latex
-    return store.save_item(_recompute(item))
+    return _update(store, _recompute(item), version)
 
 
 @router.post("/v1/ingestion/items/{item_id}/non-cloneable", response_model=IngestionItem)
@@ -153,7 +167,7 @@ def flag_non_cloneable(store: StoreDep, item_id: str, body: NonCloneableRequest)
         raise HTTPException(status_code=400, detail="item đã approve, không thể đánh dấu non-cloneable")
     item.non_cloneable = True
     item.non_cloneable_reason = body.reason
-    return store.save_item(item)
+    return _update(store, item, item.table_primary.version)
 
 
 @router.post("/v1/ingestion/items/{item_id}/approve", response_model=IngestionItem)
@@ -167,4 +181,4 @@ def approve(store: StoreDep, item_id: str) -> IngestionItem:
         ]
         raise HTTPException(status_code=409, detail={"message": "còn lỗi BLOCKING", "issues": blocking})
     item.approved = True
-    return store.save_item(item)
+    return _update(store, item, item.table_primary.version)

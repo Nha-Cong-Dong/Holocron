@@ -95,6 +95,7 @@ class GateIssue(BaseModel):
         "NOT_IN_TEXT_LAYER",
         "SELF_SOLVE_MISMATCH",
         "LATEX_UNBALANCED",
+        "CROSS_CHECK_UNAVAILABLE",  # ADR-008 mục 11; spec §5.3, §7.2, §7.4
     ]
     severity: Severity
     message_vi: str

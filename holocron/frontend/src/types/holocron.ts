@@ -23,6 +23,31 @@ export interface Citation {
   chunk_id: string | null;
 }
 
+export type ChunkCategory = "THEORY" | "PRACTICE";
+
+export type LabelStatus = "proposed" | "confirmed";
+
+/** Một chunk của Knowledge Vault (§5.8). `verbatim_quote` là chuỗi con của `raw_text` sau NFC và gộp khoảng trắng (I3). */
+export interface KnowledgeChunk {
+  chunk_id: string;
+  doc_id: string;
+  subject_code: string;
+  chapter_code: string;
+  page_number: number;
+  page_end: number | null;
+  raw_text: string;
+  verbatim_quote: string;
+  category: ChunkCategory;
+  tags: string[];
+  topic_keys: string[];
+  linked_chunk_ids: string[];
+  token_count: number;
+  embedding_model: string | null;
+  label_status: LabelStatus;
+  mapping_confidence: number | null;
+  version: number;
+}
+
 /** `SolverInputs` (extra="allow"): response luôn có `quantum`, có thể kèm khoá phụ theo topic. */
 export interface SolverInputs {
   quantum: number | null;
@@ -135,7 +160,9 @@ export type GateIssueCode =
   | "MISSING_CELL"
   | "NOT_IN_TEXT_LAYER"
   | "SELF_SOLVE_MISMATCH"
-  | "LATEX_UNBALANCED";
+  | "LATEX_UNBALANCED"
+  /** Ô số của bảng đọc từ trang OCR không có lượt đọc thứ hai (ADR-008 mục 11; spec §7.4); ô đó không được AUTO_PASS. */
+  | "CROSS_CHECK_UNAVAILABLE";
 
 /** Issue gắn với ô khi `row`/`col` khác null; issue cấp bảng/đề (LaTeX, self-solve) có cả hai là null. */
 export interface GateIssue {
@@ -206,6 +233,75 @@ export interface UploadedDocument {
   media_type: MediaType;
   size_bytes: number;
   uploaded_at: string;
+}
+
+// ------------------------------------------------------------------ domain/vault.py
+
+export type ConceptPairStatus = "proposed" | "confirmed" | "rejected";
+
+/** Cặp khái niệm – trích dẫn định nghĩa (§5.8, ADR-007). `term_spans` là vị trí `[start, end)` của `term` trong `definition_quote`. */
+export interface ConceptPair {
+  pair_id: string;
+  chunk_id: string;
+  subject_code: string;
+  chapter_code: string;
+  term: string;
+  definition_quote: string;
+  term_spans: [number, number][];
+  status: ConceptPairStatus;
+  proposed_by: "llm" | "user";
+  mapping_confidence: number | null;
+  version: number;
+  created_at: string;
+  confirmed_at: string | null;
+}
+
+export type SearchIndex = "primary" | "no_diacritics";
+
+/** Một kết quả của `GET /v1/vault/search`; `score` (BM25) chỉ để xếp hạng. */
+export interface SearchHit {
+  chunk: KnowledgeChunk;
+  score: number;
+  index: SearchIndex;
+}
+
+// ----------------------------------------------------------------- routers/vault.py
+
+/** `GET /v1/vault/chunks`. */
+export interface ChunkListResponse {
+  total: number;
+  chunks: KnowledgeChunk[];
+}
+
+/** Body của `PATCH /v1/vault/chunks/{chunk_id}/labels`; field nhãn bỏ trống thì giữ nguyên. */
+export interface ChunkLabelsPatch {
+  editor_id: string;
+  expected_version: number;
+  chapter_code?: string | null;
+  category?: ChunkCategory | null;
+  topic_keys?: string[] | null;
+}
+
+/** Body của `POST /v1/vault/concept-pairs` (người dùng bôi đoạn trong chunk). */
+export interface ConceptPairCreate {
+  editor_id: string;
+  chunk_id: string;
+  term: string;
+  definition_quote: string;
+}
+
+/** Body của `POST /v1/vault/concept-pairs/{pair_id}/confirm`; có thể sửa `term`/`definition_quote` rồi xác nhận. */
+export interface ConceptPairConfirm {
+  editor_id: string;
+  expected_version: number;
+  term?: string | null;
+  definition_quote?: string | null;
+}
+
+/** Body của `POST /v1/vault/concept-pairs/{pair_id}/reject`. */
+export interface ConceptPairReject {
+  editor_id: string;
+  expected_version: number;
 }
 
 // ------------------------------------------------------------------- routers/api.py

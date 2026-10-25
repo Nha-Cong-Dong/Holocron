@@ -179,6 +179,7 @@ class DocumentImport(StrictModel):
     filename: str = Field(min_length=1, max_length=255)
     size_bytes: int = Field(ge=1)
     output_language: OutputLanguage = "vi"
+    chapter_code: str = Field(pattern=CHAPTER_CODE_PATTERN)
     status: DocumentStatus
     pages: list[PageSummary]
 

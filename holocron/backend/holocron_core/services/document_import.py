@@ -1,9 +1,13 @@
-"""Bộ nhập tài liệu PDF, phần nhận file, đọc nền, xem và xoá (SPECIFICATION §5.7, §6.5; ADR-008 mục 3, 4, 7).
+"""Bộ nhập tài liệu PDF: nhận file, đọc nền, xem, sửa dòng, xác nhận và xoá (SPECIFICATION §5.7, §6.5; ADR-008 mục
+3, 4, 7; ADR-006 mục 1).
 
 - `accept_document` kiểm file theo đúng thứ tự của §6.5, mở thử trong worker (qua `PdfReader`), lưu file gốc, tạo
   tài liệu cùng `page_count` trang `pending` trong MỘT giao dịch của kho, rồi xếp tài liệu vào hàng đợi đọc. Mọi bước
   với cùng một nội dung chạy dưới khoá theo `document_id` (`KeyedLocks`), nên hai request cùng file không tạo trùng.
 - `read_document` đọc các trang còn `pending` qua `PdfReader` và ghi từng trang vào kho ngay khi đọc xong.
+- `edit_page_lines`, `confirm_page`, `confirm_document`: người dùng sửa dòng và xác nhận văn bản (§6.5). Văn bản CHỈ
+  vào Knowledge Vault khi tài liệu thành `confirmed` (mọi trang có văn bản đã xác nhận), qua bộ cắt chunk tất định
+  (`services.vault.ingest_confirmed_text`, §12.1).
 - `BackgroundImportQueue`: hàng đợi FIFO, một luồng nền đọc một tài liệu mỗi lúc (§6.5). Đối tượng này, khoá theo
   `document_id` và cổng nhận việc (`AdmissionGate`) nằm trong `ImportRuntime`, do `lifespan` của app tạo và đóng,
   không phải biến toàn cục; test dùng `SynchronousImportQueue`.
@@ -11,8 +15,8 @@
 Các hàm ở đây chạy đồng bộ và có thể chặn lâu (worker mở thử tới vài chục giây, ghi file 50 MiB): router PHẢI gọi
 chúng ngoài event loop (handler `def`, FastAPI chạy trong threadpool).
 
-Không văn bản nào đi vào Vault hay Gate ở đây: trang chỉ được lưu để người dùng xem lại (ADR-008 mục 7). File PDF là
-đầu vào không tin cậy, chỉ được mở trong worker có giới hạn của `PdfReader` (CLAUDE.md §2.2).
+Trước khi người dùng xác nhận, không văn bản nào đi vào Vault hay Gate: trang chỉ được lưu để xem lại (ADR-008 mục
+7). File PDF là đầu vào không tin cậy, chỉ được mở trong worker có giới hạn của `PdfReader` (CLAUDE.md §2.2).
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ import logging
 import queue
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Collection, Generator, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -32,13 +37,21 @@ from typing import Literal, Protocol
 
 from ..domain.documents import (
     CrossCheck,
+    DocumentConfirmRequest,
     DocumentImport,
     DocumentSummary,
+    ExtractedLine,
     FailureReason,
     OutputLanguage,
+    PageConfirmRequest,
+    PageEditAudit,
     PageExtraction,
+    PageLineChange,
+    PageLinesPatch,
     PageSummary,
+    ReviewReason,
 )
+from ..domain.ingestion import UploadedDocument
 from ..domain.repositories import (
     DocumentExistsError,
     DocumentRepository,
@@ -46,12 +59,16 @@ from ..domain.repositories import (
     RecordInUseError,
     StorageBusyError,
     StorageError,
+    VaultRepository,
+    VersionConflictError,
 )
 from ..domain.schemas import DocumentMeta, SourceKind
+from ..domain.vault import MAX_PAGE_LINES, ConfirmedDocumentText, ConfirmedPage
 from ..infrastructure.document_readers.config import PdfReaderConfig
 from ..infrastructure.document_readers.pdf_reader import PDF_MAGIC, PdfInputError, PdfReader, PdfWorkerError
 from ..infrastructure.document_readers.tiers import failed_page
 from ..infrastructure.storage.original_files import StagedFile
+from .vault import ingest_confirmed_text
 
 MAX_FILENAME_LENGTH = 255
 DEFAULT_FILENAME = "upload.pdf"
@@ -62,11 +79,14 @@ PDF_MEDIA_TYPE = "application/pdf"
 ACCEPTED_DECLARED_TYPES = frozenset({"", "application/octet-stream", PDF_MEDIA_TYPE})
 # Thời gian chờ tối đa khi tắt app: request đang lưu tài liệu, rồi luồng đọc nền (đọc lúc gọi, test được đổi).
 QUEUE_CLOSE_TIMEOUT_S = 10.0
-# Ghi một trang gặp kho bận (`StorageBusyError`, sau `busy_timeout` của SQLite): thử lại tối đa chừng ấy lần,
-# lần thứ k chờ k × `WRITE_RETRY_DELAY_S`; vẫn bận thì dừng đọc tài liệu, trang chưa ghi giữ `pending`.
+# Mặc định của `RetryPolicy` (cấu hình của `ImportRuntime`): số lần thử và bước chờ khi ghi một trang gặp kho bận
+# hoặc khi mở bộ đọc gặp lỗi môi trường.
 WRITE_ATTEMPTS = 3
 WRITE_RETRY_DELAY_S = 0.2
+# Đặt tài liệu thành `confirmed` mà luồng đọc nền vừa ghi tài liệu (version lệch): đọc lại rồi thử tối đa chừng ấy lần.
+SETTLE_ATTEMPTS = 3
 IMPORT_UNAVAILABLE_DETAIL = "Bộ nhập tài liệu đang dừng (app đang tắt); hãy gửi lại sau khi khởi động lại"
+CHAPTER_MISSING_DETAIL = "Tài liệu được nhập trước khi có chapter_code; hãy xoá rồi nhập lại tài liệu"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -129,6 +149,22 @@ class DocumentBusyError(Exception):
     """Không xoá được tài liệu: đang đọc, hoặc còn `IngestionItem` tham chiếu (§6.5)."""
 
 
+class PageStateError(Exception):
+    """Trạng thái trang hoặc tài liệu không cho phép thao tác (§6.5, 409): trang `pending`, `failed`, đã xác nhận,
+    không có văn bản; tài liệu còn trang `pending` hoặc đã xác nhận."""
+
+
+class InvalidPageEditError(ValueError):
+    """Body của `PATCH …/lines` sai so với trang đang lưu (§6.5, 422): `line_index` không tồn tại, quá nhiều dòng."""
+
+
+class DocumentChapterMissingError(Exception):
+    """Tài liệu nhập trước khi có `chapter_code` (cột thêm ở migration 0002): không dựng được `DocumentImport`."""
+
+    def __init__(self) -> None:
+        super().__init__(CHAPTER_MISSING_DETAIL)
+
+
 class OriginalFiles(Protocol):
     """Kho file gốc (`infrastructure/storage/original_files.py`)."""
 
@@ -150,13 +186,30 @@ class OriginalFiles(Protocol):
 
 
 @dataclass(frozen=True)
+class RetryPolicy:
+    """Thử lại có giới hạn cho lỗi tạm thời của luồng đọc nền: lần thứ k thất bại chờ k × `delay_s` rồi thử lại.
+
+    Áp dụng khi ghi một trang gặp kho bận (`StorageBusyError`) và khi mở bộ đọc gặp lỗi môi trường
+    (`PdfWorkerError`, `OSError`); hết `attempts` lần thì dừng đọc, trang chưa ghi giữ `pending`.
+    """
+
+    attempts: int = WRITE_ATTEMPTS
+    delay_s: float = WRITE_RETRY_DELAY_S
+
+    def __post_init__(self) -> None:
+        if self.attempts < 1 or self.delay_s < 0:
+            raise ValueError("RetryPolicy cần attempts ≥ 1 và delay_s ≥ 0")
+
+
+@dataclass(frozen=True)
 class ReadJob:
-    """Một tài liệu chờ đọc: kho và bộ đọc đi cùng việc, nên hàng đợi không giữ phụ thuộc nào của riêng nó."""
+    """Một tài liệu chờ đọc: kho, bộ đọc và chính sách thử lại đi cùng việc, nên hàng đợi không giữ phụ thuộc nào."""
 
     document_id: str
     path: Path
     store: DocumentRepository
     reader: PdfReader
+    retry: RetryPolicy = field(default_factory=RetryPolicy)
 
 
 class ImportQueue(Protocol):
@@ -169,6 +222,11 @@ class ImportQueue(Protocol):
 
         Chờ luồng đọc tối đa `timeout_s`; `True` khi không còn luồng nào đang đọc.
         """
+        ...
+
+    def is_active(self, document_id: str) -> bool:
+        """Tài liệu đang nằm trong hàng đợi hoặc đang được đọc. `False` với tài liệu `processing` mà không luồng nào
+        còn giữ việc của nó (ví dụ lần đọc trước dừng vì lỗi tạm thời): tài liệu đó xoá được (§6.5 `DELETE`)."""
         ...
 
 
@@ -202,9 +260,11 @@ class KeyedLocks:
 
 
 class AdmissionGate:
-    """Cổng nhận việc của bộ nhập: `close` chặn lượt nhận mới và chờ các lượt đang lưu tài liệu xong.
+    """Cổng nhận việc của bộ nhập: `close` chặn lượt nhận mới và chờ các lượt đang chạy xong.
 
-    Nhờ vậy hàng đợi chỉ bị đóng khi không request nào nằm giữa "đã tạo bản ghi" và "đã xếp vào hàng đợi".
+    Một lượt nhận bắt đầu ngay sau bước kiểm byte (§6.5 bước 1–2), TRƯỚC khi ghi file tạm và mở thử, và kết thúc
+    khi đã xếp hàng đợi (hoặc đã dọn xong). Nhờ vậy `ImportRuntime.close` chỉ đóng hàng đợi và dọn kho file gốc khi
+    không request nào đang ghi file tạm, mở thử, tạo bản ghi hay xếp việc.
     """
 
     def __init__(self) -> None:
@@ -244,13 +304,15 @@ class ImportRuntime:
     reader_config: PdfReaderConfig = field(default_factory=PdfReaderConfig)
     locks: KeyedLocks = field(default_factory=KeyedLocks)
     gate: AdmissionGate = field(default_factory=AdmissionGate)
+    retry: RetryPolicy = field(default_factory=RetryPolicy)
 
     def close(self, timeout_s: float | None = None) -> bool:
         """Ngừng nhận tài liệu, dừng hàng đợi rồi dọn kho file gốc; `True` khi mọi luồng đã dừng hẳn.
 
-        Hết `timeout_s` (mặc định `QUEUE_CLOSE_TIMEOUT_S`) mà luồng đọc nền hoặc một request vẫn chạy thì KHÔNG xoá
-        thư mục file tạm dưới chân chúng: ghi cảnh báo, thư mục được dọn ở lần khởi động sau
-        (`original_files.remove_stale_temp_dirs`).
+        "Request" ở đây là mọi lượt nhận đã qua cổng (`AdmissionGate`), kể cả lượt đang ghi file tạm hoặc mở thử;
+        request đến sau khi đóng cổng nhận `ImportUnavailableError` (router trả lỗi có `detail`). Hết `timeout_s`
+        (mặc định `QUEUE_CLOSE_TIMEOUT_S`) mà luồng đọc nền hoặc một request vẫn chạy thì KHÔNG xoá thư mục file tạm
+        dưới chân chúng: ghi cảnh báo, thư mục được dọn ở lần khởi động sau (`original_files.remove_stale_temp_dirs`).
         """
         timeout = QUEUE_CLOSE_TIMEOUT_S if timeout_s is None else timeout_s
         admissions_done = self.gate.close(timeout)
@@ -271,13 +333,17 @@ class ImportRequest:
     declared_type: str | None
     subject_code: str
     source_kind: SourceKind
+    chapter_code: str
     output_language: OutputLanguage = "vi"
     title: str | None = None
 
 
 @dataclass(frozen=True)
 class ImportOutcome:
-    """`created = False`: tài liệu cùng nội dung đã được nhập cho cùng môn (§6.5 bước 3, trả 200 thay vì 202)."""
+    """`created = False`: tài liệu cùng nội dung đã được nhập cho cùng môn (§6.5 bước 3, trả 200 thay vì 202).
+
+    Cùng môn mà khác `chapter_code`: spec chưa quyết (§6.5 bước 3, §17 D8); tạm trả bản ghi cũ như trùng cùng môn.
+    """
 
     created: bool
     document: DocumentImport
@@ -300,23 +366,31 @@ def pending_page(document_id: str, page_number: int) -> PageExtraction:
     )
 
 
-def _view(document: ImportedDocument, pages: list[PageExtraction]) -> DocumentImport:
+def _chapter_code(document: ImportedDocument) -> str:
+    if document.chapter_code is None:
+        raise DocumentChapterMissingError()
+    return document.chapter_code
+
+
+def _view(document: ImportedDocument, pages: list[PageSummary]) -> DocumentImport:
     return DocumentImport(
         meta=document.meta,
         filename=document.filename,
         size_bytes=document.size_bytes,
         output_language=document.output_language,
+        chapter_code=_chapter_code(document),
         status=document.status,
-        pages=[PageSummary.from_page(page) for page in pages],
+        pages=pages,
     )
 
 
 def document_view(store: DocumentRepository, document: ImportedDocument) -> DocumentImport:
-    return _view(document, store.list_pages(document.meta.doc_id, PageExtraction))
+    """`DocumentImport` từ tóm tắt trang của kho (không dựng lại các dòng của mọi trang ở mỗi lần hỏi trạng thái)."""
+    return _view(document, store.list_page_summaries(document.meta.doc_id))
 
 
 def document_summary(store: DocumentRepository, document: ImportedDocument) -> DocumentSummary:
-    pages = store.list_pages(document.meta.doc_id, PageExtraction)
+    pages = store.list_page_summaries(document.meta.doc_id)
     return DocumentSummary(
         meta=document.meta,
         status=document.status,
@@ -403,18 +477,47 @@ def _discard_unused_file(store: DocumentRepository, files: OriginalFiles, docume
         _LOGGER.warning("chưa dọn được file gốc của tài liệu %s (%s)", document_id, type(exc).__name__)
 
 
-def _undo_create(store: DocumentRepository, files: OriginalFiles, document_id: str, sha256: str) -> None:
-    """Huỷ tài liệu vừa tạo nhưng không xếp được vào hàng đợi (chưa trang nào được đọc)."""
+def _undo_create(
+    store: DocumentRepository, files: OriginalFiles, document_id: str, sha256: str, upload: UploadedDocument | None
+) -> None:
+    """Huỷ tài liệu vừa tạo nhưng không xếp được vào hàng đợi (chưa trang nào được đọc).
+
+    Chỉ gỡ phần do lần nhập này thêm (`revert_imported_document`): dòng `documents` do upload đề §6.1 tạo trước đó
+    (`upload`) được giữ nguyên cùng item trỏ tới nó.
+    """
     try:
-        store.delete_document(document_id)
+        store.revert_imported_document(document_id, upload)
     except StorageError as exc:
         _LOGGER.warning(
-            "không huỷ được tài liệu %s (%s); tài liệu giữ processing và được xếp lại khi khởi động",
+            "không huỷ được tài liệu %s (%s); tài liệu giữ processing, xoá được khi không còn việc đọc nào",
             document_id,
             type(exc).__name__,
         )
         return
     _discard_unused_file(store, files, document_id, sha256)
+
+
+def _new_document(
+    request: ImportRequest, *, filename: str, document_id: str, sha256: str, page_count: int, now: datetime
+) -> ImportedDocument:
+    """Bản ghi tài liệu mới (`processing`); dựng và validate TRƯỚC khi lưu file gốc, để dữ liệu sai không để lại file."""
+    return ImportedDocument(
+        meta=DocumentMeta(
+            doc_id=document_id,
+            subject_code=request.subject_code,
+            title=request.title.strip() if request.title is not None else default_title(filename),
+            source_kind=request.source_kind,
+            sha256=sha256,
+            page_count=page_count,
+            has_text_layer=False,
+            uploaded_at=now,
+        ),
+        filename=filename,
+        size_bytes=len(request.content),
+        output_language=request.output_language,
+        chapter_code=request.chapter_code,
+        status="processing",
+    )
 
 
 def accept_document(
@@ -427,102 +530,92 @@ def accept_document(
 ) -> ImportOutcome:
     """Nhận một PDF theo đúng thứ tự của §6.5. Chặn tới vài chục giây: gọi ngoài event loop.
 
-    Cả lần nhận chạy dưới khoá của `document_id` (`runtime.locks`): request thứ hai cùng nội dung chờ request đầu
-    xong rồi thấy tài liệu đã có (200, hoặc 409 khi khác môn). Tài liệu cùng mọi trang `pending` được tạo trong MỘT
-    giao dịch (`create_imported_document`); nếu một tiến trình khác vẫn kịp tạo trước (`DocumentExistsError`) thì
-    trả tài liệu đó như bước 3.
+    Sau bước kiểm byte (§6.5 bước 1–2), lần nhận đi qua cổng `runtime.gate` cho tới khi xong, nên `runtime.close`
+    chờ cả lượt đang ghi file tạm hay mở thử. Phần còn lại chạy dưới khoá của `document_id` (`runtime.locks`):
+    request thứ hai cùng nội dung chờ request đầu xong rồi thấy tài liệu đã có (200, hoặc 409 khi khác môn). Tài liệu
+    cùng mọi trang `pending` được tạo trong MỘT giao dịch (`create_imported_document`); nếu một tiến trình khác vẫn
+    kịp tạo trước (`DocumentExistsError`) thì trả tài liệu đó như bước 3.
 
     Lỗi:
     - `DocumentImportError` (bước 1–4): không để lại file hay bản ghi nào.
     - `PdfWorkerError` (worker không khởi động được, lỗi môi trường chứ không phải lỗi file): ném nguyên, không để
-      lại file hay bản ghi nào.
+      lại file hay bản ghi nào; router trả 500 kèm `detail`.
+    - `DocumentExistsError`: tiến trình khác vừa tạo rồi xoá tài liệu cùng nội dung giữa hai bước; ném nguyên,
+      router trả 500 kèm `detail` (gửi lại là đủ).
     - Lỗi kho khi tạo tài liệu (ví dụ `StorageBusyError`): không có bản ghi nào; file gốc vừa lưu được xoá nếu
       không còn tài liệu nào dùng nó (xoá lỗi thì dọn ở lần khởi động sau). Lỗi được ném nguyên.
-    - `ImportUnavailableError`: bộ nhập đang tắt (cổng đã đóng; không ghi gì) hoặc hàng đợi từ chối việc (tài liệu
-      vừa tạo bị huỷ cùng file gốc, nên không kẹt `processing`).
+    - `ImportUnavailableError`: bộ nhập đang tắt (cổng đã đóng; không ghi gì) hoặc hàng đợi từ chối việc (phần do
+      lần nhập này thêm bị gỡ cùng file gốc, nên không kẹt `processing`).
     """
     filename = _check_upload(request, runtime.reader_config.max_bytes)
     sha256 = hashlib.sha256(request.content).hexdigest()
     document_id = f"doc_{sha256[:16]}"
-    with runtime.locks.hold(document_id):
-        existing = store.get_imported_document(document_id)
-        if existing is not None:
-            return _existing_outcome(store, existing, request.subject_code)
-        staged = runtime.files.stage(request.content)
-        try:
-            page_count = _probe(reader, staged)
-            runtime.gate.enter()
-        except BaseException:
-            runtime.files.discard(staged)
-            raise
-        try:
+    runtime.gate.enter()
+    try:
+        with runtime.locks.hold(document_id):
+            existing = store.get_imported_document(document_id)
+            if existing is not None:
+                return _existing_outcome(store, existing, request.subject_code)
+            upload = store.get_document(document_id)
+            staged = runtime.files.stage(request.content)
+            try:
+                page_count = _probe(reader, staged)
+                document = _new_document(
+                    request,
+                    filename=filename,
+                    document_id=document_id,
+                    sha256=staged.sha256,
+                    page_count=page_count,
+                    now=now,
+                )
+            except BaseException:
+                runtime.files.discard(staged)
+                raise
             return _store_and_queue(
-                request,
-                filename=filename,
-                document_id=document_id,
-                page_count=page_count,
-                staged=staged,
-                store=store,
-                runtime=runtime,
-                reader=reader,
-                now=now,
+                request, document=document, upload=upload, staged=staged, store=store, runtime=runtime, reader=reader
             )
-        finally:
-            runtime.gate.leave()
+    finally:
+        runtime.gate.leave()
 
 
 def _store_and_queue(
     request: ImportRequest,
     *,
-    filename: str,
-    document_id: str,
-    page_count: int,
+    document: ImportedDocument,
+    upload: UploadedDocument | None,
     staged: StagedFile,
     store: DocumentRepository,
     runtime: ImportRuntime,
     reader: PdfReader,
-    now: datetime,
 ) -> ImportOutcome:
     """§6.5 bước 5: lưu file gốc, tạo tài liệu và trang `pending` (một giao dịch), xếp hàng đợi."""
+    document_id = document.meta.doc_id
     try:
         path = runtime.files.commit(staged)
     except BaseException:
         runtime.files.discard(staged)
         raise
-    document = ImportedDocument(
-        meta=DocumentMeta(
-            doc_id=document_id,
-            subject_code=request.subject_code,
-            title=request.title.strip() if request.title is not None else default_title(filename),
-            source_kind=request.source_kind,
-            sha256=staged.sha256,
-            page_count=page_count,
-            has_text_layer=False,
-            uploaded_at=now,
-        ),
-        filename=filename,
-        size_bytes=len(request.content),
-        output_language=request.output_language,
-        status="processing",
-    )
-    pages = [pending_page(document_id, number) for number in range(1, page_count + 1)]
+    pages = [pending_page(document_id, number) for number in range(1, document.meta.page_count + 1)]
     try:
         stored = store.create_imported_document(document, pages)
     except DocumentExistsError:
         existing = store.get_imported_document(document_id)
         if existing is None:
+            _discard_unused_file(store, runtime.files, document_id, staged.sha256)
             raise
         return _existing_outcome(store, existing, request.subject_code)
     except BaseException:
         _discard_unused_file(store, runtime.files, document_id, staged.sha256)
         raise
     # Dựng response từ dữ liệu vừa ghi, không đọc lại kho: tài liệu đã tạo thì luôn được xếp hàng đợi ngay sau đây.
-    view = _view(stored, pages)
+    view = _view(stored, [PageSummary.from_page(page) for page in pages])
     try:
-        runtime.queue.submit(ReadJob(document_id=document_id, path=path, store=store, reader=reader))
+        runtime.queue.submit(
+            ReadJob(document_id=document_id, path=path, store=store, reader=reader, retry=runtime.retry)
+        )
     except Exception as exc:
         _LOGGER.warning("hàng đợi đọc từ chối tài liệu %s (%s); huỷ lần nhập", document_id, type(exc).__name__)
-        _undo_create(store, runtime.files, document_id, staged.sha256)
+        _undo_create(store, runtime.files, document_id, staged.sha256, upload)
         raise ImportUnavailableError() from exc
     return ImportOutcome(created=True, document=view)
 
@@ -553,25 +646,26 @@ def _write_page_retrying(
     store: DocumentRepository,
     document_id: str,
     page: PageExtraction,
+    retry: RetryPolicy,
     should_stop: Callable[[], bool],
     pause: Callable[[float], None],
 ) -> None:
-    """`_write_page`, thử lại tối đa `WRITE_ATTEMPTS` lần khi kho bận; vẫn bận (hoặc đang dừng) ⇒ ném lỗi."""
-    for attempt in range(1, WRITE_ATTEMPTS + 1):
+    """`_write_page`, thử lại tối đa `retry.attempts` lần khi kho bận; vẫn bận (hoặc đang dừng) ⇒ ném lỗi."""
+    for attempt in range(1, retry.attempts + 1):
         try:
             _write_page(store, document_id, page)
             return
         except StorageBusyError:
-            if attempt == WRITE_ATTEMPTS or should_stop():
+            if attempt == retry.attempts or should_stop():
                 raise
             _LOGGER.warning(
                 "kho bận khi ghi trang %d của tài liệu %s; thử lại (%d/%d)",
                 page.page_number,
                 document_id,
                 attempt,
-                WRITE_ATTEMPTS,
+                retry.attempts,
             )
-            pause(WRITE_RETRY_DELAY_S * attempt)
+            pause(retry.delay_s * attempt)
 
 
 def _fail_pending(store: DocumentRepository, document_id: str, reason: FailureReason) -> None:
@@ -581,13 +675,17 @@ def _fail_pending(store: DocumentRepository, document_id: str, reason: FailureRe
 
 
 def _finish(store: DocumentRepository, document_id: str, status: Literal["review", "failed"]) -> None:
-    """Đặt trạng thái cuối của lần đọc và `has_text_layer` (true khi ≥ 1 trang dùng tầng 1, §5.8)."""
+    """Đặt trạng thái cuối của lần đọc và `has_text_layer` (true khi ≥ 1 trang dùng tầng 1, §5.8).
+
+    Tài liệu đã `confirmed` (người dùng xác nhận xong trước khi luồng đọc kịp gọi hàm này) giữ `confirmed`.
+    """
     document = store.get_imported_document(document_id)
     if document is None:
         return
     pages = store.list_pages(document_id, PageExtraction)
     meta = document.meta.model_copy(update={"has_text_layer": any(p.tier_used == "text_layer" for p in pages)})
-    store.update_imported_document(document.model_copy(update={"status": status, "meta": meta}), document.version)
+    final = "confirmed" if document.status == "confirmed" else status
+    store.update_imported_document(document.model_copy(update={"status": final, "meta": meta}), document.version)
 
 
 def mark_document_failed(store: DocumentRepository, document_id: str) -> None:
@@ -602,12 +700,54 @@ def _close_pages(pages: Iterator[PageExtraction]) -> None:
         pages.close()
 
 
+def _open_pages(
+    job: ReadJob, pending: list[int], should_stop: Callable[[], bool], pause: Callable[[float], None]
+) -> tuple[Iterator[PageExtraction], PageExtraction | None] | None:
+    """Mở bộ đọc và lấy trang đầu; `None` khi không đọc tiếp được ở lần này.
+
+    - Lỗi của chính tài liệu (`PdfInputError`, `ValueError`) hoặc mất file gốc (`FileNotFoundError`) ⇒ tài liệu
+      `failed` (§5.7).
+    - Lỗi môi trường (`PdfWorkerError`, `OSError` khác) ⇒ thử lại theo `job.retry`; hết lượt (hoặc đang dừng) thì
+      tài liệu giữ `processing`, trang giữ `pending` (xếp lại ở lần khởi động sau, hoặc người dùng xoá).
+    """
+    for attempt in range(1, job.retry.attempts + 1):
+        pages: Iterator[PageExtraction] = iter(())
+        try:
+            pages = iter(job.reader.read_pages(job.path, job.document_id, pending))
+            return pages, next(pages, None)
+        except (PdfInputError, ValueError, FileNotFoundError):
+            _close_pages(pages)
+            _LOGGER.warning("không mở lại được tài liệu %s để đọc", job.document_id)
+            mark_document_failed(job.store, job.document_id)
+            return None
+        except (PdfWorkerError, OSError) as exc:
+            _close_pages(pages)
+            if attempt == job.retry.attempts or should_stop():
+                _LOGGER.warning(
+                    "bộ đọc lỗi môi trường ở tài liệu %s (%s); tài liệu giữ processing, trang giữ pending",
+                    job.document_id,
+                    type(exc).__name__,
+                )
+                return None
+            _LOGGER.warning(
+                "bộ đọc lỗi môi trường ở tài liệu %s (%s); thử lại (%d/%d)",
+                job.document_id,
+                type(exc).__name__,
+                attempt,
+                job.retry.attempts,
+            )
+            pause(job.retry.delay_s * attempt)
+    return None
+
+
 def read_document(
     job: ReadJob, should_stop: Callable[[], bool] = _never, pause: Callable[[float], None] = time.sleep
 ) -> None:
     """Đọc các trang còn `pending` của tài liệu, ghi từng trang khi đọc xong; xong thì tài liệu thành `review`.
 
-    - Bộ đọc không mở lại được tài liệu (`PdfInputError`, `PdfWorkerError`, file mất) ⇒ tài liệu `failed` (§5.7).
+    - Bộ đọc không mở lại được tài liệu vì lỗi của chính file (`PdfInputError`, `ValueError`, file gốc mất) ⇒ tài
+      liệu `failed` (§5.7). Lỗi môi trường khi mở (`PdfWorkerError`, `OSError` khác) được thử lại theo `job.retry`,
+      hết lượt thì tài liệu giữ `processing` (`_open_pages`).
     - `should_stop()` được kiểm trước khi mở bộ đọc, trước và sau mỗi lần ghi trang: đúng ⇒ dừng ngay, không ghi
       thêm; trang chưa ghi giữ `pending`, tài liệu giữ `processing` (được xếp lại khi khởi động, §6.5).
     - Lỗi tạm thời KHÔNG làm tài liệu `failed`: kho bận khi ghi một trang được thử lại có giới hạn
@@ -615,27 +755,23 @@ def read_document(
       `processing`); bộ đọc ném `PdfInputError`, `RuntimeError` (gồm `PdfWorkerError`), `ValueError` hoặc `OSError`
       sau khi đã trả trang đầu (trái `PdfReader`, ví dụ worker chết bất thường) ⇒ dừng đọc, trang chưa đọc giữ
       `pending` cho lần khởi động sau.
+    - Bộ đọc kết thúc bình thường mà còn trang `pending` (trả thiếu trang, trái `PdfReader`) ⇒ các trang đó thành
+      `failed` (`PAGE_ERROR`) trước khi tài liệu thành `review`.
     """
     store, document_id = job.store, job.document_id
     pending = [p.page_number for p in store.list_pages(document_id, PageExtraction) if p.status == "pending"]
     if pending:
         if should_stop():
             return
-        pages: Iterator[PageExtraction] = iter(())
-        try:
-            pages = iter(job.reader.read_pages(job.path, document_id, pending))
-            first = next(pages, None)
-        except (PdfInputError, PdfWorkerError, ValueError, OSError):
-            _close_pages(pages)
-            _LOGGER.warning("không mở lại được tài liệu %s để đọc", document_id)
-            mark_document_failed(store, document_id)
+        opened = _open_pages(job, pending, should_stop, pause)
+        if opened is None:
             return
+        pages, page = opened
         try:
-            page = first
             while page is not None:
                 if should_stop():
                     return
-                _write_page_retrying(store, document_id, page, should_stop, pause)
+                _write_page_retrying(store, document_id, page, job.retry, should_stop, pause)
                 if should_stop():
                     return
                 try:
@@ -649,6 +785,9 @@ def read_document(
                     return
         finally:
             _close_pages(pages)
+        if should_stop():
+            return
+        _fail_pending(store, document_id, "PAGE_ERROR")
     if should_stop():
         return
     _finish(store, document_id, "review")
@@ -695,6 +834,10 @@ class SynchronousImportQueue:
     def close(self, timeout_s: float = QUEUE_CLOSE_TIMEOUT_S) -> bool:
         return True
 
+    def is_active(self, document_id: str) -> bool:
+        """Việc đọc chạy xong ngay trong `submit`, nên không tài liệu nào còn nằm trong hàng đợi."""
+        return False
+
 
 class BackgroundImportQueue:
     """Hàng đợi FIFO trong tiến trình backend; một luồng nền đọc một tài liệu mỗi lúc (§6.5)."""
@@ -705,6 +848,7 @@ class BackgroundImportQueue:
         self._stop = threading.Event()
         self._idle = threading.Condition()
         self._unfinished = 0
+        self._active: Counter[str] = Counter()
         self._thread = threading.Thread(target=self._loop, name="holocron-document-import", daemon=True)
         self._thread.start()
 
@@ -713,6 +857,7 @@ class BackgroundImportQueue:
             raise RuntimeError("hàng đợi đọc tài liệu đã đóng")
         with self._idle:
             self._unfinished += 1
+            self._active[job.document_id] += 1
         self._jobs.put(job)
 
     def _loop(self) -> None:
@@ -726,7 +871,14 @@ class BackgroundImportQueue:
             finally:
                 with self._idle:
                     self._unfinished -= 1
+                    self._active[job.document_id] -= 1
+                    if self._active[job.document_id] <= 0:
+                        del self._active[job.document_id]
                     self._idle.notify_all()
+
+    def is_active(self, document_id: str) -> bool:
+        with self._idle:
+            return self._active[document_id] > 0
 
     def wait_until_idle(self, timeout_s: float) -> bool:
         """Chờ tới khi mọi việc đã nhận xong; `False` khi hết `timeout_s`."""
@@ -745,11 +897,18 @@ class BackgroundImportQueue:
         return not self._thread.is_alive()
 
 
-def requeue_pending(store: DocumentRepository, files: OriginalFiles, reader: PdfReader, jobs: ImportQueue) -> list[str]:
+def requeue_pending(
+    store: DocumentRepository,
+    files: OriginalFiles,
+    reader: PdfReader,
+    jobs: ImportQueue,
+    retry: RetryPolicy | None = None,
+) -> list[str]:
     """Khi khởi động: xếp lại tài liệu còn `processing` theo thứ tự nhận (cũ trước), từ file gốc đã lưu (§6.5).
 
     File gốc không còn ⇒ tài liệu `failed`. Trả id các tài liệu đã xếp lại.
     """
+    policy = RetryPolicy() if retry is None else retry
     queued: list[str] = []
     for document in reversed(store.list_imported_documents()):
         if document.status != "processing":
@@ -760,7 +919,7 @@ def requeue_pending(store: DocumentRepository, files: OriginalFiles, reader: Pdf
             mark_document_failed(store, document_id)
             continue
         path = files.path_for(document.meta.sha256)
-        jobs.submit(ReadJob(document_id=document_id, path=path, store=store, reader=reader))
+        jobs.submit(ReadJob(document_id=document_id, path=path, store=store, reader=reader, retry=policy))
         queued.append(document_id)
     return queued
 
@@ -772,6 +931,285 @@ def remove_orphan_files(store: DocumentRepository, files: OriginalFiles) -> list
 
 
 # --------------------------------------------------------------------------- #
+# Sửa dòng và xác nhận (§6.5 PATCH …/lines, POST …/confirm)
+# --------------------------------------------------------------------------- #
+
+
+def _has_text(page: PageExtraction) -> bool:
+    """Trang có ít nhất một dòng có chữ (không tính dòng rỗng hay chỉ có khoảng trắng)."""
+    return any(line.text.strip() for line in page.lines)
+
+
+def _page_key(document_id: str, page_number: int) -> str:
+    return f"{document_id}#{page_number}"
+
+
+def _check_editable(document: ImportedDocument, page: PageExtraction) -> None:
+    """409 (§6.5): trang còn `pending`, `failed` (không sửa được trong MVP), đã xác nhận, hoặc tài liệu đã xác nhận."""
+    if page.status == "pending":
+        raise PageStateError("trang đang được đọc, chưa sửa được")
+    if page.status == "failed":
+        raise PageStateError("trang đọc lỗi không sửa được; hãy xoá tài liệu rồi nhập lại file")
+    if page.confirmed:
+        raise PageStateError("trang đã xác nhận, không sửa được")
+    if document.status == "confirmed":
+        raise PageStateError("tài liệu đã xác nhận, không sửa được")
+
+
+def _check_version(page: PageExtraction, expected_version: int) -> None:
+    if page.version != expected_version:
+        key = _page_key(page.document_id, page.page_number)
+        raise VersionConflictError("trang", key, expected_version, page.version)
+
+
+def apply_line_edits(
+    page: PageExtraction, patch: PageLinesPatch, *, line_conf_min: float
+) -> tuple[PageExtraction, list[PageLineChange]]:
+    """Áp `patch` lên trang (hàm thuần, §6.5); trả trang mới (version + 1) và danh sách dòng đổi cho audit.
+
+    - Dòng sửa: văn bản mới (NFC), `edited_by_human = true`, bỏ `flags`, bỏ `TokenMismatch` của dòng đó; `engine` và
+      `conf` giữ nguyên (đổi chúng là đề xuất chưa duyệt).
+    - Dòng gõ thêm: cuối trang, `engine = "human"`, `bbox = null`, `conf = 1.0`, `edited_by_human = false`.
+    - `cross_check.status`: `mismatch` mà hết token lệch ⇒ `ok`; trạng thái khác giữ nguyên.
+    - `review_reasons`: bỏ `TOKEN_MISMATCH` khi hết token lệch; bỏ `LOW_CONF_LINES` khi không còn dòng nào có
+      `conf < line_conf_min` (dòng `edited_by_human` không tính); lý do khác giữ nguyên; không thêm lý do nào.
+    - `status`: `ok` khi `review_reasons` rỗng, ngược lại `needs_review`.
+
+    `line_index` không tồn tại, hoặc trang vượt `MAX_PAGE_LINES` dòng ⇒ `InvalidPageEditError`.
+    """
+    edits = {edit.line_index: edit.text for edit in patch.edits}
+    missing = sorted(index for index in edits if index >= len(page.lines))
+    if missing:
+        raise InvalidPageEditError(f"line_index không tồn tại trong trang: {missing}")
+    if len(page.lines) + len(patch.appended_lines) > MAX_PAGE_LINES:
+        raise InvalidPageEditError(f"trang không được quá {MAX_PAGE_LINES} dòng")
+    lines = [
+        line.model_copy(update={"text": edits[line.line_index], "edited_by_human": True, "flags": []})
+        if line.line_index in edits
+        else line
+        for line in page.lines
+    ]
+    lines += [
+        ExtractedLine(line_index=len(page.lines) + offset, text=text, bbox=None, conf=1.0, engine="human")
+        for offset, text in enumerate(patch.appended_lines)
+    ]
+    mismatches = [m for m in page.cross_check.mismatches if m.line_index not in edits]
+    cross_status = "ok" if page.cross_check.status == "mismatch" and not mismatches else page.cross_check.status
+    reasons: list[ReviewReason] = list(page.review_reasons)
+    if not mismatches and "TOKEN_MISMATCH" in reasons:
+        reasons.remove("TOKEN_MISMATCH")
+    if "LOW_CONF_LINES" in reasons and not any(
+        line.conf < line_conf_min and not line.edited_by_human for line in lines
+    ):
+        reasons.remove("LOW_CONF_LINES")
+    edited = PageExtraction.model_validate(
+        {
+            **page.model_dump(),
+            "version": page.version + 1,
+            "status": "needs_review" if reasons else "ok",
+            "lines": [line.model_dump() for line in lines],
+            "cross_check": {
+                "status": cross_status,
+                "secondary_engine": page.cross_check.secondary_engine,
+                "mismatches": [m.model_dump() for m in mismatches],
+            },
+            "review_reasons": reasons,
+        }
+    )
+    changes = [
+        PageLineChange(line_index=index, old=page.lines[index].text, new=text) for index, text in sorted(edits.items())
+    ]
+    changes += [
+        PageLineChange(line_index=len(page.lines) + offset, old=None, new=text)
+        for offset, text in enumerate(patch.appended_lines)
+    ]
+    return edited, changes
+
+
+def edit_page_lines(
+    store: DocumentRepository,
+    runtime: ImportRuntime,
+    document_id: str,
+    page_number: int,
+    patch: PageLinesPatch,
+    *,
+    now: datetime,
+) -> PageExtraction:
+    """`PATCH …/lines` (§6.5): sửa dòng, tính lại cờ và lý do xem lại, ghi `PageEditAudit` cùng giao dịch với trang.
+
+    Lỗi: không có tài liệu/trang ⇒ `DocumentNotFoundError`; trạng thái không cho sửa ⇒ `PageStateError`;
+    `expected_version` lệch (kể cả do ghi chen ngang) ⇒ `VersionConflictError`; body sai so với trang ⇒
+    `InvalidPageEditError`.
+    """
+    with runtime.locks.hold(document_id):
+        page = get_page_extraction(store, document_id, page_number)
+        document = store.get_imported_document(document_id)
+        if document is None:
+            raise DocumentNotFoundError(document_id)
+        _check_editable(document, page)
+        _check_version(page, patch.expected_version)
+        edited, changes = apply_line_edits(page, patch, line_conf_min=runtime.reader_config.line_conf_min)
+        audit = PageEditAudit(
+            document_id=document_id,
+            page_number=page_number,
+            from_version=page.version,
+            to_version=edited.version,
+            editor_id=patch.editor_id,
+            changes=changes,
+            at=now,
+        )
+        store.update_page(
+            document_id,
+            page_number,
+            edited,
+            status=edited.status,
+            confirmed=False,
+            expected_version=page.version,
+            audit=audit,
+        )
+        return edited
+
+
+def _store_confirmed(store: DocumentRepository, page: PageExtraction, now: datetime) -> PageExtraction:
+    confirmed = page.model_copy(update={"confirmed": True, "confirmed_at": now, "version": page.version + 1})
+    store.update_page(
+        page.document_id,
+        page.page_number,
+        confirmed,
+        status=confirmed.status,
+        confirmed=True,
+        expected_version=page.version,
+    )
+    return confirmed
+
+
+def _ready_to_confirm(pages: list[PageExtraction]) -> bool:
+    """§5.7: hết trang `pending`, có ít nhất một trang đã xác nhận, và mọi trang có văn bản (không `failed`) đã xác
+    nhận. Trang `failed` và trang không có chữ không xác nhận được nên không chặn."""
+    if any(page.status == "pending" for page in pages):
+        return False
+    text_pages = [page for page in pages if page.status != "failed" and _has_text(page)]
+    return any(page.confirmed for page in pages) and all(page.confirmed for page in text_pages)
+
+
+def confirmed_text(document: ImportedDocument, pages: list[PageExtraction]) -> ConfirmedDocumentText | None:
+    """Văn bản đã xác nhận của tài liệu cho bộ cắt chunk (§12.1); `None` khi không có trang nào để cắt.
+
+    Chỉ trang `confirmed`; dòng có `text` rỗng không vào văn bản xác nhận (§6.5). Nhãn ban đầu (duyệt 2026-10-26):
+    `chapter_code` của tài liệu, `category = THEORY`, `topic_keys = []` (mặc định của `ConfirmedDocumentText`).
+    """
+    confirmed_pages = [
+        ConfirmedPage(page_number=page.page_number, lines=[line.text for line in page.lines if line.text])
+        for page in pages
+        if page.confirmed
+    ]
+    if not confirmed_pages:
+        return None
+    return ConfirmedDocumentText(
+        doc_id=document.meta.doc_id,
+        subject_code=document.meta.subject_code,
+        chapter_code=_chapter_code(document),
+        pages=confirmed_pages,
+    )
+
+
+def _ingest(vault: VaultRepository, document: ImportedDocument, pages: list[PageExtraction]) -> None:
+    """Cắt chunk vào Vault (idempotent: chunk đã có giữ nguyên bản đang lưu). Tài liệu `past_exam` không được cắt
+    chunk: §6.5 chỉ quy định cắt chunk cho tài liệu có `source_kind` khác `past_exam`."""
+    if document.meta.source_kind == SourceKind.PAST_EXAM:
+        return
+    text = confirmed_text(document, pages)
+    if text is not None:
+        ingest_confirmed_text(vault, text)
+
+
+def settle_document(store: DocumentRepository, vault: VaultRepository, document_id: str) -> ImportedDocument:
+    """Khi đủ điều kiện (`_ready_to_confirm`): cắt chunk vào Vault TRƯỚC, rồi đặt tài liệu `confirmed`.
+
+    Idempotent: gọi lại trên tài liệu đã `confirmed` chỉ nhập lại cùng văn bản (không thêm chunk nào). Nhập Vault lỗi
+    thì tài liệu chưa thành `confirmed`, gọi xác nhận lại là đủ. Version lệch vì luồng đọc nền vừa ghi tài liệu ⇒
+    đọc lại và thử tối đa `SETTLE_ATTEMPTS` lần.
+    """
+    for _ in range(SETTLE_ATTEMPTS - 1):
+        try:
+            return _settle_once(store, vault, document_id)
+        except VersionConflictError:
+            continue
+    return _settle_once(store, vault, document_id)
+
+
+def _settle_once(store: DocumentRepository, vault: VaultRepository, document_id: str) -> ImportedDocument:
+    document = store.get_imported_document(document_id)
+    if document is None:
+        raise DocumentNotFoundError(document_id)
+    pages = store.list_pages(document_id, PageExtraction)
+    if document.status != "confirmed" and not _ready_to_confirm(pages):
+        return document
+    _ingest(vault, document, pages)
+    if document.status == "confirmed":
+        return document
+    return store.update_imported_document(document.model_copy(update={"status": "confirmed"}), document.version)
+
+
+def confirm_page(
+    store: DocumentRepository,
+    vault: VaultRepository,
+    runtime: ImportRuntime,
+    document_id: str,
+    page_number: int,
+    request: PageConfirmRequest,
+    *,
+    now: datetime,
+) -> PageExtraction:
+    """`POST …/pages/{n}/confirm` (§6.5): nhận trang `ok` và `needs_review` (người dùng đã xem lại).
+
+    Trang đã xác nhận ⇒ trả nguyên trang (200, không đổi gì). Lỗi: `DocumentNotFoundError`; `PageStateError` khi
+    trang `pending`, `failed` hoặc không có dòng nào có chữ; `VersionConflictError` khi version lệch. Sau khi xác
+    nhận, tài liệu đủ điều kiện thì thành `confirmed` và văn bản vào Vault (`settle_document`).
+    """
+    with runtime.locks.hold(document_id):
+        page = get_page_extraction(store, document_id, page_number)
+        if not page.confirmed:
+            if page.status == "pending":
+                raise PageStateError("trang đang được đọc, chưa xác nhận được")
+            if page.status == "failed":
+                raise PageStateError("trang đọc lỗi không xác nhận được; hãy xoá tài liệu rồi nhập lại file")
+            _check_version(page, request.expected_version)
+            if not _has_text(page):
+                raise PageStateError("trang không có dòng nào có văn bản để xác nhận")
+            page = _store_confirmed(store, page, now)
+        settle_document(store, vault, document_id)
+        return page
+
+
+def confirm_document(
+    store: DocumentRepository,
+    vault: VaultRepository,
+    runtime: ImportRuntime,
+    document_id: str,
+    request: DocumentConfirmRequest,
+    *,
+    now: datetime,
+) -> DocumentImport:
+    """`POST /v1/documents/{id}/confirm` (§6.5): xác nhận mọi trang `ok` chưa xác nhận có văn bản.
+
+    Trang `needs_review` phải xác nhận từng trang; trang `failed` và trang không có chữ không xác nhận được. Lỗi:
+    `DocumentNotFoundError`; `PageStateError` khi còn trang `pending`. Gọi lại là idempotent.
+    """
+    with runtime.locks.hold(document_id):
+        document = store.get_imported_document(document_id)
+        if document is None:
+            raise DocumentNotFoundError(document_id)
+        pages = store.list_pages(document_id, PageExtraction)
+        if any(page.status == "pending" for page in pages):
+            raise PageStateError("tài liệu còn trang đang được đọc, chưa xác nhận được")
+        for page in pages:
+            if page.status == "ok" and not page.confirmed and _has_text(page):
+                _store_confirmed(store, page, now)
+        return document_view(store, settle_document(store, vault, document_id))
+
+
+# --------------------------------------------------------------------------- #
 # Xoá (§6.5 DELETE /v1/documents/{id})
 # --------------------------------------------------------------------------- #
 
@@ -779,7 +1217,10 @@ def remove_orphan_files(store: DocumentRepository, files: OriginalFiles) -> list
 def delete_imported_document(store: DocumentRepository, runtime: ImportRuntime, document_id: str) -> None:
     """Xoá tài liệu cùng trang, chunk, chỉ mục, cặp khái niệm (kho) và file gốc, dưới khoá của `document_id`.
 
-    Không có ⇒ `DocumentNotFoundError`; đang `processing` hoặc còn item tham chiếu ⇒ `DocumentBusyError`. Kho đã xoá
+    Không có ⇒ `DocumentNotFoundError`; còn item tham chiếu ⇒ `DocumentBusyError`. Tài liệu `processing` chỉ bị từ
+    chối (`DocumentBusyError`) khi hàng đợi còn giữ việc đọc nó (`ImportQueue.is_active`); tài liệu kẹt `processing`
+    mà không còn việc đọc nào (lần đọc trước dừng vì lỗi tạm thời) xoá được, để người dùng nhập lại. Không có việc
+    đọc mới nào được xếp cho tài liệu này trong lúc xoá: việc chỉ được xếp khi nhận file, dưới cùng khoá. Kho đã xoá
     mà xoá file gốc lỗi (ví dụ Windows `PermissionError` khi file đang mở) ⇒ chỉ ghi cảnh báo: file mồ côi được dọn ở
     lần khởi động sau (`remove_orphan_files`).
     """
@@ -787,7 +1228,7 @@ def delete_imported_document(store: DocumentRepository, runtime: ImportRuntime, 
         document = store.get_imported_document(document_id)
         if document is None:
             raise DocumentNotFoundError(document_id)
-        if document.status == "processing":
+        if document.status == "processing" and runtime.queue.is_active(document_id):
             raise DocumentBusyError("tài liệu đang được đọc, chưa xoá được")
         try:
             deleted = store.delete_document(document_id)

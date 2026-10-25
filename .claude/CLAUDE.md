@@ -41,7 +41,7 @@ Quy tắc cứng:
 |---|---|---|
 | `domain/` | thư viện chuẩn, `pydantic` | mọi tầng khác |
 | `sandbox/` | thư viện chuẩn, `pydantic` | `services/`, `routers/`, mạng |
-| `infrastructure/` | `domain/` | `services/`, `routers/` |
+| `infrastructure/` | `domain/`, `sandbox.os_limits` (module giới hạn OS dùng chung, ADR-008 mục 3; duyệt 2026-10-25) | `services/`, `routers/` |
 | `services/` | `domain/`, `sandbox/`, `infrastructure/` | `routers/`, `fastapi` |
 | `routers/` | tất cả tầng dưới | — |
 

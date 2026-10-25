@@ -9,7 +9,13 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from ..domain.ingestion import GateStatus, IngestionItem, IngestionItemCreate, Severity, UploadedDocument
-from ..domain.repositories import AppStore, MissingReferenceError, RecordNotFoundError, VersionConflictError
+from ..domain.repositories import (
+    AppStore,
+    ConcurrentUpdateError,
+    MissingReferenceError,
+    RecordNotFoundError,
+    VersionConflictError,
+)
 from ..domain.schemas import SolverInputs
 from ..services.extraction import UnsupportedTopicError, sniff_media_type
 from ..services.ingestion_gate import TABLE_SCHEMAS, TOPIC_ALGORITHMS, CellPatch, apply_patches, recompute_item
@@ -47,11 +53,17 @@ def _recompute(item: IngestionItem) -> IngestionItem:
 
 
 def _get(store: AppStore, item_id: str) -> IngestionItem:
-    """Bản sao của item đang lưu: router sửa trên bản sao rồi ghi có điều kiện, không sửa thẳng vào kho."""
+    """Item đang lưu, đúng như kho trả về; dùng làm trạng thái mong đợi khi ghi có điều kiện."""
     item = store.get_item(item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="không tìm thấy ingestion item")
-    return item.model_copy(deep=True)
+    return item
+
+
+def _edit(store: AppStore, item_id: str) -> tuple[IngestionItem, IngestionItem]:
+    """`(đã đọc, bản sao để sửa)`: router sửa trên bản sao rồi ghi có điều kiện theo bản đã đọc, không sửa thẳng kho."""
+    seen = _get(store, item_id)
+    return seen, seen.model_copy(deep=True)
 
 
 def _create(store: AppStore, body: IngestionItemCreate) -> IngestionItem:
@@ -62,11 +74,15 @@ def _create(store: AppStore, body: IngestionItemCreate) -> IngestionItem:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-def _update(store: AppStore, item: IngestionItem, expected_version: int) -> IngestionItem:
-    """Ghi nguyên tử: chỉ thành công khi version đang lưu vẫn là `expected_version` (BE-003, §6.2)."""
+def _update(store: AppStore, item: IngestionItem, seen: IngestionItem) -> IngestionItem:
+    """Ghi nguyên tử: chỉ thành công khi kho vẫn giữ đúng `seen` (version và mọi field, BE-003, §6.2).
+
+    Sửa stem, gắn non-cloneable và approve không tăng version, nên chỉ so version thì hai lần ghi chạy chéo đều
+    thành công và lần sau xoá thay đổi của lần trước (ví dụ mất cờ non-cloneable rồi item vẫn được approve, trái I5).
+    """
     try:
-        return store.update_item(item, expected_version)
-    except VersionConflictError as exc:
+        return store.update_item(item, seen.table_primary.version, expected=seen)
+    except (VersionConflictError, ConcurrentUpdateError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RecordNotFoundError as exc:
         raise HTTPException(status_code=404, detail="không tìm thấy ingestion item") from exc
@@ -131,12 +147,12 @@ def create_item(store: StoreDep, body: IngestionItemCreate) -> IngestionItem:
 
 @router.get("/v1/ingestion/items/{item_id}", response_model=IngestionItem)
 def get_item(store: StoreDep, item_id: str) -> IngestionItem:
-    return _get(store, item_id)
+    return _get(store, item_id).model_copy(deep=True)
 
 
 @router.patch("/v1/ingestion/items/{item_id}/table", response_model=IngestionItem)
 def patch_table(store: StoreDep, item_id: str, body: TablePatchRequest) -> IngestionItem:
-    item = _get(store, item_id)
+    seen, item = _edit(store, item_id)
     if item.approved:
         raise HTTPException(status_code=409, detail="item đã approve, không sửa được")
     if body.expected_version != item.table_primary.version:
@@ -147,32 +163,31 @@ def patch_table(store: StoreDep, item_id: str, body: TablePatchRequest) -> Inges
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     item.table_primary = new_table
     item.audits.append(audit)
-    return _update(store, _recompute(item), body.expected_version)
+    return _update(store, _recompute(item), seen)
 
 
 @router.patch("/v1/ingestion/items/{item_id}/stem", response_model=IngestionItem)
 def patch_stem(store: StoreDep, item_id: str, body: StemPatchRequest) -> IngestionItem:
-    item = _get(store, item_id)
+    seen, item = _edit(store, item_id)
     if item.approved:
         raise HTTPException(status_code=409, detail="item đã approve, không sửa được")
-    version = item.table_primary.version
     item.stem_latex = body.stem_latex
-    return _update(store, _recompute(item), version)
+    return _update(store, _recompute(item), seen)
 
 
 @router.post("/v1/ingestion/items/{item_id}/non-cloneable", response_model=IngestionItem)
 def flag_non_cloneable(store: StoreDep, item_id: str, body: NonCloneableRequest) -> IngestionItem:
-    item = _get(store, item_id)
+    seen, item = _edit(store, item_id)
     if item.approved:
         raise HTTPException(status_code=400, detail="item đã approve, không thể đánh dấu non-cloneable")
     item.non_cloneable = True
     item.non_cloneable_reason = body.reason
-    return _update(store, item, item.table_primary.version)
+    return _update(store, item, seen)
 
 
 @router.post("/v1/ingestion/items/{item_id}/approve", response_model=IngestionItem)
 def approve(store: StoreDep, item_id: str) -> IngestionItem:
-    item = _get(store, item_id)
+    seen, item = _edit(store, item_id)
     if item.non_cloneable:
         raise HTTPException(status_code=400, detail="item đang bị đánh dấu non-cloneable, không thể approve")
     if item.report is None or item.report.status is GateStatus.BLOCKED:
@@ -181,4 +196,4 @@ def approve(store: StoreDep, item_id: str) -> IngestionItem:
         ]
         raise HTTPException(status_code=409, detail={"message": "còn lỗi BLOCKING", "issues": blocking})
     item.approved = True
-    return _update(store, item, item.table_primary.version)
+    return _update(store, item, seen)

@@ -65,23 +65,32 @@ def current_version(conn: sqlite3.Connection) -> int:
     return 0 if row is None or row[0] is None else int(row[0])
 
 
-def migrate(conn: sqlite3.Connection, migrations: Sequence[Migration] | None = None) -> int:
-    """Đưa DB lên version mới nhất của code và trả version đó.
-
-    DB mới hơn code ⇒ `SchemaVersionError` và không đổi gì. Script lỗi ⇒ giao dịch của nó bị huỷ, version giữ nguyên.
-    """
-    plan = list(load_migrations() if migrations is None else migrations)
-    _check_sequence(plan)
-    target = len(plan)
-    conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
-    applied = current_version(conn)
+def _refuse_newer(applied: int, target: int) -> None:
     if applied > target:
         raise SchemaVersionError(
             f"Cơ sở dữ liệu ở version {applied}, mới hơn version {target} mà bản Holocron này hỗ trợ. "
             "Hãy dùng bản Holocron mới hơn; không hỗ trợ hạ version."
         )
-    for migration in plan[applied:]:
+
+
+def migrate(conn: sqlite3.Connection, migrations: Sequence[Migration] | None = None) -> int:
+    """Đưa DB lên version mới nhất của code và trả version đó.
+
+    DB mới hơn code ⇒ `SchemaVersionError` và không đổi gì. Script lỗi ⇒ giao dịch của nó bị huỷ, version giữ nguyên.
+    Version hiện tại được đọc lại SAU KHI đã giữ khoá ghi (`BEGIN IMMEDIATE`), nên hai tiến trình cùng mở một DB mới
+    không chạy trùng một migration: bên vào sau thấy version đã tăng và bỏ qua script đó.
+    """
+    plan = list(load_migrations() if migrations is None else migrations)
+    _check_sequence(plan)
+    target = len(plan)
+    conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
+    _refuse_newer(current_version(conn), target)
+    for migration in plan:
         with immediate_transaction(conn):
+            applied = current_version(conn)
+            _refuse_newer(applied, target)
+            if applied >= migration.version:
+                continue
             conn.executescript(migration.sql)
             conn.execute(
                 "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",

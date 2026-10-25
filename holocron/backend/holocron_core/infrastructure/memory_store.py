@@ -11,7 +11,13 @@ from collections.abc import Sequence
 from datetime import datetime
 
 from ..domain.ingestion import IngestionItem, UploadedDocument
-from ..domain.repositories import IDEMPOTENCY_TTL, RecordNotFoundError, VersionConflictError
+from ..domain.repositories import (
+    IDEMPOTENCY_TTL,
+    ConcurrentUpdateError,
+    RecordNotFoundError,
+    VersionConflictError,
+    same_item_state,
+)
 from ..domain.schemas import ExamBlueprint
 from ..domain.twins import IdempotencyRecord
 
@@ -36,8 +42,13 @@ class IngestionStore:
         self._items[item.item_id] = item
         return item
 
-    def update_item(self, item: IngestionItem, expected_version: int) -> IngestionItem:
-        """So-và-ghi dưới khoá: nguyên tử giữa các luồng của cùng tiến trình (router làm việc trên bản sao)."""
+    def update_item(
+        self, item: IngestionItem, expected_version: int, expected: IngestionItem | None = None
+    ) -> IngestionItem:
+        """So-và-ghi dưới khoá: nguyên tử giữa các luồng của cùng tiến trình (router làm việc trên bản sao).
+
+        Như bản SQLite: so version, rồi so toàn bộ trạng thái đang lưu với `expected` (nếu có) trước khi ghi.
+        """
         new_version = item.table_primary.version
         if new_version not in (expected_version, expected_version + 1):
             raise ValueError(f"version mới {new_version} không hợp lệ so với version mong đợi {expected_version}")
@@ -49,6 +60,8 @@ class IngestionStore:
                 raise VersionConflictError(
                     "ingestion item", item.item_id, expected_version, current.table_primary.version
                 )
+            if expected is not None and not same_item_state(current, expected):
+                raise ConcurrentUpdateError("ingestion item", item.item_id)
             self._items[item.item_id] = item
         return item
 

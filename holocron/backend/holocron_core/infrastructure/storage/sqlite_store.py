@@ -3,6 +3,8 @@
 Một kết nối cho mỗi kho, dùng chung giữa các luồng dưới một khoá; mọi lần ghi nằm trong `BEGIN IMMEDIATE`, mọi lần
 đọc nhiều câu nằm trong một giao dịch đọc để thấy cùng một bản chụp. Ghi có điều kiện dùng một câu
 `UPDATE … WHERE <khoá> = ? AND version = ?`; `rowcount = 0` mà bản ghi vẫn tồn tại ⇒ `VersionConflictError` (BE-003).
+Riêng `ingestion_items` so thêm toàn bộ trạng thái đã đọc (xem `update_item`). Khoá bận quá `busy_timeout` ⇒
+`StorageBusyError`.
 """
 
 from __future__ import annotations
@@ -21,19 +23,22 @@ from pydantic import BaseModel
 from ...domain.ingestion import IngestionItem, PatchAudit, UploadedDocument
 from ...domain.repositories import (
     IDEMPOTENCY_TTL,
+    ConcurrentUpdateError,
     ImportedDocument,
     MissingReferenceError,
     PageStatus,
     RecordInUseError,
     RecordNotFoundError,
     SearchIndex,
+    StorageBusyError,
     StorageError,
     VaultSearchUnavailableError,
     VersionConflictError,
+    same_item_state,
 )
 from ...domain.schemas import DocumentMeta, ExamBlueprint, KnowledgeChunk, TwinQuestion
 from ...domain.twins import IdempotencyRecord, ReviewTicket, TwinBatch
-from .connection import connect, fts5_available, immediate_transaction
+from .connection import connect, fts5_available, immediate_transaction, is_busy, read_transaction
 from .migrator import load_fts5_script, migrate
 
 IMPORTED_MEDIA_TYPE = "application/pdf"  # bộ nhập §6.5 chỉ nhận PDF trong MVP
@@ -68,6 +73,20 @@ def _version_conflict(
     if row is None:
         return RecordNotFoundError(entity, key)
     return VersionConflictError(entity, key, expected, int(row["version"]))
+
+
+@contextmanager
+def _storage_errors() -> Iterator[None]:
+    """Đổi lỗi `sqlite3` mà tầng trên cần phân biệt thành lỗi domain: ràng buộc ⇒ `StorageError`, khoá bận ⇒
+    `StorageBusyError` (router trả 503 thay vì 500). Lỗi `sqlite3` khác ném nguyên."""
+    try:
+        yield
+    except sqlite3.IntegrityError as exc:
+        raise StorageError(str(exc)) from exc
+    except sqlite3.OperationalError as exc:
+        if is_busy(exc):
+            raise StorageBusyError(f"kho dữ liệu đang bận: {exc}") from exc
+        raise
 
 
 class SQLiteStore:
@@ -106,20 +125,13 @@ class SQLiteStore:
     @contextmanager
     def _write(self) -> Iterator[sqlite3.Connection]:
         """Giao dịch ghi; vi phạm ràng buộc chưa được đổi thành lỗi riêng thì thành `StorageError`."""
-        try:
-            with self._lock, immediate_transaction(self._conn) as conn:
-                yield conn
-        except sqlite3.IntegrityError as exc:
-            raise StorageError(str(exc)) from exc
+        with _storage_errors(), self._lock, immediate_transaction(self._conn) as conn:
+            yield conn
 
     @contextmanager
     def _read(self) -> Iterator[sqlite3.Connection]:
-        with self._lock:
-            self._conn.execute("BEGIN")
-            try:
-                yield self._conn
-            finally:
-                self._conn.execute("COMMIT")
+        with _storage_errors(), self._lock, read_transaction(self._conn) as conn:
+            yield conn
 
     # ------------------------------------------------------------------ #
     # IngestionRepository
@@ -203,29 +215,41 @@ class SQLiteStore:
             self._write_audits(conn, item)
         return item
 
-    def update_item(self, item: IngestionItem, expected_version: int) -> IngestionItem:
+    def update_item(
+        self, item: IngestionItem, expected_version: int, expected: IngestionItem | None = None
+    ) -> IngestionItem:
+        """So-và-ghi trên toàn bộ trạng thái đã đọc, trong một giao dịch `BEGIN IMMEDIATE`.
+
+        Đọc dòng đang lưu sau khi đã giữ khoá ghi, so version rồi so trạng thái với `expected`, và ghi bằng
+        `UPDATE … WHERE item_id = ? AND version = ? AND item_json = ?` với đúng chuỗi vừa đọc. Không tiến trình nào
+        ghi chen được giữa bước đọc và bước ghi, nên hai lần ghi chạy chéo không tăng version (sửa stem, gắn
+        non-cloneable, approve) không thể cùng thành công.
+        """
         new_version = item.table_primary.version
         if new_version not in (expected_version, expected_version + 1):
             raise ValueError(f"version mới {new_version} không hợp lệ so với version mong đợi {expected_version}")
         with self._write() as conn:
+            row = conn.execute(
+                "SELECT version, item_json FROM ingestion_items WHERE item_id = ?", (item.item_id,)
+            ).fetchone()
+            if row is None:
+                raise RecordNotFoundError("ingestion item", item.item_id)
+            if int(row["version"]) != expected_version:
+                raise VersionConflictError("ingestion item", item.item_id, expected_version, int(row["version"]))
+            stored_json = str(row["item_json"])
+            if expected is not None and not same_item_state(IngestionItem.model_validate_json(stored_json), expected):
+                raise ConcurrentUpdateError("ingestion item", item.item_id)
             try:
                 cursor = conn.execute(
                     "UPDATE ingestion_items SET source_doc_id = ?, page_number = ?, topic_key = ?, approved = ?, "
                     "non_cloneable = ?, item_json = ?, updated_at = ?, version = ? "
-                    "WHERE item_id = ? AND version = ?",
-                    (*self._item_columns(item), item.item_id, expected_version),
+                    "WHERE item_id = ? AND version = ? AND item_json = ?",
+                    (*self._item_columns(item), item.item_id, expected_version, stored_json),
                 )
             except sqlite3.IntegrityError as exc:
                 raise self._missing_document(exc, item.source_doc_id) from exc
-            if cursor.rowcount == 0:
-                raise _version_conflict(
-                    conn,
-                    "ingestion item",
-                    item.item_id,
-                    expected_version,
-                    "SELECT version FROM ingestion_items WHERE item_id = ?",
-                    (item.item_id,),
-                )
+            if cursor.rowcount != 1:  # không xảy ra khi đang giữ khoá ghi; giữ để không báo thành công khi chưa ghi
+                raise ConcurrentUpdateError("ingestion item", item.item_id)
             self._write_audits(conn, item)
         return item
 

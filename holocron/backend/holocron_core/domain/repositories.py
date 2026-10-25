@@ -2,8 +2,8 @@
 
 Router và service chỉ phụ thuộc các `Protocol` ở đây; bản in-memory (`infrastructure/memory_store.py`, cho test và
 chế độ dev) và bản SQLite (`infrastructure/storage/`) cùng thoả chúng. Lỗi lưu trữ là exception của domain để tầng
-trên đổi thành mã HTTP mà không biết kho cụ thể: `VersionConflictError` ⇒ 409, `RecordNotFoundError` ⇒ 404,
-`MissingReferenceError` ⇒ 422, `RecordInUseError` ⇒ 409.
+trên đổi thành mã HTTP mà không biết kho cụ thể: `VersionConflictError` và `ConcurrentUpdateError` ⇒ 409,
+`RecordNotFoundError` ⇒ 404, `MissingReferenceError` ⇒ 422, `RecordInUseError` ⇒ 409, `StorageBusyError` ⇒ 503.
 """
 
 from __future__ import annotations
@@ -48,6 +48,23 @@ class VersionConflictError(StorageError):
         self.current_version = current_version
 
 
+class ConcurrentUpdateError(StorageError):
+    """Version khớp nhưng trạng thái đang lưu khác trạng thái người ghi đã đọc: một lần ghi khác đã chen vào.
+
+    Sửa stem, gắn non-cloneable và approve không tăng `table_primary.version` (§5.13: `ingestion_items.version` bằng
+    `table_primary.version`), nên chỉ so version thì hai lần ghi chạy chéo đều khớp và lần sau ghi đè lần trước.
+    """
+
+    def __init__(self, entity: str, key: str) -> None:
+        super().__init__(f"{entity} vừa bị thay đổi bởi một yêu cầu khác, hãy tải lại rồi thử lại")
+        self.entity = entity
+        self.key = key
+
+
+class StorageBusyError(StorageError):
+    """Kho đang bị tiến trình khác giữ khoá ghi quá `busy_timeout`; thử lại sau."""
+
+
 class MissingReferenceError(StorageError):
     """Bản ghi trỏ tới một bản ghi khác không tồn tại (khoá ngoại)."""
 
@@ -80,12 +97,16 @@ class IngestionRepository(Protocol):
         """Ghi không điều kiện (tạo mới hoặc thay toàn bộ). `MissingReferenceError` khi kho kiểm khoá ngoại tài liệu."""
         ...
 
-    def update_item(self, item: IngestionItem, expected_version: int) -> IngestionItem:
-        """So-và-ghi nguyên tử theo `table_primary.version` (§6.2).
+    def update_item(
+        self, item: IngestionItem, expected_version: int, expected: IngestionItem | None = None
+    ) -> IngestionItem:
+        """So-và-ghi nguyên tử theo `table_primary.version` (§6.2) và, khi có `expected`, theo toàn bộ trạng thái.
 
         Bản ghi đang lưu phải có version `expected_version`; version mới là `item.table_primary.version`, bằng
         `expected_version` (sửa không đụng bảng) hoặc `expected_version + 1` (sửa bảng). Lệch ⇒
-        `VersionConflictError`; không có bản ghi ⇒ `RecordNotFoundError`.
+        `VersionConflictError`; không có bản ghi ⇒ `RecordNotFoundError`. `expected` là item người ghi đã đọc: trạng
+        thái đang lưu (trừ `audits`) khác nó ⇒ `ConcurrentUpdateError`. Mọi lần đọc-sửa-ghi PHẢI truyền `expected`,
+        vì sửa không đụng bảng giữ nguyên version.
         """
         ...
 
@@ -94,6 +115,11 @@ class IngestionRepository(Protocol):
         ...
 
     def get_document(self, document_id: str) -> UploadedDocument | None: ...
+
+
+def same_item_state(stored: IngestionItem, expected: IngestionItem) -> bool:
+    """Hai item có cùng trạng thái lưu (mọi field trừ `audits`, vốn chỉ đổi cùng version bảng)."""
+    return stored.model_dump(exclude={"audits"}) == expected.model_dump(exclude={"audits"})
 
 
 class BlueprintRepository(Protocol):

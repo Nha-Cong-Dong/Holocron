@@ -8,16 +8,28 @@ bằng adapter VLM thật qua dependency injection mà không đổi router.
 
 from __future__ import annotations
 
-import hashlib
-from datetime import UTC, datetime
-from typing import Literal, Protocol
+from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
+from ..domain.ingestion import ExtractedCell, ExtractedTable, MediaType, UploadedDocument
 from ..domain.schemas import OptionKey
-from .ingestion_gate import ExtractedCell, ExtractedTable
 
-MediaType = Literal["image/png", "image/jpeg", "image/webp", "application/pdf"]
+# `MediaType` và `UploadedDocument` đã chuyển về `domain/ingestion.py`; tên cũ vẫn import được từ module này.
+__all__ = [
+    "RR_DEMO_HEADERS",
+    "RR_DEMO_MISREAD",
+    "RR_DEMO_OPTIONS",
+    "RR_DEMO_ROWS",
+    "RR_DEMO_STEM",
+    "DocumentExtractor",
+    "DualPassExtraction",
+    "MediaType",
+    "MockDualPassExtractor",
+    "UnsupportedTopicError",
+    "UploadedDocument",
+    "sniff_media_type",
+]
 
 _MAGIC_PREFIXES: tuple[tuple[bytes, MediaType], ...] = (
     (b"\x89PNG\r\n\x1a\n", "image/png"),
@@ -34,30 +46,6 @@ def sniff_media_type(content: bytes) -> MediaType | None:
     if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
         return "image/webp"
     return None
-
-
-class UploadedDocument(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    document_id: str = Field(pattern=r"^doc_[0-9a-f]{16}$")
-    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    filename: str = Field(min_length=1, max_length=255)
-    media_type: MediaType
-    size_bytes: int = Field(ge=1)
-    uploaded_at: datetime
-
-    @classmethod
-    def from_content(cls, content: bytes, filename: str, media_type: MediaType) -> UploadedDocument:
-        """`document_id` suy ra từ sha256 nội dung: cùng file ⇒ cùng id (tải lại không nhân bản tài liệu)."""
-        digest = hashlib.sha256(content).hexdigest()
-        return cls(
-            document_id=f"doc_{digest[:16]}",
-            sha256=digest,
-            filename=filename,
-            media_type=media_type,
-            size_bytes=len(content),
-            uploaded_at=datetime.now(UTC),
-        )
 
 
 class DualPassExtraction(BaseModel):

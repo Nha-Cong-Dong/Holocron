@@ -1,0 +1,38 @@
+THÔNG BÁO GIẤY PHÉP CỦA THÀNH PHẦN BÊN THỨ BA
+=============================================
+
+Holocron phát hành theo giấy phép MIT (xem LICENSE). File này liệt kê giấy phép của các dependency được phát
+hành kèm app, theo yêu cầu giữ thông báo bản quyền của Apache-2.0 và các giấy phép BSD (ADR-008, phần "Hệ quả").
+Toàn văn từng giấy phép nằm trong wheel tương ứng, ở thư mục `*.dist-info/licenses/` sau khi cài.
+
+Cập nhật file này trong cùng commit với mỗi dependency mới được phát hành kèm app.
+
+
+pypdfium2 5.14.0
+----------------
+Dùng cho: tầng 1 của bộ nhập PDF (đọc lớp chữ), chạy trong worker có giới hạn.
+Nguồn: https://github.com/pypdfium2-team/pypdfium2
+Giấy phép (trường `License` trong metadata của gói): "BSD-3-Clause, Apache-2.0, dependency licenses".
+File giấy phép trong gói: LICENSES/Apache-2.0.txt, LICENSES/BSD-3-Clause.txt, LICENSES/CC-BY-4.0.txt.
+
+Wheel đóng kèm bản build PDFium 156.0.8076.0 của dự án pdfium-binaries. Theo các file trong
+`BUILD_LICENSES/` của wheel `win_amd64` (đã kiểm ngày 2026-10-25; wheel Linux và macOS chưa kiểm):
+
+  Thành phần        Giấy phép (theo file đi kèm)
+  ----------------  ------------------------------------------------------------
+  PDFium            BSD-3-Clause ("Copyright 2014 The PDFium Authors")
+  pdfium-binaries   MIT ("Copyright 2014-2025 Benoit Blanchon")
+  Abseil            Apache-2.0
+  Anti-Grain Geometry 2.3   giấy phép riêng kiểu cho phép (Copyright 2002-2005 Maxim Shemanarev)
+  fast_float        MIT
+  FreeType          FreeType License (FTL)
+  ICU               Unicode License V3
+  Little CMS        MIT
+  libjpeg-turbo     IJG License và BSD-3-Clause
+  OpenJPEG          BSD-2-Clause
+  libpng            PNG Reference Library License version 2
+  LLVM libc         Apache-2.0 WITH LLVM-exception
+  simdutf           MIT
+  zlib              Zlib License
+
+Không thành phần nào ở trên theo GPL/AGPL. Wheel mặc định không có V8/XFA (`PDFIUM_INFO.flags` rỗng).

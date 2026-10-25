@@ -38,6 +38,7 @@ from ...domain.repositories import (
 )
 from ...domain.schemas import DocumentMeta, ExamBlueprint, KnowledgeChunk, TwinQuestion
 from ...domain.twins import IdempotencyRecord, ReviewTicket, TwinBatch
+from ...domain.vault import ConceptPair, ConceptPairStatus
 from .connection import connect, fts5_available, immediate_transaction, is_busy, read_transaction
 from .migrator import load_fts5_script, migrate
 
@@ -564,8 +565,8 @@ class SQLiteStore:
             try:
                 conn.execute(
                     "INSERT INTO chunks (chunk_id, document_id, subject_code, chapter_code, category, page_number, "
-                    "page_end, raw_text, verbatim_quote, tags_json, linked_chunk_ids_json, token_count) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "page_end, raw_text, verbatim_quote, tags_json, linked_chunk_ids_json, token_count, label_status, "
+                    "mapping_confidence, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         chunk.chunk_id,
                         chunk.doc_id,
@@ -579,6 +580,9 @@ class SQLiteStore:
                         json.dumps(chunk.tags, ensure_ascii=False),
                         json.dumps(chunk.linked_chunk_ids, ensure_ascii=False),
                         chunk.token_count,
+                        chunk.label_status,
+                        chunk.mapping_confidence,
+                        chunk.version,
                     ),
                 )
             except sqlite3.IntegrityError as exc:
@@ -611,12 +615,16 @@ class SQLiteStore:
                 "topic_keys": topic_keys,
                 "linked_chunk_ids": json.loads(str(row["linked_chunk_ids_json"])),
                 "token_count": row["token_count"],
+                "label_status": row["label_status"],
+                "mapping_confidence": row["mapping_confidence"],
+                "version": row["version"],
             }
         )
 
     _CHUNK_SELECT = (
         "SELECT chunk_id, document_id, subject_code, chapter_code, category, page_number, page_end, raw_text, "
-        "verbatim_quote, tags_json, linked_chunk_ids_json, token_count FROM chunks"
+        "verbatim_quote, tags_json, linked_chunk_ids_json, token_count, label_status, mapping_confidence, version "
+        "FROM chunks"
     )
 
     def get_chunk(self, chunk_id: str) -> KnowledgeChunk | None:
@@ -657,3 +665,142 @@ class SQLiteStore:
             except sqlite3.OperationalError as exc:
                 raise ValueError(f"biểu thức FTS5 không hợp lệ: {exc}") from exc
         return [str(row["chunk_id"]) for row in rows]
+
+    def update_chunk_labels(self, chunk: KnowledgeChunk, expected_version: int) -> KnowledgeChunk:
+        with self._write() as conn:
+            cursor = conn.execute(
+                "UPDATE chunks SET chapter_code = ?, category = ?, tags_json = ?, label_status = ?, "
+                "mapping_confidence = ?, version = version + 1 WHERE chunk_id = ? AND version = ?",
+                (
+                    chunk.chapter_code,
+                    chunk.category.value,
+                    json.dumps(chunk.tags, ensure_ascii=False),
+                    chunk.label_status,
+                    chunk.mapping_confidence,
+                    chunk.chunk_id,
+                    expected_version,
+                ),
+            )
+            if cursor.rowcount == 0:
+                raise _version_conflict(
+                    conn,
+                    "chunk",
+                    chunk.chunk_id,
+                    expected_version,
+                    "SELECT version FROM chunks WHERE chunk_id = ?",
+                    (chunk.chunk_id,),
+                )
+            conn.execute("DELETE FROM chunk_topics WHERE chunk_id = ?", (chunk.chunk_id,))
+            conn.executemany(
+                "INSERT INTO chunk_topics (chunk_id, topic_key) VALUES (?, ?)",
+                [(chunk.chunk_id, topic_key) for topic_key in chunk.topic_keys],
+            )
+            row = conn.execute(f"{self._CHUNK_SELECT} WHERE chunk_id = ?", (chunk.chunk_id,)).fetchone()
+        return self._chunk_from_row(row, list(chunk.topic_keys))
+
+    # ------------------------------------------------------------------ #
+    # Cặp khái niệm (§5.8, ADR-007)
+    # ------------------------------------------------------------------ #
+
+    _PAIR_SELECT = (
+        "SELECT pair_id, chunk_id, subject_code, chapter_code, term, definition_quote, term_spans_json, status, "
+        "proposed_by, mapping_confidence, created_at, confirmed_at, version FROM concept_pairs"
+    )
+
+    @staticmethod
+    def _pair_from_row(row: sqlite3.Row) -> ConceptPair:
+        return ConceptPair.model_validate(
+            {
+                "pair_id": row["pair_id"],
+                "chunk_id": row["chunk_id"],
+                "subject_code": row["subject_code"],
+                "chapter_code": row["chapter_code"],
+                "term": row["term"],
+                "definition_quote": row["definition_quote"],
+                "term_spans": json.loads(str(row["term_spans_json"])),
+                "status": row["status"],
+                "proposed_by": row["proposed_by"],
+                "mapping_confidence": row["mapping_confidence"],
+                "created_at": row["created_at"],
+                "confirmed_at": row["confirmed_at"],
+                "version": row["version"],
+            }
+        )
+
+    def add_concept_pair(self, pair: ConceptPair) -> ConceptPair:
+        with self._write() as conn:
+            try:
+                conn.execute(
+                    "INSERT INTO concept_pairs (pair_id, chunk_id, subject_code, chapter_code, term, definition_quote, "
+                    "term_spans_json, status, proposed_by, mapping_confidence, created_at, confirmed_at, version) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        pair.pair_id,
+                        pair.chunk_id,
+                        pair.subject_code,
+                        pair.chapter_code,
+                        pair.term,
+                        pair.definition_quote,
+                        json.dumps(pair.term_spans),
+                        pair.status.value,
+                        pair.proposed_by,
+                        pair.mapping_confidence,
+                        _ts(pair.created_at),
+                        None if pair.confirmed_at is None else _ts(pair.confirmed_at),
+                        pair.version,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise _translate(exc, MissingReferenceError(f"không tìm thấy chunk {pair.chunk_id}")) from exc
+        return pair
+
+    def get_concept_pair(self, pair_id: str) -> ConceptPair | None:
+        with self._read() as conn:
+            row = conn.execute(f"{self._PAIR_SELECT} WHERE pair_id = ?", (pair_id,)).fetchone()
+        return None if row is None else self._pair_from_row(row)
+
+    def list_concept_pairs(
+        self, subject_code: str, chapter_code: str | None = None, status: ConceptPairStatus | None = None
+    ) -> list[ConceptPair]:
+        clauses = ["subject_code = ?"]
+        params: list[str] = [subject_code]
+        if chapter_code is not None:
+            clauses.append("chapter_code = ?")
+            params.append(chapter_code)
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status.value)
+        with self._read() as conn:
+            rows = conn.execute(f"{self._PAIR_SELECT} WHERE {' AND '.join(clauses)}", params).fetchall()
+        # Sắp trong Python theo điểm mã Unicode, giống hệt bản in-memory (không phụ thuộc collation của SQLite).
+        return sorted(
+            (self._pair_from_row(row) for row in rows), key=lambda pair: (pair.chapter_code, pair.term, pair.pair_id)
+        )
+
+    def update_concept_pair(self, pair: ConceptPair, expected_version: int) -> ConceptPair:
+        with self._write() as conn:
+            cursor = conn.execute(
+                "UPDATE concept_pairs SET term = ?, definition_quote = ?, term_spans_json = ?, status = ?, "
+                "mapping_confidence = ?, confirmed_at = ?, version = version + 1 WHERE pair_id = ? AND version = ?",
+                (
+                    pair.term,
+                    pair.definition_quote,
+                    json.dumps(pair.term_spans),
+                    pair.status.value,
+                    pair.mapping_confidence,
+                    None if pair.confirmed_at is None else _ts(pair.confirmed_at),
+                    pair.pair_id,
+                    expected_version,
+                ),
+            )
+            if cursor.rowcount == 0:
+                raise _version_conflict(
+                    conn,
+                    "cặp khái niệm",
+                    pair.pair_id,
+                    expected_version,
+                    "SELECT version FROM concept_pairs WHERE pair_id = ?",
+                    (pair.pair_id,),
+                )
+            row = conn.execute(f"{self._PAIR_SELECT} WHERE pair_id = ?", (pair.pair_id,)).fetchone()
+        return self._pair_from_row(row)

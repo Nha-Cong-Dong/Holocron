@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from .ingestion import IngestionItem, UploadedDocument
 from .schemas import DocumentMeta, ExamBlueprint, KnowledgeChunk
 from .twins import IdempotencyRecord
+from .vault import ConceptPair, ConceptPairStatus
 
 IDEMPOTENCY_TTL = timedelta(hours=24)
 
@@ -144,10 +145,6 @@ class TwinBatchRepository(Protocol):
         ...
 
 
-class AppStore(IngestionRepository, BlueprintRepository, TwinBatchRepository, Protocol):
-    """Kho mà các router hiện có dùng, cấp qua `Depends(get_store)`."""
-
-
 class DocumentRepository(Protocol):
     """Tài liệu nhập qua §6.5 và trang của nó. Trang lưu dạng JSON của model trang do tầng gọi chọn (§5.7)."""
 
@@ -227,3 +224,37 @@ class VaultRepository(Protocol):
         Thiếu FTS5 ⇒ `VaultSearchUnavailableError`.
         """
         ...
+
+    def update_chunk_labels(self, chunk: KnowledgeChunk, expected_version: int) -> KnowledgeChunk:
+        """So-và-ghi nguyên tử phần nhãn của chunk (§6.6): `chapter_code`, `category`, `tags`, `topic_keys`,
+        `label_status`, `mapping_confidence`.
+
+        Văn bản (`raw_text`, `verbatim_quote`) và các field khác không được ghi. Trả chunk đã lưu với
+        `version = expected_version + 1`. Lệch version ⇒ `VersionConflictError`; không có chunk ⇒
+        `RecordNotFoundError`.
+        """
+        ...
+
+    def add_concept_pair(self, pair: ConceptPair) -> ConceptPair:
+        """Ghi cặp mới; chunk không có ⇒ `MissingReferenceError`. Kiểm nguyên văn (I3) là việc của tầng gọi."""
+        ...
+
+    def get_concept_pair(self, pair_id: str) -> ConceptPair | None: ...
+
+    def list_concept_pairs(
+        self, subject_code: str, chapter_code: str | None = None, status: ConceptPairStatus | None = None
+    ) -> list[ConceptPair]:
+        """Sắp theo `(chapter_code, term, pair_id)` (§6.6)."""
+        ...
+
+    def update_concept_pair(self, pair: ConceptPair, expected_version: int) -> ConceptPair:
+        """So-và-ghi nguyên tử theo version; trả cặp với `version = expected_version + 1`.
+
+        `chunk_id`, `subject_code`, `chapter_code`, `proposed_by`, `created_at` không đổi. Lệch version ⇒
+        `VersionConflictError`; không có cặp ⇒ `RecordNotFoundError`.
+        """
+        ...
+
+
+class AppStore(IngestionRepository, BlueprintRepository, TwinBatchRepository, VaultRepository, Protocol):
+    """Kho mà các router dùng, cấp qua `Depends(get_store)`."""

@@ -172,6 +172,10 @@ class KnowledgeChunk(StrictModel):
     linked_chunk_ids: list[str] = Field(default_factory=list)
     token_count: int = Field(ge=1)
     embedding_model: str | None = None
+    # §5.8: nhãn (chương, loại, topic) do LLM hoặc code đề xuất, người dùng xác nhận qua `PATCH …/labels` (§6.6).
+    label_status: Literal["proposed", "confirmed"] = "proposed"
+    mapping_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    version: int = Field(default=1, ge=1)
 
     @field_validator("tags")
     @classmethod

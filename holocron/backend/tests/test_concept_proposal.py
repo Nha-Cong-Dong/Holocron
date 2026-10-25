@@ -23,11 +23,12 @@ from holocron_core.domain.capabilities import CapabilityError
 from holocron_core.domain.llm import ChatCompletionResult, ChatMessage, LlmUpstreamError, TokenUsage
 from holocron_core.domain.repositories import AppStore, RecordNotFoundError
 from holocron_core.domain.schemas import KnowledgeChunk
-from holocron_core.domain.vault import ConceptPairStatus
+from holocron_core.domain.vault import ConceptPair, ConceptPairStatus
 from holocron_core.infrastructure.llm_client import OpenAiChatClient
 from holocron_core.infrastructure.llm_config import LlmSettings, LlmTaskLimits, RuntimeConfig, load_runtime_config
 from holocron_core.routers import vault
 from holocron_core.routers.deps import get_clock, get_runtime_config, get_store
+from holocron_core.services import concept_proposal
 from holocron_core.services.concept_proposal import (
     MAX_PROPOSAL_CHUNKS,
     ChunkSubjectMismatchError,
@@ -840,3 +841,96 @@ def test_config_error_while_building_the_client_is_a_409_capability_error(
     for leaked in (SECRET, "must-never-leak", "secret-model-name", "gateway.example.test", "ftp://"):
         assert leaked not in response.text
     assert store.list_concept_pairs("SSH1110") == []
+
+
+# --------------------------------------------------------------------------- #
+# Trần số đề xuất và hằng số đọc từ cấu hình/model (sửa sau review lần 2)
+# --------------------------------------------------------------------------- #
+
+
+def test_proposals_beyond_the_cap_are_dropped_before_the_quote_check(
+    store: AppStore, chunks: dict[str, list[KnowledgeChunk]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chunk = _phil(chunks)
+    checked: list[str] = []
+    real_quote_in_text = concept_proposal.quote_in_text
+
+    def counting_quote_in_text(quote: str, text: str) -> bool:
+        checked.append(quote)
+        return real_quote_in_text(quote, text)
+
+    monkeypatch.setattr(concept_proposal, "quote_in_text", counting_quote_in_text)
+    limits = LlmTaskLimits(max_proposals_per_chunk=2)
+    proposals = [_item(chunk, "Vật chất", PHIL_QUOTE), _item(chunk, "Sai", "không có trong chunk")]
+    proposals += [_item(chunk, f"Thừa {index}", MIND_QUOTE) for index in range(5)]
+    result = propose_concept_pairs(
+        store, StubClient(_json(*proposals)), subject_code="SSH1110", chunk_ids=[chunk.chunk_id], now=NOW, limits=limits
+    )
+    assert [pair.term for pair in result.pairs] == ["Vật chất"]
+    assert len(checked) == 2  # chỉ 2 phần tử đầu được kiểm nguyên văn
+    assert result.rejected_count == 6
+    assert result.rejected_by_reason == {"proposal_limit": 5, "quote_not_verbatim": 1}
+    assert [pair.term for pair in store.list_concept_pairs("SSH1110")] == ["Vật chất"]
+
+
+def test_the_proposal_cap_scales_with_the_number_of_chunks(
+    store: AppStore, chunks: dict[str, list[KnowledgeChunk]]
+) -> None:
+    arm_chunks = chunks["ET4010"]
+    assert len(arm_chunks) >= 2
+    first, second = arm_chunks[0], arm_chunks[1]
+    limits = LlmTaskLimits(max_proposals_per_chunk=1)
+    proposals = [_item(first, "Mục A", first.verbatim_quote), _item(second, "Mục B", second.verbatim_quote)]
+    proposals += [_item(first, "Mục C", first.verbatim_quote)]
+    result = propose_concept_pairs(
+        store,
+        StubClient(_json(*proposals)),
+        subject_code="ET4010",
+        chunk_ids=[first.chunk_id, second.chunk_id],
+        now=NOW,
+        limits=limits,
+    )
+    assert [pair.term for pair in result.pairs] == ["Mục A", "Mục B"]
+    assert result.rejected_by_reason == {"proposal_limit": 1}
+
+
+def test_the_default_cap_leaves_room_beyond_the_per_chunk_save_limit() -> None:
+    limits = LlmTaskLimits()
+    assert limits.max_proposals_per_chunk >= MAX_PAIRS_PER_CHUNK
+    with pytest.raises(ValidationError):
+        LlmTaskLimits(max_proposals_per_chunk=0)
+
+
+def test_term_limit_is_read_from_the_concept_pair_model(
+    store: AppStore, chunks: dict[str, list[KnowledgeChunk]]
+) -> None:
+    limit = next(m.max_length for m in ConceptPair.model_fields["term"].metadata if hasattr(m, "max_length"))
+    assert concept_proposal.MAX_TERM_CHARS == limit == 120
+    chunk = _phil(chunks)
+    client = StubClient(_json(_item(chunk, "a" * limit, PHIL_QUOTE), _item(chunk, "b" * (limit + 1), MIND_QUOTE)))
+    result = _propose(store, client, [chunk.chunk_id])
+    assert [len(pair.term) for pair in result.pairs] == [limit]
+    assert result.rejected_by_reason == {"invalid_term": 1}
+
+
+def test_max_tokens_comes_from_the_task_limits(store: AppStore, chunks: dict[str, list[KnowledgeChunk]]) -> None:
+    chunk = _phil(chunks)
+    assert concept_proposal.DEFAULT_MAX_TOKENS == LlmTaskLimits().max_tokens == 4096
+    default_client = StubClient("[]")
+    _propose(store, default_client, [chunk.chunk_id])
+    assert default_client.max_tokens == [4096]
+    custom = StubClient("[]")
+    propose_concept_pairs(
+        store,
+        custom,
+        subject_code="SSH1110",
+        chunk_ids=[chunk.chunk_id],
+        now=NOW,
+        limits=LlmTaskLimits(max_tokens=77),
+    )
+    assert custom.max_tokens == [77]
+    explicit = StubClient("[]")
+    propose_concept_pairs(store, explicit, subject_code="SSH1110", chunk_ids=[chunk.chunk_id], now=NOW, max_tokens=55)
+    assert explicit.max_tokens == [55]
+    with pytest.raises(ValidationError):
+        LlmTaskLimits(max_tokens=0)

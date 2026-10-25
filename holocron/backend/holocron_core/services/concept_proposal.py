@@ -14,11 +14,16 @@ hay bất kỳ field thừa nào LLM trả về đều bị bỏ qua.
   `LlmTaskLimits.json_retry_max` lần, hết lượt thì `ConceptProposalError` (502 ở router).
 - **Hạn thời gian tổng:** cả lần đề xuất, gồm mọi lần gọi lại, phải xong trong `LlmTaskLimits.deadline_s`, đo bằng
   đồng hồ đơn điệu truyền vào (test dùng đồng hồ giả). Hạn được kiểm trước mỗi lần gọi và ngay khi lần gọi trả về; quá
-  hạn thì `ConceptProposalError` (502) và kết quả về muộn bị bỏ. Lần gọi đang chạy không bị ngắt giữa chừng; mỗi lần
-  gọi đã có timeout riêng `HOLOCRON_LLM_TIMEOUT_S`.
-- **Cổng kiểm từng đề xuất:** `term` không rỗng sau khi gộp khoảng trắng và tối đa 120 ký tự; `chunk_id` thuộc các
-  chunk của request; `definition_quote` là chuỗi con của `raw_text` của đúng chunk đó sau NFC và gộp khoảng trắng
-  (I3), dài 8–600 ký tự. Đề xuất trùng (cùng chunk, cùng `term` và trích dẫn sau chuẩn hoá) với một đề xuất trước đó
+  hạn thì `ConceptProposalError` (502) và kết quả về muộn bị bỏ. Lần gọi đang chạy bị chặn ở tầng HTTP: client do
+  router dựng (`OpenAiChatClient.from_settings`) nhận cùng `deadline_s` làm cận tổng, tính từ lúc dựng (trước lúc
+  service bắt đầu đo), và chỉ cho mỗi lần thử HTTP phần thời gian còn lại; server gửi nhỏ giọt không giữ được request
+  quá hạn.
+- **Trần số đề xuất:** mảng LLM trả về chỉ được xét tối đa `LlmTaskLimits.max_proposals_per_chunk × số chunk` phần tử
+  đầu tiên, trước khi chạy kiểm nguyên văn; phần thừa bị bỏ và đếm vào `rejected_count` (lý do `proposal_limit`).
+- **Cổng kiểm từng đề xuất:** `term` không rỗng sau khi gộp khoảng trắng và tối đa `MAX_TERM_CHARS` ký tự (đọc từ
+  ràng buộc của `ConceptPair.term`); `chunk_id` thuộc các chunk của request; `definition_quote` là chuỗi con của
+  `raw_text` của đúng chunk đó sau NFC và gộp khoảng trắng (I3), dài trong giới hạn của `ConceptPair.definition_quote`
+  (8–600 ký tự). Đề xuất trùng (cùng chunk, cùng `term` và trích dẫn sau chuẩn hoá) với một đề xuất trước đó
   trong cùng phản hồi hoặc với một cặp đã có của chunk (mọi trạng thái, kể cả bị từ chối) không được lưu lại. Mỗi
   chunk lưu tối đa `MAX_PAIRS_PER_CHUNK` cặp trong một lần đề xuất (đúng giới hạn nêu trong prompt); đề xuất đạt
   nhưng vượt số đó bị loại (`chunk_limit`). Đề xuất không đạt, trùng hay vượt số chỉ được đếm vào `rejected_count`;
@@ -47,15 +52,33 @@ from ..domain.vault import ConceptPair, ConceptPairStatus
 from ..infrastructure.llm_config import LlmTaskLimits
 from .concept_proposal_prompt import MAX_PAIRS_PER_CHUNK, build_messages, build_retry_messages
 
+
+def _field_max_length(model: type[BaseModel], field: str) -> int:
+    """Giới hạn `max_length` khai báo trên một trường của model, để không chép cứng con số của `domain`."""
+    for constraint in model.model_fields[field].metadata:
+        limit = getattr(constraint, "max_length", None)
+        if isinstance(limit, int):
+            return limit
+    raise LookupError(f"{model.__name__}.{field} không khai báo max_length")
+
+
 MIN_PROPOSAL_CHUNKS = 1
 MAX_PROPOSAL_CHUNKS = 20
-DEFAULT_MAX_TOKENS = 4096
-MAX_TERM_CHARS = 120
 TASK_NAME = "concept_pair_proposal"
 DEFAULT_LIMITS = LlmTaskLimits()
+DEFAULT_MAX_TOKENS = DEFAULT_LIMITS.max_tokens
+"""Mặc định của `LlmTaskLimits.max_tokens`; giữ tên cho script đánh giá."""
+MAX_TERM_CHARS = _field_max_length(ConceptPair, "term")
+"""Độ dài tối đa của `term`, đọc từ ràng buộc của `ConceptPair`."""
 
 RejectReason = Literal[
-    "quote_not_verbatim", "unknown_chunk", "invalid_term", "invalid_quote", "duplicate", "chunk_limit"
+    "quote_not_verbatim",
+    "unknown_chunk",
+    "invalid_term",
+    "invalid_quote",
+    "duplicate",
+    "chunk_limit",
+    "proposal_limit",
 ]
 
 _FENCE_RE = re.compile(r"```[A-Za-z0-9_-]*[ \t]*\n?(.*?)```", re.DOTALL)
@@ -302,20 +325,25 @@ def propose_concept_pairs(
     subject_code: str,
     chunk_ids: Sequence[str],
     now: datetime,
-    max_tokens: int = DEFAULT_MAX_TOKENS,
+    max_tokens: int | None = None,
     limits: LlmTaskLimits = DEFAULT_LIMITS,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> ConceptProposalResult:
     """Gọi LLM một lần (cộng tối đa `limits.json_retry_max` lần gọi lại khi JSON lỗi, trong hạn `limits.deadline_s`),
     kiểm từng đề xuất, lưu cặp đạt ở trạng thái `proposed`. Trả cặp đã lưu theo thứ tự LLM đề xuất, số đề xuất bị loại
-    và số đếm. `monotonic` là đồng hồ đơn điệu (giây) dùng để đo hạn; test truyền đồng hồ giả."""
+    và số đếm. `max_tokens` mặc định là `limits.max_tokens`. `monotonic` là đồng hồ đơn điệu (giây) dùng để đo hạn;
+    test truyền đồng hồ giả."""
     chunks = _load_chunks(vault, subject_code, chunk_ids)
     stats = ProposalStats()
     try:
-        proposals = _ask(client, chunks, stats, max_tokens, limits, monotonic)
+        answered = _ask(
+            client, chunks, stats, limits.max_tokens if max_tokens is None else max_tokens, limits, monotonic
+        )
     except ConceptProposalError:
         _log(stats, "failed")
         raise
+    # Trần số phần tử được xét, áp dụng trước mọi phép kiểm (kể cả kiểm nguyên văn I3) để công việc có cận.
+    proposals = answered[: limits.max_proposals_per_chunk * len(chunks)]
     by_id = {chunk.chunk_id: chunk for chunk in chunks}
     seen = {
         _pair_key(pair.chunk_id, pair.term, pair.definition_quote)
@@ -325,12 +353,14 @@ def propose_concept_pairs(
     saved: list[ConceptPair] = []
     saved_per_chunk: Counter[str] = Counter()
     reasons: dict[RejectReason, int] = {}
+    if len(answered) > len(proposals):
+        reasons["proposal_limit"] = len(answered) - len(proposals)
     for proposal in proposals:
         outcome = _gate(proposal, by_id, seen, saved_per_chunk, now)
         if isinstance(outcome, ConceptPair):
             saved.append(vault.add_concept_pair(outcome))  # repository kiểm lại I3 trong giao dịch ghi
         else:
             reasons[outcome] = reasons.get(outcome, 0) + 1
-    rejected = len(proposals) - len(saved)
+    rejected = len(answered) - len(saved)
     _log(stats, "ok", len(saved), rejected, reasons.get("quote_not_verbatim", 0))
     return ConceptProposalResult(pairs=saved, rejected_count=rejected, rejected_by_reason=reasons, stats=stats)

@@ -1,4 +1,4 @@
-"""Dependency injection cho các router: kho dữ liệu, extractor, cấu hình chạy, author, nguồn trích dẫn, đồng hồ.
+"""Dependency injection cho các router: kho dữ liệu, Vault, extractor, cấu hình chạy, author, nguồn trích dẫn, đồng hồ.
 
 Test thay phụ thuộc bằng `app.dependency_overrides[get_xxx]`; mọi router dùng đúng các hàm ở module này.
 """
@@ -12,7 +12,7 @@ from typing import Annotated
 
 from fastapi import Depends
 
-from ..domain.repositories import AppStore
+from ..domain.repositories import AppStore, VaultRepository
 from ..infrastructure.llm_config import RuntimeConfig, load_runtime_config
 from ..infrastructure.storage import open_store_from_env
 from ..infrastructure.template_library import InMemoryTemplateRegistry
@@ -58,6 +58,14 @@ def get_clock() -> Callable[[], datetime]:
 
 
 StoreDep = Annotated[AppStore, Depends(get_store)]
+
+
+def get_vault(store: StoreDep) -> VaultRepository:
+    """Knowledge Vault nằm trong cùng kho với item và blueprint; test thay `get_store` là thay luôn Vault."""
+    return store
+
+
+VaultDep = Annotated[VaultRepository, Depends(get_vault)]
 ExtractorDep = Annotated[DocumentExtractor, Depends(get_extractor)]
 RuntimeConfigDep = Annotated[RuntimeConfig, Depends(get_runtime_config)]
 AuthorDep = Annotated[TemplateAuthor, Depends(get_template_author)]

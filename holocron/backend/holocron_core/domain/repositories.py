@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from .ingestion import IngestionItem, UploadedDocument
 from .schemas import DocumentMeta, ExamBlueprint, KnowledgeChunk
 from .twins import IdempotencyRecord
+from .vault import ConceptPair, ConceptPairStatus, VaultEdit
 
 IDEMPOTENCY_TTL = timedelta(hours=24)
 
@@ -24,6 +25,7 @@ DocumentStatus = Literal["processing", "review", "confirmed", "failed"]
 PageStatus = Literal["pending", "ok", "needs_review", "failed"]
 OutputLanguage = Literal["vi", "en"]
 SearchIndex = Literal["primary", "no_diacritics"]
+VaultEntity = Literal["chunk", "concept_pair"]
 
 
 class StorageError(Exception):
@@ -144,10 +146,6 @@ class TwinBatchRepository(Protocol):
         ...
 
 
-class AppStore(IngestionRepository, BlueprintRepository, TwinBatchRepository, Protocol):
-    """Kho mà các router hiện có dùng, cấp qua `Depends(get_store)`."""
-
-
 class DocumentRepository(Protocol):
     """Tài liệu nhập qua §6.5 và trang của nó. Trang lưu dạng JSON của model trang do tầng gọi chọn (§5.7)."""
 
@@ -201,7 +199,17 @@ class DocumentRepository(Protocol):
 
 
 class VaultRepository(Protocol):
-    """Chunk của Knowledge Vault và chỉ mục FTS5 (§5.8, §5.13). Xếp hạng BM25 không thuộc repository."""
+    """Chunk của Knowledge Vault, chỉ mục FTS5 và cặp khái niệm (§5.8, §5.13). Xếp hạng BM25 không thuộc repository.
+
+    Bất biến repository tự giữ trong mỗi giao dịch ghi, không phụ thuộc tầng gọi:
+    - I3 của cặp khái niệm: `definition_quote` là chuỗi con (NFC + gộp khoảng trắng) của `raw_text` của chunk
+      (`domain.vault.check_definition_quote`); sai ⇒ `QuoteMismatchError`, không ghi gì. Khi nạp, cặp vi phạm (ví dụ
+      DB bị sửa tay) không bao giờ được trả ra.
+    - `linked_chunk_ids` theo §12.1 (`domain.vault.link_practice_chunks`) được tính lại cho cả môn khi nhập theo lô và
+      khi sửa nhãn. Đây là dữ liệu dẫn xuất nên không tăng `version` của chunk được tính lại.
+    - `chapter_code` của cặp khái niệm chép từ chunk: sửa `chapter_code` của chunk thì cặp của nó đổi theo (version
+      của cặp tăng 1).
+    """
 
     @property
     def vault_search_available(self) -> bool:
@@ -209,9 +217,21 @@ class VaultRepository(Protocol):
         ...
 
     def add_chunk(self, chunk: KnowledgeChunk, search_body: str) -> None:
-        """Ghi chunk, `chunk_topics` và hai chỉ mục FTS5 (nếu có) trong cùng giao dịch.
+        """Ghi một chunk, `chunk_topics` và hai chỉ mục FTS5 (nếu có) trong cùng giao dịch; giữ nguyên
+        `linked_chunk_ids` của `chunk` (thao tác cấp thấp; nhập tài liệu dùng `add_chunks`).
 
-        `search_body` là văn bản đã qua bước 1–3 của ADR-006 mục 5. Tài liệu không có ⇒ `MissingReferenceError`.
+        `search_body` là token chỉ mục chính (ADR-006 mục 5) nối bằng dấu cách; chỉ mục không dấu nhận chính chuỗi đó
+        sau `domain.search_text.strip_diacritics`. Tài liệu không có ⇒ `MissingReferenceError`; trùng `chunk_id` ⇒
+        `StorageError`.
+        """
+        ...
+
+    def add_chunks(self, chunks: Sequence[KnowledgeChunk]) -> list[KnowledgeChunk]:
+        """Nhập theo lô, nguyên tử: mọi chunk chưa có được ghi (kèm chỉ mục) trong MỘT giao dịch, rồi tính lại
+        `linked_chunk_ids` của các môn liên quan; lỗi ở bất kỳ chunk nào thì không ghi gì.
+
+        Chunk đã có (cùng `chunk_id`) giữ nguyên bản đang lưu. Trả bản đang lưu của từng chunk, đúng thứ tự vào.
+        Tài liệu không có ⇒ `MissingReferenceError`.
         """
         ...
 
@@ -227,3 +247,48 @@ class VaultRepository(Protocol):
         Thiếu FTS5 ⇒ `VaultSearchUnavailableError`.
         """
         ...
+
+    def update_chunk_labels(
+        self, chunk: KnowledgeChunk, expected_version: int, edit: VaultEdit | None = None
+    ) -> KnowledgeChunk:
+        """So-và-ghi nguyên tử phần nhãn của chunk (§6.6): `chapter_code`, `category`, `tags`, `topic_keys`,
+        `label_status`, `mapping_confidence`; cùng giao dịch: `chapter_code` của cặp khái niệm thuộc chunk,
+        `linked_chunk_ids` của cả môn và người sửa (`edit`).
+
+        Văn bản (`raw_text`, `verbatim_quote`) và các field khác không được ghi. Trả chunk đã lưu với
+        `version = expected_version + 1`. Lệch version ⇒ `VersionConflictError`; không có chunk ⇒
+        `RecordNotFoundError`.
+        """
+        ...
+
+    def add_concept_pair(self, pair: ConceptPair, edit: VaultEdit | None = None) -> ConceptPair:
+        """Ghi cặp mới. Chunk không có ⇒ `MissingReferenceError`; trích dẫn không khớp nguyên văn chunk ⇒
+        `QuoteMismatchError` (I3, kiểm trong giao dịch ghi)."""
+        ...
+
+    def get_concept_pair(self, pair_id: str) -> ConceptPair | None: ...
+
+    def list_concept_pairs(
+        self, subject_code: str, chapter_code: str | None = None, status: ConceptPairStatus | None = None
+    ) -> list[ConceptPair]:
+        """Sắp theo `(chapter_code, term, pair_id)` (§6.6)."""
+        ...
+
+    def update_concept_pair(
+        self, pair: ConceptPair, expected_version: int, edit: VaultEdit | None = None
+    ) -> ConceptPair:
+        """So-và-ghi nguyên tử theo version; trả cặp với `version = expected_version + 1`.
+
+        `chunk_id`, `subject_code`, `chapter_code`, `proposed_by`, `created_at` không đổi. Lệch version ⇒
+        `VersionConflictError`; không có cặp ⇒ `RecordNotFoundError`; trích dẫn không khớp nguyên văn chunk ⇒
+        `QuoteMismatchError` (I3).
+        """
+        ...
+
+    def get_last_edit(self, entity: VaultEntity, key: str) -> VaultEdit | None:
+        """Người sửa và thời điểm của lần sửa gần nhất có `edit`; chưa sửa lần nào hoặc không có bản ghi ⇒ `None`."""
+        ...
+
+
+class AppStore(IngestionRepository, BlueprintRepository, TwinBatchRepository, VaultRepository, Protocol):
+    """Kho mà các router dùng, cấp qua `Depends(get_store)`."""

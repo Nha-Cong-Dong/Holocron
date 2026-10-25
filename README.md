@@ -21,13 +21,37 @@
 
 Đặc tả và contract: [`SPECIFICATION.md`](SPECIFICATION.md). Quy ước phát triển: [`.claude/CLAUDE.md`](.claude/CLAUDE.md).
 
+**Người dùng:** sinh viên tự ôn bằng tài liệu của chính mình. App chạy trên máy cá nhân, dạng desktop (Tauri). Người dùng đầu tiên là chính người làm dự án, một sinh viên năm 3.
+
+## Điểm khác biệt
+
+Nhãn: **ĐÃ CÓ** là chạy được trên nhánh `develop` hôm nay. **SẼ LÀM** là nằm trong phạm vi MVP và đang làm. **HƯỚNG** là định hướng sau MVP, chưa có code.
+
+| Điểm khác biệt | Trạng thái |
+|---|---|
+| Mọi câu hỏi và đáp án gắn với trích dẫn nguyên văn từ tài liệu của chính người dùng (bất biến I3) | **SẼ LÀM.** Bước kiểm "trích dẫn phải là chuỗi con của văn bản nguồn" đã có trong model. Knowledge Vault cung cấp trích dẫn thật thì đang làm |
+| Chạy local, tài liệu không rời máy | **ĐÃ CÓ** với backend (chỉ nghe `127.0.0.1`). Gói desktop Tauri: **SẼ LÀM**. Ngoại lệ: khi bật LLM, phần văn bản gửi đi rời máy (xem mục "Dữ liệu và LLM") |
+| Xét duyệt trước khi tính: con người xác nhận dữ liệu đọc từ đề trước khi đề được dùng (bất biến I5) | **ĐÃ CÓ.** Ingestion Gate có hàng đợi sửa và duyệt; hiện dùng extractor giả lập |
+| OCR tiếng Việt có dấu, chạy offline, đối chiếu chéo hai lượt đọc trên các con số, kèm màn xem lại theo trang | **SẼ LÀM** (ADR-008: Tesseract `vie` cùng RapidOCR so số) |
+| Câu lý thuyết trắc nghiệm sinh tất định từ cặp khái niệm–trích dẫn đã xác nhận | **SẼ LÀM** (ADR-007) |
+| Câu tự luận "Trình bày khái niệm X" được chấm hoàn toàn offline: báo "khớp x/y ý" cùng các ý còn thiếu, không cho điểm tuyệt đối | **SẼ LÀM nếu kịp mốc 29/10** (spec §5.14); không kịp thì chuyển sau MVP |
+| Câu tính toán do code chạy trong sandbox tính, LLM không tính nhẩm (bất biến I1) | **ĐÃ CÓ** cơ chế sandbox, template Round Robin và SJF dùng làm fixture. Template cho môn demo (ARM, XSTK): **HƯỚNG**, sau MVP |
+| Kiến trúc không gắn với một môn: dạng bài nằm trong template và dữ liệu, không nằm trong code | **SẼ LÀM.** Đây là nguyên tắc thiết kế; vẫn còn nợ gắn cứng CPU Scheduling (ARCH-001, ADR-005) |
+| Mọi môn, nhiều định dạng tài liệu (DOCX, PPTX, ảnh), chấm tự luận bằng LLM (AnswerJudge), model chạy local | **HƯỚNG** |
+
+## Dữ liệu và LLM
+
+- LLM là **tuỳ chọn**. Không cấu hình LLM thì phần nhập PDF, Vault, sinh câu lý thuyết và chấm tự luận offline vẫn chạy (spec §11.4). `GET /v1/runtime` báo từng khả năng có dùng được hay không. Phần báo theo từng khả năng đang làm.
+- Khi bật LLM, văn bản tài liệu cần xử lý được gửi tới endpoint cấu hình ở `HOLOCRON_LLM_BASE_URL`. **Trong hackathon, endpoint này là gateway của ban tổ chức**, nên dữ liệu đi qua máy chủ của ban tổ chức. Endpoint đổi được sang nhà cung cấp khác hoặc model chạy local, miễn là có giao thức kiểu OpenAI.
+
 ## Trạng thái hiện tại
 
 - **Ba môn demo của MVP** là Kỹ thuật vi xử lý (ARM Assembly), Xác suất thống kê và Triết học Mác–Lênin (`SPECIFICATION.md` §1.5); template của môn Vi xử lý chưa có. Code hiện có hai template đã kiểm chứng là Round Robin và SJF không ưu tiên (thời gian chờ trung bình); chúng chỉ còn là fixture kiểm thử và walkthrough. Nhập đề qua upload hiện chỉ hỗ trợ dạng Round Robin; SJF mới dùng được ở bước sinh câu hỏi.
 - **Đọc đề vẫn là giả lập:** extractor là `MockDualPassExtractor`, trả cùng một đề Round Robin mẫu cho mọi file hợp lệ; chưa có adapter VLM thật.
 - **Sinh câu hỏi:** đã có `POST /v1/blueprints/{id}/twins` và trang xem twin; chưa có `POST /v1/blueprints` nên chưa tạo được blueprint từ đề đã duyệt qua API. Chưa có adapter LLM viết template nên pipeline dùng template đã kiểm chứng làm fallback.
 - **Chưa có Knowledge Vault đa môn**, chưa có ôn lý thuyết hay chấm câu trả lời.
-- **Phạm vi MVP là đa môn** (`SPECIFICATION.md` §1, v0.4): desktop app Tauri cho sinh viên tự ôn luyện, ba môn demo. Thiết kế ở ADR-005/006/007/008 (*Chấp nhận*); contract hiện hành trong `SPECIFICATION.md` §5–§12 vẫn có hiệu lực cho tới khi được cập nhật theo các ADR này.
+- **Phạm vi MVP là đa môn** (`SPECIFICATION.md` §1): desktop app Tauri cho sinh viên tự ôn luyện, ba môn demo. Thiết kế ở ADR-005/006/007/008 (*Chấp nhận*). Contract cho bộ nhập PDF, Vault, blueprint, SQLite, essay và chế độ khả năng nằm ở `SPECIFICATION.md` §5–§6; phần lớn chưa có code.
+- **Lộ trình** (`SPECIFICATION.md` §16): ưu tiên lát cắt dọc PDF → Vault → câu lý thuyết MCQ → màn luyện tập. Mốc MVP cơ bản là 28/10; đủ phạm vi dự kiến trong 1–4/11; dư địa đến 7/11.
 
 ## Cấu trúc dự án
 
@@ -121,7 +145,7 @@ npm run typecheck
 npm run build
 ```
 
-Khi chưa đặt các biến `HOLOCRON_VLM_*`, hệ thống chạy chế độ demo với dữ liệu mẫu.
+Khi chưa đặt các biến `HOLOCRON_VLM_*`, bản hiện tại đọc đề bằng extractor giả lập với dữ liệu mẫu. Theo spec mới, LLM và VLM là tuỳ chọn và `GET /v1/runtime` sẽ báo từng khả năng (§5.12, §11.4); phần này chưa có code. Danh sách biến môi trường xem ở [`.env.example`](.env.example).
 
 ### Walkthrough end-to-end
 

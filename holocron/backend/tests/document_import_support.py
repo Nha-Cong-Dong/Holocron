@@ -18,7 +18,7 @@ from holocron_core.infrastructure.document_readers.tiers import failed_page
 from holocron_core.infrastructure.storage.original_files import OriginalFileStore
 from holocron_core.routers.api import app, get_clock, get_store
 from holocron_core.routers.documents import get_import_runtime, get_pdf_reader
-from holocron_core.services.document_import import ImportRuntime, SynchronousImportQueue
+from holocron_core.services.document_import import ImportQueue, ImportRuntime, KeyedLocks, SynchronousImportQueue
 from tests.vault_support import NOW
 
 
@@ -109,6 +109,7 @@ class ImportEnv:
     files: OriginalFileStore
     queue: SynchronousImportQueue
     reader: FakePdfReader
+    runtime: ImportRuntime
 
     def post(
         self,
@@ -127,13 +128,28 @@ class ImportEnv:
         )
 
 
-def install(store: AppStore, files_dir: Path, queue: SynchronousImportQueue, reader: FakePdfReader) -> ImportEnv:
-    """Thay kho, bộ nhập và đồng hồ của `app`; người gọi PHẢI `app.dependency_overrides.clear()` sau test."""
+def install(
+    store: AppStore,
+    files_dir: Path,
+    queue: SynchronousImportQueue,
+    reader: FakePdfReader,
+    *,
+    locks: KeyedLocks | None = None,
+    runtime_queue: ImportQueue | None = None,
+) -> ImportEnv:
+    """Thay kho, bộ nhập và đồng hồ của `app`; người gọi PHẢI `app.dependency_overrides.clear()` sau test.
+
+    `runtime_queue` (mặc định `queue`) là hàng đợi runtime thật sự dùng, để test thay bằng hàng đợi lỗi.
+    """
     files = OriginalFileStore(files_dir)
-    runtime = ImportRuntime(files=files, queue=queue)
+    runtime = ImportRuntime(
+        files=files,
+        queue=queue if runtime_queue is None else runtime_queue,
+        locks=KeyedLocks() if locks is None else locks,
+    )
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_import_runtime] = lambda: runtime
     app.dependency_overrides[get_pdf_reader] = lambda: reader
     clock = Clock()
     app.dependency_overrides[get_clock] = lambda: clock
-    return ImportEnv(client=TestClient(app), store=store, files=files, queue=queue, reader=reader)
+    return ImportEnv(client=TestClient(app), store=store, files=files, queue=queue, reader=reader, runtime=runtime)

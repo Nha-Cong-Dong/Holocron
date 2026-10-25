@@ -10,6 +10,7 @@ import io
 import json
 import logging
 import socket
+import traceback
 import urllib.error
 import urllib.request
 import urllib.response
@@ -323,3 +324,170 @@ def test_headers_on_the_wire_keep_the_custom_user_agent() -> None:
     [headers] = handler.sent_headers
     assert headers["User-agent"] == USER_AGENT and "Python-urllib" not in headers["User-agent"]
     assert headers["Authorization"] == f"Bearer {SECRET}" and headers["Content-type"] == "application/json"
+
+
+# --------------------------------------------------------------------------- #
+# Khoá không hợp lệ cho header: không được lộ qua exception
+# --------------------------------------------------------------------------- #
+
+UNSAFE_KEYS = [
+    "sk-test-0123\n456789-must-never-leak",
+    "sk-test-0123\r456789-must-never-leak",
+    "sk-test-0123\x00456789-must-never-leak",
+    "sk-test-0123\r\nX-Injected: 1",
+    "sk-test-0123 456789-must-never-leak",
+    "sk-test-0123\t456789-must-never-leak",
+    "sk-test-0123\x7f456789-must-never-leak",
+    "sk-test-0123ạ456789-must-never-leak",
+]
+UNSAFE_IDS = ["lf", "cr", "nul", "crlf-injection", "space", "tab", "del", "non-ascii"]
+
+
+def _chain_text(exc: BaseException) -> str:
+    """Toàn bộ chuỗi exception (thông điệp, `__cause__`, `__context__`) như khi in traceback."""
+    return "".join(traceback.format_exception(exc))
+
+
+@pytest.mark.parametrize("key", UNSAFE_KEYS, ids=UNSAFE_IDS)
+@pytest.mark.parametrize("variable", ["HOLOCRON_LLM_API_KEY", "HOLOCRON_VLM_API_KEY"])
+def test_unsafe_key_is_a_config_error_naming_only_the_variable(key: str, variable: str) -> None:
+    env = {
+        "HOLOCRON_LLM_BASE_URL": BASE_URL,
+        "HOLOCRON_LLM_MODEL_EXTRACT": MODEL,
+        "HOLOCRON_VLM_BASE_URL": BASE_URL,
+        "HOLOCRON_VLM_MODEL": MODEL,
+        variable: key,
+    }
+    with pytest.raises(ConfigError, match=variable) as excinfo:
+        load_runtime_config(env)
+    assert excinfo.value.__cause__ is None and excinfo.value.__context__ is None
+    for fragment in (key, key.strip(), "456789-must-never-leak", "X-Injected"):
+        assert fragment not in _chain_text(excinfo.value)
+
+
+@pytest.mark.parametrize("variable", ["HOLOCRON_LLM_BASE_URL", "HOLOCRON_LLM_MODEL_EXTRACT", "HOLOCRON_VLM_MODEL"])
+@pytest.mark.parametrize("bad", ["a\nb", "a\rb", "a\x00b"], ids=["lf", "cr", "nul"])
+def test_control_characters_in_other_variables_are_config_errors(variable: str, bad: str) -> None:
+    with pytest.raises(ConfigError, match=variable) as excinfo:
+        load_runtime_config({variable: f"https://host.example.test/{bad}"})
+    assert bad not in str(excinfo.value) and "host.example.test" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize("key", UNSAFE_KEYS, ids=UNSAFE_IDS)
+def test_client_refuses_an_unsafe_key_without_echoing_it(key: str) -> None:
+    with pytest.raises(ConfigError, match="HOLOCRON_LLM_API_KEY") as excinfo:
+        OpenAiChatClient(base_url=BASE_URL, api_key=SecretStr(key), model=MODEL, timeout_s=1.0)
+    assert "456789-must-never-leak" not in _chain_text(excinfo.value)
+
+
+def test_control_characters_in_the_base_url_are_refused() -> None:
+    with pytest.raises(ConfigError, match="HOLOCRON_LLM_BASE_URL") as excinfo:
+        OpenAiChatClient(base_url="https://a.test/v1\r\nX: y", api_key=SecretStr(SECRET), model=MODEL, timeout_s=1.0)
+    assert SECRET not in _chain_text(excinfo.value) and "a.test" not in str(excinfo.value)
+
+
+def _assert_no_secret_anywhere(exc: BaseException, secret: str) -> None:
+    assert exc.__cause__ is None and exc.__context__ is None
+    for text in (str(exc), repr(exc), _chain_text(exc)):
+        assert secret not in text and "Authorization" not in text and "Bearer" not in text
+
+
+def test_error_while_building_the_request_does_not_carry_the_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(ScriptedTransport())
+
+    def explode(messages: object, *, max_tokens: int) -> urllib.request.Request:
+        raise ValueError(f"Invalid header value b'Bearer {SECRET}'")
+
+    monkeypatch.setattr(client, "build_request", explode)
+    with pytest.raises(LlmUpstreamError, match="ValueError") as excinfo:
+        client.complete(MESSAGES, max_tokens=5)
+    assert excinfo.value.attempts == 0
+    _assert_no_secret_anywhere(excinfo.value, SECRET)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ValueError(f"Invalid header value b'Bearer {SECRET}'"),
+        UnicodeEncodeError("latin-1", f"Bearer {SECRET}", 7, 8, "ordinal not in range(256)"),
+        TypeError(SECRET),
+        LookupError(SECRET),
+    ],
+    ids=["value-error", "unicode-encode-error", "type-error", "lookup-error"],
+)
+def test_unexpected_error_while_sending_does_not_carry_the_key(error: BaseException) -> None:
+    transport = ScriptedTransport(error, (200, _ok_body("never")))
+    with pytest.raises(LlmUpstreamError) as excinfo:
+        _client(transport).complete(MESSAGES, max_tokens=5)
+    assert excinfo.value.attempts == 1 and len(transport.requests) == 1  # không thử lại
+    assert type(error).__name__ in str(excinfo.value)
+    _assert_no_secret_anywhere(excinfo.value, SECRET)
+
+
+def test_http_client_header_error_with_the_real_transport_does_not_carry_the_key() -> None:
+    """Khoá có xuống dòng lọt qua (ví dụ do code khác dựng client): `http.client.putheader` ném `ValueError` chứa
+    nguyên giá trị header TRƯỚC khi mở kết nối; adapter đổi thành `LlmUpstreamError` không mang lỗi gốc."""
+    leaked = "sk-test-0123456789\nmust-never-leak"
+    client = OpenAiChatClient(
+        base_url=BASE_URL, api_key=SecretStr(SECRET), model=MODEL, timeout_s=1.0, transport=UrllibTransport()
+    )
+    client._api_key = SecretStr(leaked)  # giả lập khoá hỏng đã qua được bước kiểm lúc tạo client
+    with pytest.raises(LlmUpstreamError, match="ValueError") as excinfo:
+        client.complete(MESSAGES, max_tokens=5)
+    _assert_no_secret_anywhere(excinfo.value, "must-never-leak")
+
+
+def test_network_errors_after_retries_do_not_chain_the_original_exception() -> None:
+    transport = ScriptedTransport(OSError(SECRET), OSError(SECRET), OSError(SECRET))
+    with pytest.raises(LlmUpstreamError, match="OSError") as excinfo:
+        _client(transport).complete(MESSAGES, max_tokens=5)
+    _assert_no_secret_anywhere(excinfo.value, SECRET)
+
+
+def test_malformed_envelope_error_does_not_chain_the_validation_error() -> None:
+    body = b'{"choices": "' + SECRET.encode() + b'"}'
+    with pytest.raises(LlmUpstreamError) as excinfo:
+        _client(ScriptedTransport((200, body))).complete(MESSAGES, max_tokens=5)
+    _assert_no_secret_anywhere(excinfo.value, SECRET)
+
+
+# --------------------------------------------------------------------------- #
+# Không có nhà cung cấp mặc định (spec v0.6 §11.2)
+# --------------------------------------------------------------------------- #
+
+
+def test_from_settings_names_every_missing_variable_and_never_defaults_to_a_provider() -> None:
+    with pytest.raises(ConfigError) as excinfo:
+        OpenAiChatClient.from_settings(LlmSettings(api_key=SecretStr(SECRET)), model=None)
+    message = str(excinfo.value)
+    assert "HOLOCRON_LLM_BASE_URL" in message and "HOLOCRON_LLM_MODEL_EXTRACT" in message
+    assert "HOLOCRON_LLM_API_KEY" not in message and SECRET not in message
+    settings = load_runtime_config({"HOLOCRON_LLM_API_KEY": SECRET}).llm
+    assert settings.base_url is None and settings.model_extract is None and settings.model_author is None
+    with pytest.raises(ConfigError, match="HOLOCRON_LLM_BASE_URL"):
+        OpenAiChatClient.from_settings(settings, model=settings.model_extract)
+
+
+def test_model_author_defaults_to_model_extract() -> None:
+    llm = load_runtime_config({"HOLOCRON_LLM_MODEL_EXTRACT": "m-x"}).llm
+    assert (llm.model_extract, llm.model_author) == ("m-x", "m-x")
+    llm = load_runtime_config({"HOLOCRON_LLM_MODEL_EXTRACT": "m-x", "HOLOCRON_LLM_MODEL_AUTHOR": "m-a"}).llm
+    assert (llm.model_extract, llm.model_author) == ("m-x", "m-a")
+
+
+@pytest.mark.parametrize("missing", ["HOLOCRON_LLM_BASE_URL", "HOLOCRON_LLM_API_KEY", "HOLOCRON_LLM_MODEL_EXTRACT"])
+@pytest.mark.parametrize("blank", [None, "", "   \t "], ids=["unset", "empty", "whitespace"])
+def test_llm_is_configured_only_with_all_three_variables(missing: str, blank: str | None) -> None:
+    env = {
+        "HOLOCRON_LLM_BASE_URL": BASE_URL,
+        "HOLOCRON_LLM_API_KEY": SECRET,
+        "HOLOCRON_LLM_MODEL_EXTRACT": MODEL,
+        "HOLOCRON_LLM_MODEL_AUTHOR": "author-model",
+    }
+    assert load_runtime_config(env).llm_configured
+    if blank is None:
+        del env[missing]
+    else:
+        env[missing] = blank
+    config = load_runtime_config(env)
+    assert not config.llm_configured and config.llm.missing == (missing,)

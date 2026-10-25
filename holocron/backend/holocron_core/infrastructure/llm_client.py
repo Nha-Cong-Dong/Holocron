@@ -12,6 +12,11 @@
   `Authorization` không bị gửi sang host khác.
 - Khoá là `SecretStr`, chỉ lộ giá trị lúc dựng header; không có trong `repr`, log hay thông điệp lỗi. Thông điệp lỗi
   không chứa địa chỉ endpoint, tên model, body request hay body phản hồi.
+- Khoá không hợp lệ cho header (khoảng trắng, xuống dòng, ký tự điều khiển, ngoài ASCII) bị từ chối ngay khi tạo
+  client (`ConfigError` chỉ nêu tên biến). Lỗi lúc dựng hay gửi request (lỗi mạng và lỗi dữ liệu
+  `REQUEST_DATA_ERRORS` mà urllib, http.client hay json ném ra, ví dụ `ValueError` "Invalid header value" của
+  `putheader`) đều thành `LlmUpstreamError` chỉ nêu tên lớp lỗi; lỗi gốc (có thể mang nguyên giá trị header) KHÔNG được
+  giữ trong `__cause__` hay `__context__`.
 """
 
 from __future__ import annotations
@@ -27,12 +32,25 @@ from importlib import metadata
 from pydantic import BaseModel, Field, SecretStr, ValidationError
 
 from ..domain.llm import ChatCompletionResult, ChatMessage, LlmUpstreamError, TokenUsage
-from .llm_config import ENV_LLM_BASE_URL, ConfigError, LlmSettings
+from .llm_config import (
+    ENV_LLM_API_KEY,
+    ENV_LLM_BASE_URL,
+    ENV_LLM_MODEL_EXTRACT,
+    ConfigError,
+    LlmSettings,
+    has_control_characters,
+    is_valid_key,
+)
 
 HTTP_RETRY_MAX = 2
 BACKOFF_BASE_S = 0.5
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 PACKAGE_NAME = "holocron-core"
+
+# Lỗi dữ liệu mà urllib, http.client và json có thể ném khi dựng hoặc gửi request: giá trị header sai (`ValueError`,
+# kể cả `UnicodeEncodeError`), URL sai (`ValueError`), kiểu body sai (`TypeError`), codec (`LookupError`). Thông điệp
+# của chúng có thể chứa nguyên giá trị header nên adapter không bao giờ giữ lại exception gốc.
+REQUEST_DATA_ERRORS: tuple[type[Exception], ...] = (ValueError, TypeError, LookupError)
 
 
 def package_version() -> str:
@@ -130,8 +148,13 @@ class OpenAiChatClient:
         transport: Transport | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        if not base_url.lower().startswith(("https://", "http://")):
+        if not base_url.lower().startswith(("https://", "http://")) or has_control_characters(base_url):
             raise ConfigError(f"{ENV_LLM_BASE_URL} không hợp lệ: cần bắt đầu bằng https:// hoặc http://")
+        if not is_valid_key(api_key.get_secret_value()):
+            raise ConfigError(
+                f"{ENV_LLM_API_KEY} không hợp lệ: chỉ được chứa ký tự ASCII in được, không có khoảng trắng, "
+                "xuống dòng hay ký tự điều khiển"
+            )
         self._url = base_url.rstrip("/") + "/chat/completions"
         self._api_key = api_key
         self._model = model
@@ -141,10 +164,16 @@ class OpenAiChatClient:
         self._sleep = sleep
 
     @classmethod
-    def from_settings(cls, settings: LlmSettings, *, model: str) -> OpenAiChatClient:
-        """Client cho `model` từ cấu hình; thiếu khoá ⇒ `ConfigError` (nêu tên biến, không nêu giá trị)."""
-        if settings.api_key is None:
-            raise ConfigError("HOLOCRON_LLM_API_KEY chưa được đặt")
+    def from_settings(cls, settings: LlmSettings, *, model: str | None) -> OpenAiChatClient:
+        """Client cho `model` từ cấu hình; thiếu biến ⇒ `ConfigError` (nêu tên biến, không nêu giá trị).
+
+        `model` là `None` khi biến model tương ứng chưa đặt; khi đó báo thiếu `HOLOCRON_LLM_MODEL_EXTRACT`.
+        """
+        missing = [name for name in settings.missing if name != ENV_LLM_MODEL_EXTRACT]
+        if model is None:
+            missing.append(ENV_LLM_MODEL_EXTRACT)
+        if settings.base_url is None or settings.api_key is None or model is None:
+            raise ConfigError(f"chưa đặt biến: {', '.join(missing)}")
         return cls(base_url=settings.base_url, api_key=settings.api_key, model=model, timeout_s=settings.timeout_s)
 
     def __repr__(self) -> str:
@@ -170,18 +199,27 @@ class OpenAiChatClient:
         )
 
     def complete(self, messages: Sequence[ChatMessage], *, max_tokens: int) -> ChatCompletionResult:
-        request = self.build_request(messages, max_tokens=max_tokens)
+        # Lỗi được ghi lại thành chuỗi trong khối `except` rồi ném SAU khối đó, để exception mới không mang
+        # `__context__` là lỗi gốc (lỗi của http.client có thể chứa nguyên giá trị header `Authorization`).
+        request: urllib.request.Request | None = None
+        failure = ""
+        try:
+            request = self.build_request(messages, max_tokens=max_tokens)
+        except REQUEST_DATA_ERRORS as exc:
+            failure = f"không dựng được yêu cầu gửi LLM ({type(exc).__name__})"
+        if request is None:
+            raise LlmUpstreamError(failure, attempts=0)
         last_failure = ""
         for attempt in range(1, self._retry_max + 2):
             if attempt > 1:
                 self._sleep(BACKOFF_BASE_S * 2 ** (attempt - 2))
-            try:
-                status, body = self._transport(request, self._timeout_s)
-            except (OSError, http.client.HTTPException) as exc:
-                last_failure = f"lỗi mạng {type(exc).__name__}"
-                continue
-            except LlmUpstreamError as exc:
-                raise LlmUpstreamError(str(exc), attempts=attempt) from None
+            outcome = self._send(request)
+            if isinstance(outcome, _Failure):
+                if outcome.retryable:
+                    last_failure = outcome.message
+                    continue
+                raise LlmUpstreamError(outcome.message, attempts=attempt)
+            status, body = outcome
             if _retryable(status):
                 last_failure = f"HTTP {status}"
                 continue
@@ -191,13 +229,37 @@ class OpenAiChatClient:
         attempts = self._retry_max + 1
         raise LlmUpstreamError(f"LLM không phản hồi được sau {attempts} lần thử ({last_failure})", attempts=attempts)
 
+    def _send(self, request: urllib.request.Request) -> tuple[int, bytes] | _Failure:
+        """Một lần gửi. Lỗi chỉ được giữ lại dưới dạng tên lớp và thông điệp do adapter đặt, không giữ exception gốc."""
+        try:
+            return self._transport(request, self._timeout_s)
+        except (OSError, http.client.HTTPException) as exc:
+            return _Failure(f"lỗi mạng {type(exc).__name__}", retryable=True)
+        except LlmUpstreamError as exc:
+            return _Failure(str(exc), retryable=False)
+        except REQUEST_DATA_ERRORS as exc:
+            return _Failure(f"không gửi được yêu cầu tới LLM ({type(exc).__name__})", retryable=False)
+
+
+class _Failure:
+    """Kết quả thất bại của một lần gửi: thông điệp an toàn (không khoá, header, endpoint hay body)."""
+
+    __slots__ = ("message", "retryable")
+
+    def __init__(self, message: str, *, retryable: bool) -> None:
+        self.message = message
+        self.retryable = retryable
+
 
 def _parse(body: bytes, attempts: int) -> ChatCompletionResult:
     """Lấy `choices[0].message.content` và `usage`; phản hồi sai dạng ⇒ `LlmUpstreamError` (không kèm nội dung)."""
+    envelope: _Envelope | None = None
     try:
         envelope = _Envelope.model_validate_json(body)
     except ValidationError:
-        raise LlmUpstreamError("phản hồi của LLM không đúng dạng chat completions", attempts=attempts) from None
+        envelope = None
+    if envelope is None:
+        raise LlmUpstreamError("phản hồi của LLM không đúng dạng chat completions", attempts=attempts)
     return ChatCompletionResult(
         content=envelope.choices[0].message.content, usage=envelope.token_usage(), attempts=attempts
     )

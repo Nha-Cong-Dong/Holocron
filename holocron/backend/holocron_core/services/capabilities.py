@@ -1,7 +1,9 @@
 """Tính danh sách khả năng của app (spec v0.6 §5.12, §11.4) từ cấu hình và kết quả kiểm cục bộ; không gọi mạng.
 
-LLM đã cấu hình mà gateway đang lỗi vẫn là `available = true`; lỗi lúc gọi trả 502 (§6.0). Chưa nối vào
-`GET /v1/runtime`: đổi response đó phải sửa `tests/test_llm_config.py`, việc đang chờ người dùng duyệt (§17 D12).
+LLM "đã cấu hình" khi đủ ba biến `HOLOCRON_LLM_BASE_URL`, `HOLOCRON_LLM_API_KEY`, `HOLOCRON_LLM_MODEL_EXTRACT`
+(`RuntimeConfig.llm_configured`, spec v0.6 §11.2; không có nhà cung cấp mặc định). LLM đã cấu hình mà gateway đang lỗi
+vẫn là `available = true`; lỗi lúc gọi trả 502 (§6.0). Chưa nối vào `GET /v1/runtime` (việc đó sửa
+`routers/runtime.py` và `tests/test_llm_config.py` theo §17 D12, làm ở một thay đổi riêng).
 
 Thứ tự xét lý do cho mỗi khả năng: chưa có code trong bản đang chạy (`not_implemented`) → thiếu cấu hình LLM/VLM →
 lỗi kiểm cục bộ do tầng gọi cấp (binary Tesseract, unicharset, lượt đọc thứ hai) → khả dụng.
@@ -25,8 +27,8 @@ VLM_CAPABILITIES: frozenset[CapabilityName] = frozenset({"vlm"})
 
 REASON_DETAILS_VI: dict[CapabilityReason, str] = {
     "llm_not_configured": (
-        "Chưa cấu hình LLM: đặt biến môi trường HOLOCRON_LLM_API_KEY (và HOLOCRON_LLM_BASE_URL, "
-        "HOLOCRON_LLM_MODEL_EXTRACT nếu cần) cho backend rồi khởi động lại."
+        "Chưa cấu hình LLM: đặt đủ ba biến môi trường HOLOCRON_LLM_BASE_URL, HOLOCRON_LLM_API_KEY và "
+        "HOLOCRON_LLM_MODEL_EXTRACT cho backend rồi khởi động lại."
     ),
     "vlm_not_configured": (
         "Chưa cấu hình VLM: đặt đủ HOLOCRON_VLM_BASE_URL, HOLOCRON_VLM_API_KEY và HOLOCRON_VLM_MODEL "

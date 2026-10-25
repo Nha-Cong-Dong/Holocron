@@ -1,6 +1,6 @@
 """`services/capabilities.compute_capabilities` (spec v0.6 §5.12, §11.4). Không gọi mạng, không đọc môi trường máy chạy.
 
-`GET /v1/runtime` chưa trả danh sách này (đổi response phải sửa `tests/test_llm_config.py`, chờ duyệt D12).
+`GET /v1/runtime` chưa trả danh sách này (cần sửa `routers/runtime.py`, ngoài phạm vi thay đổi hiện tại).
 """
 
 import pytest
@@ -62,6 +62,21 @@ def test_with_llm_the_concept_pair_proposal_is_available() -> None:
     capabilities = _by_name(compute_capabilities(load_runtime_config(LLM_ENV)))
     proposal = capabilities["concept_pair_llm_proposal"]
     assert proposal.available and proposal.reason is None and proposal.detail_vi is None
+
+
+@pytest.mark.parametrize("missing", list(LLM_ENV))
+@pytest.mark.parametrize("blank", [None, "", "   "], ids=["unset", "empty", "whitespace"])
+def test_any_missing_llm_variable_makes_llm_capabilities_unavailable(missing: str, blank: str | None) -> None:
+    """Không có nhà cung cấp mặc định (spec v0.6 §11.2): thiếu một trong ba biến là chưa cấu hình LLM."""
+    env = {key: value for key, value in LLM_ENV.items() if key != missing}
+    if blank is not None:
+        env[missing] = blank
+    every = set(CAPABILITY_NAMES)
+    capabilities = _by_name(compute_capabilities(load_runtime_config(env), implemented=every))
+    for name in ("concept_pair_llm_proposal", "essay_grading_llm", "template_authoring_llm"):
+        assert (capabilities[name].available, capabilities[name].reason) == (False, "llm_not_configured")
+    error = unavailable_error(list(capabilities.values()), "concept_pair_llm_proposal")
+    assert error is not None and missing in error.message and SECRET not in error.message
 
 
 def test_capabilities_without_code_on_this_build_are_not_implemented_even_when_configured() -> None:

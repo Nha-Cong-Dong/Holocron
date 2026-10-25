@@ -61,7 +61,7 @@ const CAPABILITY_REASON_HINT_VI: Record<CapabilityReason, string> = {
 };
 
 const MESSAGES: Record<Exclude<ErrorKind, "network" | "capability" | "blocking">, string> = {
-  server: "Backend không phản hồi đúng. Kiểm tra backend đang chạy rồi thử lại.",
+  server: "Không kết nối được backend, hoặc backend vừa gặp lỗi. Kiểm tra backend đang chạy rồi thử lại.",
   llm_upstream: "Dịch vụ LLM đang lỗi tạm thời. Thử lại sau ít phút.",
   version_conflict: "Dữ liệu đã được sửa ở nơi khác hoặc không còn sửa được. Tải lại bản mới nhất rồi làm lại.",
   state_conflict: "Thao tác này không còn phù hợp với trạng thái hiện tại. Tải lại để xem trạng thái mới nhất.",

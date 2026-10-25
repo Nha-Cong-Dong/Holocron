@@ -60,7 +60,8 @@ interface RequestSpec {
 
 async function request<T>(path: string, spec: RequestSpec, options: ClassifyOptions = {}): Promise<T> {
   const base = apiBase();
-  const init: RequestInit = { method: spec.method, headers: { ...authHeaders(), ...spec.headers } };
+  // Header xác thực gộp sau cùng để header riêng của request không ghi đè được token.
+  const init: RequestInit = { method: spec.method, headers: { ...spec.headers, ...authHeaders() } };
   if (spec.body !== undefined) {
     init.body = spec.body;
   }
@@ -146,7 +147,7 @@ export const realApi: HolocronApi = {
     if (quantum !== null) {
       form.append("quantum", String(quantum));
     }
-    return request<UploadResponse>("/v1/ingestion/upload", { method: "POST", body: form });
+    return request<UploadResponse>("/v1/ingestion/upload", { method: "POST", body: form }, { context: "exam_upload" });
   },
 
   getItem: (itemId) => request<IngestionItem>(`/v1/ingestion/items/${segment(itemId)}`, { method: "GET" }),
@@ -155,19 +156,29 @@ export const realApi: HolocronApi = {
     const payload: TablePatchRequest = { editor_id: LOCAL_EDITOR_ID, expected_version: expectedVersion, patches };
     return request<IngestionItem>(`/v1/ingestion/items/${segment(itemId)}/table`, jsonSpec("PATCH", payload), {
       versioned: true,
+      context: "table_edit",
     });
   },
 
   flagNonCloneable: (itemId, reason) => {
     const payload: NonCloneableRequest = { editor_id: LOCAL_EDITOR_ID, reason };
-    return request<IngestionItem>(`/v1/ingestion/items/${segment(itemId)}/non-cloneable`, jsonSpec("POST", payload));
+    return request<IngestionItem>(`/v1/ingestion/items/${segment(itemId)}/non-cloneable`, jsonSpec("POST", payload), {
+      context: "item_review",
+    });
   },
 
-  approveItem: (itemId) => request<IngestionItem>(`/v1/ingestion/items/${segment(itemId)}/approve`, { method: "POST" }),
+  approveItem: (itemId) =>
+    request<IngestionItem>(
+      `/v1/ingestion/items/${segment(itemId)}/approve`,
+      { method: "POST" },
+      { context: "item_review" },
+    ),
 
   createTwinBatch: (blueprintId, payload, idempotencyKey) => {
     const headers: Record<string, string> = idempotencyKey === null ? {} : { "Idempotency-Key": idempotencyKey };
-    return request<TwinBatch>(`/v1/blueprints/${segment(blueprintId)}/twins`, jsonSpec("POST", payload, headers));
+    return request<TwinBatch>(`/v1/blueprints/${segment(blueprintId)}/twins`, jsonSpec("POST", payload, headers), {
+      context: "twin_generation",
+    });
   },
 };
 

@@ -14,6 +14,10 @@ Thuộc Deterministic Core: hàm thuần, không gọi LLM, không gọi mạng,
   `raw_text` của chunk nguồn trước khi dùng.
 - **Tái lập (I4):** mọi lựa chọn ngẫu nhiên chỉ dùng `random.Random(f"{generator_version}:{pool_sha256}:{seed}")`;
   ứng viên luôn được sắp theo thứ tự chuẩn trước khi xáo, nên thứ tự cặp ở đầu vào không ảnh hưởng kết quả.
+- **Dạng câu do RNG chọn (I4):** dạng câu không phải đầu vào. Trước khi rút số ngẫu nhiên nào, code xác định các dạng
+  khả thi với nhóm ứng viên và chương của slot (dạng có ít nhất một cặp đáp án đủ 3 phương án nhiễu hợp lệ), theo thứ
+  tự cố định `FORM_ORDER`; RNG trên rút một dạng trong số đó. Nhờ vậy `(generator_version, pool_sha256, seed)` cùng
+  chương của slot đủ để tái lập câu.
 - **Đúng một đáp án:** cặp có `definition_quote` trùng, chứa hoặc nằm trong trích dẫn của cặp đáp án (so sau NFC, gộp
   khoảng trắng, không phân biệt hoa thường) không bao giờ làm phương án nhiễu, vì nó cũng là một đáp án đúng. Dạng điền
   khuyết còn loại thuật ngữ trùng, chứa hoặc nằm trong thuật ngữ bị che, và thuật ngữ mà khi điền vào chỗ trống cho ra
@@ -21,7 +25,9 @@ Thuộc Deterministic Core: hàm thuần, không gọi LLM, không gọi mạng,
   `pool_sha256` (I4): `raw_text` của chunk không được dùng, nên thêm hay sửa chunk cùng môn mà không đổi cặp nào thì
   câu không đổi. Câu điền khuyết vẫn có thể có đáp án đúng thứ hai nằm trong một chunk chưa có cặp xác nhận; người dùng
   giảm rủi ro này bằng cách xác nhận thêm cặp cho đoạn văn đó.
-- **Không đủ căn cứ:** không chọn được 3 phương án nhiễu khác nhau thì trả `ReviewTicket`, không bịa phương án.
+- **Không đủ căn cứ:** không dạng câu nào chọn được 3 phương án nhiễu khác nhau thì trả `ReviewTicket`, không bịa
+  phương án. Phương án nhiễu hợp lệ được lấy theo thứ tự chuẩn, bỏ cặp trùng khái niệm hoặc trùng văn bản với một cặp
+  đứng trước, nên tính khả thi không phụ thuộc RNG.
 - **Giới hạn đã biết:** che tên khái niệm chỉ khớp đúng chuỗi `term` (không phân biệt hoa thường, đúng ranh giới chữ);
   dạng biến hình hay số nhiều ("Process" và "Processes") không bị che và có thể lộ đáp án. Bộ sinh cố ý không tách từ
   hay biến hình theo ngôn ngữ.
@@ -39,7 +45,7 @@ import random
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from enum import Enum
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from pydantic import Field, model_validator
 
@@ -57,6 +63,7 @@ from ..domain.vault import (
 
 __all__ = [
     "BLANK",
+    "FORM_ORDER",
     "GENERATOR_VERSION",
     "NOT_ENOUGH_EVIDENCE",
     "THEORY_MISCONCEPTIONS",
@@ -65,6 +72,7 @@ __all__ = [
     "TheoryQuestion",
     "TheoryQuestionForm",
     "candidate_pool",
+    "feasible_forms",
     "generate_theory_question",
     "generate_theory_question_from_vault",
     "mask_terms",
@@ -72,8 +80,10 @@ __all__ = [
     "theory_rng",
 ]
 
-GENERATOR_VERSION = "theory_mcq4_v1"
-"""Phiên bản luật chọn của bộ sinh; tăng khi đổi luật chọn cặp, phương án hay thứ tự (ADR-007 mục 2)."""
+GENERATOR_VERSION = "theory_mcq4_v2"
+"""Phiên bản luật chọn của bộ sinh; tăng khi đổi luật chọn dạng câu, cặp, phương án hay thứ tự (ADR-007 mục 2).
+
+`v2`: dạng câu do RNG chọn trong các dạng khả thi thay vì do người gọi truyền vào."""
 
 THEORY_SAME_CHAPTER_CONCEPT = "THEORY_SAME_CHAPTER_CONCEPT"
 THEORY_SAME_SUBJECT_CONCEPT = "THEORY_SAME_SUBJECT_CONCEPT"
@@ -109,6 +119,20 @@ class TheoryQuestionForm(str, Enum):
     DEFINITION_CHOICE = "definition_choice"
 
 
+FORM_ORDER: tuple[TheoryQuestionForm, ...] = (
+    TheoryQuestionForm.CONCEPT_MATCH,
+    TheoryQuestionForm.FILL_BLANK,
+    TheoryQuestionForm.DEFINITION_CHOICE,
+)
+"""Thứ tự cố định của các dạng câu khi RNG rút dạng câu (I4); đổi thứ tự này phải tăng `GENERATOR_VERSION`."""
+
+_FORM_LABELS: dict[TheoryQuestionForm, str] = {
+    TheoryQuestionForm.CONCEPT_MATCH: "ghép khái niệm",
+    TheoryQuestionForm.FILL_BLANK: "điền khuyết",
+    TheoryQuestionForm.DEFINITION_CHOICE: "chọn định nghĩa đúng",
+}
+
+
 def _option_key(text: str) -> str:
     """Khoá so trùng phương án và khái niệm: NFC, gộp khoảng trắng, không phân biệt hoa thường."""
     return normalize_quote(text).casefold()
@@ -123,8 +147,9 @@ def _overlaps(first: str, second: str) -> bool:
 class TheoryQuestion(StrictModel):
     """Một câu lý thuyết MCQ4 do code ghép từ cặp khái niệm đã xác nhận (ADR-007).
 
-    Không có id hay thời điểm: cùng `(generator_version, pool_sha256, seed)` và cùng dạng câu, chương thì cho model
-    giống từng byte khi serialize (I4).
+    Không có id hay thời điểm: cùng `(generator_version, pool_sha256, seed)` (cộng chương của slot, nếu slot giới hạn
+    chương) thì cho model giống từng byte khi serialize (I4). `form` là kết quả, không phải đầu vào: chính RNG của bộ ba
+    đó chọn dạng câu trong các dạng khả thi.
     """
 
     question_kind: Literal["theory"] = "theory"
@@ -282,65 +307,78 @@ def _rationale(pair: ConceptPair) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Chọn phương án nhiễu và ghép câu
+# Bản nháp câu, phương án nhiễu hợp lệ và ghép câu
 # --------------------------------------------------------------------------- #
 
 _Distractor = tuple[ConceptPair, str, str]  # (cặp, mã misconception, văn bản phương án)
 
 
-def _pick_distractors(
-    rng: random.Random,
-    pool: Sequence[ConceptPair],
-    *,
-    chapter_code: str,
-    excluded_concepts: set[str],
-    taken_options: set[str],
-    option_text: Callable[[ConceptPair], str],
-    also_correct: Callable[[ConceptPair, str], bool],
-    allow_other_chapters: bool,
-) -> list[_Distractor] | None:
-    """3 phương án nhiễu khác khái niệm và khác văn bản (sau chuẩn hoá): cùng chương trước, rồi cùng môn.
+class _Draft(NamedTuple):
+    """Một câu có thể ghép ở một dạng câu: cặp đáp án, thân câu, đáp án, giải thích và luật chọn phương án nhiễu."""
 
-    `also_correct(cặp, văn bản phương án)` đúng khi phương án đó cũng là một đáp án đúng theo nhóm ứng viên; cặp như
-    vậy bị bỏ qua. Luôn xáo cả hai nhóm để lượng số ngẫu nhiên tiêu thụ không phụ thuộc kết quả chọn. Không đủ 3 ⇒
-    `None`.
+    anchor: ConceptPair
+    stem: str
+    correct_text: str
+    explanation: str
+    excluded_concepts: frozenset[str]
+    option_text: Callable[[ConceptPair], str]
+    also_correct: Callable[[ConceptPair, str], bool]
+    allow_other_chapters: bool
+
+
+def _eligible_distractors(
+    draft: _Draft, pool: Sequence[ConceptPair], *, limit: int | None = None
+) -> tuple[list[_Distractor], list[_Distractor]]:
+    """Phương án nhiễu hợp lệ của bản nháp, chia thành `(cùng chương, chương khác cùng môn)`.
+
+    Duyệt nhóm ứng viên theo thứ tự chuẩn, cặp cùng chương trước. Cặp bị bỏ khi khái niệm hoặc văn bản phương án (sau
+    chuẩn hoá) trùng đáp án hay trùng một phương án đã nhận trước nó, hoặc khi `also_correct(cặp, văn bản)` đúng (phương
+    án đó cũng là một đáp án đúng). Kết quả chỉ phụ thuộc nhóm ứng viên và bản nháp, không phụ thuộc RNG, nên tính khả
+    thi của một dạng câu được xác định trước khi rút số ngẫu nhiên nào. `limit` dừng sớm khi đã nhận đủ số phương án;
+    phần đã nhận luôn là tiền tố của kết quả đầy đủ.
     """
-    same_chapter = [pair for pair in pool if pair.chapter_code == chapter_code]
-    other_chapters = [pair for pair in pool if pair.chapter_code != chapter_code] if allow_other_chapters else []
-    rng.shuffle(same_chapter)
-    rng.shuffle(other_chapters)
-    concepts = set(excluded_concepts)
-    options = set(taken_options)
-    chosen: list[_Distractor] = []
-    for code, group in ((THEORY_SAME_CHAPTER_CONCEPT, same_chapter), (THEORY_SAME_SUBJECT_CONCEPT, other_chapters)):
-        for pair in group:
-            if len(chosen) == DISTRACTOR_COUNT:
-                break
-            text = option_text(pair)
-            concept, option = _option_key(pair.term), _option_key(text)
-            if concept in concepts or option in options or also_correct(pair, text):
-                continue
-            concepts.add(concept)
-            options.add(option)
-            chosen.append((pair, code, text))
-    return chosen if len(chosen) == DISTRACTOR_COUNT else None
+    chapter_code = draft.anchor.chapter_code
+    ordered = [pair for pair in pool if pair.chapter_code == chapter_code]
+    if draft.allow_other_chapters:
+        ordered.extend(pair for pair in pool if pair.chapter_code != chapter_code)
+    concepts = set(draft.excluded_concepts)
+    options = {_option_key(draft.correct_text)}
+    same_chapter: list[_Distractor] = []
+    other_chapters: list[_Distractor] = []
+    for pair in ordered:
+        if limit is not None and len(same_chapter) + len(other_chapters) >= limit:
+            break
+        text = draft.option_text(pair)
+        concept, option = _option_key(pair.term), _option_key(text)
+        if concept in concepts or option in options or draft.also_correct(pair, text):
+            continue
+        concepts.add(concept)
+        options.add(option)
+        if pair.chapter_code == chapter_code:
+            same_chapter.append((pair, THEORY_SAME_CHAPTER_CONCEPT, text))
+        else:
+            other_chapters.append((pair, THEORY_SAME_SUBJECT_CONCEPT, text))
+    return same_chapter, other_chapters
+
+
+def _is_feasible(draft: _Draft, pool: Sequence[ConceptPair]) -> bool:
+    """Bản nháp có đủ 3 phương án nhiễu hợp lệ."""
+    same_chapter, other_chapters = _eligible_distractors(draft, pool, limit=DISTRACTOR_COUNT)
+    return len(same_chapter) + len(other_chapters) >= DISTRACTOR_COUNT
 
 
 def _assemble(
     rng: random.Random,
     *,
     form: TheoryQuestionForm,
+    draft: _Draft,
+    distractors: Sequence[_Distractor],
     subject_code: str,
     seed: int,
     pool_digest: str,
-    anchor: ConceptPair,
-    stem: str,
-    correct_text: str,
-    explanation: str,
-    distractors: list[_Distractor],
     chunks: Mapping[str, KnowledgeChunk],
 ) -> TheoryQuestion:
-    entries: list[tuple[str, _Distractor | None]] = [(correct_text, None)]
+    entries: list[tuple[str, _Distractor | None]] = [(draft.correct_text, None)]
     entries.extend((text, (pair, code, text)) for pair, code, text in distractors)
     rng.shuffle(entries)
     options: dict[OptionKey, str] = {}
@@ -359,17 +397,17 @@ def _assemble(
     return TheoryQuestion(
         form=form,
         subject_code=subject_code,
-        chapter_code=anchor.chapter_code,
+        chapter_code=draft.anchor.chapter_code,
         seed=seed,
         generator_version=GENERATOR_VERSION,
         pool_sha256=pool_digest,
-        stem=stem,
+        stem=draft.stem,
         options=options,
         correct_key=correct_key,
         distractor_to_misconception_map=misconceptions,
         distractor_citations=citations,
-        solution_explanation_vi=explanation,
-        citation=_citation(anchor, chunks),
+        solution_explanation_vi=draft.explanation,
+        citation=_citation(draft.anchor, chunks),
     )
 
 
@@ -430,9 +468,110 @@ def _fill_blank_candidates(
     return found
 
 
+def _term_of(pair: ConceptPair) -> str:
+    return pair.term
+
+
+def _masked_definition(asked_term: str) -> Callable[[ConceptPair], str]:
+    """Phương án dạng định nghĩa: che tên khái niệm của chính nó và tên khái niệm đang hỏi (ADR-007 mục 1)."""
+
+    def text(pair: ConceptPair) -> str:
+        return mask_terms(pair.definition_quote, [pair.term, asked_term])
+
+    return text
+
+
+def _drafts(form: TheoryQuestionForm, anchors: Sequence[ConceptPair], pool: Sequence[ConceptPair]) -> list[_Draft]:
+    """Mọi bản nháp của một dạng câu trên các cặp neo, theo thứ tự chuẩn (chưa kiểm phương án nhiễu)."""
+    if form is TheoryQuestionForm.FILL_BLANK:
+        pool_texts = _pool_texts(pool)
+        return [
+            _Draft(
+                anchor=anchor,
+                stem=(
+                    "Điền thuật ngữ thích hợp vào chỗ trống trong đoạn trích sau:\n\n"
+                    f"> {mask_terms(anchor.definition_quote, [hidden])}"
+                ),
+                correct_text=hidden,
+                explanation=f"Thuật ngữ bị che là «{hidden}». Đoạn trích nguyên văn: “{anchor.definition_quote}”",
+                excluded_concepts=frozenset({_option_key(anchor.term), _option_key(hidden)}),
+                option_text=_term_of,
+                also_correct=_fill_blank_conflict(anchor, hidden, pool_texts),
+                allow_other_chapters=True,
+            )
+            for anchor, hidden in _fill_blank_candidates(anchors, pool)
+        ]
+    if form is TheoryQuestionForm.CONCEPT_MATCH:
+        return [
+            _Draft(
+                anchor=anchor,
+                stem=f"Khái niệm nào ứng với đoạn trích sau?\n\n> {mask_terms(anchor.definition_quote, [anchor.term])}",
+                correct_text=anchor.term,
+                explanation=_definition_explanation(anchor),
+                excluded_concepts=frozenset({_option_key(anchor.term)}),
+                option_text=_term_of,
+                also_correct=_quote_conflict(anchor),
+                allow_other_chapters=True,
+            )
+            for anchor in anchors
+        ]
+    return [
+        _Draft(
+            anchor=anchor,
+            stem=f"Phát biểu nào là định nghĩa của «{anchor.term}»?",
+            correct_text=mask_terms(anchor.definition_quote, [anchor.term]),
+            explanation=_definition_explanation(anchor),
+            excluded_concepts=frozenset({_option_key(anchor.term)}),
+            option_text=_masked_definition(anchor.term),
+            also_correct=_quote_conflict(anchor),
+            allow_other_chapters=False,
+        )
+        for anchor in anchors
+    ]
+
+
+def _anchors(pool: Sequence[ConceptPair], chapter_code: str | None) -> list[ConceptPair]:
+    """Cặp có thể làm đáp án: cả nhóm ứng viên, hoặc chỉ các cặp thuộc chương của slot."""
+    return [pair for pair in pool if chapter_code is None or pair.chapter_code == chapter_code]
+
+
+def _form_drafts(anchors: Sequence[ConceptPair], pool: Sequence[ConceptPair]) -> dict[TheoryQuestionForm, list[_Draft]]:
+    return {form: _drafts(form, anchors, pool) for form in FORM_ORDER}
+
+
+def _feasible_forms(
+    drafts: Mapping[TheoryQuestionForm, Sequence[_Draft]], pool: Sequence[ConceptPair]
+) -> tuple[TheoryQuestionForm, ...]:
+    """Các dạng câu có ít nhất một bản nháp đủ 3 phương án nhiễu, theo `FORM_ORDER`."""
+    return tuple(form for form in FORM_ORDER if any(_is_feasible(draft, pool) for draft in drafts[form]))
+
+
+def _infeasible_reason(form: TheoryQuestionForm, drafts: Sequence[_Draft]) -> str:
+    if form is TheoryQuestionForm.FILL_BLANK and not drafts:
+        detail = "không có trích dẫn định nghĩa nào chứa thuật ngữ của một khái niệm khác đã xác nhận"
+    elif form is TheoryQuestionForm.FILL_BLANK:
+        detail = "không chọn được 3 thuật ngữ khác nhau làm phương án nhiễu"
+    elif form is TheoryQuestionForm.DEFINITION_CHOICE:
+        detail = "không đủ 3 khái niệm khác cùng chương với định nghĩa khác nhau để làm phương án nhiễu"
+    else:
+        detail = "không chọn được 3 khái niệm khác nhau cùng môn làm phương án nhiễu"
+    return f"{_FORM_LABELS[form]}: {detail}"
+
+
 # --------------------------------------------------------------------------- #
 # API của service
 # --------------------------------------------------------------------------- #
+
+
+def feasible_forms(
+    pairs: Sequence[ConceptPair], subject_code: str, *, chapter_code: str | None = None
+) -> tuple[TheoryQuestionForm, ...]:
+    """Các dạng câu khả thi với nhóm ứng viên của môn và chương của slot, theo `FORM_ORDER`.
+
+    Đây đúng là tập mà `generate_theory_question` rút dạng câu từ đó; hàm không dùng RNG.
+    """
+    pool = candidate_pool(pairs, subject_code)
+    return _feasible_forms(_form_drafts(_anchors(pool, chapter_code), pool), pool)
 
 
 def generate_theory_question(
@@ -440,7 +579,6 @@ def generate_theory_question(
     chunks: Mapping[str, KnowledgeChunk],
     *,
     subject_code: str,
-    form: TheoryQuestionForm,
     seed: int,
     blueprint_id: str,
     slot_index: int,
@@ -450,8 +588,13 @@ def generate_theory_question(
     """Sinh một câu lý thuyết MCQ4, hoặc `ReviewTicket` khi Vault không đủ căn cứ.
 
     `pairs` có thể gồm cặp của môn khác hay chưa xác nhận; chúng bị bỏ qua. `chunks` ánh xạ `chunk_id` → chunk nguồn
-    của các cặp. `chapter_code` (tuỳ chọn) giới hạn cặp đúng vào một chương; phương án nhiễu vẫn có thể lấy cùng môn.
-    `blueprint_id`, `slot_index`, `topic_key` chỉ dùng để ghi `ReviewTicket`.
+    của các cặp. `chapter_code` (tuỳ chọn) là chương của slot: giới hạn cặp đáp án vào chương đó; phương án nhiễu vẫn
+    có thể lấy cùng môn. `blueprint_id`, `slot_index`, `topic_key` chỉ dùng để ghi `ReviewTicket`.
+
+    Dạng câu không phải đầu vào (I4): RNG duy nhất `random.Random(f"{generator_version}:{pool_sha256}:{seed}")` rút
+    lần lượt dạng câu trong `feasible_forms(...)` (dạng không đủ 3 phương án nhiễu bị loại trước), bản nháp trong các
+    bản nháp khả thi của dạng đó, thứ tự phương án nhiễu hợp lệ, rồi thứ tự bốn phương án. Không dạng nào khả thi ⇒
+    `ReviewTicket`.
 
     Cặp được chọn mà thiếu chunk, khác môn với chunk hoặc trích dẫn không còn khớp nguyên văn chunk (I3) ⇒ lỗi
     (`ValueError`/`QuoteMismatchError`): đó là dữ liệu hỏng, không phải thiếu căn cứ.
@@ -471,103 +614,38 @@ def generate_theory_question(
             attempts=[],
         )
 
-    anchors = [pair for pair in pool if chapter_code is None or pair.chapter_code == chapter_code]
+    anchors = _anchors(pool, chapter_code)
     if not anchors:
         scope = f"chương {chapter_code} của môn {subject_code}" if chapter_code else f"môn {subject_code}"
         return ticket(f"không có cặp khái niệm đã xác nhận nào thuộc {scope}")
 
-    if form is TheoryQuestionForm.FILL_BLANK:
-        candidates = _fill_blank_candidates(anchors, pool)
-        if not candidates:
-            return ticket("không có trích dẫn định nghĩa nào chứa thuật ngữ của một khái niệm khác đã xác nhận")
-        rng.shuffle(candidates)
-        pool_texts = _pool_texts(pool)
-        for anchor, hidden in candidates:
-            distractors = _pick_distractors(
-                rng,
-                pool,
-                chapter_code=anchor.chapter_code,
-                excluded_concepts={_option_key(anchor.term), _option_key(hidden)},
-                taken_options={_option_key(hidden)},
-                option_text=_term_of,
-                also_correct=_fill_blank_conflict(anchor, hidden, pool_texts),
-                allow_other_chapters=True,
-            )
-            if distractors is not None:
-                masked = mask_terms(anchor.definition_quote, [hidden])
-                return _assemble(
-                    rng,
-                    form=form,
-                    subject_code=subject_code,
-                    seed=seed,
-                    pool_digest=digest,
-                    anchor=anchor,
-                    stem=f"Điền thuật ngữ thích hợp vào chỗ trống trong đoạn trích sau:\n\n> {masked}",
-                    correct_text=hidden,
-                    explanation=f"Thuật ngữ bị che là «{hidden}». Đoạn trích nguyên văn: “{anchor.definition_quote}”",
-                    distractors=distractors,
-                    chunks=chunks,
-                )
-        return ticket("không chọn được 3 thuật ngữ khác nhau làm phương án nhiễu")
+    drafts = _form_drafts(anchors, pool)
+    forms = _feasible_forms(drafts, pool)
+    if not forms:
+        reasons = "; ".join(_infeasible_reason(form, drafts[form]) for form in FORM_ORDER)
+        return ticket(f"không dạng câu nào khả thi ({reasons})")
 
-    order = list(anchors)
-    rng.shuffle(order)
-    for anchor in order:
-        if form is TheoryQuestionForm.CONCEPT_MATCH:
-            correct_text = anchor.term
-            stem = f"Khái niệm nào ứng với đoạn trích sau?\n\n> {mask_terms(anchor.definition_quote, [anchor.term])}"
-            option_text: Callable[[ConceptPair], str] = _term_of
-        else:
-            correct_text = mask_terms(anchor.definition_quote, [anchor.term])
-            stem = f"Phát biểu nào là định nghĩa của «{anchor.term}»?"
-            option_text = _masked_definition(anchor.term)
-        distractors = _pick_distractors(
-            rng,
-            pool,
-            chapter_code=anchor.chapter_code,
-            excluded_concepts={_option_key(anchor.term)},
-            taken_options={_option_key(correct_text)},
-            option_text=option_text,
-            also_correct=_quote_conflict(anchor),
-            allow_other_chapters=form is TheoryQuestionForm.CONCEPT_MATCH,
-        )
-        if distractors is not None:
-            return _assemble(
-                rng,
-                form=form,
-                subject_code=subject_code,
-                seed=seed,
-                pool_digest=digest,
-                anchor=anchor,
-                stem=stem,
-                correct_text=correct_text,
-                explanation=_definition_explanation(anchor),
-                distractors=distractors,
-                chunks=chunks,
-            )
-    if form is TheoryQuestionForm.DEFINITION_CHOICE:
-        return ticket("không đủ 3 khái niệm khác cùng chương với định nghĩa khác nhau để làm phương án nhiễu")
-    return ticket("không chọn được 3 khái niệm khác nhau cùng môn làm phương án nhiễu")
-
-
-def _term_of(pair: ConceptPair) -> str:
-    return pair.term
-
-
-def _masked_definition(asked_term: str) -> Callable[[ConceptPair], str]:
-    """Phương án dạng định nghĩa: che tên khái niệm của chính nó và tên khái niệm đang hỏi (ADR-007 mục 1)."""
-
-    def text(pair: ConceptPair) -> str:
-        return mask_terms(pair.definition_quote, [pair.term, asked_term])
-
-    return text
+    form = rng.choice(forms)
+    draft = rng.choice([candidate for candidate in drafts[form] if _is_feasible(candidate, pool)])
+    same_chapter, other_chapters = _eligible_distractors(draft, pool)
+    rng.shuffle(same_chapter)
+    rng.shuffle(other_chapters)
+    return _assemble(
+        rng,
+        form=form,
+        draft=draft,
+        distractors=(same_chapter + other_chapters)[:DISTRACTOR_COUNT],
+        subject_code=subject_code,
+        seed=seed,
+        pool_digest=digest,
+        chunks=chunks,
+    )
 
 
 def generate_theory_question_from_vault(
     vault: VaultRepository,
     *,
     subject_code: str,
-    form: TheoryQuestionForm,
     seed: int,
     blueprint_id: str,
     slot_index: int,
@@ -586,7 +664,6 @@ def generate_theory_question_from_vault(
         pairs,
         chunks,
         subject_code=subject_code,
-        form=form,
         seed=seed,
         blueprint_id=blueprint_id,
         slot_index=slot_index,

@@ -27,6 +27,15 @@ class PdfReaderConfig(BaseModel):
     text_layer_page_timeout_s: float = Field(default=5.0, gt=0)
     worker_mem_bytes: int = Field(default=2 * GIB, ge=256 * MIB)
     worker_cpu_seconds_per_page: int = Field(default=5, ge=1)
+    # Hạn tổng cho cả tài liệu, chỉ tính thời gian bộ đọc làm việc (không tính lúc nơi gọi xử lý trang đã nhận).
+    # 300 trang × 5 s là 1500 s; 600 s đủ cho tài liệu số bình thường (vài chục ms mỗi trang) mà vẫn chặn được file
+    # khiến mọi trang đều chạm timeout. Hết hạn thì các trang còn lại thành `failed` (`PAGE_TIMEOUT`).
+    document_timeout_s: float = Field(default=600.0, gt=0)
+    # Giới hạn byte của MỘT thông điệp worker gửi qua stdout (một dòng, tính cả ký tự xuống dòng). Tiến trình cha
+    # không có giới hạn OS, nên dòng dài hơn mức này bị cắt ngay khi đọc: worker bị kill, trang thành `PAGE_ERROR`.
+    # Một trang A4 dày đặc (vài nghìn từ, mỗi từ kèm bbox) cỡ vài trăm KiB JSON; 8 MiB cao hơn hàng chục lần mà vẫn
+    # giữ bộ nhớ của tiến trình cha ở mức vài chục MiB cho mỗi worker.
+    max_message_bytes: int = Field(default=8 * MIB, ge=1024)
 
     # Ngưỡng của ADR-008 mục 6, 10, 11, 12.
     text_layer_min: float = Field(default=0.85, ge=0.0, le=1.0)

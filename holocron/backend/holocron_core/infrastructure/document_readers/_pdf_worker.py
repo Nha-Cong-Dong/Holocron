@@ -64,6 +64,18 @@ def _read_one(document: PdfiumDocument, index: int, page_count: int) -> PageMess
         return PageErrorMessage(page_index=index, message=type(exc).__name__[:200])
 
 
+def _fit_message(message: PageMessage | PageErrorMessage, max_message_bytes: int) -> PageMessage | PageErrorMessage:
+    """Trang mà thông điệp vượt `max_message_bytes` được báo lỗi thay vì gửi (tiến trình cha sẽ không nhận dòng đó).
+
+    Tính cả `\\r\\n`, vì stdout ở chế độ văn bản trên Windows đổi `\\n` thành `\\r\\n`.
+    """
+    if not isinstance(message, PageMessage):
+        return message
+    if len(encode_message(message).encode("utf-8")) + 2 <= max_message_bytes:
+        return message
+    return PageErrorMessage(page_index=message.page.page_index, message="MessageTooLarge")
+
+
 def run(request: WorkerRequest, backend: PdfiumBackend, requests: Iterable[PageRequest], emit: Emit) -> None:
     """Mở tài liệu, báo số trang, rồi đọc tối đa `page_budget` trang theo thứ tự được yêu cầu."""
     data = _read_bounded(request.path, request.config.max_bytes)
@@ -82,7 +94,8 @@ def run(request: WorkerRequest, backend: PdfiumBackend, requests: Iterable[PageR
         for served, page_request in enumerate(requests):
             if served >= request.page_budget:
                 return
-            emit(_read_one(opened, page_request.page_index, page_count))
+            page = _read_one(opened, page_request.page_index, page_count)
+            emit(_fit_message(page, request.config.max_message_bytes))
 
 
 def main() -> None:

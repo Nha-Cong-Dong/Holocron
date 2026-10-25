@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .config import PdfReaderConfig
-from .protocol import RawTextLine, RawWord, UnitBBox
+from .protocol import MAX_RAW_LINE_CHARS, RawTextLine, RawWord, UnitBBox
 
 PdfBox = tuple[float, float, float, float]  # (left, bottom, right, top), toạ độ PDF gốc dưới-trái
 
@@ -108,16 +108,20 @@ def _build_line(chars: Sequence[tuple[str, UnitBBox | None]]) -> RawTextLine | N
 
 
 def group_lines(chars: Sequence[PdfChar], page_box: PdfBox, rotation: int) -> list[RawTextLine]:
-    """Gom ký tự theo thứ tự đọc của PDFium thành dòng; ngắt dòng tại `\\r`/`\\n` (PDFium tự chèn giữa các dòng)."""
+    """Gom ký tự theo thứ tự đọc của PDFium thành dòng; ngắt dòng tại `\\r`/`\\n` (PDFium tự chèn giữa các dòng).
+
+    Dòng dài hơn `MAX_RAW_LINE_CHARS` ký tự được ngắt thành nhiều dòng, để khớp giới hạn của `RawTextLine`.
+    """
     lines: list[RawTextLine] = []
     current: list[tuple[str, UnitBBox | None]] = []
     for char in [*chars, PdfChar(text="\n", box=None)]:
-        if char.text in ("\r", "\n"):
+        if char.text in ("\r", "\n") or len(current) >= MAX_RAW_LINE_CHARS:
             line = _build_line(current)
             if line is not None:
                 lines.append(line)
             current = []
-            continue
+            if char.text in ("\r", "\n"):
+                continue
         box = None if char.box is None else normalize_box(char.box, page_box, rotation)
         current.append((char.text, box))
     return lines

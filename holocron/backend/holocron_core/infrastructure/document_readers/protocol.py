@@ -11,11 +11,21 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from .config import PdfReaderConfig
 
 MESSAGE_PREFIX = "HOLOCRON_PDF:"
+
+# Giới hạn cấu trúc của dữ liệu thô từ worker (ngoài giới hạn byte mỗi thông điệp `max_message_bytes`), để một
+# worker bị khai thác không đẩy được cấu trúc khổng lồ vào tiến trình cha.
+# - Dòng thô dài tối đa 4 lần `ExtractedLine.text` (2000 ký tự, SPECIFICATION §5.7): tiến trình cha chuẩn hoá NFC
+#   rồi mới cắt thành các dòng ≤ 2000 (`tiers._chunks`), vì NFC có thể làm chuỗi dài ra; worker tự ngắt dòng dài
+#   hơn giới hạn này (`text_layer.group_lines`) nên PDF hợp lệ không bị loại vì một dòng quá dài.
+# - Một trang A4 dày đặc có cỡ vài nghìn từ và vài trăm dòng; giới hạn dưới đây cao hơn nhiều lần.
+MAX_RAW_LINE_CHARS = 8000
+MAX_PAGE_LINES = 10_000
+MAX_PAGE_WORDS = 50_000
 
 UnitFloat = Annotated[float, Field(ge=0.0, le=1.0)]
 UnitBBox = tuple[UnitFloat, UnitFloat, UnitFloat, UnitFloat]
@@ -46,16 +56,16 @@ class PageRequest(_Frozen):
 class RawWord(_Frozen):
     """Một cụm ký tự không trắng liền nhau trong dòng; `bbox` chuẩn hoá về [0, 1], gốc trên-trái."""
 
-    text: str
+    text: str = Field(max_length=MAX_RAW_LINE_CHARS)
     bbox: UnitBBox
 
 
 class RawTextLine(_Frozen):
     """Một dòng của lớp chữ theo thứ tự đọc của PDFium; `text` giữ nguyên khoảng trắng bên trong."""
 
-    text: str
+    text: str = Field(max_length=MAX_RAW_LINE_CHARS)
     bbox: UnitBBox | None
-    words: list[RawWord]
+    words: list[RawWord] = Field(max_length=MAX_RAW_LINE_CHARS)
 
 
 class RawPdfPage(_Frozen):
@@ -64,9 +74,15 @@ class RawPdfPage(_Frozen):
     page_index: int = Field(ge=0)
     width_pt: float = Field(gt=0)
     height_pt: float = Field(gt=0)
-    lines: list[RawTextLine]
+    lines: list[RawTextLine] = Field(max_length=MAX_PAGE_LINES)
     image_area_ratio: UnitFloat
     path_area_ratio: UnitFloat
+
+    @model_validator(mode="after")
+    def _bounded_words(self) -> RawPdfPage:
+        if sum(len(line.words) for line in self.lines) > MAX_PAGE_WORDS:
+            raise ValueError(f"trang có quá {MAX_PAGE_WORDS} từ")
+        return self
 
 
 class ReadyMessage(_Frozen):

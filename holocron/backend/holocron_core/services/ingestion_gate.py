@@ -21,6 +21,7 @@ from ..domain.ingestion import (
     GateIssue,
     GateReport,
     GateStatus,
+    IngestionItem,
     PatchAudit,
     Severity,
 )
@@ -34,6 +35,7 @@ from ..domain.schemas import (
     SelfSolveResult,
 )
 from ..sandbox.sandbox import SandboxStatus, run_template
+from .pipeline import TemplateRegistry
 
 # Model dữ liệu của Gate đã chuyển về `domain/ingestion.py`; tên cũ vẫn import được từ module này.
 __all__ = [
@@ -53,6 +55,7 @@ __all__ = [
     "check_table",
     "gate_status",
     "latex_issues",
+    "recompute_item",
     "rerun_self_solve",
     "table_to_params",
     "table_to_problem",
@@ -377,3 +380,53 @@ def rerun_self_solve(
     return SelfSolveResult(
         status="NO_MATCH", solved_answer_display=display, solver_confidence=1.0, solver_template_id=solver.template_id
     )
+
+
+def recompute_item(item: IngestionItem, registry: TemplateRegistry) -> IngestionItem:
+    """Chuẩn hoá bảng, tự giải lại trong sandbox và quét lại toàn bộ Gate cho `item` (sửa tại chỗ rồi trả lại)."""
+    solver = registry.get_verified(item.topic_key)
+    pre_issues: list[GateIssue] = []
+    item.problem = None
+    if solver is None:
+        # Phòng thủ chiều sâu (I5): topic chưa có template đã kiểm chứng thì không thể tự giải ⇒ không được AUTO_PASS.
+        item.self_solve = None
+        pre_issues.append(
+            GateIssue(
+                code="SELF_SOLVE_MISMATCH",
+                severity=Severity.BLOCKING,
+                message_vi=f"Chưa có template đã kiểm chứng cho topic {item.topic_key}, không thể tự giải để đối chiếu.",
+            )
+        )
+    elif item.table_primary.n_rows > MAX_PROCESSES:
+        # Không tự giải được; check_table đã báo OUT_OF_RANGE nên không thêm issue (tránh gắn nhầm NOT_A_NUMBER).
+        item.self_solve = SelfSolveResult(status="SKIPPED", solver_confidence=0.0)
+    else:
+        try:
+            item.problem = table_to_problem(item.topic_key, item.table_primary, item.solver_inputs.quantum)
+            item.self_solve = rerun_self_solve(solver, item.problem.to_template_params(), item.options)
+            if item.self_solve.status == "SKIPPED":
+                pre_issues.append(
+                    GateIssue(
+                        code="SELF_SOLVE_MISMATCH",
+                        severity=Severity.BLOCKING,
+                        message_vi="Sandbox không tính được đáp án để đối chiếu (SKIPPED: lỗi, quá thời gian hoặc sai hợp đồng).",
+                    )
+                )
+        except ValueError as exc:
+            item.problem = None
+            item.self_solve = SelfSolveResult(status="SKIPPED", solver_confidence=0.0)
+            pre_issues.append(
+                GateIssue(code="NOT_A_NUMBER", severity=Severity.BLOCKING, message_vi=f"Chưa thể tự giải: {exc}")
+            )
+    issues = (
+        pre_issues
+        + check_table(item.topic_key, item.table_primary, item.table_secondary, item.page_text_layer, item.self_solve)
+        + latex_issues(item.stem_latex)
+    )
+    item.report = GateReport(
+        table_id=item.table_primary.table_id,
+        table_version=item.table_primary.version,
+        status=gate_status(issues),
+        issues=issues,
+    )
+    return item

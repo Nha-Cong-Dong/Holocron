@@ -19,6 +19,7 @@ from ..domain.ingestion import IngestionItem, MediaType, UploadedDocument
 from ..domain.repositories import (
     IDEMPOTENCY_TTL,
     ConcurrentUpdateError,
+    DocumentExistsError,
     ImportedDocument,
     MissingReferenceError,
     PageStatus,
@@ -157,15 +158,39 @@ class IngestionStore:
         self._document_versions[meta.doc_id] = version
         return stored.model_copy(deep=True)
 
+    def _check_sha256_unique(self, document: ImportedDocument) -> None:
+        """Cột `sha256` UNIQUE của bản SQLite: nội dung này đã thuộc tài liệu khác ⇒ `StorageError`."""
+        meta = document.meta
+        if any(d.sha256 == meta.sha256 and d.document_id != meta.doc_id for d in self._documents.values()):
+            raise StorageError(f"UNIQUE: sha256 {meta.sha256} đã thuộc tài liệu khác")
+
     def save_imported_document(self, document: ImportedDocument) -> ImportedDocument:
         """Tạo mới (version 1) hoặc bổ sung thông tin cho bản ghi đã có cùng `document_id` (version tăng 1)."""
-        meta = document.meta
         with self._lock:
-            current = self._document_versions.get(meta.doc_id)
-            clash = any(d.sha256 == meta.sha256 and d.document_id != meta.doc_id for d in self._documents.values())
-            if clash:  # cột `sha256` UNIQUE của bản SQLite
-                raise StorageError(f"UNIQUE: sha256 {meta.sha256} đã thuộc tài liệu khác")
+            self._check_sha256_unique(document)
+            current = self._document_versions.get(document.meta.doc_id)
             return self._put_imported(document, 1 if current is None else current + 1)
+
+    def create_imported_document(
+        self, document: ImportedDocument, pending_pages: Sequence[BaseModel]
+    ) -> ImportedDocument:
+        """Như bản SQLite: kiểm và dựng toàn bộ dữ liệu (JSON của từng trang) trước, rồi mới ghi dưới khoá, nên lỗi
+        ở bất kỳ trang nào ⇒ không ghi gì."""
+        document_id = document.meta.doc_id
+        if len(pending_pages) != document.meta.page_count:
+            raise ValueError("số trang pending phải bằng page_count")
+        with self._lock:
+            if document_id in self._imported:
+                raise DocumentExistsError(document_id)
+            self._check_sha256_unique(document)
+            rows = {
+                (document_id, number): _StoredPage(_dump(page), "pending", False, 1)
+                for number, page in enumerate(pending_pages, start=1)
+            }
+            current = self._document_versions.get(document_id)
+            stored = self._put_imported(document, 1 if current is None else current + 1)
+            self._pages.update(rows)
+            return stored
 
     def get_imported_document(self, document_id: str) -> ImportedDocument | None:
         with self._lock:

@@ -76,6 +76,14 @@ class RecordInUseError(StorageError):
     """Không xoá được vì còn bản ghi khác tham chiếu (`ON DELETE RESTRICT`)."""
 
 
+class DocumentExistsError(StorageError):
+    """Đã có tài liệu nhập qua §6.5 với cùng `document_id`; `create_imported_document` không ghi gì."""
+
+    def __init__(self, document_id: str) -> None:
+        super().__init__(f"tài liệu {document_id} đã được nhập")
+        self.document_id = document_id
+
+
 class VaultSearchUnavailableError(StorageError):
     """SQLite không có FTS5; tầng gọi dùng BM25 tự cài (§5.13, ADR-006 mục 4)."""
 
@@ -160,6 +168,18 @@ class DocumentRepository(Protocol):
 
     def save_imported_document(self, document: ImportedDocument) -> ImportedDocument:
         """Tạo mới, hoặc bổ sung thông tin cho bản ghi đã có cùng `document_id` (version tăng 1)."""
+        ...
+
+    def create_imported_document(
+        self, document: ImportedDocument, pending_pages: Sequence[BaseModel]
+    ) -> ImportedDocument:
+        """Tạo tài liệu nhập và MỌI trang của nó (trạng thái `pending`, chưa xác nhận) trong MỘT giao dịch.
+
+        Phần tử thứ i của `pending_pages` là trang số i + 1; số phần tử phải bằng `meta.page_count`, sai ⇒
+        `ValueError`. Bản ghi chỉ do upload đề tạo (chưa có `subject_code`) được bổ sung thông tin như
+        `save_imported_document`. Đã có tài liệu nhập cùng `document_id` ⇒ `DocumentExistsError`. Lỗi ở bất kỳ bước
+        nào (kể cả `StorageBusyError` giữa chừng) ⇒ không ghi gì. Trả bản ghi đã lưu.
+        """
         ...
 
     def get_imported_document(self, document_id: str) -> ImportedDocument | None:

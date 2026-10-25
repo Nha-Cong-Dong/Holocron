@@ -1,0 +1,141 @@
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-height: 0;
+  padding: var(--space-4) var(--space-3);
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  background: var(--surface-sunken);
+}
+
+.brand {
+  padding: 0 var(--space-2);
+  font-family: var(--font-serif);
+  font-size: var(--text-xl);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.brandShort {
+  display: none;
+}
+
+.section {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.sectionTitle {
+  padding: 0 var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.list {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 32px;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--text-md);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.item:hover {
+  border-color: var(--border);
+}
+
+.item[aria-current="page"],
+.item[aria-pressed="true"] {
+  border-color: var(--border);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.code {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.short {
+  display: none;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.note {
+  display: grid;
+  gap: var(--space-1);
+  justify-items: start;
+  padding: 0 var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.linkButton {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: var(--text-sm);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+@media (max-width: 1099px) {
+  .sidebar {
+    padding: var(--space-4) 2px;
+  }
+
+  .brandFull,
+  .label,
+  .sectionTitle,
+  .note {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .brandShort,
+  .short {
+    display: inline;
+  }
+
+  .brand {
+    text-align: center;
+  }
+
+  .item {
+    justify-content: center;
+    padding: var(--space-1) 2px;
+    text-align: center;
+  }
+
+  .code {
+    font-size: var(--text-xs);
+    word-break: break-all;
+  }
+}

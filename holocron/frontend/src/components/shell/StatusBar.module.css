@@ -1,0 +1,83 @@
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 0 var(--space-3);
+  border-top: 1px solid var(--border);
+  background: var(--surface-sunken);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.items {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-3);
+  border-right: 1px solid var(--border);
+  color: var(--text);
+}
+
+.item:first-child {
+  padding-left: 0;
+}
+
+.label {
+  color: var(--text-muted);
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--text-muted);
+  border-radius: 50%;
+}
+
+.item[data-tone="success"] .dot {
+  border-color: var(--success);
+  background: var(--success);
+}
+
+.item[data-tone="info"] .dot {
+  border-color: var(--info);
+  background: var(--info);
+}
+
+.item[data-tone="warning"] {
+  color: var(--warning);
+}
+
+.item[data-tone="warning"] .dot {
+  border-color: var(--warning);
+  background: var(--warning);
+}
+
+.item[data-tone="danger"] {
+  color: var(--danger);
+}
+
+.item[data-tone="danger"] .dot {
+  border-color: var(--danger);
+  background: var(--danger);
+}
+
+.retry {
+  min-height: 20px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}

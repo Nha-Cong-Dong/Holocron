@@ -4,6 +4,7 @@ import { useSearchParams } from "next/navigation";
 
 import { IngestionReview } from "./IngestionReview";
 import styles from "./IngestionView.module.css";
+import { MockExtractorNotice } from "./MockExtractorNotice";
 import { UploadForm } from "./UploadForm";
 
 /**
@@ -25,6 +26,7 @@ function UploadPanel() {
         Tải ảnh đề thi lên. Hệ thống đọc bảng hai lượt độc lập; ô nào hai lượt đọc lệch nhau hoặc độ tin cậy thấp sẽ
         được tô đỏ để bạn xác nhận trước khi sandbox tính toán.
       </p>
+      <MockExtractorNotice />
       <UploadForm />
     </div>
   );

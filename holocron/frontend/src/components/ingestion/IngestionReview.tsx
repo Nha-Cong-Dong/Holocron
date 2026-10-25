@@ -10,6 +10,7 @@ import type { UiError } from "@/lib/errors";
 import type { IngestionItem, OptionKey } from "@/types/holocron";
 
 import styles from "./IngestionView.module.css";
+import { MockExtractorNotice } from "./MockExtractorNotice";
 import { TableAuditor } from "./TableAuditor";
 
 const OPTION_KEYS: OptionKey[] = ["A", "B", "C", "D"];
@@ -57,6 +58,7 @@ export function IngestionReview({ itemId }: { itemId: string }) {
 
   return (
     <div className={styles.page}>
+      <MockExtractorNotice />
       <section className={styles.panel} aria-labelledby="item-stem">
         <h2 id="item-stem">
           Kiểm duyệt đề <code>{item.item_id}</code>

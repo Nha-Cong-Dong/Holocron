@@ -31,7 +31,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import Literal, Protocol, Self
+from typing import Literal, NamedTuple, Protocol, Self
 
 from pydantic import ValidationError
 
@@ -63,6 +63,8 @@ QUEUE_LINES = 4
 WORKDIR_CLEANUP_S = 5.0
 
 StreamEvent = Literal["eof", "overflow"]
+# Lượt chờ của tiến trình cha khi đọc một trang: tầng 1 (lớp chữ), hoặc tầng 2 sau thông điệp `ocr_started`.
+WaitPhase = Literal["text_layer", "ocr"]
 
 PdfInputErrorCode = Literal[
     "EMPTY",
@@ -324,6 +326,18 @@ class WorkerSession:
         self.close()
 
 
+class _PageOutcome(NamedTuple):
+    """Kết quả đọc một trang bên trong `WorkerPdfReader`.
+
+    `healthy` là False khi worker đã bị kill và cần dựng worker mới; `expired_wait` là lượt chờ đã hết hạn
+    (None khi trang không bị `PAGE_TIMEOUT`).
+    """
+
+    page: PageExtraction
+    healthy: bool
+    expired_wait: WaitPhase | None
+
+
 class WorkerPdfReader:
     """`PdfReader` tầng 1–2: mỗi tài liệu đọc qua worker có giới hạn; trang quá hạn được thay worker mới.
 
@@ -384,26 +398,53 @@ class WorkerPdfReader:
         chờ kết quả là `ocr_timeout_s` (mặc định `ocr_page_timeout_s`). `read_pages` truyền giá trị nhỏ hơn khi hạn
         tổng của tài liệu sắp hết.
         """
+        outcome = self._read_page(session, index, document_id, timeout_s, ocr_timeout_s)
+        return outcome.page, outcome.healthy
+
+    def _read_page(
+        self,
+        session: WorkerSession,
+        index: int,
+        document_id: str,
+        timeout_s: float | None,
+        ocr_timeout_s: float | None,
+    ) -> _PageOutcome:
+        """Như `_next_page`, kèm lượt chờ đã hết hạn để `read_pages` biết hạn nào đã chạm."""
         page_number = index + 1
         session.request_page(index)
         failure: FailureReason = "PAGE_ERROR"
+        phase: WaitPhase = "text_layer"
+        expired_wait: WaitPhase | None = None
         try:
             message = session.receive(self.config.text_layer_page_timeout_s if timeout_s is None else timeout_s)
             if isinstance(message, OcrStartedMessage) and message.page_index == index:
+                phase = "ocr"
                 message = session.receive(self.config.ocr_page_timeout_s if ocr_timeout_s is None else ocr_timeout_s)
         except TimeoutError:
-            message, failure = None, "PAGE_TIMEOUT"
+            message, failure, expired_wait = None, "PAGE_TIMEOUT", phase
         except (ValidationError, WorkerProtocolError):
             message = None
         if isinstance(message, PageMessage) and message.page.page_index == index:
             try:
-                return assemble_text_layer_page(message.page, document_id, self.config), True
+                return _PageOutcome(assemble_text_layer_page(message.page, document_id, self.config), True, None)
             except ValidationError:
-                return failed_page(document_id, page_number, "PAGE_ERROR"), True
+                return _PageOutcome(failed_page(document_id, page_number, "PAGE_ERROR"), True, None)
         if isinstance(message, PageErrorMessage) and message.page_index == index:
-            return failed_page(document_id, page_number, "PAGE_ERROR"), True
+            return _PageOutcome(failed_page(document_id, page_number, "PAGE_ERROR"), True, None)
         session.kill()
-        return failed_page(document_id, page_number, failure), False
+        return _PageOutcome(failed_page(document_id, page_number, failure), False, expired_wait)
+
+    def _wait_capped_by_deadline(self, phase: WaitPhase | None, remaining: float) -> bool:
+        """True khi lượt chờ đã hết hạn dùng phần hạn tổng còn lại (`remaining`) thay cho hạn của trang.
+
+        Khi đó hạn tổng coi như đã hết, bất kể `time.monotonic()` đo được bao nhiêu sau lượt chờ: đồng hồ có độ
+        phân giải thô (Windows) có thể cho thấy vẫn còn một chút hạn, và quyết định không được phụ thuộc vào đó.
+        """
+        if phase == "text_layer":
+            return remaining <= self.config.text_layer_page_timeout_s
+        if phase == "ocr":
+            return remaining <= self.config.ocr_page_timeout_s
+        return False
 
     def read_pages(
         self, path: Path, document_id: str, page_numbers: Sequence[int] | None = None
@@ -416,6 +457,7 @@ class WorkerPdfReader:
         deadline = time.monotonic() + self.config.document_timeout_s
         first, page_count = self._start(path, page_budget=budget)
         session: WorkerSession | None = first
+        document_expired = False
         try:
             pending = list(range(page_count)) if requested is None else requested
             if any(index >= page_count for index in pending):
@@ -424,20 +466,24 @@ class WorkerPdfReader:
                 index = pending.pop(0)
                 remaining = deadline - time.monotonic()
                 healthy = True
-                if remaining <= 0:
+                if document_expired or remaining <= 0:
                     page = failed_page(document_id, index + 1, "PAGE_TIMEOUT")
                 elif session is None:
                     page = failed_page(document_id, index + 1, "PAGE_ERROR")
                 else:
                     page_timeout = min(self.config.text_layer_page_timeout_s, remaining)
                     ocr_timeout = min(self.config.ocr_page_timeout_s, remaining)
-                    page, healthy = self._next_page(session, index, document_id, page_timeout, ocr_timeout)
+                    outcome = self._read_page(session, index, document_id, page_timeout, ocr_timeout)
+                    page, healthy = outcome.page, outcome.healthy
+                    # Lượt chờ hết hạn bị giới hạn bởi hạn tổng ⇒ hạn tổng đã hết (ADR-008 mục 4), không đọc lại đồng hồ.
+                    document_expired = self._wait_capped_by_deadline(outcome.expired_wait, remaining)
                 yielded_at = time.monotonic()
                 yield page
                 deadline += time.monotonic() - yielded_at  # thời gian nơi gọi xử lý trang không tính vào hạn
                 if not healthy and session is not None:
                     session.close()
-                    session = self._restart(path, len(pending), deadline) if pending else None
+                    restart = bool(pending) and not document_expired
+                    session = self._restart(path, len(pending), deadline) if restart else None
         finally:
             if session is not None:
                 session.close()

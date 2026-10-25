@@ -10,8 +10,10 @@ Thuật toán (cùng đầu vào ⇒ cùng tập chunk, cùng `chunk_id`):
    dòng dài quá 120 ký tự hoặc kết thúc bằng dấu câu không phải tiêu đề.
 3. **Giới hạn 450 token.** Token là token âm tiết của chỉ mục tìm kiếm (`domain.search_text.search_tokens`). Phần
    dài hơn được tách tại ranh giới đoạn; đoạn không vừa thì tách tại ranh giới câu; câu dài hơn 450 token thì tách
-   theo từ. Chunk sau mở đầu bằng câu cuối của chunk trước (chồng lấn 1 câu), trừ khi câu đó cộng với phần tiếp theo
-   vượt giới hạn. Chồng lấn không vượt qua ranh giới phần.
+   theo từ; một "từ" (không có dấu cách) dài hơn 450 token, ví dụ `a-b-c-…`, thì cắt cứng theo token, ưu tiên cắt
+   ngay trước một token. Các mảnh của cùng một từ được nối lại không có dấu cách khi nằm chung chunk, nên `raw_text`
+   luôn là đoạn liền của văn bản đã xác nhận. Chunk sau mở đầu bằng câu cuối của chunk trước (chồng lấn 1 câu), trừ
+   khi câu đó cộng với phần tiếp theo vượt giới hạn. Chồng lấn không vượt qua ranh giới phần.
 4. **Trích dẫn mặc định** (§5.8, khi chưa có LLM): câu đầu tiên đủ 8 ký tự, ưu tiên câu không phải tiêu đề; dài quá
    600 ký tự thì cắt tại ranh giới từ.
 5. **`chunk_id`** = `"chk_"` + 16 ký tự hex đầu của sha256 trên `doc_id`, thứ tự chunk và `raw_text`.
@@ -26,7 +28,7 @@ import re
 from dataclasses import dataclass
 
 from ..domain.schemas import KnowledgeChunk, normalize_quote
-from ..domain.search_text import search_tokens
+from ..domain.search_text import TOKEN_RE, search_tokens
 from ..domain.vault import ConfirmedDocumentText
 
 MAX_CHUNK_TOKENS = 450
@@ -55,13 +57,17 @@ class _Paragraph:
 
 @dataclass(frozen=True)
 class _Unit:
-    """Một câu (hoặc mảnh câu) — đơn vị nhỏ nhất khi tách chunk."""
+    """Một câu (hoặc mảnh câu) — đơn vị nhỏ nhất khi tách chunk.
+
+    `glued`: mảnh nối tiếp một từ bị cắt cứng, nên đứng liền (không dấu cách) sau đơn vị ngay trước nó.
+    """
 
     paragraph: int
     page_number: int
     text: str
     tokens: int
     is_heading: bool
+    glued: bool = False
 
 
 def is_heading(line: str) -> bool:
@@ -113,29 +119,76 @@ def _token_count(text: str) -> int:
     return len(search_tokens(text))
 
 
-def _split_long_sentence(sentence: str) -> list[str]:
-    """Câu dài hơn giới hạn được tách theo từ thành các mảnh ≤ 450 token (một từ quá dài vẫn giữ nguyên)."""
+def _longest_fitting_prefix(text: str) -> int:
+    """Độ dài lớn nhất `n ≥ 1` mà `text[:n]` có ≤ 450 token (tìm nhị phân; `text` có hơn 450 token).
+
+    Bất biến `_token_count(text[:low]) ≤ 450` luôn đúng, nên kết quả luôn vừa giới hạn kể cả khi chuẩn hoá (NFC,
+    `casefold`) làm số token không tăng đều theo độ dài; một ký tự cho tối đa vài token nên `low = 1` vừa.
+    """
+    low, high = 1, len(text)
+    while high - low > 1:
+        middle = (low + high) // 2
+        if _token_count(text[:middle]) <= MAX_CHUNK_TOKENS:
+            low = middle
+        else:
+            high = middle
+    return low
+
+
+def _hard_cut(word: str) -> list[str]:
+    """Cắt một từ (không có dấu cách) có hơn 450 token thành các mảnh liền nhau, mỗi mảnh ≤ 450 token.
+
+    Mỗi mảnh dài nhất có thể; điểm cắt lùi về đầu token gần nhất (`a-b-|c`) nếu vẫn còn ít nhất một token ở trước,
+    ngược lại cắt đúng tại ký tự (một token dài hơn 450 token sau chuẩn hoá, ví dụ chuỗi `İ`).
+    """
     pieces: list[str] = []
+    rest = word
+    while _token_count(rest) > MAX_CHUNK_TOKENS:
+        cut = _longest_fitting_prefix(rest)
+        starts = [match.start() for match in TOKEN_RE.finditer(rest, 0, cut + 1) if 0 < match.start() <= cut]
+        if starts and 0 < _token_count(rest[: starts[-1]]) <= MAX_CHUNK_TOKENS:
+            cut = starts[-1]
+        pieces.append(rest[:cut])
+        rest = rest[cut:]
+    pieces.append(rest)
+    return pieces
+
+
+def _split_long_sentence(sentence: str) -> list[tuple[str, bool]]:
+    """Câu dài hơn giới hạn được tách theo từ thành các mảnh ≤ 450 token; từ quá dài thì cắt cứng (`_hard_cut`).
+
+    Trả `(mảnh, glued)`: `glued` khi mảnh mở đầu bằng phần sau của một từ bị cắt (đứng liền sau mảnh trước).
+    """
+    pieces: list[tuple[str, bool]] = []
     words: list[str] = []
+    glued = False
     count = 0
     for word in sentence.split(" "):
         word_tokens = _token_count(word)
+        if word_tokens > MAX_CHUNK_TOKENS:
+            if words:
+                pieces.append((" ".join(words), glued))
+            parts = _hard_cut(word)
+            pieces.extend((part, position > 0) for position, part in enumerate(parts[:-1]))
+            words, count, glued = [parts[-1]], _token_count(parts[-1]), True
+            continue
         if words and count + word_tokens > MAX_CHUNK_TOKENS:
-            pieces.append(" ".join(words))
-            words, count = [], 0
+            pieces.append((" ".join(words), glued))
+            words, count, glued = [], 0, False
         words.append(word)
         count += word_tokens
     if words:
-        pieces.append(" ".join(words))
+        pieces.append((" ".join(words), glued))
     return pieces
 
 
 def _units(index: int, paragraph: _Paragraph) -> list[_Unit]:
     units: list[_Unit] = []
     for sentence in SENTENCE_SPLIT_RE.split(paragraph.text):
-        pieces = [sentence] if _token_count(sentence) <= MAX_CHUNK_TOKENS else _split_long_sentence(sentence)
+        pieces = [(sentence, False)] if _token_count(sentence) <= MAX_CHUNK_TOKENS else _split_long_sentence(sentence)
         units.extend(
-            _Unit(index, paragraph.page_number, piece, _token_count(piece), paragraph.is_heading) for piece in pieces
+            _Unit(index, paragraph.page_number, piece, _token_count(piece), paragraph.is_heading, glued)
+            for piece, glued in pieces
         )
     return units
 
@@ -205,9 +258,12 @@ def _raw_text(units: list[_Unit]) -> str:
     previous: int | None = None
     for unit in units:
         if unit.paragraph != previous:
-            paragraphs.append([])
+            paragraphs.append([unit.text])
             previous = unit.paragraph
-        paragraphs[-1].append(unit.text)
+        elif unit.glued:
+            paragraphs[-1][-1] += unit.text
+        else:
+            paragraphs[-1].append(unit.text)
     return "\n\n".join(" ".join(sentences) for sentences in paragraphs)
 
 

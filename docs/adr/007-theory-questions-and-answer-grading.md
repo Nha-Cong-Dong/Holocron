@@ -16,7 +16,7 @@ CLAUDE.md §2.1 đã xếp "bộ sinh câu hỏi tất định (điền khuyết
 Nguyên liệu là các **cặp khái niệm – định nghĩa** (`ConceptPair`). Mỗi cặp gồm `term` (tên khái niệm), `definition_quote` (trích dẫn định nghĩa), `chunk_id`, `subject_code`, `chapter_code` và trạng thái xác nhận.
 
 **Nguồn của cặp, theo đúng thứ tự:**
-1. **LLM đề xuất** cặp từ một chunk đã nằm trong Vault (ADR-006), tức từ văn bản người dùng đã xác nhận ở màn hình xem lại của bộ nhập. LLM là tuỳ chọn; nhà cung cấp do cấu hình quyết định (hiện là gateway kiểu OpenAI của ban tổ chức, model `claude-haiku-5-5`); DeepSeek, Anthropic gốc là lựa chọn khác qua cùng `Protocol`. Không có LLM thì người dùng tự tạo cặp bằng cách bôi đoạn văn trong chunk (duyệt 2026-10-25); cặp đó vẫn qua bước 2.
+1. **LLM đề xuất** cặp từ một chunk đã nằm trong Vault (ADR-006), tức từ văn bản người dùng đã xác nhận ở màn hình xem lại của bộ nhập. LLM là tuỳ chọn; nhà cung cấp do cấu hình quyết định, không có nhà cung cấp mặc định (hiện là gateway kiểu OpenAI của ban tổ chức, model `claude-haiku-5-5`). Contract hiện chỉ có adapter kiểu OpenAI Chat Completions sau `Protocol` `ChatCompletionClient` (spec §11.5); DeepSeek hay server local tương thích OpenAI dùng được qua adapter này; Anthropic gốc (API không theo giao thức OpenAI) cần một adapter riêng cài cùng `Protocol`, chưa có. Không có LLM thì người dùng tự tạo cặp bằng cách bôi đoạn văn trong chunk (duyệt 2026-10-25); cặp đó vẫn qua bước 2.
 2. **Code kiểm nguyên văn:** `definition_quote` PHẢI là chuỗi con (đã chuẩn hoá NFC và khoảng trắng, ADR-006 mục 9, duyệt 2026-10-24) của văn bản chunk đó (I3). Không khớp thì cặp bị loại ngay, không sửa hộ và không hiện cho người dùng.
 3. **Người dùng xác nhận** cặp ở màn hình xem lại; có thể sửa `term`, hoặc chọn lại trích dẫn bằng cách bôi đúng đoạn văn trong chunk (đoạn được chọn vẫn qua bước 2).
 
@@ -74,7 +74,7 @@ Chỉ dạng "Trình bày khái niệm X", đáp án tham chiếu là `definitio
 - Code chấm offline, không cần LLM, thuộc Deterministic Core (bộ tính điểm, CLAUDE.md §2.1): độ phủ n-gram âm tiết (bigram, trigram) sau chuẩn hoá NFC, theo từng ý tách nguyên văn từ `definition_quote`. Các ý là chuỗi con (sau NFC) của `definition_quote` (I3).
 - Kết quả chỉ báo "khớp x/y ý" kèm danh sách ý còn thiếu; KHÔNG có điểm số tuyệt đối. UI ghi rõ giới hạn: người học diễn đạt khác tài liệu thì có thể bị chấm sót ý.
 - Cùng `grader_version`, ngưỡng, các ý và câu trả lời (NFC) thì cùng kết quả (I4, spec §0).
-- Tham số (tách ý theo dấu câu, tối thiểu 4 âm tiết mỗi ý; trọng số bigram/trigram 0.5/0.5; ngưỡng khớp ý 0.5) đã duyệt hướng, **chưa hiệu chỉnh**; hiệu chỉnh bằng script đánh giá opt-in (CLAUDE.md §2.2).
+- Tham số số học (tách ý theo dấu câu, tối thiểu 4 âm tiết mỗi ý; trọng số bigram/trigram 0.5/0.5; ngưỡng khớp ý 0.5): đề xuất, **chưa hiệu chỉnh**, chờ duyệt; hiệu chỉnh bằng script đánh giá opt-in (CLAUDE.md §2.2). Phần đã duyệt 2026-10-25 là hướng chấm ở gạch đầu dòng thứ nhất và thứ hai của mục này (n-gram âm tiết bigram và trigram, "khớp x/y ý", không điểm tuyệt đối).
 - Chỉ làm nếu lát cắt dọc của spec §16 chạy được trước hết ngày 29/10; không thì chuyển sang sau MVP.
 
 #### 5b. `AnswerJudge`: sau MVP (đã duyệt 2026-10-23)

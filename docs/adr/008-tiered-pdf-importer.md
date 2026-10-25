@@ -7,7 +7,7 @@
 
 `SPECIFICATION.md` §1.5 (v0.4) yêu cầu một bộ nhập PDF dùng chung cho tài liệu học (đi vào Vault, ADR-006) và đề thi (đi vào Ingestion Gate). Bộ nhập chia bốn tầng: lớp chữ, OCR, bố cục bảng và công thức, VLM tuỳ chọn. Các ràng buộc:
 
-- **Không có VLM vẫn phải chạy đủ luồng** (G5). Nhà cung cấp LLM do cấu hình quyết định (hiện là gateway kiểu OpenAI của ban tổ chức, model `claude-haiku-5-5`; DeepSeek, Anthropic gốc là lựa chọn khác qua cùng `Protocol`). Chưa kiểm gateway của ban tổ chức có nhận ảnh không; VLM park (R4; duyệt 2026-10-25).
+- **Không có VLM vẫn phải chạy đủ luồng** (G5). Nhà cung cấp LLM do cấu hình quyết định, không có nhà cung cấp mặc định (hiện là gateway kiểu OpenAI của ban tổ chức, model `claude-haiku-5-5`). Contract hiện chỉ có adapter kiểu OpenAI Chat Completions sau `Protocol` `ChatCompletionClient` (spec §11.5); DeepSeek hay server local tương thích OpenAI dùng được qua adapter này; Anthropic gốc (API không theo giao thức OpenAI) cần một adapter riêng cài cùng `Protocol`, chưa có. Chưa kiểm gateway của ban tổ chức có nhận ảnh không; VLM park (R4; duyệt 2026-10-25).
 - **Tiếng Việt có dấu** phải đọc tốt. PDF tiếng Việt cũ hay dùng font mã TCVN3/VNI, khiến lớp chữ là ký tự rác dù trang hiển thị bình thường (R8).
 - **Chạy offline** trong desktop app Tauri, backend là sidecar Python. Dung lượng gói là chi phí thật (R9).
 - **Giấy phép tương thích MIT**, không GPL/AGPL (CLAUDE.md §2.2), vì app sẽ được phát hành.
@@ -153,6 +153,7 @@ Kết luận: không dùng cho MVP. Sau MVP có thể thêm Docling như một w
       | `HOLOCRON_TESSDATA_DIR` | thư mục mặc định của bản cài Tesseract | Thư mục chứa `vie.traineddata`, truyền qua `--tessdata-dir` |
 
     - Ngưỡng, là field có giá trị mặc định của model cấu hình bộ nhập ở `infrastructure/`: `TEXT_SCORE_MIN=0.80`, `OCR_SCORE_MIN=0.80` (giữ ngưỡng 0.80 ở mục 6), `LINE_CONF_MIN=0.70`, `COVERAGE_MIN=0.85`, `FIGURE_INK_MIN=0.10`, `CROSS_LINE_CER_WARN=0.05`. Ngưỡng 0.85 chọn lớp chữ ở mục 6 cũng là cấu hình, tên `TEXT_LAYER_MIN=0.85` (đã duyệt 2026-10-24).
+    - Danh sách chữ được phép thiếu trong unicharset của engine chính, `OCR_CHARSET_ALLOWED_MISSING` (mặc định `Ỵ`, `ỵ`; mục 14, duyệt 2026-10-25), cũng là field có giá trị mặc định của model cấu hình OCR ở `infrastructure/`, không phải biến môi trường (theo quy tắc của mục này).
     - Bảng biến môi trường ở spec §11.2 và `.env.example` (gốc repo) đã được cập nhật ở Đợt 2b (2026-10-24), trước khi có code.
 13. **Kết quả theo trang `PageExtraction`** (mô tả ở mức ADR; contract JSON chi tiết ở spec §5.7, viết ở Đợt 2b ngày 2026-10-24; `types/holocron.ts` cập nhật cùng nhánh triển khai):
 

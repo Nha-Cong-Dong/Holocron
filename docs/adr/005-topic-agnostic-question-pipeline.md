@@ -7,7 +7,7 @@
 
 Theo `SPECIFICATION.md` §1.5 (v0.4, cập nhật 2026-10-24), MVP là đa môn. CPU Scheduling (RR/SJF) giờ chỉ là fixture kiểm thử và walkthrough, không phải môn demo. Môn demo Kỹ thuật vi xử lý có câu tính toán cần artifact dạng bảng (thanh ghi, cờ CPSR, ô nhớ). CLAUDE.md §1 cấm code trong `domain/`, `services/`, `routers/` và `frontend/` rẽ nhánh theo môn, chương hay topic. Tuy vậy, khung hiện tại được dựng quanh CPU Scheduling. Nợ ARCH-001 trong ADR-004 liệt kê các chỗ gắn cứng, gồm năm nhóm:
 
-1. **Dữ liệu đề:** `SchedulingAlgorithm`, `ProcessItem`, `CPUSchedulingProblem`, `SolverInputs.quantum` (`domain/schemas.py`), `IngestionItem.problem: CPUSchedulingProblem` (`routers/api.py`).
+1. **Dữ liệu đề:** `SchedulingAlgorithm`, `ProcessItem`, `CPUSchedulingProblem`, `SolverInputs.quantum` (`domain/schemas.py`), `IngestionItem.problem: CPUSchedulingProblem` (`domain/ingestion.py:144`; trước khi tách router ở PR #37: `routers/api.py`).
 2. **Lược đồ bảng của Gate:** `TABLE_SCHEMAS` và `TOPIC_ALGORITHMS` khoá theo `os.cpu_sched.rr.avg_waiting_time`, cùng `table_to_problem` (`services/ingestion_gate.py`).
 3. **Artifact lời giải:** `TwinQuestion.gantt` và validator rẽ nhánh `topic_key.startswith(CPU_SCHEDULING_TOPIC_PREFIX)`; `_gantt_ok` trong `sandbox/_sandbox_child.py`; ánh xạ `gantt` trong `services/pipeline.py`.
 4. **Metadata template viết trong code:** `RR_TOPIC`, `SJF_TOPIC` và toàn bộ biến, assert, misconception của hai template nằm trong `infrastructure/template_library.py`.

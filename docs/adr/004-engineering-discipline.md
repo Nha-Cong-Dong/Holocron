@@ -49,7 +49,7 @@ Chi tiết ARCH-001, lập ngày 2026-10-23 bằng `grep -rinE 'cpu_?sched|CPUSc
 - `holocron/frontend/src/components/ingestion/UploadForm.tsx`: danh sách dạng bài ghi cứng (Round Robin) và ô nhập quantum; `holocron/frontend/src/lib/api.ts`: tham số `quantum` của `uploadDocument`.
 - `holocron/frontend/src/components/twins/GanttChart.tsx`, `GanttChart.module.css`, `TwinViewer.tsx`, `holocron/frontend/src/lib/twin.ts` (`ganttLayout`, `ganttDescription`) và biến màu `--gantt-*` trong `app/globals.css`: component vẽ riêng sơ đồ Gantt.
 
-Bổ sung ngày 2026-10-24 (số dòng theo `777c521`), các chỗ còn thiếu trong danh sách trên:
+Bổ sung ngày 2026-10-24, các chỗ còn thiếu trong danh sách trên. Số dòng theo `777c521`, trừ hai vị trí mới sau khi tách router ở gạch đầu dòng thứ nhất (`services/ingestion_gate.py:400`) và thứ năm (`routers/ingestion.py:113`), theo `99a3d2e`; số dòng cũ ghi trong ngoặc ở hai gạch đầu dòng đó (`routers/api.py:220`, `routers/api.py:328`) vẫn theo `777c521`:
 
 - `holocron_core/domain/schemas.py:240` và `holocron_core/services/ingestion_gate.py:400` (trước khi tách router: `routers/api.py:220`; cập nhật đường dẫn, duyệt 2026-10-25): hằng `MAX_PROCESSES`; thông điệp "tiến trình" khi bảng quá số dòng ở `holocron_core/services/ingestion_gate.py:218-226`.
 - `holocron_core/domain/schemas.py:269-278`: `to_template_params` với các khoá `names`, `arrivals`, `bursts` riêng của dạng bài lập lịch.

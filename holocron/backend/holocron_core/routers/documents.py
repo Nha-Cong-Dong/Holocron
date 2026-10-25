@@ -3,9 +3,15 @@
 Chưa có ở đây (chờ quyết định): sửa dòng (`PATCH …/lines`), xác nhận trang/tài liệu, tạo item từ trang.
 
 Phụ thuộc cấp qua `Depends`, test thay bằng `app.dependency_overrides`:
-- `get_pdf_reader`: `WorkerPdfReader` với cấu hình OCR đọc từ biến môi trường (spec §11.2).
-- `get_import_runtime`: kho file gốc và hàng đợi đọc nền, do `lifespan` của app tạo (`create_import_runtime`) và gắn
-  vào `app.state`; không có biến toàn cục nào giữ chúng.
+- `get_import_runtime`: kho file gốc, hàng đợi đọc nền, cấu hình bộ đọc (`PdfReaderConfig`, nguồn duy nhất của giới
+  hạn dung lượng), khoá theo tài liệu và cổng nhận việc; do `lifespan` của app tạo (`create_import_runtime`) và gắn
+  vào `app.state`, không có biến toàn cục nào giữ chúng.
+- `get_pdf_reader`: `WorkerPdfReader` với cấu hình bộ đọc của runtime và cấu hình OCR đọc từ biến môi trường (spec
+  §11.2). Cấu hình OCR sai không làm request lỗi: bộ đọc chạy không có OCR (trang cần OCR thành `failed`,
+  `OCR_ENGINE_MISSING`, ADR-008 mục 8), kèm cảnh báo chỉ nêu tên biến.
+
+Mọi handler là `def` (FastAPI chạy trong threadpool): nhận file chặn tới vài chục giây (worker mở thử, ghi file, giao
+dịch của kho), không được chạy trên event loop.
 """
 
 from __future__ import annotations
@@ -24,7 +30,6 @@ from ..infrastructure.document_readers.pdf_reader import PdfReader, WorkerPdfRea
 from ..infrastructure.llm_config import ConfigError
 from ..infrastructure.storage.original_files import OriginalFileStore
 from ..services.document_import import (
-    MAX_DOCUMENT_BYTES,
     BackgroundImportQueue,
     DocumentBusyError,
     DocumentImportError,
@@ -32,11 +37,13 @@ from ..services.document_import import (
     ImportErrorCode,
     ImportRequest,
     ImportRuntime,
+    ImportUnavailableError,
     accept_document,
     delete_imported_document,
     get_document_view,
     get_page_extraction,
     list_document_summaries,
+    remove_orphan_files,
     requeue_pending,
 )
 from .deps import ClockDep, StoreDep
@@ -62,26 +69,33 @@ router = APIRouter()
 _LOGGER = logging.getLogger(__name__)
 
 
-def get_pdf_reader() -> PdfReader:
-    """Bộ đọc tầng 1–2; cấu hình OCR sai là `ConfigError` (thông điệp chỉ nêu tên biến)."""
-    return WorkerPdfReader(PdfReaderConfig(), load_ocr_settings())
+def load_pdf_reader(config: PdfReaderConfig) -> PdfReader:
+    """Bộ đọc tầng 1–2 với cấu hình OCR từ biến môi trường; cấu hình OCR sai ⇒ `ConfigError` (chỉ nêu tên biến)."""
+    return WorkerPdfReader(config, load_ocr_settings())
 
 
-def create_import_runtime(data_dir: Path | None) -> ImportRuntime:
-    """Kho file gốc (`HOLOCRON_DATA_DIR/files` hoặc thư mục tạm) và hàng đợi đọc nền; gọi trong `lifespan`."""
-    files = OriginalFileStore.open(data_dir, max_bytes=MAX_DOCUMENT_BYTES)
+def create_import_runtime(data_dir: Path | None, config: PdfReaderConfig | None = None) -> ImportRuntime:
+    """Kho file gốc (`HOLOCRON_DATA_DIR/files` hoặc thư mục tạm) và hàng đợi đọc nền; gọi trong `lifespan`.
+
+    Kho file gốc nhận đúng `max_bytes` của cấu hình bộ đọc mà runtime giữ (một đối tượng cấu hình cho cả app).
+    """
+    reader_config = PdfReaderConfig() if config is None else config
+    files = OriginalFileStore.open(data_dir, max_bytes=reader_config.max_bytes)
     files.clean_staging()
-    return ImportRuntime(files=files, queue=BackgroundImportQueue())
+    return ImportRuntime(files=files, queue=BackgroundImportQueue(), reader_config=reader_config)
 
 
 def requeue_on_startup(store: DocumentRepository, runtime: ImportRuntime) -> list[str]:
-    """Xếp lại tài liệu đang đọc dở từ file gốc đã lưu (§6.5; chỉ có ý nghĩa với kho SQLite).
+    """Khi khởi động: dọn file gốc mồ côi, rồi xếp lại tài liệu đang đọc dở từ file gốc đã lưu (§6.5; chỉ có ý nghĩa
+    với kho SQLite).
 
-    Cấu hình OCR sai thì không xếp lại được: ghi cảnh báo (chỉ nêu tên biến, không nêu giá trị) và để app vẫn khởi
-    động; tài liệu giữ `processing` tới lần khởi động sau với cấu hình đúng.
+    Cấu hình OCR sai thì không xếp lại (khác với `POST`, nơi bộ đọc chạy không có OCR): đọc lại khi cấu hình đang sai
+    sẽ làm trang cần OCR thành `failed` vĩnh viễn. Ghi cảnh báo (chỉ nêu tên biến, không nêu giá trị) và để app vẫn
+    khởi động; tài liệu giữ `processing` tới lần khởi động sau với cấu hình đúng.
     """
+    remove_orphan_files(store, runtime.files)
     try:
-        reader = get_pdf_reader()
+        reader = load_pdf_reader(runtime.reader_config)
     except ConfigError as exc:
         _LOGGER.warning("không xếp lại tài liệu đang đọc dở: %s", exc)
         return []
@@ -95,8 +109,19 @@ def get_import_runtime(request: Request) -> ImportRuntime:
     raise RuntimeError("bộ nhập tài liệu chưa được khởi tạo (lifespan của app chưa chạy)")
 
 
-ReaderDep = Annotated[PdfReader, Depends(get_pdf_reader)]
 RuntimeDep = Annotated[ImportRuntime, Depends(get_import_runtime)]
+
+
+def get_pdf_reader(runtime: RuntimeDep) -> PdfReader:
+    """Bộ đọc của request; cấu hình OCR sai ⇒ bộ đọc không có OCR và một cảnh báo (thông điệp chỉ nêu tên biến)."""
+    try:
+        return load_pdf_reader(runtime.reader_config)
+    except ConfigError as exc:
+        _LOGGER.warning("cấu hình OCR không hợp lệ, đọc PDF không có OCR: %s", exc)
+        return WorkerPdfReader(runtime.reader_config, ocr=None)
+
+
+ReaderDep = Annotated[PdfReader, Depends(get_pdf_reader)]
 
 
 @router.post(
@@ -105,7 +130,7 @@ RuntimeDep = Annotated[ImportRuntime, Depends(get_import_runtime)]
     status_code=202,
     responses={200: {"model": DocumentImport, "description": "Đã nhập cùng nội dung cho cùng môn"}},
 )
-async def import_document(
+def import_document(
     response: Response,
     store: StoreDep,
     runtime: RuntimeDep,
@@ -119,7 +144,7 @@ async def import_document(
 ) -> DocumentImport:
     if title is not None and not title.strip():
         raise HTTPException(status_code=422, detail="title không được chỉ gồm khoảng trắng")
-    content = await file.read(MAX_DOCUMENT_BYTES + 1)
+    content = file.file.read(runtime.reader_config.max_bytes + 1)
     request = ImportRequest(
         content=content,
         filename=file.filename,
@@ -133,6 +158,8 @@ async def import_document(
         outcome = accept_document(request, store=store, runtime=runtime, reader=reader, now=clock())
     except DocumentImportError as exc:
         raise HTTPException(status_code=ERROR_STATUS[exc.code], detail=str(exc)) from exc
+    except ImportUnavailableError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     if outcome.created:
         response.headers["Location"] = f"/v1/documents/{outcome.document.meta.doc_id}"
     else:
@@ -166,7 +193,7 @@ def get_document_page(store: StoreDep, document_id: str, page_number: int) -> Pa
 @router.delete("/v1/documents/{document_id}", status_code=204, response_class=Response)
 def delete_document(store: StoreDep, runtime: RuntimeDep, document_id: str) -> Response:
     try:
-        delete_imported_document(store, runtime.files, document_id)
+        delete_imported_document(store, runtime, document_id)
     except DocumentNotFoundError as exc:
         raise HTTPException(status_code=404, detail=NOT_FOUND_DETAIL) from exc
     except DocumentBusyError as exc:

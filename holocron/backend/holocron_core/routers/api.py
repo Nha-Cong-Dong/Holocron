@@ -18,6 +18,7 @@ from ..domain.repositories import StorageBusyError
 from ..domain.twins import IdempotencyRecord
 from ..infrastructure.memory_store import IDEMPOTENCY_TTL, IngestionStore
 from ..infrastructure.storage import SQLiteStore, data_dir_from_env
+from ..services.document_import import ImportRuntime
 from . import blueprints, documents, ingestion, runtime, vault
 from .blueprints import create_twins
 from .deps import (
@@ -102,20 +103,24 @@ STORE_BUSY_DETAIL = "Kho dữ liệu đang bận, thử lại"
 async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     """Mở kho ngay khi khởi động: DB SQLite mới hơn code thì app từ chối khởi động (SPECIFICATION §5.13).
 
-    Sau khi mở kho, tạo bộ nhập tài liệu (kho file gốc và hàng đợi đọc nền, §6.5), gắn vào `app.state` và xếp lại các
-    tài liệu còn đang đọc dở. Khi tắt app, dừng hàng đợi và dọn thư mục file tạm (khi không có `HOLOCRON_DATA_DIR`),
-    rồi đóng kết nối SQLite của kho mặc định và bỏ nó khỏi cache, để lần khởi động sau trong cùng tiến trình (test,
-    `--reload`) mở lại kết nối mới thay vì dùng kết nối đã đóng. Kho in-memory không có gì để đóng.
+    Sau khi mở kho, tạo bộ nhập tài liệu (kho file gốc, hàng đợi đọc nền, §6.5), gắn vào `app.state`, dọn file gốc
+    mồ côi và xếp lại các tài liệu còn đang đọc dở. Khi tắt app (kể cả khi chính bước tạo bộ nhập lỗi): dừng bộ nhập
+    (chờ có hạn; luồng đọc nền chưa dừng kịp thì thư mục file tạm được giữ lại cho lần khởi động sau, luồng đó tự
+    thoát êm khi thấy kho đã đóng), rồi đóng kết nối SQLite của kho mặc định và bỏ nó khỏi cache, để lần khởi động
+    sau trong cùng tiến trình (test, `--reload`) mở lại kết nối mới thay vì dùng kết nối đã đóng. Kho in-memory
+    không có gì để đóng.
     """
     store = get_store()
-    import_runtime = documents.create_import_runtime(data_dir_from_env())
-    setattr(application.state, documents.RUNTIME_STATE_ATTR, import_runtime)
+    import_runtime: ImportRuntime | None = None
     try:
+        import_runtime = documents.create_import_runtime(data_dir_from_env())
+        setattr(application.state, documents.RUNTIME_STATE_ATTR, import_runtime)
         documents.requeue_on_startup(store, import_runtime)
         yield
     finally:
-        import_runtime.close()
-        delattr(application.state, documents.RUNTIME_STATE_ATTR)
+        if import_runtime is not None:
+            import_runtime.close()
+            delattr(application.state, documents.RUNTIME_STATE_ATTR)
         if isinstance(store, SQLiteStore):
             store.close()
             _default_store.cache_clear()

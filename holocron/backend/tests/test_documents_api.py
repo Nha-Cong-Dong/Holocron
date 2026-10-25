@@ -13,15 +13,17 @@ from fastapi.testclient import TestClient
 
 from holocron_core.domain.documents import DocumentImport, DocumentSummary, PageExtraction
 from holocron_core.domain.ingestion import IngestionItem, UploadedDocument
+from holocron_core.infrastructure.document_readers.config import PdfReaderConfig
 from holocron_core.infrastructure.document_readers.pdf_reader import PdfInputErrorCode, PdfWorkerError
 from holocron_core.routers import deps
 from holocron_core.routers.api import app
-from holocron_core.services.document_import import MAX_DOCUMENT_BYTES, SynchronousImportQueue
+from holocron_core.services.document_import import SynchronousImportQueue
 from holocron_core.services.ingestion_gate import recompute_item
 from tests.document_import_support import FakePdfReader, ImportEnv, install, pdf_bytes
 from tests.test_api_item_state import _body
 from tests.vault_support import NOW, STORE_KINDS, open_store
 
+MAX_DOCUMENT_BYTES = PdfReaderConfig().max_bytes
 DOCUMENT_PATHS = [
     ("/v1/documents", "post"),
     ("/v1/documents", "get"),

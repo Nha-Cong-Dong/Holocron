@@ -175,7 +175,7 @@ def test_closing_the_queue_stops_after_the_current_document(store: AppStore, tmp
     release.set()
     closer.join(WAIT_S)
     assert ran == [first], "việc sau khi đóng hàng đợi không được chạy"
-    assert _page_statuses(store, first) == ["ok", "pending"], "dừng sau trang hiện tại, trang còn lại giữ pending"
+    assert _page_statuses(store, first) == ["pending", "pending"], "đã dừng thì không ghi thêm trang nào"
     assert _status(store, first) == "processing" and _status(store, second) == "processing"
     with pytest.raises(RuntimeError):
         jobs.submit(_job(store, files, reader, second))
@@ -203,7 +203,9 @@ def test_requeue_reads_pending_documents_oldest_first_and_fails_lost_files(store
 def test_requeue_only_reads_pages_still_pending(store: AppStore, tmp_path: Path) -> None:
     files, reader = OriginalFileStore(tmp_path / "files"), FakePdfReader(page_count=3)
     document_id = _accept(store, files, reader, "partial")
-    read_document(_job(store, files, reader, document_id), should_stop=lambda: True)
+    read_document(
+        _job(store, files, reader, document_id), should_stop=lambda: _page_statuses(store, document_id)[0] == "ok"
+    )
     assert _page_statuses(store, document_id) == ["ok", "pending", "pending"]
     requeue_pending(store, files, reader, SynchronousImportQueue())
     assert reader.reads[-1] == (document_id, [2, 3])
@@ -260,7 +262,7 @@ def test_lifespan_requeues_pending_documents_from_the_data_dir(
 ) -> None:
     document_id = _seed_processing_document(tmp_path)
     reader = FakePdfReader()
-    monkeypatch.setattr(documents, "get_pdf_reader", lambda: reader)
+    monkeypatch.setattr(documents, "load_pdf_reader", lambda config: reader)
     monkeypatch.setenv(DATA_DIR_ENV, str(tmp_path))
     with TestClient(app) as client:
         runtime = getattr(app.state, documents.RUNTIME_STATE_ATTR)
@@ -277,10 +279,10 @@ def test_lifespan_still_starts_when_the_ocr_config_is_invalid(
 ) -> None:
     document_id = _seed_processing_document(tmp_path)
 
-    def invalid() -> FakePdfReader:
+    def invalid(config: PdfReaderConfig) -> FakePdfReader:
         raise ConfigError("HOLOCRON_PDF_OCR_PRIMARY không hợp lệ")
 
-    monkeypatch.setattr(documents, "get_pdf_reader", invalid)
+    monkeypatch.setattr(documents, "load_pdf_reader", invalid)
     monkeypatch.setenv(DATA_DIR_ENV, str(tmp_path))
     with TestClient(app) as client:
         assert client.get(f"/v1/documents/{document_id}").json()["status"] == "processing"

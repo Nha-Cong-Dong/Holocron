@@ -1,7 +1,7 @@
 # ADR 007: Câu lý thuyết sinh tất định từ Vault; chấm tự luận offline (MVP nếu còn thời gian); AnswerJudge sau MVP
 
-- Trạng thái: Chấp nhận (2026-10-23), gồm câu chữ I2 và I4 ở mục 4. Sửa ngày 2026-10-25 theo quyết định của người dùng: tiêu đề, nhà cung cấp LLM ở mục 1 và 3, khoá sắp xếp `pool_sha256` ở mục 2, mục 5 tách thành 5a (chấm offline) và 5b (`AnswerJudge` sau MVP), phần Hệ quả.
-- Ngày: 2026-10-23; cập nhật 2026-10-25
+- Trạng thái: Chấp nhận (2026-10-23), gồm câu chữ I2 và I4 ở mục 4. Sửa ngày 2026-10-25 theo quyết định của người dùng: tiêu đề, nhà cung cấp LLM ở mục 1 và 3, khoá sắp xếp `pool_sha256` ở mục 2, mục 5 tách thành 5a (chấm offline) và 5b (`AnswerJudge` sau MVP), phần Hệ quả. Sửa ngày 2026-10-26 theo quyết định của người dùng: mục 2 thêm cách chọn dạng câu; phần Hệ quả cập nhật trạng thái field nullable của `BlueprintSlot`. Trạng thái không đổi.
+- Ngày: 2026-10-23; cập nhật 2026-10-25, 2026-10-26
 
 ## Bối cảnh
 
@@ -38,6 +38,7 @@ Ba dạng câu MCQ4, đều do code sinh; LLM không soạn thân câu, phương
 ### 2. Tái lập và misconception
 
 - **Tái lập:** chọn cặp và phương án bằng `random.Random(f"{generator_version}:{pool_sha256}:{seed}")`, trong đó `generator_version` là phiên bản của bộ sinh, tăng khi đổi luật chọn. Cùng ba giá trị đó thì cùng câu hỏi, cùng đáp án và cùng thứ tự phương án. Đây là cách mở rộng I4 sang câu không có template.
+- **Chọn dạng câu (duyệt 2026-10-26):** dạng câu (một trong ba dạng ở mục 1) cũng do chính RNG trên chọn, trong các dạng khả thi của pool, nên bộ ba `(generator_version, pool_sha256, seed)` đủ để tái lập câu kể cả dạng câu; câu chữ I4 ở spec §0 không đổi. Thứ tự rút (dạng trước, cặp sau) và thứ tự khai báo các dạng là đề xuất ở spec §5.11, chờ duyệt.
 - **Phạm vi của `pool_sha256`:** chỉ gồm các cặp **đã xác nhận** có **cùng `subject_code` với slot**, không phải toàn Vault. Thêm, sửa hay xoá dữ liệu của môn khác không làm đổi câu hỏi của môn này.
 - **Cách tính `pool_sha256`:**
   1. Mỗi cặp lấy đúng năm trường `subject_code`, `chapter_code`, `term`, `definition_quote`, `chunk_id`; mỗi trường chuỗi được chuẩn hoá Unicode NFC.
@@ -94,7 +95,7 @@ Lý do để `AnswerJudge` sau MVP: chấm tự luận bằng LLM cần một b�
 - Chất lượng câu hỏi phụ thuộc chất lượng cặp khái niệm, nên màn hình xem lại của Vault phải cho sửa và xoá cặp.
 - **Chạm bất biến I2 và I4:** câu chữ cũ của I2 ("mã đã khai báo trong template") và I4 ("`(template_sha256, seed)`") chỉ nói về câu có template. Người làm dự án đã duyệt câu chữ mới ngày 2026-10-23 (mục 4); spec §0 và bảng CLAUDE.md §9 đã cập nhật theo (CLAUDE.md §9).
 - MVP có câu có đáp án xác định và câu ESSAY chấm offline (nếu kịp mốc 29/10; mục 5a, duyệt 2026-10-25).
-- Contract (`question_kind`, model `ConceptPair`, trace cho câu không có template) được viết ở spec §5.8, §5.9, §5.11 và §6.6 (Đợt 2b, 2026-10-24). Đã duyệt 2026-10-25: `TheoryTrace`, `TwinQuestion.template_id` và `topic_key` nullable, `MisconceptionRef.citation` (spec §5.11); các field nullable của `BlueprintSlot` vẫn là đề xuất, chờ duyệt (spec §17 D8).
+- Contract (`question_kind`, model `ConceptPair`, trace cho câu không có template) được viết ở spec §5.8, §5.9, §5.11 và §6.6 (Đợt 2b, 2026-10-24). Đã duyệt 2026-10-25: `TheoryTrace`, `TwinQuestion.template_id` và `topic_key` nullable, `MisconceptionRef.citation` (spec §5.11); đã duyệt 2026-10-26: `TheorySlotSpec`, `theory_slots`, các field nullable của `BlueprintSlot` (`source_page_number`, `topic_key`, `self_solve`) và `ReviewTicket.topic_key` (spec §5.9, §5.11, §17 D8).
 - Kiểm chứng: test cho thấy cặp có trích dẫn không nguyên văn bị loại; cặp chưa xác nhận không bao giờ được dùng và không làm đổi `pool_sha256`; Vault ít hơn 4 khái niệm đã xác nhận thì vào `review_tickets`; dạng "chọn định nghĩa đúng" chỉ lấy phương án nhiễu cùng chương; cùng `(generator_version, pool_sha256, seed)` thì câu hỏi giống từng byte; cùng nội dung nhập ở dạng NFC hay NFD cho cùng `pool_sha256`; thêm cặp ở môn khác không làm đổi `pool_sha256` của môn này; mọi phương án nhiễu đều có mã thuộc `THEORY_MISCONCEPTIONS`.
 
 ## Phương án đã loại

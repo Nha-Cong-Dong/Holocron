@@ -147,13 +147,21 @@ def _letter_run(token: str, start: int, step: int) -> int:
     return count
 
 
+def _is_plain_latin(run: str) -> bool:
+    """Cụm chữ chỉ gồm chữ cái Latin ASCII (không dấu)."""
+    return run.isascii() and run.isalpha()
+
+
 def _counts_as_legacy_marker(token: str, index: int) -> bool:
     """Ký tự ở `index` có được tính là dấu TCVN3/VNI hay không.
 
     Dấu thường (`®`, `¸`, `Ö`…) luôn được tính. Ký hiệu toán trùng mã TCVN3 (`MATH_LIKE_MARKERS`) được xét theo vị
-    trí: `µ` đứng đầu từ là tiền tố đơn vị (`µs`, `µm`), còn ở giữa hay cuối từ là chữ `à` của TCVN3 (`hµnh`, `vµ`);
-    `−`, `×`, `·`, `÷` chỉ được tính khi nằm giữa hai chữ cái và một bên là cụm từ hai chữ cái trở lên (`Tr−êng`,
-    `tr×nh`). Toán hạng là số (`x−1`, `2·3`) hoặc biến một chữ (`a×b`) không bị tính.
+    trí: `µ` chỉ được tính khi đứng ngay sau một chữ cái (chữ `à` của TCVN3: `hµnh`, `vµ`); đứng đầu từ hay sau chữ
+    số là tiền tố đơn vị (`µs`, `10µs`). `−`, `×`, `·`, `÷` chỉ được tính khi nằm giữa hai chữ cái và một bên là
+    cụm từ hai chữ cái trở lên (`Tr−êng`, `tr×nh`). Toán hạng là số (`x−1`, `2·3`) hoặc biến một chữ (`a×b`) không
+    bị tính. Riêng `·` nằm giữa hai cụm chữ Latin không dấu là dấu nhân của đơn vị (`kg·m`, `kW·h`), không bị tính;
+    đổi lại, từ TCVN3 mà `·` (chữ `ã`) chỉ đứng cạnh chữ không dấu (`l·nh`) không được tính ở ký tự này, các dấu
+    khác của trang vẫn kéo `valid_word_ratio` xuống.
     """
     char = token[index]
     if char not in LEGACY_VIETNAMESE_MARKERS:
@@ -161,9 +169,15 @@ def _counts_as_legacy_marker(token: str, index: int) -> bool:
     if char not in MATH_LIKE_MARKERS:
         return True
     if char == "µ":
-        return index > 0
+        return index > 0 and token[index - 1].isalpha()
     left = _letter_run(token, index - 1, -1)
     right = _letter_run(token, index + 1, 1)
+    if (
+        char == "·"
+        and _is_plain_latin(token[index - left : index])
+        and _is_plain_latin(token[index + 1 : index + 1 + right])
+    ):
+        return False
     return left > 0 and right > 0 and max(left, right) >= 2
 
 

@@ -19,6 +19,7 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 - Template SJF không ưu tiên `os_sjf_avg_waiting` (topic `os.cpu_sched.sjf.avg_waiting_time`) với 3 misconception `WAIT_CONFUSED_WITH_TURNAROUND`, `SJF_IGNORES_ARRIVAL`, `SJF_COMPUTED_AS_SRTF`, đăng ký trong `template_library` và registry; kiểm bằng bộ giải tham chiếu độc lập, property test 200 seed (tỉ lệ nhận seed 16 %), tất định và sandbox không thoát bất thường. Chưa đăng ký ở Ingestion Gate (`TABLE_SCHEMAS`, `TOPIC_ALGORITHMS`).
 
 ### 🛠️ Cải tiến & Tối ưu
+- Vault nối vào app (ADR-006 mục 6; spec §5.8, §6.6; quyết định người dùng 2026-10-25): `routers/api.py` gắn `routers/vault.py` vào `app`, nên các endpoint Vault của §6.6 (trừ `propose`) chạy qua app chính; `tests/test_router_split.py` giờ chỉ kiểm `EXPECTED_PATHS` là tập con của OpenAPI. `CitationProvider.citation_for` đổi chữ ký thành `(subject_code, slot)` và `generate_twin_batch` truyền `blueprint.subject_code`, nên `VaultCitationProvider` thoả `Protocol`; test mới khoá việc chunk môn khác không bao giờ thành trích dẫn của twin và các endpoint Vault qua `app` (kể cả I3 khi tạo/xác nhận cặp). `get_citation_provider` vẫn trả `NoCitationProvider` (nối Vault vào twin là việc sau); model response không đổi nên không sửa `types/holocron.ts`.
 - Vault, sửa sau review:
   - I3 của `ConceptPair` được kiểm ngay trong cả hai repository; cặp hỏng nạp từ SQLite bị bỏ qua kèm cảnh báo.
   - Hai bảng FTS5 dùng chung bộ tách từ của Python, nên kết quả tìm kiếm không phụ thuộc việc có FTS5 hay không, kể cả với chữ Kirin, Hy Lạp và NFD.

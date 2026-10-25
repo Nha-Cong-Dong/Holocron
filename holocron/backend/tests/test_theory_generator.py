@@ -934,6 +934,68 @@ def test_model_rejects_a_fill_blank_distractor_overlapping_the_hidden_term() -> 
 
 
 # --------------------------------------------------------------------------- #
+# Luật lấy phương án nhiễu: theo thứ tự chuẩn, bỏ cặp trùng khái niệm hoặc trùng văn bản với cặp đứng trước
+# --------------------------------------------------------------------------- #
+
+GREEDY_LINES = [
+    "Vật chất là phạm trù triết học dùng để chỉ thực tại khách quan.",
+    "Vật chất là cái được cảm giác chép lại, chụp lại, phản ánh.",
+    "Vận động là phương thức tồn tại của vật chất.",
+    "Ý thức là sự phản ánh năng động, sáng tạo thế giới khách quan vào bộ óc con người.",
+    "Không gian là hình thức tồn tại của vật chất.",
+    "Thời gian là hình thức tồn tại của vật chất.",
+    "Chân lý là tri thức phù hợp với hiện thực khách quan.",
+]
+GREEDY_CHUNK = _lines_chunk("chk_greedy_ch1", "ch1", GREEDY_LINES, 6)
+# Hai cặp cùng khái niệm "Vật chất", khác trích dẫn; "Không gian" và "Thời gian" có cùng văn bản phương án sau khi che
+# tên khái niệm ở dạng chọn định nghĩa ("____ là hình thức tồn tại của vật chất.").
+GREEDY_PAIRS = _pairs_in(
+    GREEDY_CHUNK,
+    [
+        ("Vật chất", GREEDY_LINES[0]),
+        ("Vật chất", GREEDY_LINES[1]),
+        ("Vận động", GREEDY_LINES[2]),
+        ("Ý thức", GREEDY_LINES[3]),
+        ("Không gian", GREEDY_LINES[4]),
+        ("Thời gian", GREEDY_LINES[5]),
+        ("Chân lý", GREEDY_LINES[6]),
+    ],
+)
+
+
+def test_distractors_follow_the_canonical_order_and_skip_later_duplicates() -> None:
+    """Ghim luật tham lam: phương án nhiễu hợp lệ lấy theo thứ tự chuẩn của nhóm ứng viên; cặp trùng khái niệm hoặc trùng
+    văn bản phương án với một cặp đứng trước bị bỏ, nên tính khả thi không phụ thuộc RNG.
+
+    - Hai biến thể của "Vật chất": thứ tự chuẩn phân xử bằng `definition_quote`, nên biến thể "cái được cảm giác…"
+      đứng trước; mọi phương án nhiễu "Vật chất" (ở mọi dạng) luôn trích biến thể đó, không bao giờ biến thể sau.
+    - "Không gian" đứng trước "Thời gian" và cùng văn bản phương án ở dạng chọn định nghĩa: định nghĩa của "Thời gian"
+      không bao giờ là phương án nhiễu của dạng này.
+    """
+    pool = candidate_pool(GREEDY_PAIRS, SUBJECT)
+    variants = [pair for pair in pool if pair.term == "Vật chất"]
+    assert [pair.definition_quote for pair in variants] == [GREEDY_LINES[1], GREEDY_LINES[0]]
+    first, later = variants
+    assert [pair.term for pair in pool].index("Không gian") < [pair.term for pair in pool].index("Thời gian")
+
+    chunks = {GREEDY_CHUNK.chunk_id: GREEDY_CHUNK}
+    seen: Counter[str] = Counter()
+    for seed in OVERLAP_SEEDS:
+        result = generate_theory_question(GREEDY_PAIRS, chunks, subject_code=SUBJECT, seed=seed, **TICKET_CONTEXT)
+        assert isinstance(result, TheoryQuestion), result
+        quotes = {citation.verbatim_quote for citation in result.distractor_citations.values()}
+        assert later.definition_quote not in quotes, (seed, result.form, result.options)
+        if first.definition_quote in quotes:
+            seen[f"{result.form.value}:Vật chất"] += 1
+        if result.form is TheoryQuestionForm.DEFINITION_CHOICE:
+            assert GREEDY_LINES[5] not in quotes, (seed, result.options)
+            if GREEDY_LINES[4] in quotes:
+                seen["definition_choice:Không gian"] += 1
+    expected = {"definition_choice:Vật chất", "definition_choice:Không gian", "concept_match:Vật chất"}
+    assert expected <= set(seen), seen
+
+
+# --------------------------------------------------------------------------- #
 # Khoá phân xử khi hoà và giới hạn che tên khái niệm
 # --------------------------------------------------------------------------- #
 

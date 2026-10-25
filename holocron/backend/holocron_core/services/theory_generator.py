@@ -14,10 +14,15 @@ Thuộc Deterministic Core: hàm thuần, không gọi LLM, không gọi mạng,
   `raw_text` của chunk nguồn trước khi dùng.
 - **Tái lập (I4):** mọi lựa chọn ngẫu nhiên chỉ dùng `random.Random(f"{generator_version}:{pool_sha256}:{seed}")`;
   ứng viên luôn được sắp theo thứ tự chuẩn trước khi xáo, nên thứ tự cặp ở đầu vào không ảnh hưởng kết quả.
-- **Dạng câu do RNG chọn (I4):** dạng câu không phải đầu vào. Trước khi rút số ngẫu nhiên nào, code xác định các dạng
-  khả thi với nhóm ứng viên và chương của slot (dạng có ít nhất một cặp đáp án đủ 3 phương án nhiễu hợp lệ), theo thứ
-  tự cố định `FORM_ORDER`; RNG trên rút một dạng trong số đó. Nhờ vậy `(generator_version, pool_sha256, seed)` cùng
-  chương của slot đủ để tái lập câu.
+- **Dạng câu do RNG chọn (I4; duyệt 2026-10-26, spec §5.11, ADR-007 mục 2):** dạng câu không phải đầu vào; chính RNG
+  của bộ ba I4 rút dạng câu trong các dạng khả thi của nhóm ứng viên, nên `(generator_version, pool_sha256, seed)` cùng
+  chương của slot đủ để tái lập câu. Các chi tiết sau là **đề xuất, chờ duyệt (spec §5.11, §17 D8)**; code làm đúng
+  theo đề xuất đó: (a) thứ tự rút là dạng trước, cặp sau (rồi thứ tự phương án nhiễu, rồi thứ tự bốn phương án);
+  (b) danh sách dạng khả thi giữ thứ tự khai báo cố định `FORM_ORDER` (ghép khái niệm, điền khuyết, chọn định nghĩa
+  đúng), và một dạng là khả thi khi có ít nhất một bản nháp của dạng đó (cặp đáp án thuộc chương của slot nếu slot giới
+  hạn chương, cộng thuật ngữ bị che với dạng điền khuyết) mà luật lấy phương án nhiễu ở mục "Không đủ căn cứ" cho đủ 3
+  phương án nhiễu hợp lệ; tính khả thi được xác định trước khi rút số ngẫu nhiên nào; (c) không dạng nào khả thi thì
+  trả `ReviewTicket` với lý do "không đủ căn cứ trong Vault".
 - **Đúng một đáp án:** cặp có `definition_quote` trùng, chứa hoặc nằm trong trích dẫn của cặp đáp án (so sau NFC, gộp
   khoảng trắng, không phân biệt hoa thường) không bao giờ làm phương án nhiễu, vì nó cũng là một đáp án đúng. Hai dạng
   có phương án là thuật ngữ (ghép khái niệm, điền khuyết) còn loại thuật ngữ mà khi điền vào chỗ `____` của thân câu
@@ -29,8 +34,15 @@ Thuộc Deterministic Core: hàm thuần, không gọi LLM, không gọi mạng,
   đúng thứ hai nằm trong một chunk chưa có cặp xác nhận; người dùng giảm rủi ro này bằng cách xác nhận thêm cặp cho
   đoạn văn đó.
 - **Không đủ căn cứ:** không dạng câu nào chọn được 3 phương án nhiễu khác nhau thì trả `ReviewTicket`, không bịa
-  phương án. Phương án nhiễu hợp lệ được lấy theo thứ tự chuẩn, bỏ cặp trùng khái niệm hoặc trùng văn bản với một cặp
-  đứng trước, nên tính khả thi không phụ thuộc RNG.
+  phương án. Phương án nhiễu hợp lệ được lấy tham lam theo thứ tự chuẩn của nhóm ứng viên (cặp cùng chương trước): bỏ
+  cặp trùng khái niệm hoặc trùng văn bản phương án với đáp án hay với một cặp đã nhận đứng trước, và cặp bị luật "đúng
+  một đáp án" loại; nên tính khả thi không phụ thuộc RNG. Ví dụ hai cặp cùng `term` khác trích dẫn thì chỉ biến thể
+  đứng trước trong thứ tự chuẩn làm phương án nhiễu.
+- **Giới hạn đã biết của luật tham lam:** một cặp đứng trước đã nhận có thể chặn hai cặp đứng sau vốn hợp lệ với nhau
+  (cặp A khái niệm X văn bản t, cặp B khái niệm X văn bản u, cặp C khái niệm Y văn bản t: nhận A thì bỏ cả B lẫn C dù
+  B và C cùng nhận được; thực tế gặp ở dạng chọn định nghĩa, khi hai định nghĩa trùng nhau sau khi che tên khái niệm).
+  Vì vậy bộ sinh có thể báo không khả thi (`ReviewTicket`) dù tồn tại bộ 3 phương án nhiễu hợp lệ. Đổi sang luật tìm
+  bộ 3 tối ưu là đổi luật chọn, phải tăng `GENERATOR_VERSION`.
 - **Giới hạn đã biết:** che tên khái niệm chỉ khớp đúng chuỗi `term` (không phân biệt hoa thường, đúng ranh giới chữ);
   dạng biến hình hay số nhiều ("Process" và "Processes") không bị che và có thể lộ đáp án. Bộ sinh cố ý không tách từ
   hay biến hình theo ngôn ngữ.
@@ -128,7 +140,10 @@ FORM_ORDER: tuple[TheoryQuestionForm, ...] = (
     TheoryQuestionForm.FILL_BLANK,
     TheoryQuestionForm.DEFINITION_CHOICE,
 )
-"""Thứ tự cố định của các dạng câu khi RNG rút dạng câu (I4); đổi thứ tự này phải tăng `GENERATOR_VERSION`."""
+"""Thứ tự khai báo cố định của các dạng câu khi RNG rút dạng câu (I4).
+
+Việc RNG của bộ ba I4 chọn dạng câu đã duyệt 2026-10-26; riêng thứ tự khai báo này là đề xuất, chờ duyệt (spec §5.11,
+§17 D8). Đổi thứ tự phải tăng `GENERATOR_VERSION`."""
 
 _FORM_LABELS: dict[TheoryQuestionForm, str] = {
     TheoryQuestionForm.CONCEPT_MATCH: "ghép khái niệm",
@@ -340,6 +355,9 @@ def _eligible_distractors(
     án đó cũng là một đáp án đúng). Kết quả chỉ phụ thuộc nhóm ứng viên và bản nháp, không phụ thuộc RNG, nên tính khả
     thi của một dạng câu được xác định trước khi rút số ngẫu nhiên nào. `limit` dừng sớm khi đã nhận đủ số phương án;
     phần đã nhận luôn là tiền tố của kết quả đầy đủ.
+
+    Luật tham lam: không tìm bộ phương án lớn nhất, nên có thể báo thiếu phương án dù tồn tại bộ 3 hợp lệ (xem "Giới hạn
+    đã biết của luật tham lam" ở docstring của module).
     """
     chapter_code = draft.anchor.chapter_code
     ordered = [pair for pair in pool if pair.chapter_code == chapter_code]
@@ -641,7 +659,9 @@ def generate_theory_question(
     Dạng câu không phải đầu vào (I4): RNG duy nhất `random.Random(f"{generator_version}:{pool_sha256}:{seed}")` rút
     lần lượt dạng câu trong `feasible_forms(...)` (dạng không đủ 3 phương án nhiễu bị loại trước), bản nháp trong các
     bản nháp khả thi của dạng đó, thứ tự phương án nhiễu hợp lệ, rồi thứ tự bốn phương án. Không dạng nào khả thi ⇒
-    `ReviewTicket`.
+    `ReviewTicket`. RNG của bộ ba I4 chọn dạng câu là phần đã duyệt 2026-10-26; thứ tự rút (dạng trước, cặp sau), thứ
+    tự `FORM_ORDER`, định nghĩa "khả thi" và `ReviewTicket` khi không dạng nào khả thi là đề xuất, chờ duyệt (spec §5.11,
+    §17 D8).
 
     Cặp được chọn mà thiếu chunk, khác môn với chunk hoặc trích dẫn không còn khớp nguyên văn chunk (I3) ⇒ lỗi
     (`ValueError`/`QuoteMismatchError`): đó là dữ liệu hỏng, không phải thiếu căn cứ.

@@ -580,3 +580,358 @@ def test_vault_backed_generation_matches_the_pure_function() -> None:
         assert isinstance(from_vault, TheoryQuestion)
         assert from_vault.model_dump_json() == direct.model_dump_json()
         assert from_vault.citation.doc_id == doc_id
+
+
+# --------------------------------------------------------------------------- #
+# Đúng một đáp án: trích dẫn trùng hoặc lồng nhau, thuật ngữ điền được vào chỗ trống
+# --------------------------------------------------------------------------- #
+
+OVERLAP_SEEDS = range(300)
+
+OVERLAP_CH1_LINES = [
+    "Vật chất là phạm trù triết học dùng để chỉ thực tại khách quan.",
+    "Vận động là phương thức tồn tại của vật chất.",
+    "Không gian là hình thức tồn tại của vật chất.",
+    "Thời gian là hình thức tồn tại của vật chất.",
+    "Ý thức là sự phản ánh năng động, sáng tạo thế giới khách quan vào bộ óc con người.",
+    "Ý thức xã hội là mặt tinh thần của đời sống xã hội.",
+    "Tồn tại xã hội là mặt vật chất của đời sống xã hội.",
+]
+OVERLAP_CH2_LINES = [
+    "Thực tiễn là toàn bộ hoạt động vật chất có mục đích của con người.",
+    "Nhận thức là quá trình phản ánh hiện thực khách quan vào bộ óc con người.",
+    "Chân lý là tri thức phù hợp với hiện thực khách quan.",
+    "CHÂN LÝ LÀ TRI THỨC PHÙ HỢP VỚI HIỆN THỰC KHÁCH QUAN.",
+]
+OVERLAP_CH1_DEFINITIONS = [
+    ("Vật chất", OVERLAP_CH1_LINES[0]),
+    # Trùng trích dẫn với "Vật chất".
+    ("Thực tại khách quan", OVERLAP_CH1_LINES[0]),
+    ("Vận động", OVERLAP_CH1_LINES[1]),
+    # Trích dẫn nằm trong trích dẫn của "Vận động".
+    ("Phương thức tồn tại", "phương thức tồn tại của vật chất"),
+    ("Không gian", OVERLAP_CH1_LINES[2]),
+    # Trùng trích dẫn với "Không gian"; che "Không gian" rồi điền "Thời gian" cho ra một câu có trong Vault.
+    ("Hình thức tồn tại", OVERLAP_CH1_LINES[2]),
+    ("Thời gian", OVERLAP_CH1_LINES[3]),
+    ("Ý thức", OVERLAP_CH1_LINES[4]),
+    # Trích dẫn nằm trong trích dẫn của "Ý thức".
+    ("Phản ánh năng động", "sự phản ánh năng động, sáng tạo thế giới khách quan"),
+    # Thuật ngữ chứa thuật ngữ "Ý thức".
+    ("Ý thức xã hội", OVERLAP_CH1_LINES[5]),
+    ("Tồn tại xã hội", OVERLAP_CH1_LINES[6]),
+]
+OVERLAP_CH2_DEFINITIONS = [
+    ("Thực tiễn", OVERLAP_CH2_LINES[0]),
+    ("Nhận thức", OVERLAP_CH2_LINES[1]),
+    ("Chân lý", OVERLAP_CH2_LINES[2]),
+    # Trùng trích dẫn với "Chân lý", chỉ khác hoa thường và khoảng trắng.
+    ("Tri thức đúng", "CHÂN LÝ LÀ  TRI THỨC PHÙ HỢP VỚI HIỆN THỰC KHÁCH QUAN."),
+    # Trích dẫn nằm trong trích dẫn của "Nhận thức".
+    ("Hiện thực khách quan", "phản ánh hiện thực khách quan vào bộ óc"),
+]
+
+
+def _lines_chunk(chunk_id: str, chapter: str, lines: list[str], page: int, *, subject: str = SUBJECT) -> KnowledgeChunk:
+    raw_text = "Mở đầu phần lý thuyết.\n" + "\n".join(lines)
+    return KnowledgeChunk(
+        chunk_id=chunk_id,
+        doc_id=DOC,
+        subject_code=subject,
+        chapter_code=chapter,
+        page_number=page,
+        raw_text=raw_text,
+        verbatim_quote=lines[0],
+        category=ChunkCategory.THEORY,
+        token_count=80,
+        label_status="confirmed",
+    )
+
+
+def _pairs_in(chunk: KnowledgeChunk, definitions: list[tuple[str, str]]) -> list[ConceptPair]:
+    return [
+        ConceptPair(
+            pair_id=f"cp_{chunk.chunk_id}_{index:02d}",
+            chunk_id=chunk.chunk_id,
+            subject_code=chunk.subject_code,
+            chapter_code=chunk.chapter_code,
+            term=term,
+            definition_quote=quote,
+            status=ConceptPairStatus.CONFIRMED,
+            proposed_by="user",
+            created_at=NOW,
+            confirmed_at=NOW,
+        )
+        for index, (term, quote) in enumerate(definitions)
+    ]
+
+
+OVERLAP_CHUNKS = {
+    chunk.chunk_id: chunk
+    for chunk in (
+        _lines_chunk("chk_overlap_ch1", "ch1", OVERLAP_CH1_LINES, 4),
+        _lines_chunk("chk_overlap_ch2", "ch2", OVERLAP_CH2_LINES, 12),
+    )
+}
+OVERLAP_PAIRS = _pairs_in(OVERLAP_CHUNKS["chk_overlap_ch1"], OVERLAP_CH1_DEFINITIONS) + _pairs_in(
+    OVERLAP_CHUNKS["chk_overlap_ch2"], OVERLAP_CH2_DEFINITIONS
+)
+
+
+def _overlap(first: str, second: str) -> bool:
+    first_key, second_key = normalize_quote(first).casefold(), normalize_quote(second).casefold()
+    return first_key in second_key or second_key in first_key
+
+
+def _vault_correct_keys(question: TheoryQuestion) -> set[OptionKey]:
+    """Các phương án đúng theo dữ liệu Vault (không dựa vào `correct_key` do bộ sinh ghi)."""
+    cited = question.citation.verbatim_quote
+    correct: set[OptionKey] = set()
+    for key, text in question.options.items():
+        if question.form is TheoryQuestionForm.CONCEPT_MATCH:
+            # Đúng nếu có cặp mang thuật ngữ này mà trích dẫn trùng hoặc lồng với đoạn trích ở thân câu.
+            hit = any(_same_concept(p.term, text) and _overlap(p.definition_quote, cited) for p in OVERLAP_PAIRS)
+        elif question.form is TheoryQuestionForm.DEFINITION_CHOICE:
+            # Đúng nếu định nghĩa nằm ở phương án này thuộc về một trích dẫn trùng hoặc lồng với trích dẫn đáp án.
+            source = cited if key is question.correct_key else question.distractor_citations[key].verbatim_quote
+            hit = _overlap(source, cited)
+        else:
+            # Đúng nếu điền thuật ngữ vào chỗ trống cho ra một đoạn có trong Vault, hoặc thuật ngữ lồng với đáp án.
+            filled = normalize_quote(question.stem.split("> ", 1)[1].replace(BLANK, text)).casefold()
+            in_vault = any(filled in normalize_quote(c.raw_text).casefold() for c in OVERLAP_CHUNKS.values())
+            hit = in_vault or _overlap(text, question.options[question.correct_key])
+        if hit:
+            correct.add(key)
+    return correct
+
+
+@pytest.mark.parametrize("form", FORMS)
+@pytest.mark.parametrize("chapter_code", [None, "ch1", "ch2"])
+def test_overlapping_quotes_never_give_two_correct_answers(form: TheoryQuestionForm, chapter_code: str | None) -> None:
+    generated = 0
+    for seed in OVERLAP_SEEDS:
+        result = generate_theory_question(
+            OVERLAP_PAIRS,
+            OVERLAP_CHUNKS,
+            subject_code=SUBJECT,
+            form=form,
+            seed=seed,
+            chapter_code=chapter_code,
+            **TICKET_CONTEXT,
+        )
+        if isinstance(result, ReviewTicket):
+            _assert_ticket(result)
+            continue
+        generated += 1
+        assert _vault_correct_keys(result) == {result.correct_key}, (seed, result.stem, result.options)
+        for citation in result.distractor_citations.values():
+            assert not _overlap(citation.verbatim_quote, result.citation.verbatim_quote)
+    assert generated > 0
+
+
+def test_only_duplicate_or_nested_quotes_give_a_review_ticket() -> None:
+    """4 khái niệm nhưng chỉ 2 định nghĩa độc lập: mỗi đáp án chỉ còn 2 phương án nhiễu hợp lệ."""
+    four = [
+        pair
+        for pair in OVERLAP_PAIRS
+        if pair.term in {"Vật chất", "Thực tại khách quan", "Vận động", "Phương thức tồn tại"}
+    ]
+    assert len(four) == 4
+    for form in (TheoryQuestionForm.CONCEPT_MATCH, TheoryQuestionForm.DEFINITION_CHOICE):
+        for seed in range(50):
+            _assert_ticket(
+                generate_theory_question(
+                    four, OVERLAP_CHUNKS, subject_code=SUBJECT, form=form, seed=seed, **TICKET_CONTEXT
+                )
+            )
+
+
+def test_fill_blank_skips_a_term_that_also_fills_the_blank() -> None:
+    """Che "Không gian" trong "Không gian là hình thức tồn tại của vật chất.": "Thời gian" cũng điền đúng theo Vault."""
+    seen = False
+    for seed in OVERLAP_SEEDS:
+        result = generate_theory_question(
+            OVERLAP_PAIRS,
+            OVERLAP_CHUNKS,
+            subject_code=SUBJECT,
+            form=TheoryQuestionForm.FILL_BLANK,
+            seed=seed,
+            **TICKET_CONTEXT,
+        )
+        assert isinstance(result, TheoryQuestion)
+        if result.options[result.correct_key] == "Không gian":
+            seen = True
+            assert "Thời gian" not in result.options.values()
+    assert seen
+
+
+def test_model_rejects_a_distractor_citation_overlapping_the_answer_citation() -> None:
+    question = _question(SUBJECT_PAIRS, TheoryQuestionForm.CONCEPT_MATCH, 7)
+    wrong = next(iter(question.distractor_citations))
+    for quote in (
+        question.citation.verbatim_quote,
+        "  " + question.citation.verbatim_quote.upper(),
+        question.citation.verbatim_quote[:-1],
+    ):
+        data = question.model_dump()
+        data["distractor_citations"][wrong]["verbatim_quote"] = quote
+        with pytest.raises(ValidationError, match="hai đáp án đúng"):
+            TheoryQuestion.model_validate(data)
+
+
+def test_model_rejects_a_fill_blank_distractor_overlapping_the_hidden_term() -> None:
+    question = _question(SUBJECT_PAIRS, TheoryQuestionForm.FILL_BLANK, 7)
+    wrong = next(iter(question.distractor_citations))
+    data = question.model_dump()
+    data["options"][wrong] = question.options[question.correct_key] + " xã hội"
+    with pytest.raises(ValidationError, match="hai đáp án đúng"):
+        TheoryQuestion.model_validate(data)
+
+
+# --------------------------------------------------------------------------- #
+# Khoá phân xử khi hoà và giới hạn che tên khái niệm
+# --------------------------------------------------------------------------- #
+
+
+def test_pool_order_breaks_ties_on_definition_quote() -> None:
+    """Hai cặp cùng `(chapter_code, term, chunk_id)`, khác `definition_quote`: đảo đầu vào vẫn cùng `pool_sha256`."""
+    tied = [
+        _pair("chk_phil_ch1", "Vật chất", "phạm trù triết học dùng để chỉ thực tại khách quan", index=80),
+        _pair("chk_phil_ch1", "Vật chất", "phương thức tồn tại của vật chất", index=81),
+    ]
+    forward = SUBJECT_PAIRS + tied
+    backward = list(reversed(tied)) + SUBJECT_PAIRS
+    assert candidate_pool(forward, SUBJECT) == candidate_pool(backward, SUBJECT)
+    assert pool_sha256(forward, SUBJECT) == pool_sha256(backward, SUBJECT)
+    assert pool_sha256(tied, SUBJECT) == pool_sha256(list(reversed(tied)), SUBJECT)
+    for form in FORMS:
+        assert _question(forward, form, 9).model_dump_json() == _question(backward, form, 9).model_dump_json()
+
+
+INFLECTION_SUBJECT = "IT3070"
+INFLECTION_LINES = [
+    "Processes are programs in execution.",
+    "A thread is a basic unit of CPU utilization.",
+    "The scheduler selects a process from the ready queue.",
+    "A deadlock is a situation where processes wait for each other forever.",
+    "A semaphore is an integer variable accessed only through atomic operations.",
+]
+INFLECTION_CHUNK = _lines_chunk("chk_inflection_ch2", "ch2", INFLECTION_LINES, 2, subject=INFLECTION_SUBJECT)
+INFLECTION_PAIRS = _pairs_in(
+    INFLECTION_CHUNK,
+    [
+        ("Process", INFLECTION_LINES[0]),
+        ("Thread", INFLECTION_LINES[1]),
+        ("Scheduler", INFLECTION_LINES[2]),
+        ("Deadlock", INFLECTION_LINES[3]),
+        ("Semaphore", INFLECTION_LINES[4]),
+    ],
+)
+
+
+def test_inflected_term_is_not_masked_and_the_quote_stays_verbatim() -> None:
+    """Giới hạn đã biết: "Process" không che được "Processes"; câu vẫn sinh, trích dẫn vẫn nguyên văn."""
+    assert mask_terms(INFLECTION_LINES[0], ["Process"]) == INFLECTION_LINES[0]
+    seen = False
+    for seed in range(100):
+        result = generate_theory_question(
+            INFLECTION_PAIRS,
+            {INFLECTION_CHUNK.chunk_id: INFLECTION_CHUNK},
+            subject_code=INFLECTION_SUBJECT,
+            form=TheoryQuestionForm.CONCEPT_MATCH,
+            seed=seed,
+            **TICKET_CONTEXT,
+        )
+        assert isinstance(result, TheoryQuestion)
+        assert quote_in_text(result.citation.verbatim_quote, INFLECTION_CHUNK.raw_text)
+        if result.options[result.correct_key] == "Process":
+            seen = True
+            assert result.citation.verbatim_quote == INFLECTION_LINES[0]
+            assert result.stem.endswith(f"> {INFLECTION_LINES[0]}")
+            assert BLANK not in result.stem
+    assert seen
+
+
+# --------------------------------------------------------------------------- #
+# I4: giá trị ghim cứng (phát hiện khi Python đổi thuật toán `random` hoặc khi code đổi)
+# --------------------------------------------------------------------------- #
+
+PINNED_SEED = 2026
+PINNED_POOL_SHA256 = "c6dbfff6b149b136a3160c265da2757b5b9832ec2d0c8e2cd64b9045cc5bc538"
+PINNED_RNG_FIRST_BITS = 0x61E3CF69B9D394AE
+PINNED_QUESTIONS: dict[tuple[TheoryQuestionForm, str | None], dict[str, object]] = {
+    (TheoryQuestionForm.CONCEPT_MATCH, None): {
+        "stem": "Khái niệm nào ứng với đoạn trích sau?\n\n> ____ là hình thức tồn tại của vật chất xét về quảng tính.",
+        "options": ["Vận động", "Thời gian", "Không gian", "Ý thức"],
+        "correct_key": "C",
+        "misconceptions": {
+            "A": THEORY_SAME_CHAPTER_CONCEPT,
+            "B": THEORY_SAME_CHAPTER_CONCEPT,
+            "D": THEORY_SAME_CHAPTER_CONCEPT,
+        },
+        "citation": "Không gian là hình thức tồn tại của vật chất xét về quảng tính.",
+    },
+    (TheoryQuestionForm.CONCEPT_MATCH, "ch2"): {
+        "stem": "Khái niệm nào ứng với đoạn trích sau?\n\n> ____ là tri thức phù hợp với hiện thực khách quan.",
+        "options": ["Chân lý", "Thực tiễn", "Nhận thức", "Không gian"],
+        "correct_key": "A",
+        "misconceptions": {
+            "B": THEORY_SAME_CHAPTER_CONCEPT,
+            "C": THEORY_SAME_CHAPTER_CONCEPT,
+            "D": THEORY_SAME_SUBJECT_CONCEPT,
+        },
+        "citation": "Chân lý là tri thức phù hợp với hiện thực khách quan.",
+    },
+    (TheoryQuestionForm.FILL_BLANK, None): {
+        "stem": "Điền thuật ngữ thích hợp vào chỗ trống trong đoạn trích sau:\n\n> Vận động là phương thức tồn tại của ____.",
+        "options": ["Ý thức", "Vật chất", "Không gian", "Thời gian"],
+        "correct_key": "B",
+        "misconceptions": {
+            "A": THEORY_SAME_CHAPTER_CONCEPT,
+            "C": THEORY_SAME_CHAPTER_CONCEPT,
+            "D": THEORY_SAME_CHAPTER_CONCEPT,
+        },
+        "citation": "Vận động là phương thức tồn tại của vật chất.",
+    },
+    (TheoryQuestionForm.DEFINITION_CHOICE, None): {
+        "stem": "Phát biểu nào là định nghĩa của «Không gian»?",
+        "options": [
+            "____ là hình thức tồn tại của vật chất xét về độ dài diễn biến.",
+            "____ là hình thức tồn tại của vật chất xét về quảng tính.",
+            "____ là phương thức tồn tại của vật chất.",
+            "____ là sự phản ánh năng động, sáng tạo thế giới khách quan vào bộ óc con người.",
+        ],
+        "correct_key": "B",
+        "misconceptions": {
+            "A": THEORY_SAME_CHAPTER_CONCEPT,
+            "C": THEORY_SAME_CHAPTER_CONCEPT,
+            "D": THEORY_SAME_CHAPTER_CONCEPT,
+        },
+        "citation": "Không gian là hình thức tồn tại của vật chất xét về quảng tính.",
+    },
+}
+
+
+def test_pinned_pool_sha256_and_rng() -> None:
+    assert GENERATOR_VERSION == "theory_mcq4_v1"
+    assert pool_sha256(SUBJECT_PAIRS, SUBJECT) == PINNED_POOL_SHA256
+    assert theory_rng(PINNED_POOL_SHA256, PINNED_SEED).getrandbits(64) == PINNED_RNG_FIRST_BITS
+
+
+@pytest.mark.parametrize(("form", "chapter_code"), list(PINNED_QUESTIONS))
+def test_pinned_question_for_version_pool_and_seed(form: TheoryQuestionForm, chapter_code: str | None) -> None:
+    question = _question(SUBJECT_PAIRS, form, PINNED_SEED, chapter_code=chapter_code)
+    assert question.generator_version == GENERATOR_VERSION
+    assert question.pool_sha256 == PINNED_POOL_SHA256
+    assert question.seed == PINNED_SEED
+    actual = {
+        "stem": question.stem,
+        "options": [question.options[key] for key in OptionKey],
+        "correct_key": question.correct_key.value,
+        "misconceptions": {
+            key.value: ref.misconception_code
+            for key, ref in sorted(question.distractor_to_misconception_map.items(), key=lambda item: item[0].value)
+        },
+        "citation": question.citation.verbatim_quote,
+    }
+    assert actual == PINNED_QUESTIONS[(form, chapter_code)]

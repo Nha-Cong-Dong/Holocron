@@ -14,7 +14,14 @@ Thuộc Deterministic Core: hàm thuần, không gọi LLM, không gọi mạng,
   `raw_text` của chunk nguồn trước khi dùng.
 - **Tái lập (I4):** mọi lựa chọn ngẫu nhiên chỉ dùng `random.Random(f"{generator_version}:{pool_sha256}:{seed}")`;
   ứng viên luôn được sắp theo thứ tự chuẩn trước khi xáo, nên thứ tự cặp ở đầu vào không ảnh hưởng kết quả.
+- **Đúng một đáp án:** cặp có `definition_quote` trùng, chứa hoặc nằm trong trích dẫn của cặp đáp án (so sau NFC, gộp
+  khoảng trắng, không phân biệt hoa thường) không bao giờ làm phương án nhiễu, vì nó cũng là một đáp án đúng. Dạng điền
+  khuyết còn loại thuật ngữ trùng, chứa hoặc nằm trong thuật ngữ bị che, và thuật ngữ mà khi điền vào chỗ trống cho ra
+  đoạn văn có trong Vault (trích dẫn hay `raw_text` của chunk cùng môn).
 - **Không đủ căn cứ:** không chọn được 3 phương án nhiễu khác nhau thì trả `ReviewTicket`, không bịa phương án.
+- **Giới hạn đã biết:** che tên khái niệm chỉ khớp đúng chuỗi `term` (không phân biệt hoa thường, đúng ranh giới chữ);
+  dạng biến hình hay số nhiều ("Process" và "Processes") không bị che và có thể lộ đáp án. Bộ sinh cố ý không tách từ
+  hay biến hình theo ngôn ngữ.
 
 `TheoryQuestion` là model nội bộ của service, chưa xuất hiện trong response nào: đưa câu lý thuyết vào `TwinQuestion`
 cần `question_kind`, `template_id`/`topic_key` nullable và `TheoryTrace` của spec §5.11, phần lớn còn chờ duyệt.
@@ -35,7 +42,14 @@ from pydantic import Field, model_validator
 from ..domain.repositories import VaultRepository
 from ..domain.schemas import Citation, KnowledgeChunk, MisconceptionRef, OptionKey, StrictModel, normalize_quote
 from ..domain.twins import SEED_SPACE, ReviewTicket
-from ..domain.vault import ConceptPair, ConceptPairStatus, check_definition_quote, find_term_spans
+from ..domain.vault import (
+    CHAPTER_CODE_PATTERN,
+    SUBJECT_CODE_PATTERN,
+    ConceptPair,
+    ConceptPairStatus,
+    check_definition_quote,
+    find_term_spans,
+)
 
 __all__ = [
     "BLANK",
@@ -65,7 +79,19 @@ THEORY_MISCONCEPTIONS: tuple[str, ...] = (THEORY_SAME_CHAPTER_CONCEPT, THEORY_SA
 BLANK = "____"
 NOT_ENOUGH_EVIDENCE = "không đủ căn cứ trong Vault"
 DISTRACTOR_COUNT = 3
-MAX_RATIONALE_CHARS = 600
+
+
+def _max_length(model: type[StrictModel], field: str) -> int:
+    """Giới hạn `max_length` khai báo trên một trường của model, để không chép cứng con số của `domain`."""
+    for constraint in model.model_fields[field].metadata:
+        limit = getattr(constraint, "max_length", None)
+        if isinstance(limit, int):
+            return limit
+    raise LookupError(f"{model.__name__}.{field} không khai báo max_length")
+
+
+MAX_RATIONALE_CHARS = _max_length(MisconceptionRef, "rationale_vi")
+"""Độ dài tối đa của `MisconceptionRef.rationale_vi`, đọc từ ràng buộc của model."""
 
 _SAME_CHAPTER_LABEL = "Khái niệm khác cùng chương"
 _SAME_SUBJECT_LABEL = "Khái niệm khác cùng môn"
@@ -84,6 +110,12 @@ def _option_key(text: str) -> str:
     return normalize_quote(text).casefold()
 
 
+def _overlaps(first: str, second: str) -> bool:
+    """Hai đoạn văn trùng nhau, hoặc đoạn này chứa đoạn kia, sau cùng phép chuẩn hoá của `_option_key`."""
+    first_key, second_key = _option_key(first), _option_key(second)
+    return first_key in second_key or second_key in first_key
+
+
 class TheoryQuestion(StrictModel):
     """Một câu lý thuyết MCQ4 do code ghép từ cặp khái niệm đã xác nhận (ADR-007).
 
@@ -93,8 +125,8 @@ class TheoryQuestion(StrictModel):
 
     question_kind: Literal["theory"] = "theory"
     form: TheoryQuestionForm
-    subject_code: str = Field(pattern=r"^[A-Z]{2,6}[0-9]{2,4}$")
-    chapter_code: str = Field(pattern=r"^ch[0-9]{1,2}(\.[0-9]{1,2})?$")
+    subject_code: str = Field(pattern=SUBJECT_CODE_PATTERN)
+    chapter_code: str = Field(pattern=CHAPTER_CODE_PATTERN)
     seed: int = Field(ge=0, lt=SEED_SPACE)
     generator_version: str = Field(min_length=1, max_length=32)
     pool_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -125,6 +157,13 @@ class TheoryQuestion(StrictModel):
                 and ref.misconception_code != THEORY_SAME_CHAPTER_CONCEPT
             ):
                 raise ValueError("dạng chọn định nghĩa đúng chỉ dùng phương án nhiễu cùng chương")
+        for citation in self.distractor_citations.values():
+            if _overlaps(citation.verbatim_quote, self.citation.verbatim_quote):
+                raise ValueError("trích dẫn của phương án nhiễu trùng hoặc lồng với trích dẫn đáp án: hai đáp án đúng")
+        if self.form is TheoryQuestionForm.FILL_BLANK:
+            correct = self.options[self.correct_key]
+            if any(_overlaps(self.options[key], correct) for key in wrong):
+                raise ValueError("thuật ngữ nhiễu trùng hoặc lồng với thuật ngữ bị che: hai đáp án đúng")
         return self
 
 
@@ -150,7 +189,11 @@ def _pool_record(pair: ConceptPair) -> dict[str, str]:
 
 def _pool_order(pair: ConceptPair) -> tuple[str, str, str, str]:
     """Sắp theo `(chapter_code, term, chunk_id)` sau NFC như ADR-007; `definition_quote` chỉ phân xử khi hoà, để thứ
-    tự (và do đó `pool_sha256`) không phụ thuộc thứ tự đầu vào."""
+    tự (và do đó `pool_sha256`) không phụ thuộc thứ tự đầu vào.
+
+    Khoá phân xử `definition_quote` là phần làm chặt hơn ADR-007 mục 2 (ADR chỉ ghi ba khoá), đang chờ sửa ADR cho
+    khớp. Khi ba khoá đầu không hoà, thứ tự trùng với cách tính của ADR.
+    """
     record = _pool_record(pair)
     return (record["chapter_code"], record["term"], record["chunk_id"], record["definition_quote"])
 
@@ -182,7 +225,16 @@ def theory_rng(pool_digest: str, seed: int) -> random.Random:
 
 def mask_terms(text: str, terms: Sequence[str]) -> str:
     """Thay mọi lần xuất hiện của từng `term` trong `text` (không phân biệt hoa thường, đúng ranh giới chữ, như
-    `find_term_spans`) bằng `BLANK`; các vị trí chồng nhau được gộp. Phần còn lại giữ nguyên văn."""
+    `find_term_spans`) bằng `BLANK`; các vị trí chồng nhau được gộp. Phần còn lại giữ nguyên văn.
+
+    Giới hạn: chỉ khớp đúng chuỗi `term`; dạng biến hình hay số nhiều ("Process" trong "Processes") không bị che. Cố ý
+    không tách từ hay biến hình theo ngôn ngữ để giữ hàm thuần và không rẽ nhánh theo ngôn ngữ của tài liệu.
+    """
+    return _replace_terms(text, terms, BLANK)
+
+
+def _replace_terms(text: str, terms: Sequence[str], replacement: str) -> str:
+    """Như `mask_terms` nhưng thay bằng `replacement` tuỳ ý (dùng để thử điền một thuật ngữ vào chỗ trống)."""
     spans = sorted(span for term in terms for span in find_term_spans(term, text))
     merged: list[tuple[int, int]] = []
     for start, end in spans:
@@ -194,7 +246,7 @@ def mask_terms(text: str, terms: Sequence[str]) -> str:
     cursor = 0
     for start, end in merged:
         pieces.append(text[cursor:start])
-        pieces.append(BLANK)
+        pieces.append(replacement)
         cursor = end
     pieces.append(text[cursor:])
     return "".join(pieces)
@@ -241,11 +293,14 @@ def _pick_distractors(
     excluded_concepts: set[str],
     taken_options: set[str],
     option_text: Callable[[ConceptPair], str],
+    also_correct: Callable[[ConceptPair, str], bool],
     allow_other_chapters: bool,
 ) -> list[_Distractor] | None:
     """3 phương án nhiễu khác khái niệm và khác văn bản (sau chuẩn hoá): cùng chương trước, rồi cùng môn.
 
-    Luôn xáo cả hai nhóm để lượng số ngẫu nhiên tiêu thụ không phụ thuộc kết quả chọn. Không đủ 3 ⇒ `None`.
+    `also_correct(cặp, văn bản phương án)` đúng khi phương án đó cũng là một đáp án đúng theo dữ liệu Vault; cặp như
+    vậy bị bỏ qua. Luôn xáo cả hai nhóm để lượng số ngẫu nhiên tiêu thụ không phụ thuộc kết quả chọn. Không đủ 3 ⇒
+    `None`.
     """
     same_chapter = [pair for pair in pool if pair.chapter_code == chapter_code]
     other_chapters = [pair for pair in pool if pair.chapter_code != chapter_code] if allow_other_chapters else []
@@ -260,7 +315,7 @@ def _pick_distractors(
                 break
             text = option_text(pair)
             concept, option = _option_key(pair.term), _option_key(text)
-            if concept in concepts or option in options:
+            if concept in concepts or option in options or also_correct(pair, text):
                 continue
             concepts.add(concept)
             options.add(option)
@@ -317,6 +372,41 @@ def _assemble(
 
 def _definition_explanation(pair: ConceptPair) -> str:
     return f"Định nghĩa của «{pair.term}» trong tài liệu: “{pair.definition_quote}”"
+
+
+def _quote_conflict(anchor: ConceptPair) -> Callable[[ConceptPair, str], bool]:
+    """Cặp có trích dẫn trùng, chứa hoặc nằm trong trích dẫn của cặp đáp án cũng là đáp án đúng: không làm nhiễu."""
+
+    def conflict(pair: ConceptPair, _text: str) -> bool:
+        return _overlaps(pair.definition_quote, anchor.definition_quote)
+
+    return conflict
+
+
+def _fill_blank_conflict(
+    anchor: ConceptPair, hidden: str, vault_texts: Sequence[str]
+) -> Callable[[ConceptPair, str], bool]:
+    """Quy tắc tương đương cho phương án là thuật ngữ (dạng điền khuyết).
+
+    Loại cặp có trích dẫn lồng với trích dẫn đáp án, thuật ngữ trùng/chứa/nằm trong thuật ngữ bị che, và thuật ngữ mà
+    khi điền vào chỗ trống cho ra một đoạn có trong `vault_texts` (đã qua `_option_key`).
+    """
+    quote_conflict = _quote_conflict(anchor)
+
+    def conflict(pair: ConceptPair, text: str) -> bool:
+        if quote_conflict(pair, text) or _overlaps(text, hidden):
+            return True
+        filled = _option_key(_replace_terms(anchor.definition_quote, [hidden], text))
+        return any(filled in vault_text for vault_text in vault_texts)
+
+    return conflict
+
+
+def _vault_texts(pool: Sequence[ConceptPair], chunks: Mapping[str, KnowledgeChunk], subject_code: str) -> list[str]:
+    """Văn bản Vault cùng môn để nhận ra đáp án đúng thứ hai: `raw_text` của chunk và trích dẫn của cặp."""
+    texts = [chunk.raw_text for chunk in chunks.values() if chunk.subject_code == subject_code]
+    texts.extend(pair.definition_quote for pair in pool)
+    return [_option_key(text) for text in texts]
 
 
 def _fill_blank_candidates(
@@ -387,6 +477,7 @@ def generate_theory_question(
         if not candidates:
             return ticket("không có trích dẫn định nghĩa nào chứa thuật ngữ của một khái niệm khác đã xác nhận")
         rng.shuffle(candidates)
+        vault_texts = _vault_texts(pool, chunks, subject_code)
         for anchor, hidden in candidates:
             distractors = _pick_distractors(
                 rng,
@@ -394,7 +485,8 @@ def generate_theory_question(
                 chapter_code=anchor.chapter_code,
                 excluded_concepts={_option_key(anchor.term), _option_key(hidden)},
                 taken_options={_option_key(hidden)},
-                option_text=lambda pair: pair.term,
+                option_text=_term_of,
+                also_correct=_fill_blank_conflict(anchor, hidden, vault_texts),
                 allow_other_chapters=True,
             )
             if distractors is not None:
@@ -432,6 +524,7 @@ def generate_theory_question(
             excluded_concepts={_option_key(anchor.term)},
             taken_options={_option_key(correct_text)},
             option_text=option_text,
+            also_correct=_quote_conflict(anchor),
             allow_other_chapters=form is TheoryQuestionForm.CONCEPT_MATCH,
         )
         if distractors is not None:

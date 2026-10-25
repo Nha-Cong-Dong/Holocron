@@ -12,17 +12,20 @@ import socket
 import unicodedata
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import ClassVar, Self
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import SecretStr, ValidationError
 
+from holocron_core.domain.capabilities import CapabilityError
 from holocron_core.domain.llm import ChatCompletionResult, ChatMessage, LlmUpstreamError, TokenUsage
 from holocron_core.domain.repositories import AppStore, RecordNotFoundError
 from holocron_core.domain.schemas import KnowledgeChunk
 from holocron_core.domain.vault import ConceptPairStatus
 from holocron_core.infrastructure.llm_client import OpenAiChatClient
-from holocron_core.infrastructure.llm_config import RuntimeConfig, load_runtime_config
+from holocron_core.infrastructure.llm_config import LlmSettings, LlmTaskLimits, RuntimeConfig, load_runtime_config
 from holocron_core.routers import vault
 from holocron_core.routers.deps import get_clock, get_runtime_config, get_store
 from holocron_core.services.concept_proposal import (
@@ -31,10 +34,17 @@ from holocron_core.services.concept_proposal import (
     ConceptProposalError,
     ConceptProposalResult,
     ProposalFormatError,
+    json_depth_exceeds,
     parse_proposals,
     propose_concept_pairs,
 )
-from holocron_core.services.concept_proposal_prompt import RETRY_NOTE, SYSTEM_PROMPT, build_messages
+from holocron_core.services.concept_proposal_prompt import (
+    MAX_ECHOED_RESPONSE_CHARS,
+    MAX_PAIRS_PER_CHUNK,
+    RETRY_NOTE,
+    SYSTEM_PROMPT,
+    build_messages,
+)
 from holocron_core.services.vault import create_concept_pair, ingest_confirmed_text, reject_concept_pair
 from tests.vault_support import (
     ARM_PAGES,
@@ -256,7 +266,12 @@ def test_retry_budget_is_a_parameter(store: AppStore, chunks: dict[str, list[Kno
     client = StubClient("x")
     with pytest.raises(ConceptProposalError):
         propose_concept_pairs(
-            store, client, subject_code="SSH1110", chunk_ids=[chunk.chunk_id], now=NOW, json_retry_max=0
+            store,
+            client,
+            subject_code="SSH1110",
+            chunk_ids=[chunk.chunk_id],
+            now=NOW,
+            limits=LlmTaskLimits(json_retry_max=0),
         )
     assert len(client.calls) == 1
 
@@ -496,3 +511,332 @@ def test_endpoint_errors_for_chunks(store: AppStore, chunks: dict[str, list[Know
         {"subject_code": "SSH1110", "chunk_ids": [phil], "status": "confirmed"},
     ):
         assert client.post(PROPOSE_URL, json=body).status_code == 422, body
+
+
+# --------------------------------------------------------------------------- #
+# Giới hạn phản hồi, hạn thời gian tổng, số cặp mỗi chunk (sửa sau review)
+# --------------------------------------------------------------------------- #
+
+DEEP_NESTING = "[1," * 200_000
+
+
+def test_parse_rejects_deeply_nested_json_without_recursion_error() -> None:
+    """`'[1,' * 200000` từng làm bộ parse ném `RecursionError` (500): nay là JSON hỏng như mọi phản hồi sai khác."""
+    with pytest.raises(ProposalFormatError, match="dài"):
+        parse_proposals(DEEP_NESTING)
+    roomy = LlmTaskLimits(max_response_chars=len(DEEP_NESTING) + 1)
+    with pytest.raises(ProposalFormatError, match="sâu"):
+        parse_proposals(DEEP_NESTING, roomy)
+    with pytest.raises(ProposalFormatError, match="sâu"):
+        parse_proposals("[" * 33 + "]" * 33)
+    assert parse_proposals("[" * 1 + "]", LlmTaskLimits(max_json_depth=1)) == []
+
+
+def test_brackets_inside_json_strings_do_not_count_towards_the_depth() -> None:
+    quote = "Khoảng [a, b) " + "[" * 100 + " và {x}"
+    text = json.dumps([{"term": "Khoảng", "definition_quote": quote, "chunk_id": "c"}], ensure_ascii=False)
+    [proposal] = parse_proposals(text)
+    assert proposal.definition_quote == quote
+
+
+def test_deep_nesting_hidden_from_the_depth_scan_is_still_a_format_error() -> None:
+    """Ngoặc nằm sau một dấu `"` lẻ được phép đếm bỏ qua, nhưng bộ parse vẫn thử từ đó: `RecursionError` bị bắt."""
+    with pytest.raises(ProposalFormatError, match="sâu"):
+        parse_proposals('"' + "[" * 50_000)
+
+
+def test_json_depth_scan_handles_escapes_and_stray_closers() -> None:
+    assert not json_depth_exceeds('["a\\"[[[", "\\\\"]', 1)
+    assert json_depth_exceeds('["\\\\" [[', 2)
+    assert not json_depth_exceeds("]]]]][", 1)
+
+
+def test_the_number_of_parse_attempts_is_bounded() -> None:
+    """Mỗi lần thử parse hỏng tốn thời gian tỉ lệ với độ dài phản hồi: số vị trí `[` được thử có cận."""
+    prose = "[ghi chú] " * 3 + ITEM_JSON
+    assert len(parse_proposals(prose)) == 1
+    with pytest.raises(ProposalFormatError, match="quá nhiều"):
+        parse_proposals(prose, LlmTaskLimits(max_parse_starts=3))
+    with pytest.raises(ProposalFormatError, match="quá nhiều"):
+        parse_proposals("[x]" * 33_000)
+    with pytest.raises(ProposalFormatError, match="quá nhiều"):
+        parse_proposals('"' + ("[" * 900 + "x") * 110)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [DEEP_NESTING, "[1," * 30_000, "x" * 100_001],
+    ids=["too-long-and-deep", "too-deep", "too-long"],
+)
+def test_oversized_or_too_deep_responses_count_as_json_errors_and_are_retried(
+    store: AppStore, chunks: dict[str, list[KnowledgeChunk]], bad: str
+) -> None:
+    chunk = _phil(chunks)
+    client = StubClient(bad, _json(_item(chunk, "Vật chất", PHIL_QUOTE)))
+    result = _propose(store, client, [chunk.chunk_id])
+    assert [pair.term for pair in result.pairs] == ["Vật chất"]
+    assert result.stats.llm_calls == 2 and result.stats.json_errors == 1
+    assert len(client.calls[1][2].content) <= MAX_ECHOED_RESPONSE_CHARS
+
+
+def test_too_deep_responses_until_the_budget_runs_out_are_a_502(
+    store: AppStore, chunks: dict[str, list[KnowledgeChunk]]
+) -> None:
+    client = _app(store, load_runtime_config(CONFIGURED_ENV), StubClient(DEEP_NESTING, "[1," * 30_000))
+    response = client.post(PROPOSE_URL, json={"subject_code": "SSH1110", "chunk_ids": [_phil(chunks).chunk_id]})
+    assert response.status_code == 502 and response.json()["detail"]["code"] == "LLM_UPSTREAM_ERROR"
+
+
+def test_limits_come_from_the_configuration_model() -> None:
+    limits = load_runtime_config(CONFIGURED_ENV).llm.task_limits
+    assert limits == LlmTaskLimits() and limits.json_retry_max == 1
+    assert limits.max_response_chars > 0 and limits.max_json_depth > 0 and limits.deadline_s > 0
+    invalid: list[dict[str, float]] = [
+        {"json_retry_max": -1},
+        {"max_response_chars": 0},
+        {"max_json_depth": 0},
+        {"max_parse_starts": 0},
+        {"deadline_s": 0},
+        {"deadline_s": float("inf")},
+    ]
+    for bad in invalid:
+        with pytest.raises(ValidationError):
+            LlmTaskLimits.model_validate(bad)
+
+
+class FakeMonotonic:
+    """Đồng hồ đơn điệu giả: chỉ tiến khi test gọi `advance`; không sleep thật."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class SlowStubClient(StubClient):
+    """Như `StubClient`, nhưng mỗi lần gọi làm đồng hồ giả tiến thêm một khoảng định sẵn."""
+
+    def __init__(self, clock: FakeMonotonic, seconds_per_call: float, *responses: str | LlmUpstreamError) -> None:
+        super().__init__(*responses)
+        self.clock = clock
+        self.seconds_per_call = seconds_per_call
+
+    def complete(self, messages: Sequence[ChatMessage], *, max_tokens: int) -> ChatCompletionResult:
+        self.clock.advance(self.seconds_per_call)
+        return super().complete(messages, max_tokens=max_tokens)
+
+
+def test_a_valid_answer_after_the_total_deadline_is_discarded(
+    store: AppStore, chunks: dict[str, list[KnowledgeChunk]], caplog: pytest.LogCaptureFixture
+) -> None:
+    chunk = _phil(chunks)
+    clock = FakeMonotonic()
+    client = SlowStubClient(clock, 180.5, _json(_item(chunk, "Vật chất", PHIL_QUOTE)))
+    with caplog.at_level(logging.INFO), pytest.raises(ConceptProposalError, match="hết hạn") as excinfo:
+        propose_concept_pairs(
+            store, client, subject_code="SSH1110", chunk_ids=[chunk.chunk_id], now=NOW, monotonic=clock
+        )
+    assert excinfo.value.stats.deadline_exceeded and excinfo.value.stats.llm_calls == 1
+    assert store.list_concept_pairs("SSH1110") == []
+    assert "outcome=failed" in caplog.text and "deadline_exceeded=True" in caplog.text
+
+
+def test_no_retry_is_started_once_the_total_deadline_has_passed(
+    store: AppStore, chunks: dict[str, list[KnowledgeChunk]]
+) -> None:
+    chunk = _phil(chunks)
+    clock = FakeMonotonic()
+    limits = LlmTaskLimits(json_retry_max=3, deadline_s=100.0)
+    client = SlowStubClient(clock, 60.0, "không phải JSON", "vẫn không phải JSON", "[]", "[]")
+    with pytest.raises(ConceptProposalError, match="hết hạn") as excinfo:
+        propose_concept_pairs(
+            store, client, subject_code="SSH1110", chunk_ids=[chunk.chunk_id], now=NOW, limits=limits, monotonic=clock
+        )
+    # Lượt 1 về ở 60 s (JSON hỏng), lượt 2 về ở 120 s > 100 s: dừng, không gọi lượt 3.
+    assert len(client.calls) == 2 and excinfo.value.stats.json_errors == 1
+    assert excinfo.value.stats.deadline_exceeded
+
+
+def test_a_retry_is_not_started_when_the_deadline_is_reached_exactly(
+    store: AppStore, chunks: dict[str, list[KnowledgeChunk]]
+) -> None:
+    chunk = _phil(chunks)
+    clock = FakeMonotonic()
+    limits = LlmTaskLimits(deadline_s=100.0)
+    client = SlowStubClient(clock, 100.0, "không phải JSON", _json(_item(chunk, "Vật chất", PHIL_QUOTE)))
+    with pytest.raises(ConceptProposalError, match="hết hạn") as excinfo:
+        propose_concept_pairs(
+            store, client, subject_code="SSH1110", chunk_ids=[chunk.chunk_id], now=NOW, limits=limits, monotonic=clock
+        )
+    assert len(client.calls) == 1 and excinfo.value.stats.json_errors == 1
+
+
+def test_an_answer_within_the_deadline_is_kept(store: AppStore, chunks: dict[str, list[KnowledgeChunk]]) -> None:
+    chunk = _phil(chunks)
+    clock = FakeMonotonic()
+    client = SlowStubClient(clock, 90.0, "hỏng", _json(_item(chunk, "Vật chất", PHIL_QUOTE)))
+    result = propose_concept_pairs(
+        store, client, subject_code="SSH1110", chunk_ids=[chunk.chunk_id], now=NOW, monotonic=clock
+    )
+    assert [pair.term for pair in result.pairs] == ["Vật chất"] and not result.stats.deadline_exceeded
+
+
+def test_endpoint_maps_the_total_deadline_to_502_llm_upstream_error(
+    store: AppStore, chunks: dict[str, list[KnowledgeChunk]]
+) -> None:
+    chunk = _phil(chunks)
+    clock = FakeMonotonic()
+    stub = SlowStubClient(clock, 500.0, _json(_item(chunk, "Vật chất", PHIL_QUOTE)))
+    client = _app(store, load_runtime_config(CONFIGURED_ENV), stub)
+    assert isinstance(client.app, FastAPI)
+    client.app.dependency_overrides[vault.get_monotonic] = lambda: clock
+    response = client.post(PROPOSE_URL, json={"subject_code": "SSH1110", "chunk_ids": [chunk.chunk_id]})
+    assert response.status_code == 502
+    assert response.json() == {"detail": {"code": "LLM_UPSTREAM_ERROR", "message": vault.LLM_UPSTREAM_MESSAGE}}
+    assert store.list_concept_pairs("SSH1110") == []
+
+
+def test_endpoint_uses_the_configured_limits(store: AppStore, chunks: dict[str, list[KnowledgeChunk]]) -> None:
+    chunk = _phil(chunks)
+    base = load_runtime_config(CONFIGURED_ENV)
+    strict = base.model_copy(
+        update={"llm": base.llm.model_copy(update={"task_limits": LlmTaskLimits(json_retry_max=0)})}
+    )
+    stub = StubClient("hỏng", _json(_item(chunk, "Vật chất", PHIL_QUOTE)))
+    response = _app(store, strict, stub).post(
+        PROPOSE_URL, json={"subject_code": "SSH1110", "chunk_ids": [chunk.chunk_id]}
+    )
+    assert response.status_code == 502 and len(stub.calls) == 1
+
+
+def test_at_most_max_pairs_per_chunk_are_saved(store: AppStore, chunks: dict[str, list[KnowledgeChunk]]) -> None:
+    chunk = _phil(chunks)
+    arm_chunk = chunks["ET4010"][0]
+    extra = MAX_PAIRS_PER_CHUNK + 2
+    proposals = [_item(chunk, f"Khái niệm {index}", PHIL_QUOTE) for index in range(extra)]
+    result = _propose(store, StubClient(_json(*proposals)), [chunk.chunk_id])
+    assert [pair.term for pair in result.pairs] == [f"Khái niệm {index}" for index in range(MAX_PAIRS_PER_CHUNK)]
+    assert result.rejected_count == 2 and result.rejected_by_reason == {"chunk_limit": 2}
+    assert len(store.list_concept_pairs("SSH1110")) == MAX_PAIRS_PER_CHUNK
+    # Giới hạn tính riêng cho từng chunk; đề xuất trùng hay sai không chiếm chỗ.
+    arm_quote = arm_chunk.verbatim_quote
+    arm_proposals = [_item(arm_chunk, "Sai", "không có trong chunk"), _item(arm_chunk, "Trùng", arm_quote)]
+    arm_proposals += [_item(arm_chunk, "Trùng", arm_quote)]
+    arm_proposals += [_item(arm_chunk, f"Mục {index}", arm_quote) for index in range(MAX_PAIRS_PER_CHUNK)]
+    arm_result = _propose(store, StubClient(_json(*arm_proposals)), [arm_chunk.chunk_id], subject="ET4010")
+    assert len(arm_result.pairs) == MAX_PAIRS_PER_CHUNK
+    assert arm_result.rejected_by_reason == {"quote_not_verbatim": 1, "duplicate": 1, "chunk_limit": 1}
+
+
+# --------------------------------------------------------------------------- #
+# Thiếu hoặc hỏng cấu hình LLM: 409, không gọi mạng (spec v0.6 §6.0, §11.2, §11.4)
+# --------------------------------------------------------------------------- #
+
+
+class RecordingAdapter:
+    """Thay `OpenAiChatClient` trong router: ghi lại mọi lần dựng client và mọi lần gọi."""
+
+    built: ClassVar[list[str | None]] = []
+    calls: ClassVar[list[int]] = []
+
+    def __init__(self, model: str | None) -> None:
+        self.model = model
+
+    @classmethod
+    def from_settings(cls, settings: LlmSettings, *, model: str | None) -> Self:
+        cls.built.append(model)
+        return cls(model)
+
+    def complete(self, messages: Sequence[ChatMessage], *, max_tokens: int) -> ChatCompletionResult:
+        type(self).calls.append(max_tokens)
+        return ChatCompletionResult(content="[]", attempts=1)
+
+
+@pytest.fixture
+def recording_adapter(monkeypatch: pytest.MonkeyPatch) -> type[RecordingAdapter]:
+    RecordingAdapter.built = []
+    RecordingAdapter.calls = []
+    monkeypatch.setattr(vault, "OpenAiChatClient", RecordingAdapter)
+    return RecordingAdapter
+
+
+@pytest.mark.parametrize("missing", ["HOLOCRON_LLM_BASE_URL", "HOLOCRON_LLM_API_KEY", "HOLOCRON_LLM_MODEL_EXTRACT"])
+@pytest.mark.parametrize("blank", [None, "", "  \t "], ids=["unset", "empty", "whitespace"])
+def test_endpoint_with_any_llm_variable_missing_is_409_without_any_call(
+    store: AppStore,
+    chunks: dict[str, list[KnowledgeChunk]],
+    recording_adapter: type[RecordingAdapter],
+    missing: str,
+    blank: str | None,
+) -> None:
+    env = dict(CONFIGURED_ENV)
+    if blank is None:
+        del env[missing]
+    else:
+        env[missing] = blank
+    response = _app(store, load_runtime_config(env), None).post(
+        PROPOSE_URL, json={"subject_code": "SSH1110", "chunk_ids": [_phil(chunks).chunk_id]}
+    )
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert CapabilityError.model_validate(detail) == CapabilityError(
+        capability="concept_pair_llm_proposal", reason="llm_not_configured", message=detail["message"]
+    )
+    assert missing in detail["message"]
+    assert recording_adapter.built == [] and recording_adapter.calls == []
+    for leaked in (SECRET, "secret-model-name", "gateway.example.test"):
+        assert leaked not in response.text
+    assert store.list_concept_pairs("SSH1110") == []
+
+
+def test_endpoint_with_all_three_variables_builds_the_adapter_for_the_extract_model(
+    store: AppStore, chunks: dict[str, list[KnowledgeChunk]], recording_adapter: type[RecordingAdapter]
+) -> None:
+    response = _app(store, load_runtime_config(CONFIGURED_ENV), None).post(
+        PROPOSE_URL, json={"subject_code": "SSH1110", "chunk_ids": [_phil(chunks).chunk_id]}
+    )
+    assert response.status_code == 200
+    assert recording_adapter.built == ["secret-model-name"] and len(recording_adapter.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("settings", "variable"),
+    [
+        (
+            LlmSettings(
+                base_url="ftp://gateway.example.test/v1", api_key=SecretStr(SECRET), model_extract="secret-model-name"
+            ),
+            "HOLOCRON_LLM_BASE_URL",
+        ),
+        (
+            LlmSettings(
+                base_url="https://gateway.example.test/v1",
+                api_key=SecretStr("sk-test\r\nmust-never-leak"),
+                model_extract="secret-model-name",
+            ),
+            "HOLOCRON_LLM_API_KEY",
+        ),
+    ],
+    ids=["bad-scheme", "unsafe-key"],
+)
+def test_config_error_while_building_the_client_is_a_409_capability_error(
+    store: AppStore, chunks: dict[str, list[KnowledgeChunk]], settings: LlmSettings, variable: str
+) -> None:
+    response = _app(store, RuntimeConfig(llm=settings), None).post(
+        PROPOSE_URL, json={"subject_code": "SSH1110", "chunk_ids": [_phil(chunks).chunk_id]}
+    )
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert (detail["code"], detail["capability"], detail["reason"]) == (
+        "CAPABILITY_UNAVAILABLE",
+        "concept_pair_llm_proposal",
+        "llm_not_configured",
+    )
+    assert variable in detail["message"]
+    for leaked in (SECRET, "must-never-leak", "secret-model-name", "gateway.example.test", "ftp://"):
+        assert leaked not in response.text
+    assert store.list_concept_pairs("SSH1110") == []

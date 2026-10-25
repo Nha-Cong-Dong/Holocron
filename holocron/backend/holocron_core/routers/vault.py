@@ -3,9 +3,12 @@ khái niệm, và `POST /v1/vault/concept-pairs/propose` (LLM đề xuất cặp
 
 Mọi truy vấn bắt buộc lọc theo `subject_code` (ADR-006 mục 4). Lỗi: 404 không có chunk/cặp; 409 lệch
 `expected_version`; 422 body sai hoặc `definition_quote` không khớp nguyên văn văn bản chunk (I3).
-`propose` (spec v0.6 §6.0, §6.6, §11.4): thiếu cấu hình LLM ⇒ 409 `CapabilityError`; chunk khác môn ⇒ 422; gọi LLM
-lỗi hoặc phản hồi không parse được sau mọi lần thử ⇒ 502 `{"code": "LLM_UPSTREAM_ERROR", "message"}`, không lộ
-endpoint, tên model hay nội dung phản hồi. Client LLM cấp qua `Depends(get_chat_client)`; test thay bằng stub.
+`propose` (spec v0.6 §6.0, §6.6, §11.4): thiếu một trong ba biến LLM bắt buộc hoặc cấu hình LLM không hợp lệ
+(`ConfigError`) ⇒ 409 `CapabilityError` (`reason = "llm_not_configured"`, thông điệp chỉ nêu tên biến), không gọi
+mạng; chunk khác môn ⇒ 422; gọi LLM lỗi, phản hồi không parse được sau mọi lần thử hoặc hết hạn thời gian tổng
+(`LlmTaskLimits.deadline_s`) ⇒ 502 `{"code": "LLM_UPSTREAM_ERROR", "message"}`, không lộ endpoint, tên model hay nội
+dung phản hồi. Client LLM cấp qua `Depends(get_chat_client)`, đồng hồ đơn điệu đo hạn qua `Depends(get_monotonic)`;
+test thay bằng stub.
 
 Giới hạn đầu vào: `editor_id`, `chunk_id`, `pair_id` tối đa 128 ký tự; mỗi `topic_key` tối đa 128 ký tự và tối đa 32
 khoá mỗi request. Mọi thao tác sửa (nhãn chunk; tạo, xác nhận, từ chối cặp) lưu `editor_id` và thời điểm kèm bản ghi
@@ -14,11 +17,14 @@ khoá mỗi request. Mọi thao tác sửa (nhãn chunk; tạo, xác nhận, t�
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, Field, ValidationError
 
+from ..domain.capabilities import CapabilityError
 from ..domain.llm import ChatCompletionClient, LlmUpstreamError, LlmUpstreamErrorDetail
 from ..domain.repositories import RecordNotFoundError, VersionConflictError
 from ..domain.schemas import ChunkCategory, KnowledgeChunk, StrictModel
@@ -35,6 +41,7 @@ from ..domain.vault import (
     VaultEdit,
 )
 from ..infrastructure.llm_client import OpenAiChatClient
+from ..infrastructure.llm_config import ConfigError
 from ..services import vault as vault_service
 from ..services.capabilities import compute_capabilities, unavailable_error
 from ..services.concept_proposal import MAX_PROPOSAL_CHUNKS, ChunkSubjectMismatchError, propose_concept_pairs
@@ -58,15 +65,32 @@ LLM_UPSTREAM_MESSAGE = (
 def get_chat_client(config: RuntimeConfigDep) -> ChatCompletionClient:
     """Client LLM cho đề xuất cặp khái niệm, dùng model `HOLOCRON_LLM_MODEL_EXTRACT` (§11.2).
 
-    Khả năng `concept_pair_llm_proposal` không khả dụng ⇒ 409 `CapabilityError` (spec v0.6 §11.4).
+    Khả năng `concept_pair_llm_proposal` không khả dụng, hoặc cấu hình LLM không dựng được client (`ConfigError`) ⇒
+    409 `CapabilityError` (spec v0.6 §11.4). Không gửi gì ra mạng ở đây.
     """
     error = unavailable_error(compute_capabilities(config), "concept_pair_llm_proposal")
     if error is not None:
         raise HTTPException(status_code=409, detail=error.model_dump(mode="json"))
-    return OpenAiChatClient.from_settings(config.llm, model=config.llm.model_extract)
+    failure: str | None = None
+    try:
+        return OpenAiChatClient.from_settings(config.llm, model=config.llm.model_extract)
+    except ConfigError as exc:
+        failure = str(exc)  # ConfigError chỉ nêu tên biến, không bao giờ nêu giá trị
+    invalid = CapabilityError(
+        capability="concept_pair_llm_proposal",
+        reason="llm_not_configured",
+        message=f"Khả năng concept_pair_llm_proposal không khả dụng: cấu hình LLM không hợp lệ ({failure}).",
+    )
+    raise HTTPException(status_code=409, detail=invalid.model_dump(mode="json"))
+
+
+def get_monotonic() -> Callable[[], float]:
+    """Đồng hồ đơn điệu (giây) đo hạn thời gian tổng của một lần đề xuất; test thay bằng đồng hồ giả."""
+    return time.monotonic
 
 
 ChatClientDep = Annotated[ChatCompletionClient, Depends(get_chat_client)]
+MonotonicDep = Annotated[Callable[[], float], Depends(get_monotonic)]
 
 
 class ChunkListResponse(BaseModel):
@@ -254,11 +278,22 @@ def reject_concept_pair(vault: VaultDep, clock: ClockDep, pair_id: PairIdPath, b
 
 @router.post("/concept-pairs/propose", response_model=ConceptPairProposeResponse)
 def propose_pairs(
-    vault: VaultDep, clock: ClockDep, client: ChatClientDep, body: ConceptPairProposeRequest
+    vault: VaultDep,
+    clock: ClockDep,
+    config: RuntimeConfigDep,
+    client: ChatClientDep,
+    monotonic: MonotonicDep,
+    body: ConceptPairProposeRequest,
 ) -> ConceptPairProposeResponse:
     try:
         result = propose_concept_pairs(
-            vault, client, subject_code=body.subject_code, chunk_ids=body.chunk_ids, now=clock()
+            vault,
+            client,
+            subject_code=body.subject_code,
+            chunk_ids=body.chunk_ids,
+            now=clock(),
+            limits=config.llm.task_limits,
+            monotonic=monotonic,
         )
     except RecordNotFoundError as exc:
         raise _not_found(exc) from exc

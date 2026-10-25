@@ -12,25 +12,21 @@ from __future__ import annotations
 import hashlib
 from typing import Protocol
 
-from pydantic import BaseModel, Field
-
 from ..domain.schemas import BlueprintSlot, Citation, ExamBlueprint, QuestionFormat, QuestionTemplate, TwinQuestion
-from .pipeline import SEED_STRIDE, ReviewTicket, TemplateAuthor, TemplateRegistry, produce_twin
+from ..domain.twins import SEED_SPACE, ReviewTicket, TwinBatch, TwinBatchRequest
+from .pipeline import SEED_STRIDE, TemplateAuthor, TemplateRegistry, produce_twin
 
-SEED_SPACE = 2**63
-
-
-class TwinBatchRequest(BaseModel):
-    count: int = Field(default=3, ge=1, le=10)
-    format: QuestionFormat = QuestionFormat.MCQ4
-    base_seed: int | None = Field(default=None, ge=0, lt=SEED_SPACE)
-
-
-class TwinBatch(BaseModel):
-    blueprint_id: str
-    base_seed: int
-    twins: list[TwinQuestion]
-    review_tickets: list[ReviewTicket]
+# `TwinBatchRequest`, `TwinBatch` và `SEED_SPACE` đã chuyển về `domain/twins.py`; tên cũ vẫn import được từ module này.
+__all__ = [
+    "SEED_SPACE",
+    "CitationProvider",
+    "NoCitationProvider",
+    "TwinBatch",
+    "TwinBatchRequest",
+    "UnconfiguredTemplateAuthor",
+    "default_base_seed",
+    "generate_twin_batch",
+]
 
 
 class CitationProvider(Protocol):

@@ -11,12 +11,19 @@ Năm tín hiệu độc lập, mỗi tín hiệu sinh GateIssue gắn toạ đ�
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
-from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
+from ..domain.ingestion import (
+    ExtractedCell,
+    ExtractedTable,
+    GateIssue,
+    GateReport,
+    GateStatus,
+    PatchAudit,
+    Severity,
+)
 from ..domain.schemas import (
     MAX_PROCESSES,
     CPUSchedulingProblem,
@@ -27,6 +34,29 @@ from ..domain.schemas import (
     SelfSolveResult,
 )
 from ..sandbox.sandbox import SandboxStatus, run_template
+
+# Model dữ liệu của Gate đã chuyển về `domain/ingestion.py`; tên cũ vẫn import được từ module này.
+__all__ = [
+    "CELL_CONFIDENCE_MIN",
+    "TABLE_SCHEMAS",
+    "TOPIC_ALGORITHMS",
+    "CellPatch",
+    "ColumnSpec",
+    "ExtractedCell",
+    "ExtractedTable",
+    "GateIssue",
+    "GateReport",
+    "GateStatus",
+    "PatchAudit",
+    "Severity",
+    "apply_patches",
+    "check_table",
+    "gate_status",
+    "latex_issues",
+    "rerun_self_solve",
+    "table_to_params",
+    "table_to_problem",
+]
 
 CELL_CONFIDENCE_MIN = 0.85
 
@@ -58,93 +88,10 @@ TABLE_SCHEMAS: dict[str, tuple[ColumnSpec, ...]] = {
 }
 
 
-class Severity(str, Enum):
-    INFO = "info"
-    WARNING = "warning"
-    BLOCKING = "blocking"
-
-
-class ExtractedCell(BaseModel):
-    row: int = Field(ge=0)
-    col: int = Field(ge=0)
-    text: str
-    confidence: float = Field(ge=0.0, le=1.0)
-    verified_by_human: bool = False
-
-
-class ExtractedTable(BaseModel):
-    table_id: str
-    page_number: int = Field(ge=1)
-    version: int = Field(default=1, ge=1)
-    headers: list[str]
-    cells: list[ExtractedCell]
-
-    @model_validator(mode="after")
-    def _grid(self) -> ExtractedTable:
-        coords = {(c.row, c.col) for c in self.cells}
-        if len(coords) != len(self.cells):
-            raise ValueError("trùng toạ độ ô")
-        if any(c.col >= len(self.headers) for c in self.cells):
-            raise ValueError("ô vượt số cột header")
-        return self
-
-    @property
-    def n_rows(self) -> int:
-        return 1 + max((c.row for c in self.cells), default=-1)
-
-    def cell(self, row: int, col: int) -> ExtractedCell | None:
-        for c in self.cells:
-            if c.row == row and c.col == col:
-                return c
-        return None
-
-
-class GateIssue(BaseModel):
-    code: Literal[
-        "DUAL_PASS_MISMATCH",
-        "LOW_CONFIDENCE",
-        "HEADER_MISMATCH",
-        "NOT_A_NUMBER",
-        "OUT_OF_RANGE",
-        "DUPLICATE_LABEL",
-        "MISSING_CELL",
-        "NOT_IN_TEXT_LAYER",
-        "SELF_SOLVE_MISMATCH",
-        "LATEX_UNBALANCED",
-    ]
-    severity: Severity
-    message_vi: str
-    row: int | None = None
-    col: int | None = None
-    alternatives: list[str] = Field(default_factory=list)
-
-
-class GateStatus(str, Enum):
-    AUTO_PASS = "AUTO_PASS"
-    NEEDS_REVIEW = "NEEDS_REVIEW"
-    BLOCKED = "BLOCKED"
-
-
-class GateReport(BaseModel):
-    table_id: str
-    table_version: int
-    status: GateStatus
-    issues: list[GateIssue]
-
-
 class CellPatch(BaseModel):
     row: int = Field(ge=0)
     col: int = Field(ge=0)
     new_text: str = Field(max_length=64)
-
-
-class PatchAudit(BaseModel):
-    table_id: str
-    from_version: int
-    to_version: int
-    editor_id: str
-    changes: list[dict[str, Any]]
-    at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 def _norm(s: str) -> str:

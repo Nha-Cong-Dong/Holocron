@@ -11,33 +11,34 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
+from ..domain.ingestion import (
+    GateIssue,
+    GateReport,
+    GateStatus,
+    IngestionItem,
+    IngestionItemCreate,
+    Severity,
+    UploadedDocument,
+)
 from ..domain.schemas import (
     MAX_PROCESSES,
-    CPUSchedulingProblem,
     ExamBlueprint,
-    OptionKey,
     SelfSolveResult,
     SolverInputs,
 )
+from ..domain.twins import IdempotencyRecord, TwinBatch, TwinBatchRequest
 from ..infrastructure.llm_config import RuntimeConfig, load_runtime_config
 from ..infrastructure.template_library import InMemoryTemplateRegistry
 from ..services.extraction import (
     DocumentExtractor,
     MockDualPassExtractor,
     UnsupportedTopicError,
-    UploadedDocument,
     sniff_media_type,
 )
 from ..services.ingestion_gate import (
     TABLE_SCHEMAS,
     TOPIC_ALGORITHMS,
     CellPatch,
-    ExtractedTable,
-    GateIssue,
-    GateReport,
-    GateStatus,
-    PatchAudit,
-    Severity,
     apply_patches,
     check_table,
     gate_status,
@@ -49,8 +50,6 @@ from ..services.pipeline import TemplateAuthor
 from ..services.twin_batch import (
     CitationProvider,
     NoCitationProvider,
-    TwinBatch,
-    TwinBatchRequest,
     UnconfiguredTemplateAuthor,
     generate_twin_batch,
 )
@@ -61,29 +60,6 @@ IDEMPOTENCY_TTL = timedelta(hours=24)
 
 app = FastAPI(title="Holocron Ingestion Gate", version="0.1.0a0")
 REGISTRY = InMemoryTemplateRegistry()
-
-
-class IngestionItemCreate(BaseModel):
-    source_doc_id: str
-    page_number: int = Field(ge=1)
-    topic_key: str
-    stem_latex: str
-    options: dict[OptionKey, str]
-    table_primary: ExtractedTable
-    table_secondary: ExtractedTable | None = None
-    page_text_layer: str | None = None
-    solver_inputs: SolverInputs = Field(default_factory=SolverInputs)
-
-
-class IngestionItem(IngestionItemCreate):
-    item_id: str
-    non_cloneable: bool = False
-    non_cloneable_reason: str | None = None
-    problem: CPUSchedulingProblem | None = None
-    self_solve: SelfSolveResult | None = None
-    report: GateReport | None = None
-    audits: list[PatchAudit] = Field(default_factory=list)
-    approved: bool = False
 
 
 class RuntimeInfo(BaseModel):
@@ -113,12 +89,6 @@ class StemPatchRequest(BaseModel):
 class NonCloneableRequest(BaseModel):
     editor_id: str
     reason: str = Field(min_length=5, max_length=300)
-
-
-class IdempotencyRecord(BaseModel):
-    body_digest: str
-    stored_at: datetime
-    batch: TwinBatch
 
 
 class IngestionStore:

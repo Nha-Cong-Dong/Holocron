@@ -10,7 +10,7 @@ import { CAPABILITY_NAMES, CAPABILITY_REASONS, type CapabilityName } from "@/typ
 import { CAPABILITY_ERROR_BODY, LLM_UPSTREAM_ERROR_BODY } from "./fixtures/errors";
 import { REASON_DETAILS_VI, RUNTIME_FIXTURES, RUNTIME_SCENARIOS } from "./fixtures/runtime";
 import { SUBJECT_FIXTURES } from "./fixtures/subjects";
-import { mockApi } from "./index";
+import { fillRuntimeGaps, mockApi, RUNTIME_GAP_FIELDS } from "./index";
 import { DEFAULT_RUNTIME_SCENARIO, scenarioFromSearch } from "./store";
 
 /** Khả năng cần LLM theo §11.4. */
@@ -119,26 +119,67 @@ describe("thân lỗi (§6.0)", () => {
 });
 
 describe("handler giả", () => {
-  it("chỉ thay endpoint chưa có ở backend", () => {
-    expect(Object.keys(mockApi).sort()).toEqual(["getRuntime", "listSubjects"]);
+  it("chỉ thay endpoint chưa có ở backend; /v1/runtime không bị thay", () => {
+    expect(Object.keys(mockApi).sort()).toEqual(["listSubjects"]);
   });
 
   it("trả bản sao: sửa kết quả không làm hỏng fixture", async () => {
-    const runtime = await mockApi.getRuntime?.();
-    expect(runtime).toEqual(RUNTIME_FIXTURES[DEFAULT_RUNTIME_SCENARIO]);
-    if (runtime !== undefined) runtime.demo_mode = !runtime.demo_mode;
-    expect(RUNTIME_FIXTURES[DEFAULT_RUNTIME_SCENARIO].demo_mode).toBe(true);
-
     const subjects = await mockApi.listSubjects?.();
     expect(subjects).toEqual(SUBJECT_FIXTURES);
     subjects?.pop();
     expect(SUBJECT_FIXTURES).toHaveLength(2);
   });
 
-  it("chọn kịch bản theo query, sai giá trị thì về mặc định", () => {
+  it("chọn kịch bản theo query, sai giá trị thì về kịch bản dự phòng", () => {
     expect(scenarioFromSearch("?mock_runtime=llm")).toBe("llm");
     expect(scenarioFromSearch("?a=1&mock_runtime=no_tesseract")).toBe("no_tesseract");
     expect(scenarioFromSearch("?mock_runtime=khong-co")).toBe(DEFAULT_RUNTIME_SCENARIO);
     expect(scenarioFromSearch("")).toBe(DEFAULT_RUNTIME_SCENARIO);
+    expect(scenarioFromSearch("", "llm")).toBe("llm");
+    expect(scenarioFromSearch("?mock_runtime=offline", "llm")).toBe("offline");
+  });
+});
+
+describe("fillRuntimeGaps (M1)", () => {
+  const backendBody = { demo_mode: true, llm_configured: false, vlm_configured: false };
+
+  it("chỉ bù capabilities và mock_extractor khi backend chưa trả, giữ nguyên cờ của backend", () => {
+    const filled = fillRuntimeGaps(backendBody);
+    expect(filled).toEqual({
+      ...backendBody,
+      capabilities: RUNTIME_FIXTURES.offline.capabilities,
+      mock_extractor: RUNTIME_FIXTURES.offline.mock_extractor,
+    });
+    expect(RUNTIME_GAP_FIELDS).toEqual(["capabilities", "mock_extractor"]);
+  });
+
+  it("backend đã cấu hình LLM thì bù theo kịch bản có LLM", () => {
+    const filled = fillRuntimeGaps({ ...backendBody, demo_mode: false, llm_configured: true });
+    expect(filled).toMatchObject({ llm_configured: true, capabilities: RUNTIME_FIXTURES.llm.capabilities });
+  });
+
+  it("field backend đã trả (kể cả sai dạng) không bị thay", () => {
+    const own = [{ name: "ocr", available: true, reason: null, detail_vi: null }];
+    expect(fillRuntimeGaps({ ...backendBody, capabilities: own, mock_extractor: false })).toEqual({
+      ...backendBody,
+      capabilities: own,
+      mock_extractor: false,
+    });
+    expect(fillRuntimeGaps({ ...backendBody, capabilities: "hỏng" })).toMatchObject({ capabilities: "hỏng" });
+  });
+
+  it("thân không phải object trả nguyên văn; fixture không bị sửa qua kết quả", () => {
+    expect(fillRuntimeGaps(null)).toBeNull();
+    expect(fillRuntimeGaps("x")).toBe("x");
+    const filled = fillRuntimeGaps(backendBody);
+    if (
+      typeof filled === "object" &&
+      filled !== null &&
+      "capabilities" in filled &&
+      Array.isArray(filled.capabilities)
+    ) {
+      filled.capabilities.pop();
+    }
+    expect(RUNTIME_FIXTURES.offline.capabilities).toHaveLength(9);
   });
 });

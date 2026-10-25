@@ -18,6 +18,9 @@ export const TOKEN_HEADER = "X-Holocron-Token";
 const BUILD_API_BASE: string | undefined = process.env.NEXT_PUBLIC_HOLOCRON_API_BASE;
 const BUILD_MOCKS_FLAG: string | undefined = process.env.NEXT_PUBLIC_HOLOCRON_MOCKS;
 
+/** Đang chạy `next dev`: chỉ khi đó giao diện mới hiện lệnh dành cho người phát triển (ví dụ lệnh chạy backend). */
+export const IS_DEVELOPMENT: boolean = process.env.NODE_ENV === "development";
+
 /** Object vỏ desktop chèn vào trang, sau khi đã kiểm dạng. */
 export interface InjectedRuntime {
   apiBase: string;

@@ -2,22 +2,27 @@
 
 import Link from "next/link";
 
-import { CapabilityNotice } from "@/components/common/CapabilityNotice";
+import { CapabilityNoticeBox } from "@/components/common/CapabilityNotice";
 import { ErrorNotice } from "@/components/common/ErrorNotice";
 import { Loading } from "@/components/common/LoadState";
 import { useShell } from "@/components/shell/ShellContext";
+import { IS_DEVELOPMENT } from "@/lib/config";
 import {
-  CAPABILITY_LABEL_VI,
-  type CapabilityGroup,
+  type CapabilityEntry,
   capabilitiesOf,
+  capabilityLabel,
+  type DataEgress,
+  freshRuntime,
   groupCapabilities,
   needsTesseractHelp,
+  type RuntimeView,
+  selectDataEgress,
+  type UnavailableGroup as UnavailableGroupName,
 } from "@/lib/runtime";
-import type { Capability, RuntimeInfoPending } from "@/types/contract-pending";
 
 import styles from "./StartScreen.module.css";
 
-const GROUP_TEXT: Record<Exclude<CapabilityGroup, "offline" | "online">, { title: string; intro: string }> = {
+const GROUP_TEXT: Record<UnavailableGroupName, { title: string; intro: string }> = {
   install: {
     title: "Cần cài thêm trên máy này",
     intro: "Các phần dưới đây chạy offline nhưng cần chương trình hoặc dữ liệu chưa có trên máy.",
@@ -30,11 +35,26 @@ const GROUP_TEXT: Record<Exclude<CapabilityGroup, "offline" | "online">, { title
     title: "Chưa có trong bản đang chạy",
     intro: "Các tính năng này sẽ có ở bản sau.",
   },
+  unrecognized: {
+    title: "Giao diện chưa nhận ra",
+    intro:
+      "Backend báo các khả năng hoặc trạng thái dưới đây nhưng giao diện này chưa biết chúng. Coi như chúng có thể gửi dữ liệu ra khỏi máy; cập nhật giao diện để xem chi tiết.",
+  },
+};
+
+const EGRESS_TEXT: Record<DataEgress, string> = {
+  unknown:
+    "Chưa đọc được trạng thái LLM và VLM của backend, nên chưa biết lúc này có dữ liệu nào có thể rời máy hay không.",
+  local_only: "Hiện chưa bật LLM hay VLM: không dữ liệu nào rời máy.",
+  may_leave:
+    "Hiện đã bật LLM hoặc VLM: khi bạn dùng các tính năng ở nhóm “có gửi dữ liệu ra khỏi máy”, dữ liệu tương ứng được gửi tới dịch vụ đã cấu hình.",
 };
 
 /** Màn chạy lần đầu (trang gốc): đọc `capabilities` để nói rõ cái gì chạy offline được, cái gì cần cài thêm. */
 export function StartScreen() {
   const { runtime, refreshRuntime } = useShell();
+  // Chỉ hiện khả năng khi lần tải gần nhất thành công; dữ liệu cũ không được trình bày như trạng thái hiện tại.
+  const current = freshRuntime(runtime);
 
   return (
     <div className={styles.screen}>
@@ -46,21 +66,35 @@ export function StartScreen() {
         </p>
       </section>
 
-      {runtime.runtime === null && runtime.backend === "connecting" && (
-        <Loading label="Đang kiểm tra backend và khả năng của máy này…" />
+      {runtime.backend === "connecting" && (
+        <Loading
+          label={
+            runtime.runtime === null
+              ? "Đang kiểm tra backend và khả năng của máy này…"
+              : "Đang kiểm tra lại backend và khả năng của máy này…"
+          }
+        />
       )}
 
-      {runtime.runtime === null && runtime.error !== null && (
+      {runtime.error !== null && (
         <section className={styles.section} aria-labelledby="start-backend">
-          <h2 id="start-backend">Chưa kết nối được backend</h2>
+          <h2 id="start-backend">
+            {runtime.backend === "unreachable" ? "Chưa kết nối được backend" : "Backend từ chối yêu cầu"}
+          </h2>
           <ErrorNotice error={runtime.error} onAction={refreshRuntime} />
-          <BackendHelp />
+          {runtime.runtime !== null && (
+            <p className={styles.muted}>
+              Danh sách khả năng của lần kiểm tra trước đã được ẩn vì chưa cập nhật được; nó sẽ hiện lại khi backend trả
+              lời.
+            </p>
+          )}
+          {runtime.backend === "unreachable" && <BackendHelp />}
         </section>
       )}
 
-      {runtime.runtime !== null && <CapabilityOverview runtime={runtime.runtime} />}
+      {current !== null && <CapabilityOverview runtime={current} />}
 
-      <KeyPolicy />
+      <KeyPolicy egress={selectDataEgress(current)} />
 
       <section className={styles.section} aria-labelledby="start-next">
         <h2 id="start-next">Bước tiếp theo</h2>
@@ -82,15 +116,22 @@ function BackendHelp() {
   return (
     <div className={styles.help}>
       <p>
-        Chạy backend trong thư mục <code>holocron/backend</code>:
+        Backend của Holocron chưa chạy hoặc chưa sẵn sàng. Khởi động backend, rồi bấm "Thử lại" ở trên hoặc "Kiểm tra
+        lại" ở thanh trạng thái.
       </p>
-      <pre className={styles.command}>python -m uvicorn holocron_core.routers.api:app --host 127.0.0.1 --port 8000</pre>
-      <p>Rồi bấm "Thử lại" ở trên hoặc "Kiểm tra lại" ở thanh trạng thái.</p>
+      {IS_DEVELOPMENT && (
+        <>
+          <p className={styles.muted}>
+            Bản phát triển: chạy backend trong thư mục <code>holocron/backend</code> bằng lệnh
+          </p>
+          <pre className={styles.command}>python -m uvicorn holocron_core.routers.api:app --reload</pre>
+        </>
+      )}
     </div>
   );
 }
 
-function CapabilityOverview({ runtime }: { runtime: RuntimeInfoPending }) {
+function CapabilityOverview({ runtime }: { runtime: RuntimeView }) {
   const capabilities = capabilitiesOf(runtime);
   if (capabilities === null) {
     return (
@@ -118,23 +159,29 @@ function CapabilityOverview({ runtime }: { runtime: RuntimeInfoPending }) {
         note={null}
       />
       <ReadyGroup
-        title="Đang dùng được, có gửi dữ liệu tới LLM"
+        title="Đang dùng được, có gửi dữ liệu ra khỏi máy"
         capabilities={groups.online}
-        badge="dùng LLM"
+        badge="dùng mạng"
         tone="info"
-        note="Khi dùng các tính năng này, văn bản đã tách từ tài liệu được gửi tới dịch vụ LLM đã cấu hình."
+        note="Khi dùng các tính năng này, văn bản đã tách từ tài liệu (với LLM) hoặc ảnh trang (với VLM) được gửi tới dịch vụ đã cấu hình."
       />
-      <UnavailableGroup group="install" capabilities={groups.install} runtime={runtime} />
+      <UnavailableGroup group="install" capabilities={groups.install} />
       {needsTesseractHelp(runtime) && <TesseractHelp />}
-      <UnavailableGroup group="configure" capabilities={groups.configure} runtime={runtime} />
-      <UnavailableGroup group="not_implemented" capabilities={groups.not_implemented} runtime={runtime} />
+      <UnavailableGroup group="configure" capabilities={groups.configure} />
+      <UnavailableGroup group="not_implemented" capabilities={groups.not_implemented} />
+      <UnavailableGroup group="unrecognized" capabilities={groups.unrecognized} />
     </section>
   );
 }
 
+/** Khoá React cho một phần tử: tên có thể trùng hoặc là `null` (tên lạ), nên kèm vị trí. */
+function entryKey(entry: CapabilityEntry, index: number): string {
+  return `${entry.name ?? "unrecognized"}-${index}`;
+}
+
 interface ReadyGroupProps {
   title: string;
-  capabilities: Capability[];
+  capabilities: CapabilityEntry[];
   badge: string;
   tone: "success" | "info";
   note: string | null;
@@ -147,12 +194,12 @@ function ReadyGroup({ title, capabilities, badge, tone, note }: ReadyGroupProps)
       <h3>{title}</h3>
       {note !== null && <p className={styles.muted}>{note}</p>}
       <ul className={styles.ready}>
-        {capabilities.map((capability) => (
-          <li key={capability.name}>
+        {capabilities.map((capability, index) => (
+          <li key={entryKey(capability, index)}>
             <span className={styles.badge} data-tone={tone}>
               {badge}
             </span>{" "}
-            {CAPABILITY_LABEL_VI[capability.name]}
+            {capabilityLabel(capability)}
           </li>
         ))}
       </ul>
@@ -161,12 +208,11 @@ function ReadyGroup({ title, capabilities, badge, tone, note }: ReadyGroupProps)
 }
 
 interface UnavailableGroupProps {
-  group: Exclude<CapabilityGroup, "offline" | "online">;
-  capabilities: Capability[];
-  runtime: RuntimeInfoPending;
+  group: UnavailableGroupName;
+  capabilities: CapabilityEntry[];
 }
 
-function UnavailableGroup({ group, capabilities, runtime }: UnavailableGroupProps) {
+function UnavailableGroup({ group, capabilities }: UnavailableGroupProps) {
   if (capabilities.length === 0) return null;
   const text = GROUP_TEXT[group];
   return (
@@ -174,8 +220,13 @@ function UnavailableGroup({ group, capabilities, runtime }: UnavailableGroupProp
       <h3>{text.title}</h3>
       <p className={styles.muted}>{text.intro}</p>
       <div className={styles.notices}>
-        {capabilities.map((capability) => (
-          <CapabilityNotice key={capability.name} runtime={runtime} name={capability.name} />
+        {capabilities.map((capability, index) => (
+          <CapabilityNoticeBox
+            key={entryKey(capability, index)}
+            label={capabilityLabel(capability)}
+            available={capability.available}
+            detail={capability.detail_vi}
+          />
         ))}
       </div>
     </div>
@@ -203,7 +254,7 @@ function TesseractHelp() {
   );
 }
 
-function KeyPolicy() {
+function KeyPolicy({ egress }: { egress: DataEgress }) {
   return (
     <section className={styles.section} aria-labelledby="start-keys">
       <h2 id="start-keys">Khoá API và dữ liệu của bạn</h2>
@@ -212,9 +263,10 @@ function KeyPolicy() {
         của backend rồi khởi động lại backend; bản desktop sẽ dùng kho khoá của hệ điều hành.
       </p>
       <p className={styles.muted}>
-        Không cấu hình LLM thì không dữ liệu nào rời máy. Khi bật LLM, văn bản đã tách từ tài liệu được gửi tới dịch vụ
-        LLM đã cấu hình.
+        Dữ liệu chỉ rời máy khi bật LLM hoặc VLM: văn bản đã tách từ tài liệu được gửi tới LLM đã cấu hình, ảnh trang
+        được gửi tới VLM đã cấu hình. Không bật cả hai thì không dữ liệu nào rời máy.
       </p>
+      <p className={styles.muted}>{EGRESS_TEXT[egress]}</p>
     </section>
   );
 }

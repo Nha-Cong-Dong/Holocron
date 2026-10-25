@@ -4,7 +4,8 @@
  * - Base URL và header token lấy từ `lib/config.ts` lúc gọi (chạy được dưới `next dev`, static export và vỏ desktop).
  * - Lỗi được phân loại tập trung ở `lib/errors.ts`; component đọc `ApiError.info` để chọn thông điệp và hành động.
  * - `api` gộp dữ liệu mẫu cho endpoint backend CHƯA có khi bật `NEXT_PUBLIC_HOLOCRON_MOCKS`; endpoint đã có luôn gọi
- *   backend thật (kế hoạch UI mục 3.2).
+ *   backend thật (kế hoạch UI mục 3.2). `/v1/runtime` đã có nên luôn gọi backend; cờ mock chỉ bù field backend chưa trả.
+ * - Thân `/v1/runtime` được kiểm dạng ở đây (`normalizeRuntimeInfo`) trước khi tới component.
  */
 
 import { apiBase, authHeaders, USE_MOCKS } from "@/lib/config";
@@ -17,8 +18,9 @@ import {
   type UiError,
   unknownError,
 } from "@/lib/errors";
-import { mockApi } from "@/mocks";
-import type { RuntimeInfoPending, Subject } from "@/types/contract-pending";
+import { normalizeRuntimeInfo, type RuntimeView } from "@/lib/runtime";
+import { fillRuntimeGaps, mockApi } from "@/mocks";
+import type { Subject } from "@/types/contract-pending";
 import type {
   CellPatch,
   IngestionItem,
@@ -94,8 +96,8 @@ function segment(value: string): string {
 
 /** Mọi hàm gọi backend. Mock chỉ được thay phần tử của endpoint chưa có ở backend. */
 export interface HolocronApi {
-  /** `GET /v1/runtime` (§5.12). */
-  getRuntime: () => Promise<RuntimeInfoPending>;
+  /** `GET /v1/runtime` (§5.12), đã kiểm dạng. */
+  getRuntime: () => Promise<RuntimeView>;
   /** `GET /v1/subjects` (§6.8, đường dẫn còn đề xuất; chưa có ở backend). */
   listSubjects: () => Promise<Subject[]>;
   /** `POST /v1/ingestion/upload` (§6.1). */
@@ -119,8 +121,21 @@ export interface HolocronApi {
   ) => Promise<TwinBatch>;
 }
 
+/**
+ * Gọi `/v1/runtime`, cho thân JSON qua `transform` (chỉ dùng để bù field còn thiếu khi bật mock) rồi kiểm dạng.
+ * Thiếu cờ bắt buộc ⇒ lỗi phản hồi không hợp lệ, như thân không phải JSON.
+ */
+async function loadRuntime(transform: (raw: unknown) => unknown): Promise<RuntimeView> {
+  const raw = await request<unknown>("/v1/runtime", { method: "GET" });
+  const runtime = normalizeRuntimeInfo(transform(raw));
+  if (runtime === null) {
+    throw new ApiError(200, invalidResponseError());
+  }
+  return runtime;
+}
+
 export const realApi: HolocronApi = {
-  getRuntime: () => request<RuntimeInfoPending>("/v1/runtime", { method: "GET" }),
+  getRuntime: () => loadRuntime((raw) => raw),
 
   listSubjects: () => request<Subject[]>("/v1/subjects", { method: "GET" }),
 
@@ -156,4 +171,13 @@ export const realApi: HolocronApi = {
   },
 };
 
-export const api: HolocronApi = USE_MOCKS ? { ...realApi, ...mockApi } : realApi;
+/**
+ * Bộ hàm gọi backend theo cờ mock. Bật mock: endpoint backend chưa có lấy từ `mockApi`; `/v1/runtime` vẫn gọi backend
+ * thật (backend không chạy thì vẫn báo không kết nối), chỉ bù `capabilities` và `mock_extractor` còn thiếu.
+ */
+export function createApi(useMocks: boolean): HolocronApi {
+  if (!useMocks) return realApi;
+  return { ...realApi, ...mockApi, getRuntime: () => loadRuntime(fillRuntimeGaps) };
+}
+
+export const api: HolocronApi = createApi(USE_MOCKS);

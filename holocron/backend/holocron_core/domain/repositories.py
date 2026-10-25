@@ -14,6 +14,7 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field
 
+from .documents import PageEditAudit
 from .ingestion import IngestionItem, UploadedDocument
 from .schemas import DocumentMeta, ExamBlueprint, KnowledgeChunk
 from .twins import IdempotencyRecord
@@ -119,6 +120,14 @@ class IngestionRepository(Protocol):
     def get_document(self, document_id: str) -> UploadedDocument | None: ...
 
 
+def check_page_audit(audit: PageEditAudit, document_id: str, page_number: int, expected_version: int) -> None:
+    """`audit` thuộc đúng trang `(document_id, page_number)` và bắt đầu từ `expected_version`; sai ⇒ `ValueError`."""
+    if (audit.document_id, audit.page_number) != (document_id, page_number):
+        raise ValueError("audit không thuộc trang đang ghi")
+    if audit.from_version != expected_version:
+        raise ValueError(f"audit phải có from_version = {expected_version}")
+
+
 def same_item_state(stored: IngestionItem, expected: IngestionItem) -> bool:
     """Hai item có cùng trạng thái lưu (mọi field trừ `audits`, vốn chỉ đổi cùng version bảng)."""
     return stored.model_dump(exclude={"audits"}) == expected.model_dump(exclude={"audits"})
@@ -187,8 +196,17 @@ class DocumentRepository(Protocol):
         status: PageStatus,
         confirmed: bool,
         expected_version: int,
+        audit: PageEditAudit | None = None,
     ) -> int:
-        """So-và-ghi nguyên tử; trả version mới (`expected_version + 1`)."""
+        """So-và-ghi nguyên tử; trả version mới (`expected_version + 1`).
+
+        `audit` (lần sửa dòng, §6.5) được ghi trong cùng giao dịch với trang; nó phải thuộc đúng trang này và có
+        `from_version = expected_version` (`check_page_audit`), sai ⇒ `ValueError`, không ghi gì.
+        """
+        ...
+
+    def list_page_audits(self, document_id: str, page_number: int) -> list[PageEditAudit]:
+        """Lịch sử sửa dòng của trang theo thứ tự ghi; trang không có ⇒ danh sách rỗng."""
         ...
 
     def get_page[M: BaseModel](self, document_id: str, page_number: int, model: type[M]) -> M | None: ...
@@ -290,5 +308,7 @@ class VaultRepository(Protocol):
         ...
 
 
-class AppStore(IngestionRepository, BlueprintRepository, TwinBatchRepository, VaultRepository, Protocol):
+class AppStore(
+    IngestionRepository, BlueprintRepository, TwinBatchRepository, DocumentRepository, VaultRepository, Protocol
+):
     """Kho mà các router dùng, cấp qua `Depends(get_store)`."""

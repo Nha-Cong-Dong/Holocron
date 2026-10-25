@@ -1,4 +1,4 @@
-"""Kho SQLite (SPECIFICATION §5.13): thoả `AppStore`, `DocumentRepository` và `VaultRepository`.
+"""Kho SQLite (SPECIFICATION §5.13): thoả `AppStore` (gồm `DocumentRepository` và `VaultRepository`).
 
 Một kết nối cho mỗi kho, dùng chung giữa các luồng dưới một khoá; mọi lần ghi nằm trong `BEGIN IMMEDIATE`, mọi lần
 đọc nhiều câu nằm trong một giao dịch đọc để thấy cùng một bản chụp. Ghi có điều kiện dùng một câu
@@ -21,6 +21,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from ...domain.documents import PageEditAudit
 from ...domain.ingestion import IngestionItem, PatchAudit, UploadedDocument
 from ...domain.repositories import (
     IDEMPOTENCY_TTL,
@@ -36,6 +37,7 @@ from ...domain.repositories import (
     VaultEntity,
     VaultSearchUnavailableError,
     VersionConflictError,
+    check_page_audit,
     same_item_state,
 )
 from ...domain.schemas import DocumentMeta, ExamBlueprint, KnowledgeChunk, TwinQuestion
@@ -543,7 +545,10 @@ class SQLiteStore:
         status: PageStatus,
         confirmed: bool,
         expected_version: int,
+        audit: PageEditAudit | None = None,
     ) -> int:
+        if audit is not None:
+            check_page_audit(audit, document_id, page_number, expected_version)
         with self._write() as conn:
             cursor = conn.execute(
                 "UPDATE pages SET status = ?, extraction_json = ?, confirmed = ?, updated_at = ?, "
@@ -559,7 +564,43 @@ class SQLiteStore:
                     "SELECT version FROM pages WHERE document_id = ? AND page_number = ?",
                     (document_id, page_number),
                 )
+            if audit is not None:
+                conn.execute(
+                    "INSERT INTO page_audits (document_id, page_number, from_version, to_version, editor_id, "
+                    "changes_json, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        document_id,
+                        page_number,
+                        audit.from_version,
+                        audit.to_version,
+                        audit.editor_id,
+                        json.dumps(audit.model_dump(mode="json")["changes"], ensure_ascii=False),
+                        _ts(audit.at),
+                    ),
+                )
         return expected_version + 1
+
+    def list_page_audits(self, document_id: str, page_number: int) -> list[PageEditAudit]:
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT document_id, page_number, from_version, to_version, editor_id, changes_json, at "
+                "FROM page_audits WHERE document_id = ? AND page_number = ? ORDER BY audit_id",
+                (document_id, page_number),
+            ).fetchall()
+        return [
+            PageEditAudit.model_validate(
+                {
+                    "document_id": row["document_id"],
+                    "page_number": row["page_number"],
+                    "from_version": row["from_version"],
+                    "to_version": row["to_version"],
+                    "editor_id": row["editor_id"],
+                    "changes": json.loads(str(row["changes_json"])),
+                    "at": row["at"],
+                }
+            )
+            for row in rows
+        ]
 
     def get_page[M: BaseModel](self, document_id: str, page_number: int, model: type[M]) -> M | None:
         with self._read() as conn:

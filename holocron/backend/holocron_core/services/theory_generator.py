@@ -17,14 +17,18 @@ Thuộc Deterministic Core: hàm thuần, không gọi LLM, không gọi mạng,
 - **Đúng một đáp án:** cặp có `definition_quote` trùng, chứa hoặc nằm trong trích dẫn của cặp đáp án (so sau NFC, gộp
   khoảng trắng, không phân biệt hoa thường) không bao giờ làm phương án nhiễu, vì nó cũng là một đáp án đúng. Dạng điền
   khuyết còn loại thuật ngữ trùng, chứa hoặc nằm trong thuật ngữ bị che, và thuật ngữ mà khi điền vào chỗ trống cho ra
-  đoạn văn có trong Vault (trích dẫn hay `raw_text` của chunk cùng môn).
+  một đoạn nằm trong `definition_quote` của một cặp thuộc nhóm ứng viên. Luật này chỉ đọc dữ liệu đã nằm trong
+  `pool_sha256` (I4): `raw_text` của chunk không được dùng, nên thêm hay sửa chunk cùng môn mà không đổi cặp nào thì
+  câu không đổi. Câu điền khuyết vẫn có thể có đáp án đúng thứ hai nằm trong một chunk chưa có cặp xác nhận; người dùng
+  giảm rủi ro này bằng cách xác nhận thêm cặp cho đoạn văn đó.
 - **Không đủ căn cứ:** không chọn được 3 phương án nhiễu khác nhau thì trả `ReviewTicket`, không bịa phương án.
 - **Giới hạn đã biết:** che tên khái niệm chỉ khớp đúng chuỗi `term` (không phân biệt hoa thường, đúng ranh giới chữ);
   dạng biến hình hay số nhiều ("Process" và "Processes") không bị che và có thể lộ đáp án. Bộ sinh cố ý không tách từ
   hay biến hình theo ngôn ngữ.
 
-`TheoryQuestion` là model nội bộ của service, chưa xuất hiện trong response nào: đưa câu lý thuyết vào `TwinQuestion`
-cần `question_kind`, `template_id`/`topic_key` nullable và `TheoryTrace` của spec §5.11, phần lớn còn chờ duyệt.
+`TheoryQuestion` là model nội bộ của service, chưa xuất hiện trong response nào. Phần contract để đưa câu lý thuyết vào
+`TwinQuestion` (`TheoryTrace`, `template_id`/`topic_key` nullable, `MisconceptionRef.citation`, spec §5.11) đã duyệt
+2026-10-25; việc nối vào `TwinQuestion` làm ở một thay đổi sau.
 """
 
 from __future__ import annotations
@@ -188,11 +192,10 @@ def _pool_record(pair: ConceptPair) -> dict[str, str]:
 
 
 def _pool_order(pair: ConceptPair) -> tuple[str, str, str, str]:
-    """Sắp theo `(chapter_code, term, chunk_id)` sau NFC như ADR-007; `definition_quote` chỉ phân xử khi hoà, để thứ
-    tự (và do đó `pool_sha256`) không phụ thuộc thứ tự đầu vào.
+    """Sắp theo `(chapter_code, term, chunk_id, definition_quote)` sau NFC như ADR-007 mục 2; khoá cuối chỉ phân xử
+    khi hoà, để thứ tự (và do đó `pool_sha256`) không phụ thuộc thứ tự đầu vào.
 
-    Khoá phân xử `definition_quote` là phần làm chặt hơn ADR-007 mục 2 (ADR chỉ ghi ba khoá), đang chờ sửa ADR cho
-    khớp. Khi ba khoá đầu không hoà, thứ tự trùng với cách tính của ADR.
+    Khoá phân xử `definition_quote` thuộc cách tính của ADR-007 mục 2 (duyệt 2026-10-25).
     """
     record = _pool_record(pair)
     return (record["chapter_code"], record["term"], record["chunk_id"], record["definition_quote"])
@@ -298,7 +301,7 @@ def _pick_distractors(
 ) -> list[_Distractor] | None:
     """3 phương án nhiễu khác khái niệm và khác văn bản (sau chuẩn hoá): cùng chương trước, rồi cùng môn.
 
-    `also_correct(cặp, văn bản phương án)` đúng khi phương án đó cũng là một đáp án đúng theo dữ liệu Vault; cặp như
+    `also_correct(cặp, văn bản phương án)` đúng khi phương án đó cũng là một đáp án đúng theo nhóm ứng viên; cặp như
     vậy bị bỏ qua. Luôn xáo cả hai nhóm để lượng số ngẫu nhiên tiêu thụ không phụ thuộc kết quả chọn. Không đủ 3 ⇒
     `None`.
     """
@@ -384,12 +387,12 @@ def _quote_conflict(anchor: ConceptPair) -> Callable[[ConceptPair, str], bool]:
 
 
 def _fill_blank_conflict(
-    anchor: ConceptPair, hidden: str, vault_texts: Sequence[str]
+    anchor: ConceptPair, hidden: str, pool_texts: Sequence[str]
 ) -> Callable[[ConceptPair, str], bool]:
     """Quy tắc tương đương cho phương án là thuật ngữ (dạng điền khuyết).
 
     Loại cặp có trích dẫn lồng với trích dẫn đáp án, thuật ngữ trùng/chứa/nằm trong thuật ngữ bị che, và thuật ngữ mà
-    khi điền vào chỗ trống cho ra một đoạn có trong `vault_texts` (đã qua `_option_key`).
+    khi điền vào chỗ trống cho ra một đoạn có trong `pool_texts` (trích dẫn của nhóm ứng viên, đã qua `_option_key`).
     """
     quote_conflict = _quote_conflict(anchor)
 
@@ -397,16 +400,17 @@ def _fill_blank_conflict(
         if quote_conflict(pair, text) or _overlaps(text, hidden):
             return True
         filled = _option_key(_replace_terms(anchor.definition_quote, [hidden], text))
-        return any(filled in vault_text for vault_text in vault_texts)
+        return any(filled in pool_text for pool_text in pool_texts)
 
     return conflict
 
 
-def _vault_texts(pool: Sequence[ConceptPair], chunks: Mapping[str, KnowledgeChunk], subject_code: str) -> list[str]:
-    """Văn bản Vault cùng môn để nhận ra đáp án đúng thứ hai: `raw_text` của chunk và trích dẫn của cặp."""
-    texts = [chunk.raw_text for chunk in chunks.values() if chunk.subject_code == subject_code]
-    texts.extend(pair.definition_quote for pair in pool)
-    return [_option_key(text) for text in texts]
+def _pool_texts(pool: Sequence[ConceptPair]) -> list[str]:
+    """Văn bản dùng để nhận ra đáp án đúng thứ hai của dạng điền khuyết: chỉ `definition_quote` của các cặp trong nhóm
+    ứng viên, tức đúng dữ liệu đã nằm trong `pool_sha256`. `raw_text` của chunk không được dùng: chunk không thuộc
+    `pool_sha256`, nên nếu dùng thì thêm một chunk cùng môn sẽ làm câu đổi dù `(generator_version, pool_sha256, seed)`
+    giữ nguyên (I4)."""
+    return [_option_key(pair.definition_quote) for pair in pool]
 
 
 def _fill_blank_candidates(
@@ -477,7 +481,7 @@ def generate_theory_question(
         if not candidates:
             return ticket("không có trích dẫn định nghĩa nào chứa thuật ngữ của một khái niệm khác đã xác nhận")
         rng.shuffle(candidates)
-        vault_texts = _vault_texts(pool, chunks, subject_code)
+        pool_texts = _pool_texts(pool)
         for anchor, hidden in candidates:
             distractors = _pick_distractors(
                 rng,
@@ -486,7 +490,7 @@ def generate_theory_question(
                 excluded_concepts={_option_key(anchor.term), _option_key(hidden)},
                 taken_options={_option_key(hidden)},
                 option_text=_term_of,
-                also_correct=_fill_blank_conflict(anchor, hidden, vault_texts),
+                also_correct=_fill_blank_conflict(anchor, hidden, pool_texts),
                 allow_other_chapters=True,
             )
             if distractors is not None:
@@ -570,9 +574,14 @@ def generate_theory_question_from_vault(
     topic_key: str,
     chapter_code: str | None = None,
 ) -> TheoryQuestion | ReviewTicket:
-    """Như `generate_theory_question`, với cặp đã xác nhận và chunk của môn `subject_code` đọc từ Vault."""
+    """Như `generate_theory_question`, với cặp đã xác nhận của môn `subject_code` đọc từ Vault.
+
+    Chỉ đọc chunk nguồn của các cặp đó, và chỉ để dựng và kiểm lại trích dẫn (I3); chunk khác của môn không ảnh hưởng
+    tới câu sinh ra (I4).
+    """
     pairs = vault.list_concept_pairs(subject_code, status=ConceptPairStatus.CONFIRMED)
-    chunks = {chunk.chunk_id: chunk for chunk in vault.list_chunks(subject_code)}
+    sources = {pair.chunk_id for pair in pairs}
+    chunks = {chunk.chunk_id: chunk for chunk in vault.list_chunks(subject_code) if chunk.chunk_id in sources}
     return generate_theory_question(
         pairs,
         chunks,

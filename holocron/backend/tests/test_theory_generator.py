@@ -45,7 +45,7 @@ from holocron_core.services.theory_generator import (
     pool_sha256,
     theory_rng,
 )
-from holocron_core.services.vault import create_concept_pair, ingest_confirmed_text
+from holocron_core.services.vault import create_concept_pair, ingest_confirmed_text, update_chunk_labels
 from tests.vault_support import add_document, confirmed, document_id
 
 NOW = datetime(2026, 10, 25, 8, 0, tzinfo=UTC)
@@ -935,3 +935,128 @@ def test_pinned_question_for_version_pool_and_seed(form: TheoryQuestionForm, cha
         "citation": question.citation.verbatim_quote,
     }
     assert actual == PINNED_QUESTIONS[(form, chapter_code)]
+
+
+# --------------------------------------------------------------------------- #
+# I4: chunk cùng môn không thuộc `pool_sha256` nên không được làm đổi câu (sửa sau review)
+# --------------------------------------------------------------------------- #
+
+# Mỗi dòng là trích dẫn mẫu của câu điền khuyết ghim cứng với một phương án nhiễu điền vào chỗ trống. Với luật cũ (so
+# với `raw_text` của mọi chunk cùng môn), chunk này biến cả ba phương án nhiễu thành "đáp án đúng thứ hai" và làm câu
+# đổi dù không cặp nào đổi.
+EXTRA_LINES = [
+    "Vận động là phương thức tồn tại của ý thức.",
+    "Vận động là phương thức tồn tại của không gian.",
+    "Vận động là phương thức tồn tại của thời gian.",
+    "Ý thức là hình thức tồn tại của vật chất xét về quảng tính.",
+    "Thực tiễn là tri thức phù hợp với hiện thực khách quan.",
+]
+
+
+def _extra_chunk(chunk_id: str, chapter: str, label_status: str) -> KnowledgeChunk:
+    return KnowledgeChunk(
+        chunk_id=chunk_id,
+        doc_id=DOC,
+        subject_code=SUBJECT,
+        chapter_code=chapter,
+        page_number=40,
+        raw_text="Ghi chú thêm.\n" + "\n".join(EXTRA_LINES),
+        verbatim_quote=EXTRA_LINES[0],
+        category=ChunkCategory.THEORY,
+        token_count=50,
+        label_status=label_status,
+    )
+
+
+EXTRA_CHUNKS = {
+    chunk.chunk_id: chunk
+    for chunk in (
+        _extra_chunk("chk_phil_extra_proposed", "ch1", "proposed"),
+        _extra_chunk("chk_phil_extra_confirmed", "ch2", "confirmed"),
+    )
+}
+
+
+def test_the_extra_chunk_would_have_conflicted_under_the_old_rule() -> None:
+    """Chứng minh test I4 bên dưới có ý nghĩa: mọi phương án nhiễu của câu ghim cứng điền vào chỗ trống đều cho ra một
+    câu có trong chunk thêm vào."""
+    question = _question(SUBJECT_PAIRS, TheoryQuestionForm.FILL_BLANK, PINNED_SEED)
+    masked = question.stem.split("> ", 1)[1]
+    extra_text = normalize_quote("\n".join(chunk.raw_text for chunk in EXTRA_CHUNKS.values())).casefold()
+    for key in set(OptionKey) - {question.correct_key}:
+        filled = normalize_quote(masked.replace(BLANK, question.options[key])).casefold()
+        assert filled in extra_text, question.options[key]
+
+
+@pytest.mark.parametrize("form", FORMS)
+@pytest.mark.parametrize("chapter_code", [None, "ch1", "ch2"])
+@pytest.mark.parametrize("label_status", ["proposed", "confirmed", "both"])
+def test_adding_same_subject_chunks_without_pairs_keeps_questions_byte_identical(
+    form: TheoryQuestionForm, chapter_code: str | None, label_status: str
+) -> None:
+    extra = {
+        chunk_id: chunk
+        for chunk_id, chunk in EXTRA_CHUNKS.items()
+        if label_status == "both" or chunk.label_status == label_status
+    }
+    assert extra
+    widened = {**CHUNKS, **extra}
+    assert pool_sha256(SUBJECT_PAIRS, SUBJECT) == PINNED_POOL_SHA256
+    for seed in [*range(60), PINNED_SEED]:
+        context = {"subject_code": SUBJECT, "form": form, "seed": seed, "chapter_code": chapter_code, **TICKET_CONTEXT}
+        before = generate_theory_question(SUBJECT_PAIRS, CHUNKS, **context)
+        after = generate_theory_question(SUBJECT_PAIRS, widened, **context)
+        assert after.model_dump_json() == before.model_dump_json(), (seed, form, chapter_code)
+
+
+def test_pinned_questions_survive_extra_same_subject_chunks() -> None:
+    widened = {**CHUNKS, **EXTRA_CHUNKS}
+    for form, chapter_code in PINNED_QUESTIONS:
+        result = generate_theory_question(
+            SUBJECT_PAIRS,
+            widened,
+            subject_code=SUBJECT,
+            form=form,
+            seed=PINNED_SEED,
+            chapter_code=chapter_code,
+            **TICKET_CONTEXT,
+        )
+        assert isinstance(result, TheoryQuestion)
+        assert result.pool_sha256 == PINNED_POOL_SHA256
+        assert [result.options[key] for key in OptionKey] == PINNED_QUESTIONS[(form, chapter_code)]["options"]
+        assert result.correct_key.value == PINNED_QUESTIONS[(form, chapter_code)]["correct_key"]
+
+
+def test_vault_backed_questions_ignore_new_same_subject_chunks_without_pairs() -> None:
+    """Qua `VaultRepository`: thêm chunk cùng môn (chưa xác nhận, rồi xác nhận nhãn), không thêm cặp ⇒ câu giống từng
+    byte với cùng seed, cho cả ba dạng câu."""
+    store = IngestionStore()
+    doc_id, extra_doc = document_id("f"), document_id("d")
+    add_document(store, doc_id)
+    add_document(store, extra_doc)
+    lines = ["Mở đầu phần lý thuyết.", *(quote for _, quote in CH1_DEFINITIONS)]
+    [source] = ingest_confirmed_text(store, confirmed(doc_id, [lines], subject_code=SUBJECT, chapter_code="ch1"))
+    for term, quote in CH1_DEFINITIONS:
+        create_concept_pair(store, chunk_id=source.chunk_id, term=term, definition_quote=quote, now=NOW)
+    seeds = [*range(40), PINNED_SEED]
+
+    def snapshot() -> list[str]:
+        results = [
+            generate_theory_question_from_vault(store, subject_code=SUBJECT, form=form, seed=seed, **TICKET_CONTEXT)
+            for form in FORMS
+            for seed in seeds
+        ]
+        assert all(isinstance(result, TheoryQuestion) for result in results)
+        return [result.model_dump_json() for result in results]
+
+    baseline = snapshot()
+    digest = pool_sha256(store.list_concept_pairs(SUBJECT), SUBJECT)
+    [extra] = ingest_confirmed_text(
+        store, confirmed(extra_doc, [["Ghi chú thêm.", *EXTRA_LINES]], subject_code=SUBJECT, chapter_code="ch1")
+    )
+    assert extra.label_status == "proposed"
+    assert snapshot() == baseline
+    confirmed_extra = update_chunk_labels(store, extra.chunk_id, expected_version=extra.version)
+    assert confirmed_extra.label_status == "confirmed"
+    assert snapshot() == baseline
+    assert pool_sha256(store.list_concept_pairs(SUBJECT), SUBJECT) == digest

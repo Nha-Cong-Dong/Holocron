@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { type FormEvent, useState } from "react";
 
-import { ApiError, uploadDocument } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
 
 import styles from "./UploadForm.module.css";
 
@@ -41,7 +41,7 @@ export function UploadForm() {
     setSubmitting(true);
     setError(null);
     try {
-      const { item } = await uploadDocument(file, topicKey, parsedQuantum);
+      const { item } = await api.uploadDocument(file, topicKey, parsedQuantum);
       router.push(`/ingestion/${encodeURIComponent(item.item_id)}`);
     } catch (err) {
       setError(err instanceof ApiError || err instanceof Error ? err.message : "Tải lên thất bại.");

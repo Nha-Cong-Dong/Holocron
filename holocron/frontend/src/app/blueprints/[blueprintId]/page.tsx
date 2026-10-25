@@ -5,7 +5,7 @@ import { useParams } from "next/navigation";
 import { type FormEvent, useState } from "react";
 
 import { TwinViewer } from "@/components/twins/TwinViewer";
-import { createTwinBatch } from "@/lib/api";
+import { api } from "@/lib/api";
 import { clampTwinCount, DEFAULT_TWIN_COUNT, MAX_TWIN_COUNT, MIN_TWIN_COUNT } from "@/lib/twin";
 import type { TwinBatch } from "@/types/holocron";
 
@@ -26,7 +26,8 @@ export default function TwinBatchPage() {
   const generate = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setState({ kind: "loading" });
-    createTwinBatch(blueprintId, { count }, idempotencyKey)
+    api
+      .createTwinBatch(blueprintId, { count }, idempotencyKey)
       .then((batch) => setState({ kind: "ready", batch }))
       .catch((err: unknown) =>
         setState({ kind: "error", message: err instanceof Error ? err.message : "Không sinh được Twin Questions." }),

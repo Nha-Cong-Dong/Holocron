@@ -1,5 +1,25 @@
+/**
+ * Client API có kiểu: mọi lời gọi backend của frontend đi qua module này (CLAUDE.md §4.2).
+ *
+ * - Base URL và header token lấy từ `lib/config.ts` lúc gọi (chạy được dưới `next dev`, static export và vỏ desktop).
+ * - Lỗi được phân loại tập trung ở `lib/errors.ts`; component đọc `ApiError.info` để chọn thông điệp và hành động.
+ * - `api` gộp dữ liệu mẫu cho endpoint backend CHƯA có khi bật `NEXT_PUBLIC_HOLOCRON_MOCKS`; endpoint đã có luôn gọi
+ *   backend thật (kế hoạch UI mục 3.2).
+ */
+
+import { apiBase, authHeaders, USE_MOCKS } from "@/lib/config";
+import {
+  type ClassifyOptions,
+  classifyHttpError,
+  classifyNetworkError,
+  describeUiError,
+  invalidResponseError,
+  type UiError,
+  unknownError,
+} from "@/lib/errors";
+import { mockApi } from "@/mocks";
+import type { RuntimeInfoPending, Subject } from "@/types/contract-pending";
 import type {
-  ApiErrorBody,
   CellPatch,
   IngestionItem,
   NonCloneableRequest,
@@ -9,112 +29,131 @@ import type {
   UploadResponse,
 } from "@/types/holocron";
 
-/** Đi qua rewrite của Next (next.config.ts) tới FastAPI cục bộ. */
-const API_BASE = "/api/holocron";
-
 /** Ứng dụng local-first một người dùng: mọi chỉnh sửa ghi audit dưới định danh này. */
 export const LOCAL_EDITOR_ID = "local_user";
 
 export class ApiError extends Error {
-  readonly status: number;
-  readonly body: ApiErrorBody | null;
+  /** Mã HTTP; `null` khi không tới được backend. Chỉ dùng cho logic, không hiển thị. */
+  readonly status: number | null;
+  readonly info: UiError;
 
-  constructor(status: number, body: ApiErrorBody | null) {
-    super(describeError(status, body));
+  constructor(status: number | null, info: UiError) {
+    super(describeUiError(info));
     this.name = "ApiError";
     this.status = status;
-    this.body = body;
+    this.info = info;
   }
 }
 
-function describeError(status: number, body: ApiErrorBody | null): string {
-  if (body === null) {
-    return `Máy chủ trả lỗi HTTP ${status}.`;
-  }
-  const { detail } = body;
-  if (typeof detail === "string") {
-    return detail;
-  }
-  if (Array.isArray(detail)) {
-    return detail.map((item) => `${item.loc.join(".")}: ${item.msg}`).join("; ");
-  }
-  return detail.issues.length > 0 ? `${detail.message}: ${detail.issues.join("; ")}` : detail.message;
+/** Lỗi bất kỳ bắt được từ lời gọi API → lỗi đã phân loại để hiển thị. */
+export function toUiError(error: unknown): UiError {
+  return error instanceof ApiError ? error.info : unknownError();
 }
 
-function isApiErrorBody(value: unknown): value is ApiErrorBody {
-  return typeof value === "object" && value !== null && "detail" in value;
+interface RequestSpec {
+  method: "GET" | "POST" | "PATCH" | "DELETE";
+  body?: BodyInit;
+  headers?: Record<string, string>;
 }
 
-async function request<T>(path: string, init: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, init);
+async function request<T>(path: string, spec: RequestSpec, options: ClassifyOptions = {}): Promise<T> {
+  const base = apiBase();
+  const init: RequestInit = { method: spec.method, headers: { ...authHeaders(), ...spec.headers } };
+  if (spec.body !== undefined) {
+    init.body = spec.body;
+  }
+  let response: Response;
+  try {
+    response = await fetch(`${base}${path}`, init);
+  } catch {
+    throw new ApiError(null, classifyNetworkError(base));
+  }
   if (!response.ok) {
-    let body: ApiErrorBody | null = null;
+    let body: unknown = null;
     try {
-      const parsed: unknown = await response.json();
-      body = isApiErrorBody(parsed) ? parsed : null;
+      body = await response.json();
     } catch {
       body = null;
     }
-    throw new ApiError(response.status, body);
+    throw new ApiError(response.status, classifyHttpError(response.status, body, options));
   }
-  return (await response.json()) as T;
-}
-
-function jsonInit(method: "POST" | "PATCH", payload: unknown): RequestInit {
-  return {
-    method,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  };
-}
-
-export function uploadDocument(file: File, topicKey: string, quantum: number | null): Promise<UploadResponse> {
-  const form = new FormData();
-  form.append("file", file);
-  form.append("topic_key", topicKey);
-  if (quantum !== null) {
-    form.append("quantum", String(quantum));
+  try {
+    return (await response.json()) as T;
+  } catch {
+    throw new ApiError(response.status, invalidResponseError());
   }
-  return request<UploadResponse>("/v1/ingestion/upload", { method: "POST", body: form });
 }
 
-export function getItem(itemId: string): Promise<IngestionItem> {
-  return request<IngestionItem>(`/v1/ingestion/items/${encodeURIComponent(itemId)}`, { method: "GET" });
+function jsonSpec(method: "POST" | "PATCH", payload: unknown, headers: Record<string, string> = {}): RequestSpec {
+  return { method, headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(payload) };
 }
 
-export function patchTable(itemId: string, expectedVersion: number, patches: CellPatch[]): Promise<IngestionItem> {
-  const payload: TablePatchRequest = { editor_id: LOCAL_EDITOR_ID, expected_version: expectedVersion, patches };
-  return request<IngestionItem>(`/v1/ingestion/items/${encodeURIComponent(itemId)}/table`, jsonInit("PATCH", payload));
+function segment(value: string): string {
+  return encodeURIComponent(value);
 }
 
-export function flagNonCloneable(itemId: string, reason: string): Promise<IngestionItem> {
-  const payload: NonCloneableRequest = { editor_id: LOCAL_EDITOR_ID, reason };
-  return request<IngestionItem>(
-    `/v1/ingestion/items/${encodeURIComponent(itemId)}/non-cloneable`,
-    jsonInit("POST", payload),
-  );
+/** Mọi hàm gọi backend. Mock chỉ được thay phần tử của endpoint chưa có ở backend. */
+export interface HolocronApi {
+  /** `GET /v1/runtime` (§5.12). */
+  getRuntime: () => Promise<RuntimeInfoPending>;
+  /** `GET /v1/subjects` (§6.8, đường dẫn còn đề xuất; chưa có ở backend). */
+  listSubjects: () => Promise<Subject[]>;
+  /** `POST /v1/ingestion/upload` (§6.1). */
+  uploadDocument: (file: File, topicKey: string, quantum: number | null) => Promise<UploadResponse>;
+  /** `GET /v1/ingestion/items/{item_id}`. */
+  getItem: (itemId: string) => Promise<IngestionItem>;
+  /** `PATCH /v1/ingestion/items/{item_id}/table` (§6.2). */
+  patchTable: (itemId: string, expectedVersion: number, patches: CellPatch[]) => Promise<IngestionItem>;
+  /** `POST /v1/ingestion/items/{item_id}/non-cloneable`. */
+  flagNonCloneable: (itemId: string, reason: string) => Promise<IngestionItem>;
+  /** `POST /v1/ingestion/items/{item_id}/approve`. */
+  approveItem: (itemId: string) => Promise<IngestionItem>;
+  /**
+   * `POST /v1/blueprints/{id}/twins` (§6.3). `Idempotency-Key` cho phép gửi lại cùng body trong 24 h mà backend trả
+   * đúng batch cũ, không chạy lại sandbox.
+   */
+  createTwinBatch: (
+    blueprintId: string,
+    payload: TwinBatchRequest,
+    idempotencyKey: string | null,
+  ) => Promise<TwinBatch>;
 }
 
-export function approveItem(itemId: string): Promise<IngestionItem> {
-  return request<IngestionItem>(`/v1/ingestion/items/${encodeURIComponent(itemId)}/approve`, { method: "POST" });
-}
+export const realApi: HolocronApi = {
+  getRuntime: () => request<RuntimeInfoPending>("/v1/runtime", { method: "GET" }),
 
-/**
- * Sinh bộ Twin Questions cho blueprint. `Idempotency-Key` cho phép gửi lại cùng body trong 24 h mà backend trả đúng
- * batch cũ, không chạy lại sandbox.
- */
-export function createTwinBatch(
-  blueprintId: string,
-  payload: TwinBatchRequest,
-  idempotencyKey: string | null,
-): Promise<TwinBatch> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (idempotencyKey !== null) {
-    headers["Idempotency-Key"] = idempotencyKey;
-  }
-  return request<TwinBatch>(`/v1/blueprints/${encodeURIComponent(blueprintId)}/twins`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-  });
-}
+  listSubjects: () => request<Subject[]>("/v1/subjects", { method: "GET" }),
+
+  uploadDocument: (file, topicKey, quantum) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("topic_key", topicKey);
+    if (quantum !== null) {
+      form.append("quantum", String(quantum));
+    }
+    return request<UploadResponse>("/v1/ingestion/upload", { method: "POST", body: form });
+  },
+
+  getItem: (itemId) => request<IngestionItem>(`/v1/ingestion/items/${segment(itemId)}`, { method: "GET" }),
+
+  patchTable: (itemId, expectedVersion, patches) => {
+    const payload: TablePatchRequest = { editor_id: LOCAL_EDITOR_ID, expected_version: expectedVersion, patches };
+    return request<IngestionItem>(`/v1/ingestion/items/${segment(itemId)}/table`, jsonSpec("PATCH", payload), {
+      versioned: true,
+    });
+  },
+
+  flagNonCloneable: (itemId, reason) => {
+    const payload: NonCloneableRequest = { editor_id: LOCAL_EDITOR_ID, reason };
+    return request<IngestionItem>(`/v1/ingestion/items/${segment(itemId)}/non-cloneable`, jsonSpec("POST", payload));
+  },
+
+  approveItem: (itemId) => request<IngestionItem>(`/v1/ingestion/items/${segment(itemId)}/approve`, { method: "POST" }),
+
+  createTwinBatch: (blueprintId, payload, idempotencyKey) => {
+    const headers: Record<string, string> = idempotencyKey === null ? {} : { "Idempotency-Key": idempotencyKey };
+    return request<TwinBatch>(`/v1/blueprints/${segment(blueprintId)}/twins`, jsonSpec("POST", payload, headers));
+  },
+};
+
+export const api: HolocronApi = USE_MOCKS ? { ...realApi, ...mockApi } : realApi;

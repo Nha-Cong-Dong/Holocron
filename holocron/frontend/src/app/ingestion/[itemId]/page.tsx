@@ -5,7 +5,7 @@ import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { TableAuditor } from "@/components/ingestion/TableAuditor";
-import { getItem } from "@/lib/api";
+import { api } from "@/lib/api";
 import type { IngestionItem, OptionKey } from "@/types/holocron";
 
 const OPTION_KEYS: OptionKey[] = ["A", "B", "C", "D"];
@@ -19,7 +19,8 @@ export default function IngestionReviewPage() {
 
   useEffect(() => {
     let cancelled = false;
-    getItem(itemId)
+    api
+      .getItem(itemId)
       .then((item) => {
         if (!cancelled) setState({ kind: "ready", item });
       })

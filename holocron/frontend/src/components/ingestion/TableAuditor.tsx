@@ -2,7 +2,7 @@
 
 import { type KeyboardEvent, useCallback, useMemo, useState } from "react";
 
-import { ApiError, approveItem, getItem, patchTable } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
 import { canApprove, cellKey, cellText, groupIssues, keyedIssues, rowIndices, tableColumns } from "@/lib/gate";
 import type { GateIssue, IngestionItem, Severity } from "@/types/holocron";
 
@@ -106,15 +106,15 @@ export function TableAuditor({ item, onItemChange, onApproved }: TableAuditorPro
     setBusy("patch");
     setError(null);
     try {
-      const updated = await patchTable(item.item_id, table.version, [{ row, col, new_text: text }]);
+      const updated = await api.patchTable(item.item_id, table.version, [{ row, col, new_text: text }]);
       setEditing(null);
       onItemChange(updated);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
+      if (err instanceof ApiError && err.info.kind === "version_conflict") {
         setError("Bảng đã thay đổi ở nơi khác (version lệch). Đã tải lại bản mới nhất, hãy kiểm tra rồi sửa lại.");
         setEditing(null);
         try {
-          onItemChange(await getItem(item.item_id));
+          onItemChange(await api.getItem(item.item_id));
         } catch (reloadErr) {
           setError(errorMessage(reloadErr));
         }
@@ -143,7 +143,7 @@ export function TableAuditor({ item, onItemChange, onApproved }: TableAuditorPro
     setBusy("approve");
     setError(null);
     try {
-      const approved = await approveItem(item.item_id);
+      const approved = await api.approveItem(item.item_id);
       onItemChange(approved);
       onApproved(approved);
     } catch (err) {

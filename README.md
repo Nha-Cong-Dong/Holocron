@@ -21,7 +21,7 @@
 
 Đặc tả và contract: [`SPECIFICATION.md`](SPECIFICATION.md). Quy ước phát triển: [`.claude/CLAUDE.md`](.claude/CLAUDE.md).
 
-**Người dùng:** sinh viên tự ôn bằng tài liệu của chính mình. App chạy trên máy cá nhân, dạng desktop (Tauri). Người dùng đầu tiên là chính người làm dự án, một sinh viên năm 3.
+**Người dùng:** sinh viên tự ôn bằng tài liệu của chính mình. App chạy trên máy cá nhân; đích là app desktop đóng gói bằng Tauri (đang ở bước kế hoạch spike). Người dùng đầu tiên là chính người làm dự án, một sinh viên năm 3.
 
 ## Điểm khác biệt
 
@@ -30,18 +30,18 @@ Nhãn: **ĐÃ CÓ** là chạy được trên nhánh `develop` hôm nay. **SẼ 
 | Điểm khác biệt | Trạng thái |
 |---|---|
 | Mọi câu hỏi và đáp án gắn với trích dẫn nguyên văn từ tài liệu của chính người dùng (bất biến I3) | **SẼ LÀM.** Bước kiểm "trích dẫn phải là chuỗi con của văn bản nguồn" đã có trong model. Knowledge Vault cung cấp trích dẫn thật thì đang làm |
-| Chạy local, tài liệu không rời máy | **ĐÃ CÓ** với backend (chỉ nghe `127.0.0.1`). Gói desktop Tauri: **SẼ LÀM**. Ngoại lệ: khi bật LLM, phần văn bản gửi đi rời máy (xem mục "Dữ liệu và LLM") |
-| Xét duyệt trước khi tính: con người xác nhận dữ liệu đọc từ đề trước khi đề được dùng (bất biến I5) | **ĐÃ CÓ.** Ingestion Gate có hàng đợi sửa và duyệt; hiện dùng extractor giả lập |
+| Chạy local, tài liệu không rời máy | **ĐÃ CÓ** với backend: lệnh chạy hướng dẫn chỉ nghe `127.0.0.1` (code chưa tự cưỡng chế; kiểm Host và token: **SẼ LÀM**, spec §13.1). Gói desktop Tauri: **SẼ LÀM**. Ngoại lệ: khi bật LLM, phần văn bản gửi đi rời máy (xem mục "Dữ liệu và LLM") |
+| Xét duyệt trước khi tính: con người xác nhận dữ liệu đọc từ đề trước khi đề được dùng (bất biến I5) | **ĐÃ CÓ.** Ingestion Gate có màn sửa và duyệt từng item, chặn sinh câu khi còn lỗi BLOCKING; hiện dùng extractor giả lập. Hàng đợi xét duyệt theo trang cho PDF: **SẼ LÀM** |
 | OCR tiếng Việt có dấu, chạy offline, đối chiếu chéo hai lượt đọc trên các con số, kèm màn xem lại theo trang | **SẼ LÀM** (ADR-008: Tesseract `vie` cùng RapidOCR so số) |
 | Câu lý thuyết trắc nghiệm sinh tất định từ cặp khái niệm–trích dẫn đã xác nhận | **SẼ LÀM** (ADR-007) |
 | Câu tự luận "Trình bày khái niệm X" được chấm hoàn toàn offline: báo "khớp x/y ý" cùng các ý còn thiếu, không cho điểm tuyệt đối | **SẼ LÀM nếu kịp mốc 29/10** (spec §5.14); không kịp thì chuyển sau MVP |
-| Câu tính toán do code chạy trong sandbox tính, LLM không tính nhẩm (bất biến I1) | **ĐÃ CÓ** cơ chế sandbox, template Round Robin và SJF dùng làm fixture. Template cho môn demo (ARM, XSTK): **HƯỚNG**, sau MVP |
+| Câu tính toán do code chạy trong sandbox tính, LLM không tính nhẩm (bất biến I1) | **ĐÃ CÓ** cơ chế sandbox, template Round Robin và SJF dùng làm fixture. Template cho môn demo (ARM, XSTK): **SẼ LÀM** ở luồng song song, không chặn MVP cơ bản; chờ quyết ADR-005 bước 3 và D6 (spec §16), có thể lùi sau MVP nếu trễ |
 | Kiến trúc không gắn với một môn: dạng bài nằm trong template và dữ liệu, không nằm trong code | **SẼ LÀM.** Đây là nguyên tắc thiết kế; vẫn còn nợ gắn cứng CPU Scheduling (ARCH-001, ADR-005) |
 | Mọi môn, nhiều định dạng tài liệu (DOCX, PPTX, ảnh), chấm tự luận bằng LLM (AnswerJudge), model chạy local | **HƯỚNG** |
 
 ## Dữ liệu và LLM
 
-- LLM là **tuỳ chọn**. Không cấu hình LLM thì phần nhập PDF, Vault, sinh câu lý thuyết và chấm tự luận offline vẫn chạy (spec §11.4). `GET /v1/runtime` báo từng khả năng có dùng được hay không. Phần báo theo từng khả năng đang làm.
+- LLM là **tuỳ chọn** (**SẼ LÀM**, spec §11.4). Khi các phần nhập PDF, Vault, sinh câu lý thuyết và chấm tự luận offline có code, chúng chạy được cả khi không cấu hình LLM. `GET /v1/runtime` báo từng khả năng có dùng được hay không. Phần báo theo từng khả năng đang làm.
 - Khi bật LLM, văn bản tài liệu cần xử lý được gửi tới endpoint cấu hình ở `HOLOCRON_LLM_BASE_URL`. **Trong hackathon, endpoint này là gateway của ban tổ chức**, nên dữ liệu đi qua máy chủ của ban tổ chức. Endpoint đổi được sang nhà cung cấp khác hoặc model chạy local, miễn là có giao thức kiểu OpenAI.
 
 ## Trạng thái hiện tại

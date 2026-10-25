@@ -61,7 +61,7 @@ Ghi lại version của từng thứ đã cài vào kết quả spike.
 ### 5.2 Tesseract do người dùng tự cài
 
 - App GUI có thể không thấy `tesseract` trong PATH dù shell thấy. Khả năng `ocr` (§11.4) phải báo đúng `ocr_engine_missing` kèm hướng dẫn, và UI cần chỗ đặt `HOLOCRON_TESSERACT_CMD`, `HOLOCRON_TESSDATA_DIR`.
-- Bản cài Tesseract có thể thiếu `vie.traineddata` hoặc mang bản `tessdata_fast`. Worker đã kiểm unicharset khi khởi động (ADR-008 mục 14 test 1); spike chỉ cần xác nhận kiểm tra này chạy được trong bản đóng gói.
+- Bản cài Tesseract có thể thiếu `vie.traineddata` hoặc mang bản `tessdata_fast`. Theo ADR-008 mục 14 test 1, worker sẽ kiểm unicharset khi khởi động (chưa có code); spike chỉ cần xác nhận kiểm tra này chạy được trong bản đóng gói.
 - Không có Tesseract thì trang có lớp chữ vẫn đọc được ở tầng 1, còn lát cắt dọc chạy được với PDF số (§16).
 
 ### 5.3 Token và `Host`

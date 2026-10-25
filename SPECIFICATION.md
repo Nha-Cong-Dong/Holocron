@@ -1003,7 +1003,7 @@ class Capability(StrictModel):
 
 class RuntimeInfo(BaseModel):       # routers/; không lộ key, tên model hay endpoint
     demo_mode: bool         # đổi: = not llm_configured ("thiếu key LLM", đã duyệt 2026-10-23). Code hiện: extractor đang chạy là Mock
-    llm_configured: bool    # code: đủ các biến LLM bắt buộc ở §11.2 (đổi 2026-10-25: trước đây chỉ cần HOLOCRON_LLM_API_KEY)
+    llm_configured: bool    # code: đủ các biến LLM bắt buộc ở §11.2 (đề xuất 2026-10-25, chờ duyệt; code hiện chỉ cần HOLOCRON_LLM_API_KEY)
     vlm_configured: bool    # code: đủ ba biến HOLOCRON_VLM_*
     mock_extractor: bool    # đề xuất: upload đề (§6.1) đang dùng MockDualPassExtractor, tức dữ liệu mẫu, không đọc file thật
     capabilities: list[Capability]   # code: đủ 9 phần tử, theo thứ tự khai báo của CapabilityName (đã duyệt 2026-10-25)
@@ -1171,7 +1171,7 @@ class EssayGradeResult(StrictModel):
 ### 6.0 Quy ước chung
 - Base URL backend: `http://127.0.0.1:8000`. Frontend gọi `/api/holocron/*`, được Next.js rewrite sang backend (cùng origin, không cần CORS).
 - Payload JSON UTF-8, field snake_case. Thời gian ISO-8601 UTC.
-- Lỗi luôn có dạng FastAPI `{"detail": ...}`, trong đó `detail` là một trong: chuỗi tiếng Việt; danh sách lỗi validate `[{loc, msg, type}]` (422); `{"message", "issues": [...]}` (409 khi approve còn BLOCKING); hoặc `CapabilityError` (409 khi thiếu khả năng, đề xuất, xem dưới).
+- Lỗi luôn có dạng FastAPI `{"detail": ...}`, trong đó `detail` là một trong: chuỗi tiếng Việt; danh sách lỗi validate `[{loc, msg, type}]` (422); `{"message", "issues": [...]}` (409 khi approve còn BLOCKING); `CapabilityError` (409 khi thiếu khả năng, đề xuất, xem dưới); hoặc `{"code": "LLM_UPSTREAM_ERROR", "message"}` (502 khi gọi LLM lỗi, đề xuất, xem dưới).
 - **Mọi endpoint chạy được khi không có LLM, trừ endpoint thực sự cần LLM** (đã duyệt 2026-10-25, §11.4). Quy tắc "503 khi thiếu key" của v0.5 bị bỏ. Endpoint cần một khả năng đang không khả dụng trả mã và `detail` dưới đây (mã và dạng `detail` là đề xuất, chờ duyệt):
 
 ```python
@@ -1192,7 +1192,8 @@ class CapabilityError(StrictModel):              # đề xuất: detail của 40
 | 400 | Yêu cầu hợp lệ về cú pháp nhưng vi phạm trạng thái nghiệp vụ (file rỗng; approve item non-cloneable; gắn non-cloneable cho item đã duyệt) |
 | 403 | Đề xuất (§13.1): `Host` không thuộc danh sách cho phép, hoặc thiếu/sai token khi đã đặt `HOLOCRON_REQUIRE_TOKEN`. `detail` là chuỗi cố định, không lặp lại token hay header đã gửi |
 | 404 | Không tìm thấy item / blueprint / batch / tài liệu / trang / chunk / cặp khái niệm / môn / twin |
-| 409 | Xung đột trạng thái: `expected_version` lệch; sửa item đã duyệt; approve khi còn BLOCKING; blueprint chứa item chưa duyệt; sửa trang đã xác nhận hoặc đang đọc; xoá tài liệu còn được item tham chiếu; đề xuất: endpoint cần một khả năng đang không khả dụng (`CapabilityError`) || 413 | File vượt giới hạn của luồng: 10 MiB cho upload đề (§6.1); 50 MiB cho nhập tài liệu (§6.5, ADR-008 mục 4) |
+| 409 | Xung đột trạng thái: `expected_version` lệch; sửa item đã duyệt; approve khi còn BLOCKING; blueprint chứa item chưa duyệt; sửa trang đã xác nhận hoặc đang đọc; xoá tài liệu còn được item tham chiếu; đề xuất: endpoint cần một khả năng đang không khả dụng (`CapabilityError`) |
+| 413 | File vượt giới hạn của luồng: 10 MiB cho upload đề (§6.1); 50 MiB cho nhập tài liệu (§6.5, ADR-008 mục 4) |
 | 415 | Định dạng file không hỗ trợ, hoặc `Content-Type` khai báo không khớp nội dung |
 | 422 | Lỗi validate dữ liệu (kể cả `quantum` null/ngoài miền, topic chưa hỗ trợ); PDF có mật khẩu, không mở được hoặc quá 300 trang (§6.5) |
 | 502 | Đề xuất (chờ duyệt): LLM đã cấu hình nhưng gọi lỗi sau khi hết số lần thử của adapter (timeout, gateway từ chối, JSON không hợp lệ; §11.5). `detail = {"code": "LLM_UPSTREAM_ERROR", "message"}`; không lộ địa chỉ endpoint, tên model hay nội dung phản hồi |
@@ -1340,7 +1341,7 @@ Kích hoạt sandbox sinh bộ Twin Questions cho mọi slot của blueprint.
 | PATCH | `/v1/ingestion/items/{id}/stem` | Sửa LaTeX stem (≥ 10 ký tự), chạy lại Gate | 404, 409 (đã duyệt) |
 | POST | `/v1/ingestion/items/{id}/non-cloneable` | Gắn cờ câu phụ thuộc hình vẽ (`reason` 5–300 ký tự) | 400 (đã duyệt), 404 |
 | POST | `/v1/ingestion/items/{id}/approve` | Duyệt | 400 (non-cloneable), 409 (còn BLOCKING), 404 |
-| PATCH | `/v1/ingestion/items/{id}/labels` | **Chưa triển khai, đề xuất (§6.7):** sửa và xác nhận `ItemLabels` | 404, 422 |
+| PATCH | `/v1/ingestion/items/{id}/labels` | **Chưa triển khai, đã duyệt 2026-10-25 (§6.7):** sửa và xác nhận `ItemLabels` | 404, 422 |
 | GET | `/v1/runtime` | Trạng thái chạy cho UI: `{"demo_mode", "llm_configured", "vlm_configured"}` (chỉ boolean; không lộ khoá API, tên model hay endpoint). Code hiện: `demo_mode` đúng theo extractor đang chạy. Contract mới ở §5.12: `demo_mode` = thiếu LLM (đã duyệt 2026-10-23), thêm `capabilities` (đã duyệt 2026-10-25) và `mock_extractor` (đề xuất); làm cùng F17 | — |
 
 ### 6.5 Bộ nhập tài liệu PDF (ADR-008) — contract, chưa triển khai
@@ -1582,7 +1583,7 @@ Contract đã duyệt 2026-10-25 ở mức field (§5.14); đường dẫn và m
 
 ```python
 class EssayGradeRequest(StrictModel):
-    answer_text: str = Field(min_length=1, max_length=5000)   # người học; ≤ ESSAY_ANSWER_MAX_CHARS
+    answer_text: str = Field(min_length=1)   # người học; độ dài tối đa kiểm theo cấu hình ESSAY_ANSWER_MAX_CHARS (mặc định 5000), không ghi cứng trong model; vượt ⇒ 422
 ```
 
 - **Xử lý:** đọc twin đã lưu (§5.13 bảng `twins`; bản in-memory cần tra twin theo `twin_id`), kiểm `format = ESSAY`, chấm theo §5.14 trên `essay.points` đã lưu trong twin, không tách lại ý từ `definition_quote` hiện tại của cặp. Nhờ vậy sửa cặp khái niệm sau khi sinh câu không làm đổi kết quả chấm của twin cũ (trích dẫn là bản chụp, ADR-006 mục 7).

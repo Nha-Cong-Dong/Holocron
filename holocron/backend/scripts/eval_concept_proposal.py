@@ -10,8 +10,14 @@ Chạy trong `holocron/backend`:
         --output-dir <thư mục ngoài repo> --price-input-per-mtok <USD> --price-output-per-mtok <USD> \\
         [--max-calls 2] [--max-tokens 4096] [--dry-run]
 
-- In ước tính chi phí TRƯỚC khi gọi: token đầu vào ước tính (1 token ≈ 3 ký tự) × giá đầu vào, cộng `--max-tokens`
-  × giá đầu ra, nhân số lượt gọi tối đa. `--dry-run` chỉ in ước tính rồi dừng, không cần khoá.
+- In CẬN TRÊN chi phí TRƯỚC khi gọi: số lượt gọi mới tối đa × (cận trên token vào của lượt đắt nhất × giá đầu vào
+  + `--max-tokens` × giá đầu ra). Cận trên token vào = số byte UTF-8 của mọi tin nhắn (bộ tách từ BPE theo byte cho
+  mỗi token ít nhất 1 byte) cộng `MESSAGE_OVERHEAD_TOKENS` mỗi tin nhắn; lượt đắt nhất là lượt gọi lại, gồm thêm phản
+  hồi trước (tối đa `MAX_ECHOED_RESPONSE_CHARS` ký tự, mỗi ký tự tối đa 4 byte) và lời nhắc `RETRY_NOTE`. Số lượt gọi
+  mới tối đa = `min(--max-calls, 1 + json_retry_max)`, bớt 1 khi lượt đầu đã có trong cache; mỗi lượt gọi có thể gửi
+  tới `1 + HTTP_RETRY_MAX` request HTTP (thử lại sau timeout hay 5xx), và request bị timeout phía client vẫn có thể bị
+  tính tiền, nên số request tính tiền tối đa = số lượt × `(1 + HTTP_RETRY_MAX)`. Làm tròn lên tới 1e-6 USD.
+  `--dry-run` chỉ in ước tính rồi dừng, không cần khoá.
 - Cache theo sha256 của `(model, messages, max_tokens)` trong `<output-dir>/cache/`: cùng đầu vào không gọi lại.
 - `--max-calls`: số lượt gọi LLM mới (không tính lượt lấy từ cache) tối đa trong một lần chạy.
 - File JSON chunk: như `ConfirmedDocumentText` nhưng không có `doc_id` (script tự suy từ sha256 của file); khoá bắt
@@ -38,29 +44,56 @@ from holocron_core.domain.ingestion import UploadedDocument
 from holocron_core.domain.llm import ChatCompletionClient, ChatCompletionResult, ChatMessage, LlmUpstreamError
 from holocron_core.domain.schemas import KnowledgeChunk
 from holocron_core.domain.vault import ConfirmedDocumentText
-from holocron_core.infrastructure.llm_client import OpenAiChatClient
-from holocron_core.infrastructure.llm_config import RuntimeConfig, load_runtime_config
+from holocron_core.infrastructure.llm_client import HTTP_RETRY_MAX, OpenAiChatClient
+from holocron_core.infrastructure.llm_config import LlmTaskLimits, RuntimeConfig, load_runtime_config
 from holocron_core.infrastructure.memory_store import IngestionStore
 from holocron_core.services.concept_proposal import (
     DEFAULT_MAX_TOKENS,
-    JSON_RETRY_MAX,
     ConceptProposalError,
     ConceptProposalResult,
     ProposalStats,
     propose_concept_pairs,
 )
-from holocron_core.services.concept_proposal_prompt import PROMPT_VERSION, build_messages
+from holocron_core.services.concept_proposal_prompt import (
+    MAX_ECHOED_RESPONSE_CHARS,
+    PROMPT_VERSION,
+    RETRY_NOTE,
+    build_messages,
+)
 from holocron_core.services.vault import ingest_confirmed_text
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-CHARS_PER_TOKEN = 3
-MESSAGE_OVERHEAD_TOKENS = 4
+MESSAGE_OVERHEAD_TOKENS = 16
+MAX_UTF8_BYTES_PER_CHAR = 4
 EXIT_USAGE = 2
 
 
-def estimate_tokens(messages: Sequence[ChatMessage]) -> int:
-    """Ước tính thô, thiên về cao cho tiếng Việt: 1 token ≈ 3 ký tự, cộng phần đầu của mỗi tin nhắn."""
-    return sum(math.ceil(len(message.content) / CHARS_PER_TOKEN) + MESSAGE_OVERHEAD_TOKENS for message in messages)
+def input_tokens_upper_bound(messages: Sequence[ChatMessage]) -> int:
+    """Cận trên token đầu vào: số byte UTF-8 của nội dung (mỗi token BPE theo byte phủ ít nhất 1 byte) cộng phần
+    đầu của mỗi tin nhắn."""
+    return sum(len(message.content.encode("utf-8")) + MESSAGE_OVERHEAD_TOKENS for message in messages)
+
+
+def worst_call_input_tokens(messages: Sequence[ChatMessage]) -> int:
+    """Cận trên token đầu vào của lượt đắt nhất: lượt gọi lại, gồm tin nhắn của lượt đầu, phản hồi trước (đã cắt còn
+    tối đa `MAX_ECHOED_RESPONSE_CHARS` ký tự) và `RETRY_NOTE`."""
+    echoed = MAX_ECHOED_RESPONSE_CHARS * MAX_UTF8_BYTES_PER_CHAR + MESSAGE_OVERHEAD_TOKENS
+    note = len(RETRY_NOTE.encode("utf-8")) + MESSAGE_OVERHEAD_TOKENS
+    return input_tokens_upper_bound(messages) + echoed + note
+
+
+def max_new_calls(max_calls: int, json_retry_max: int, *, first_call_cached: bool) -> int:
+    """Số lượt gọi LLM mới tối đa của một lần đề xuất: lượt đầu cộng `json_retry_max` lượt gọi lại, trừ lượt đầu khi
+    đã có trong cache, không quá `--max-calls`."""
+    return max(0, min(max_calls, 1 + json_retry_max - (1 if first_call_cached else 0)))
+
+
+def cost_upper_bound_usd(
+    *, calls: int, input_tokens: int, max_tokens: int, price_in_per_mtok: float, price_out_per_mtok: float
+) -> float:
+    """`calls × (input_tokens × giá vào + max_tokens × giá ra)`, làm tròn LÊN tới 1e-6 USD."""
+    exact = calls * (input_tokens * price_in_per_mtok + max_tokens * price_out_per_mtok) / 1_000_000
+    return math.ceil(exact * 1_000_000) / 1_000_000
 
 
 def request_key(model: str, messages: Sequence[ChatMessage], max_tokens: int) -> str:
@@ -125,7 +158,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, required=True, help="thư mục kết quả và cache, ngoài repo")
     parser.add_argument("--price-input-per-mtok", type=float, required=True, help="USD cho 1 triệu token đầu vào")
     parser.add_argument("--price-output-per-mtok", type=float, required=True, help="USD cho 1 triệu token đầu ra")
-    parser.add_argument("--max-calls", type=int, default=1 + JSON_RETRY_MAX, help="số lượt gọi LLM mới tối đa")
+    parser.add_argument(
+        "--max-calls", type=int, default=1 + LlmTaskLimits().json_retry_max, help="số lượt gọi LLM mới tối đa"
+    )
     parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS, help="max_tokens mỗi lượt gọi")
     parser.add_argument("--dry-run", action="store_true", help="chỉ in ước tính chi phí, không gọi LLM")
     return parser
@@ -186,7 +221,8 @@ def run(
     if args.max_calls < 0 or args.max_tokens < 1:
         print("--max-calls phải ≥ 0 và --max-tokens phải ≥ 1.", file=sys.stderr)
         return EXIT_USAGE
-    model = config.llm.model_extract
+    model = config.llm.model_extract or ""
+    limits = config.llm.task_limits
     store, subject_code, chunks = load_fixture(args.chunks_json)
     messages = build_messages(chunks)
     input_sha256 = request_key(model, messages, args.max_tokens)
@@ -197,26 +233,29 @@ def run(
         max_calls=args.max_calls,
     )
 
-    worst_calls = min(args.max_calls, 1 + JSON_RETRY_MAX)
-    if client.cached(input_sha256).exists():
-        worst_calls = 0
-    input_tokens = estimate_tokens(messages)
-    estimate_usd = _cost(
-        input_tokens * worst_calls,
-        args.max_tokens * worst_calls,
-        args.price_input_per_mtok,
-        args.price_output_per_mtok,
+    worst_calls = max_new_calls(
+        args.max_calls, limits.json_retry_max, first_call_cached=client.cached(input_sha256).exists()
     )
-    print(f"Môn {subject_code}: {len(chunks)} chunk; model {model}; prompt {PROMPT_VERSION}.")
+    worst_requests = worst_calls * (1 + HTTP_RETRY_MAX)
+    input_tokens = worst_call_input_tokens(messages)
+    estimate_usd = cost_upper_bound_usd(
+        calls=worst_requests,
+        input_tokens=input_tokens,
+        max_tokens=args.max_tokens,
+        price_in_per_mtok=args.price_input_per_mtok,
+        price_out_per_mtok=args.price_output_per_mtok,
+    )
+    print(f"Môn {subject_code}: {len(chunks)} chunk; model {model or '(chưa đặt)'}; prompt {PROMPT_VERSION}.")
     print(
-        f"Ước tính TRƯỚC khi gọi: tối đa {worst_calls} lượt gọi mới × (~{input_tokens} token vào, "
-        f"≤ {args.max_tokens} token ra) ≈ tối đa {estimate_usd:.6f} USD."
+        f"Cận trên TRƯỚC khi gọi: tối đa {worst_calls} lượt gọi mới, mỗi lượt tối đa {1 + HTTP_RETRY_MAX} request "
+        f"HTTP ⇒ {worst_requests} request × (≤ {input_tokens} token vào, ≤ {args.max_tokens} token ra) "
+        f"≤ {estimate_usd:.6f} USD."
     )
     if args.dry_run:
         print("--dry-run: không gọi LLM.")
         return 0
     if worst_calls > 0 and not config.llm_configured:
-        print("Chưa cấu hình LLM: đặt HOLOCRON_LLM_API_KEY (và HOLOCRON_LLM_BASE_URL nếu cần).", file=sys.stderr)
+        print(f"Chưa cấu hình LLM: đặt {', '.join(config.llm.missing)}.", file=sys.stderr)
         return EXIT_USAGE
 
     result: ConceptProposalResult | None = None
@@ -228,6 +267,7 @@ def run(
             chunk_ids=[chunk.chunk_id for chunk in chunks],
             now=datetime.now(UTC),
             max_tokens=args.max_tokens,
+            limits=limits,
         )
         stats = result.stats
     except ConceptProposalError as exc:

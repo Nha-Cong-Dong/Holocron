@@ -14,6 +14,12 @@ export interface NavItem {
 export const NAV_ITEMS: readonly NavItem[] = [
   { href: "/", label: "Bắt đầu", short: "BĐ", description: "Khả năng của máy này và bước tiếp theo" },
   {
+    href: "/vault",
+    label: "Vault",
+    short: "VT",
+    description: "Môn học, nhập tài liệu PDF, xem lại trang và kho tri thức",
+  },
+  {
     href: "/practice",
     label: "Luyện tập",
     short: "LT",

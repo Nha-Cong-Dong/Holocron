@@ -14,9 +14,13 @@ import {
   DOCUMENT_UPLOAD_MAX_MIB,
   EXAM_UPLOAD_MAX_MIB,
   FILENAME_MAX_CHARS,
+  LINE_TEXT_MAX_CHARS,
   MAX_THEORY_SLOTS,
   QUANTUM_MAX,
   QUANTUM_MIN,
+  TOPIC_KEY_MAX_CHARS,
+  TOPIC_KEYS_MAX,
+  VAULT_SEARCH_MAX_CHARS,
 } from "@/lib/limits";
 import { MAX_TWIN_COUNT, MIN_TWIN_COUNT } from "@/lib/twin";
 import {
@@ -35,6 +39,7 @@ export type ErrorKind =
   | "blocking"
   | "version_conflict"
   | "state_conflict"
+  | "duplicate"
   | "unapproved_source"
   | "too_large"
   | "unsupported_media"
@@ -68,7 +73,15 @@ export type ErrorContext =
   | "blueprint_create"
   | "twin_generation"
   | "essay_grade"
-  | "vault_source";
+  | "vault_source"
+  | "vault_browse"
+  | "document_list"
+  | "document_review"
+  | "page_confirm"
+  | "document_confirm"
+  | "document_delete"
+  | "vault_labels"
+  | "subject_create";
 
 export interface ClassifyOptions {
   /** Request có gửi `expected_version`: 409 dạng chuỗi được hiểu là bản đã đổi ở nơi khác. */
@@ -96,6 +109,7 @@ const MESSAGES: Record<Exclude<ErrorKind, "network" | "capability" | "blocking">
   llm_upstream: "Dịch vụ LLM đang lỗi tạm thời. Thử lại sau ít phút.",
   version_conflict: "Dữ liệu đã được sửa ở nơi khác hoặc không còn sửa được. Tải lại bản mới nhất rồi làm lại.",
   state_conflict: "Thao tác này không còn phù hợp với trạng thái hiện tại. Tải lại để xem trạng thái mới nhất.",
+  duplicate: "Dữ liệu này đã có.",
   unapproved_source:
     "Bộ đề có đề thi chưa được duyệt hoặc còn lỗi chặn ở bước kiểm duyệt, nên chưa sinh câu hỏi. Mở đề đó ở mục “Nhập đề thi”, sửa các ô bị chặn rồi duyệt lại.",
   too_large: "File vượt giới hạn dung lượng cho phép.",
@@ -151,6 +165,80 @@ const CONTEXT_MESSAGES: Record<ErrorContext, Partial<Record<ContextualKind, stri
   vault_source: {
     not_found: "Backend đang chạy chưa cho xem văn bản nguồn trong kho tri thức. Trích dẫn ở trên vẫn là nguyên văn.",
   },
+  vault_browse: {
+    not_found: "Backend đang chạy chưa có kho tri thức (Vault). Cập nhật backend lên bản có Vault rồi thử lại.",
+    validation: `Bộ lọc hoặc từ cần tìm không hợp lệ. Mã chương có dạng ch1 hoặc ch2.1; từ cần tìm dài 1–${VAULT_SEARCH_MAX_CHARS} ký tự.`,
+  },
+  document_list: {
+    not_found:
+      "Backend đang chạy chưa hỗ trợ nhập tài liệu PDF. Cập nhật backend lên bản có bộ nhập tài liệu rồi thử lại.",
+    validation: "Mã môn không hợp lệ. Chọn lại môn ở thanh bên.",
+  },
+  document_review: {
+    not_found:
+      "Không tìm thấy tài liệu hoặc trang này (có thể đã bị xoá), hoặc backend đang chạy chưa hỗ trợ sửa và xác nhận trang.",
+    validation: `Nội dung sửa không hợp lệ: mỗi dòng tối đa ${LINE_TEXT_MAX_CHARS} ký tự. Rút ngắn dòng rồi lưu lại.`,
+  },
+  page_confirm: {
+    not_found:
+      "Không tìm thấy tài liệu hoặc trang này (có thể đã bị xoá), hoặc backend đang chạy chưa hỗ trợ xác nhận trang.",
+  },
+  document_confirm: {
+    not_found:
+      "Không tìm thấy tài liệu này (có thể đã bị xoá), hoặc backend đang chạy chưa hỗ trợ xác nhận cả tài liệu.",
+  },
+  vault_labels: {
+    not_found:
+      "Đoạn văn bản này không còn trong kho tri thức (có thể tài liệu gốc đã bị xoá). Tải lại danh sách để xem các đoạn còn lại.",
+    validation: `Nhãn chưa hợp lệ. Mã chương có dạng ch1 hoặc ch2.1; mỗi khoá dạng bài gồm ít nhất ba phần chữ thường, chữ số hoặc gạch dưới nối bằng dấu chấm, tối đa ${TOPIC_KEYS_MAX} khoá, mỗi khoá tối đa ${TOPIC_KEY_MAX_CHARS} ký tự.`,
+  },
+  document_delete: {
+    not_found: "Tài liệu này không còn ở backend (có thể đã bị xoá). Tải lại danh sách tài liệu.",
+  },
+  subject_create: {
+    not_found:
+      "Backend đang chạy chưa hỗ trợ tạo môn riêng. Môn sẽ tự được tạo khi bạn nhập tài liệu đầu tiên với mã môn đó.",
+    validation: "Mã môn hoặc tên môn không hợp lệ. Mã môn gồm 2–6 chữ cái in hoa rồi 2–4 chữ số, ví dụ MAU101.",
+  },
+};
+
+/**
+ * 409 theo luồng (§6.5, §6.8): câu riêng và loại lỗi riêng, vì cùng mã 409 nhưng việc người dùng làm tiếp khác nhau
+ * (trùng tài liệu ở môn khác thì không có gì để tải lại; xoá khi đang đọc thì tải lại để xem trạng thái).
+ */
+const CONTEXT_CONFLICTS: Partial<Record<ErrorContext, { kind: ErrorKind; message: string }>> = {
+  document_upload: {
+    kind: "duplicate",
+    message:
+      "Tài liệu cùng nội dung đã được nhập cho một môn khác. Mỗi tài liệu chỉ thuộc một môn: mở môn đó, hoặc xoá tài liệu ở môn đó rồi nhập lại vào môn này.",
+  },
+  document_review: {
+    kind: "version_conflict",
+    message:
+      "Trang đã thay đổi (được sửa ở nơi khác, đã xác nhận, hoặc còn đang đọc) nên thao tác chưa được ghi. Tải lại bản mới nhất rồi làm lại.",
+  },
+  page_confirm: {
+    kind: "version_conflict",
+    message:
+      "Chưa xác nhận được trang: trang đã được sửa ở nơi khác, còn đang đọc, đọc lỗi, hoặc trang không có dòng nào có văn bản. Tải lại bản mới nhất rồi làm lại.",
+  },
+  document_confirm: {
+    kind: "state_conflict",
+    message: "Chưa xác nhận được tài liệu vì còn trang đang đọc. Chờ đọc xong, tải lại rồi xác nhận.",
+  },
+  vault_labels: {
+    kind: "version_conflict",
+    message: "Nhãn của đoạn này vừa được sửa ở nơi khác nên thay đổi chưa được ghi. Tải lại bản mới nhất rồi sửa lại.",
+  },
+  document_delete: {
+    kind: "state_conflict",
+    message:
+      "Chưa xoá được: tài liệu đang được đọc, hoặc có đề thi đã nhập đang dùng tài liệu này. Chờ đọc xong rồi thử lại.",
+  },
+  subject_create: {
+    kind: "duplicate",
+    message: "Mã môn này đã có (có thể đã được tạo tự động khi nhập tài liệu). Chọn môn đó ở thanh bên.",
+  },
 };
 
 function contextual(kind: ContextualKind, options: ClassifyOptions): UiError {
@@ -166,6 +254,7 @@ const ACTIONS: Record<ErrorKind, ErrorAction> = {
   blocking: "none",
   version_conflict: "reload",
   state_conflict: "reload",
+  duplicate: "none",
   unapproved_source: "none",
   too_large: "none",
   unsupported_media: "none",
@@ -279,6 +368,8 @@ function classifyConflict(detail: unknown, options: ClassifyOptions): UiError {
     return build("blocking", message, { issues });
   }
   if (forGeneration) return build("unapproved_source", MESSAGES.unapproved_source);
+  const conflict = options.context === undefined ? undefined : CONTEXT_CONFLICTS[options.context];
+  if (conflict !== undefined) return build(conflict.kind, conflict.message);
   const kind = options.versioned === true ? "version_conflict" : "state_conflict";
   return build(kind, MESSAGES[kind]);
 }

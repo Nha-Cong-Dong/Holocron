@@ -9,13 +9,14 @@ import { useShell } from "@/components/shell/ShellContext";
 import { api, toUiError } from "@/lib/api";
 import type { UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
-import { appendSentence, VAULT_HINT_VI } from "@/lib/practice";
+import { appendSentence, PAIR_SCREEN_MISSING_VI, VAULT_HINT_VI } from "@/lib/practice";
 import type { PracticeBatch, PracticeBlueprint, PracticeTicket } from "@/lib/practice-data";
 import { freshRuntime } from "@/lib/runtime";
 import { selectedSubject } from "@/lib/subjects";
-import type { BlueprintCreate, Subject } from "@/types/contract-pending";
+import type { BlueprintCreate } from "@/types/contract-pending";
 
 import { BlueprintBuilder } from "./BlueprintBuilder";
+import { CitationBlueprintContext } from "./CitationPanel";
 import styles from "./Practice.module.css";
 import { PracticeSession } from "./PracticeSession";
 
@@ -90,8 +91,8 @@ export function PracticeView() {
   if (subjects.subjects.length === 0) {
     return (
       <EmptyState title="Chưa có môn học nào.">
-        Môn được tạo khi bạn nhập tài liệu đầu tiên của môn đó. Sau khi xác nhận cặp khái niệm trong Vault, quay lại đây
-        để luyện tập.
+        Tạo môn và nhập tài liệu ở mục <Link href="/vault">Vault</Link>. Sau khi xác nhận cặp khái niệm trong Vault,
+        quay lại đây để luyện tập.
       </EmptyState>
     );
   }
@@ -132,7 +133,6 @@ export function PracticeView() {
           key={stage.batch.batchId ?? stage.blueprint.blueprintId}
           batch={stage.batch}
           blueprint={stage.blueprint}
-          subject={subject}
           onNewExam={restart}
         />
       )}
@@ -155,11 +155,10 @@ function SubjectsUnavailable({ error, onRetry }: { error: UiError; onRetry: () =
 interface ReadyBatchProps {
   batch: PracticeBatch;
   blueprint: PracticeBlueprint;
-  subject: Subject;
   onNewExam: () => void;
 }
 
-function ReadyBatch({ batch, blueprint, subject, onNewExam }: ReadyBatchProps) {
+function ReadyBatch({ batch, blueprint, onNewExam }: ReadyBatchProps) {
   const hasSkipped = batch.skipped.malformed > 0 || batch.skipped.unsupported > 0;
   if (batch.questions.length === 0) {
     const onlyTheory = batch.tickets.length > 0 && batch.tickets.every((ticket) => ticket.theory);
@@ -173,7 +172,7 @@ function ReadyBatch({ batch, blueprint, subject, onNewExam }: ReadyBatchProps) {
           }
         >
           {onlyTheory
-            ? `Lý do của từng câu ở bên dưới. ${VAULT_HINT_VI}`
+            ? `Lý do của từng câu ở bên dưới. ${PAIR_SCREEN_MISSING_VI}`
             : "Thử tạo đề với chương khác, hoặc xem lý do của từng câu bên dưới."}
         </EmptyState>
         <TicketNotice tickets={batch.tickets} showVaultHint={!onlyTheory} />
@@ -190,18 +189,27 @@ function ReadyBatch({ batch, blueprint, subject, onNewExam }: ReadyBatchProps) {
     <div className={styles.page}>
       <TicketNotice tickets={batch.tickets} showVaultHint />
       {hasSkipped && <SkippedNotice />}
-      <PracticeSession
-        questions={batch.questions}
-        blueprint={blueprint}
-        subjectCode={subject.subject_code}
-        onNewExam={onNewExam}
-      />
+      {/* Đoạn nguồn của trích dẫn tìm theo môn và mã của blueprint sinh ra câu, không theo môn đang chọn (ADR-006). */}
+      <CitationBlueprintContext.Provider value={blueprint.blueprintId}>
+        <PracticeSession
+          questions={batch.questions}
+          blueprint={blueprint}
+          subjectCode={blueprint.subjectCode}
+          onNewExam={onNewExam}
+        />
+      </CitationBlueprintContext.Provider>
     </div>
   );
 }
 
+interface TicketNoticeProps {
+  tickets: PracticeTicket[];
+  /** Thêm `VAULT_HINT_VI` sau lý do của ticket lý thuyết (tắt khi khối rỗng ở trên đã nói điều đó). */
+  showVaultHint: boolean;
+}
+
 /** Slot không sinh được (`review_tickets`): hiện lý do backend ghi, không hiện câu hỏng. */
-function TicketNotice({ tickets, showVaultHint }: { tickets: PracticeTicket[]; showVaultHint: boolean }) {
+function TicketNotice({ tickets, showVaultHint }: TicketNoticeProps) {
   if (tickets.length === 0) return null;
   return (
     <section className={styles.tickets} aria-labelledby="practice-tickets-title">

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 
 import { ErrorNotice } from "@/components/common/ErrorNotice";
 import { Loading } from "@/components/common/LoadState";
@@ -12,8 +12,15 @@ import { CHUNK_PAGE_LIMIT, chunkScanTruncated, locateQuote, nextChunkOffset } fr
 
 import styles from "./Practice.module.css";
 
+/**
+ * Mã blueprint sinh ra các câu đang luyện (màn luyện tập cấp qua Provider). Chỉ dùng để chọn nguồn chunk khi bật dữ
+ * liệu mẫu (`ChunkQuery.blueprintId`); không gửi lên backend. `null` khi không có Provider.
+ */
+export const CitationBlueprintContext = createContext<string | null>(null);
+
 interface CitationPanelProps {
   citation: PracticeCitation;
+  /** Môn của blueprint sinh ra câu (ADR-006 mục 6), không phải môn đang chọn ở thanh bên. */
   subjectCode: string;
   /** Chương của câu (từ blueprint), để thu hẹp truy vấn chunk; `null` khi không biết. */
   chapterCode: string | null;
@@ -56,6 +63,7 @@ interface SourceExcerptProps {
 /** Tìm chunk của trích dẫn qua `GET /v1/vault/chunks` (§6.6, đọc theo trang) rồi hiện văn bản với đoạn trích tô đậm. */
 function SourceExcerpt({ citation, subjectCode, chapterCode }: SourceExcerptProps) {
   const chunkId = citation.chunk_id;
+  const blueprintId = useContext(CitationBlueprintContext);
   const [state, setState] = useState<SourceState>({ kind: "loading" });
   const textRef = useRef<HTMLPreElement>(null);
 
@@ -68,7 +76,13 @@ function SourceExcerpt({ citation, subjectCode, chapterCode }: SourceExcerptProp
       let pagesRead = 0;
       let truncated = false;
       while (offset !== null) {
-        const page = await api.listVaultChunks({ subjectCode, chapterCode, offset, limit: CHUNK_PAGE_LIMIT });
+        const page = await api.listVaultChunks({
+          subjectCode,
+          chapterCode,
+          offset,
+          limit: CHUNK_PAGE_LIMIT,
+          ...(blueprintId === null ? {} : { blueprintId }),
+        });
         pagesRead += 1;
         const found = page.chunks.find((chunk) => chunk.chunkId === id);
         if (found !== undefined) return { kind: "ready", chunk: found };
@@ -87,7 +101,7 @@ function SourceExcerpt({ citation, subjectCode, chapterCode }: SourceExcerptProp
     return () => {
       cancelled = true;
     };
-  }, [chunkId, subjectCode, chapterCode]);
+  }, [chunkId, subjectCode, chapterCode, blueprintId]);
 
   useEffect(() => load(), [load]);
 

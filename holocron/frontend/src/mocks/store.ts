@@ -6,6 +6,9 @@
  * truyền vào (khớp cờ `llm_configured` backend thật trả), mặc định `offline`.
  */
 
+import type { Subject } from "@/types/contract-pending";
+
+import { MOCK_IMPORT_DOC_ID, type MockDocumentStep } from "./fixtures/documents";
 import { RUNTIME_SCENARIOS, type RuntimeScenario } from "./fixtures/runtime";
 
 export const MOCK_RUNTIME_QUERY = "mock_runtime";
@@ -47,7 +50,10 @@ export function currentPracticeScenario(): PracticeScenario {
   return practiceScenarioFromSearch(window.location.search);
 }
 
-/** Mã các blueprint do handler giả tạo trong phiên: chỉ những mã này được sinh câu bằng dữ liệu mẫu. */
+/**
+ * Mã các blueprint do handler giả tạo trong phiên: chỉ những mã này được sinh câu bằng dữ liệu mẫu, và chỉ câu của
+ * chúng tìm trích dẫn trong chunk mẫu.
+ */
 const mockBlueprintIds = new Set<string>();
 
 export function rememberMockBlueprint(blueprintId: string): void {
@@ -56,4 +62,41 @@ export function rememberMockBlueprint(blueprintId: string): void {
 
 export function isMockBlueprint(blueprintId: string): boolean {
   return mockBlueprintIds.has(blueprintId);
+}
+
+// ------------------------------------------------------------------------- môn học và tài liệu mẫu
+
+/** Môn do handler giả `POST /v1/subjects` tạo trong phiên (M3). */
+export const createdSubjects: Subject[] = [];
+
+/** Mã tài liệu mẫu (M4, M5): chỉ những mã này dùng fixture; mọi tài liệu khác gọi backend thật. */
+const MOCK_DOCUMENT_IDS: ReadonlySet<string> = new Set([MOCK_IMPORT_DOC_ID]);
+
+export function isMockDocument(documentId: string): boolean {
+  return MOCK_DOCUMENT_IDS.has(documentId);
+}
+
+/**
+ * Trạng thái phiên của tài liệu mẫu: bước hiện tại của kịch bản cố định (`fixtures/documents.ts`) và cờ đã xoá. Bước
+ * chỉ tiến theo đúng thứ tự kịch bản; handler không dựng bản ghi mới mà trả bản dựng sẵn của bước.
+ */
+export interface MockDocumentSession {
+  deleted: boolean;
+  step: MockDocumentStep;
+}
+
+const documentSessions = new Map<string, MockDocumentSession>();
+
+/** Phiên của tài liệu mẫu; lần đầu ở bước đầu của kịch bản. */
+export function mockDocumentSession(documentId: string): MockDocumentSession {
+  const existing = documentSessions.get(documentId);
+  if (existing !== undefined) return existing;
+  const session: MockDocumentSession = { deleted: false, step: "initial" };
+  documentSessions.set(documentId, session);
+  return session;
+}
+
+/** Đưa mọi tài liệu mẫu về bước đầu (để test không phụ thuộc thứ tự chạy). */
+export function resetMockDocumentSessions(): void {
+  documentSessions.clear();
 }

@@ -5,9 +5,16 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import {
+  INITIAL_PAGES,
+  MOCK_DOCUMENT_SCENARIO,
+  MOCK_IMPORT_DOC_ID,
+  MOCK_IMPORT_SUBJECT,
+} from "@/mocks/fixtures/documents";
 import { RUNTIME_FIXTURES } from "@/mocks/fixtures/runtime";
+import { resetMockDocumentSessions } from "@/mocks/store";
 
-import { ApiError, createApi, realApi, toUiError } from "./api";
+import { ApiError, createApi, LOCAL_EDITOR_ID, realApi, toUiError } from "./api";
 import { DEFAULT_API_BASE, TOKEN_HEADER } from "./config";
 
 interface FetchCall {
@@ -220,5 +227,217 @@ describe("màn luyện tập ở ranh giới", () => {
     const batch = await mocked.generatePracticeBatch(blueprint.blueprintId, { count: 1 }, null);
     expect(batch.questions.length).toBeGreaterThan(0);
     expect(calls).toHaveLength(1);
+  });
+});
+
+// ------------------------------------------------------------------------- bộ nhập tài liệu và Vault (§6.5, §6.6)
+
+const REAL_DOC_ID = "doc_ffffffffffffffff";
+
+/** `DocumentImport` hợp lệ của một tài liệu thật (không phải mã tài liệu mẫu). */
+function realDocumentBody(): unknown {
+  const document = structuredClone(MOCK_DOCUMENT_SCENARIO.initial.document);
+  document.meta.doc_id = REAL_DOC_ID;
+  return document;
+}
+
+function realSummaryBody(): unknown {
+  const summary = structuredClone(MOCK_DOCUMENT_SCENARIO.initial.summary);
+  summary.meta.doc_id = REAL_DOC_ID;
+  summary.meta.title = "Tài liệu thật";
+  return summary;
+}
+
+function pageBody(): unknown {
+  const page = structuredClone(INITIAL_PAGES[0]);
+  return page === undefined ? null : { ...page, document_id: REAL_DOC_ID };
+}
+
+function jsonBody(call: FetchCall | undefined): unknown {
+  const body = call?.init?.body;
+  return typeof body === "string" ? JSON.parse(body) : undefined;
+}
+
+const PDF = new File(["%PDF-1.7"], "chuong-2.pdf", { type: "application/pdf" });
+
+describe("bộ nhập tài liệu ở ranh giới", () => {
+  it("importDocument gửi multipart đủ field (kể cả chapter_code, source_kind); 202 ⇒ created, 200 ⇒ đã có", async () => {
+    const calls = stubFetch(() => Promise.resolve(jsonResponse(202, realDocumentBody())));
+    const input = { file: PDF, subjectCode: "MAU101", sourceKind: "textbook", chapterCode: "ch2", title: "Chương 2" };
+    const created = await realApi.importDocument(input);
+    expect(created.created).toBe(true);
+    expect(created.document.docId).toBe(REAL_DOC_ID);
+    expect(calls[0]?.url).toBe(`${DEFAULT_API_BASE}/v1/documents`);
+    expect(calls[0]?.init?.method).toBe("POST");
+    const form = calls[0]?.init?.body;
+    expect(form).toBeInstanceOf(FormData);
+    if (form instanceof FormData) {
+      expect(form.get("subject_code")).toBe("MAU101");
+      expect(form.get("source_kind")).toBe("textbook");
+      expect(form.get("chapter_code")).toBe("ch2");
+      expect(form.get("title")).toBe("Chương 2");
+      expect(form.get("file")).toBeInstanceOf(File);
+    }
+
+    stubFetch(() => Promise.resolve(jsonResponse(200, realDocumentBody())));
+    const existing = await realApi.importDocument({ ...input, title: null });
+    expect(existing.created).toBe(false);
+  });
+
+  it("importDocument không gửi title khi bỏ trống; 409 dùng câu của luồng nhập tài liệu", async () => {
+    const calls = stubFetch(() => Promise.resolve(jsonResponse(409, { detail: "đã thuộc môn ABC123" })));
+    const input = { file: PDF, subjectCode: "MAU101", sourceKind: "textbook", chapterCode: "ch2", title: null };
+    const error = await captureError(realApi.importDocument(input));
+    expect(error.info.kind).toBe("duplicate");
+    expect(error.info.message).toContain("môn khác");
+    const form = calls[0]?.init?.body;
+    expect(form).toBeInstanceOf(FormData);
+    if (form instanceof FormData) expect(form.has("title")).toBe(false);
+  });
+
+  it("deleteDocument: 204 không đọc thân", async () => {
+    const response = new Response(null, { status: 204 });
+    const json = vi.spyOn(response, "json");
+    const calls = stubFetch(() => Promise.resolve(response));
+    await expect(realApi.deleteDocument("doc 1")).resolves.toBeUndefined();
+    expect(calls[0]?.init?.method).toBe("DELETE");
+    expect(calls[0]?.url).toBe(`${DEFAULT_API_BASE}/v1/documents/doc%201`);
+    expect(json).not.toHaveBeenCalled();
+  });
+
+  it("patchPageLines gửi editor_id, expected_version, edits, appended_lines", async () => {
+    const calls = stubFetch(() => Promise.resolve(jsonResponse(200, pageBody())));
+    await realApi.patchPageLines(REAL_DOC_ID, 2, 3, [{ line_index: 1, text: "MOV R0, #1" }], ["dòng thêm"]);
+    expect(calls[0]?.init?.method).toBe("PATCH");
+    expect(calls[0]?.url).toBe(`${DEFAULT_API_BASE}/v1/documents/${REAL_DOC_ID}/pages/2/lines`);
+    expect(jsonBody(calls[0])).toEqual({
+      editor_id: LOCAL_EDITOR_ID,
+      expected_version: 3,
+      edits: [{ line_index: 1, text: "MOV R0, #1" }],
+      appended_lines: ["dòng thêm"],
+    });
+  });
+
+  it("confirmPage gửi editor_id và expected_version; 409 nhắc trang không có dòng có văn bản", async () => {
+    const calls = stubFetch(() => Promise.resolve(jsonResponse(200, pageBody())));
+    await realApi.confirmPage(REAL_DOC_ID, 1, 2);
+    expect(calls[0]?.url).toBe(`${DEFAULT_API_BASE}/v1/documents/${REAL_DOC_ID}/pages/1/confirm`);
+    expect(jsonBody(calls[0])).toEqual({ editor_id: LOCAL_EDITOR_ID, expected_version: 2 });
+
+    stubFetch(() => Promise.resolve(jsonResponse(409, { detail: "x" })));
+    const error = await captureError(realApi.confirmPage(REAL_DOC_ID, 1, 2));
+    expect(error.info.action).toBe("reload");
+    expect(error.info.message).toContain("không có dòng nào có văn bản");
+  });
+
+  it("confirmDocument CHỈ gửi {editor_id}, không có expected_version (§6.5); 409 là còn trang đang đọc", async () => {
+    const calls = stubFetch(() => Promise.resolve(jsonResponse(200, realDocumentBody())));
+    await realApi.confirmDocument(REAL_DOC_ID);
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(calls[0]?.url).toBe(`${DEFAULT_API_BASE}/v1/documents/${REAL_DOC_ID}/confirm`);
+    const body = jsonBody(calls[0]);
+    expect(body).toEqual({ editor_id: LOCAL_EDITOR_ID });
+    expect(typeof body === "object" && body !== null && "expected_version" in body).toBe(false);
+
+    stubFetch(() => Promise.resolve(jsonResponse(409, { detail: "còn trang pending" })));
+    expect((await captureError(realApi.confirmDocument(REAL_DOC_ID))).info.message).toContain("còn trang đang đọc");
+  });
+});
+
+describe("sửa nhãn chunk ở ranh giới", () => {
+  const CHUNK_BODY = {
+    chunk_id: "chk 1",
+    doc_id: REAL_DOC_ID,
+    subject_code: "MAU101",
+    chapter_code: "ch2",
+    page_number: 1,
+    page_end: null,
+    raw_text: "Văn bản đã xác nhận của trang một.",
+    verbatim_quote: "Văn bản đã xác nhận",
+    category: "THEORY",
+    tags: [],
+    topic_keys: [],
+    linked_chunk_ids: [],
+    token_count: 7,
+    embedding_model: null,
+    label_status: "confirmed",
+    mapping_confidence: null,
+    version: 5,
+  };
+
+  it("PATCH …/labels gửi editor_id kèm đúng body đã dựng (chỉ field đổi, topic_keys rỗng có chủ đích)", async () => {
+    const calls = stubFetch(() => Promise.resolve(jsonResponse(200, CHUNK_BODY)));
+    const chunk = await realApi.patchChunkLabels("chk 1", { expected_version: 4, topic_keys: [] });
+    expect(chunk).toMatchObject({ chunkId: "chk 1", labelStatus: "confirmed", version: 5 });
+    expect(calls[0]?.init?.method).toBe("PATCH");
+    expect(calls[0]?.url).toBe(`${DEFAULT_API_BASE}/v1/vault/chunks/chk%201/labels`);
+    expect(jsonBody(calls[0])).toEqual({ editor_id: LOCAL_EDITOR_ID, expected_version: 4, topic_keys: [] });
+  });
+
+  it("404, 409 (tải lại bản mới nhất), 422 có câu riêng; thân trả về sai dạng là phản hồi không hợp lệ", async () => {
+    const change = { expected_version: 1 };
+    stubFetch(() => Promise.resolve(jsonResponse(404, { detail: "không tìm thấy chunk" })));
+    expect((await captureError(realApi.patchChunkLabels("c", change))).info.kind).toBe("not_found");
+    stubFetch(() => Promise.resolve(jsonResponse(409, { detail: "version lệch" })));
+    const conflict = await captureError(realApi.patchChunkLabels("c", change));
+    expect(conflict.info).toMatchObject({ kind: "version_conflict", action: "reload" });
+    const invalid = { detail: [{ loc: ["body", "chapter_code"], msg: "x", type: "x" }] };
+    stubFetch(() => Promise.resolve(jsonResponse(422, invalid)));
+    expect((await captureError(realApi.patchChunkLabels("c", change))).info.kind).toBe("validation");
+    stubFetch(() => Promise.resolve(jsonResponse(200, { chunk_id: "c" })));
+    expect((await captureError(realApi.patchChunkLabels("c", change))).info.kind).toBe("server");
+  });
+});
+
+describe("bật dữ liệu mẫu: chỉ bản ghi mẫu dùng fixture", () => {
+  it("mã tài liệu mẫu đọc từ fixture, không gọi fetch; tài liệu khác gọi backend thật", async () => {
+    resetMockDocumentSessions();
+    const calls = stubFetch(() => Promise.resolve(jsonResponse(200, realDocumentBody())));
+    const mocked = createApi(true);
+    const sample = await mocked.getDocument(MOCK_IMPORT_DOC_ID);
+    expect(sample.docId).toBe(MOCK_IMPORT_DOC_ID);
+    expect(calls).toHaveLength(0);
+    const real = await mocked.getDocument(REAL_DOC_ID);
+    expect(real.docId).toBe(REAL_DOC_ID);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("listDocuments gộp danh sách thật (giữ thứ tự backend) với tài liệu mẫu của môn ở cuối", async () => {
+    resetMockDocumentSessions();
+    const calls = stubFetch(() => Promise.resolve(jsonResponse(200, [realSummaryBody()])));
+    const mocked = createApi(true);
+    const sampleSubject = await mocked.listDocuments(MOCK_IMPORT_SUBJECT);
+    expect(sampleSubject.map((document) => document.docId)).toEqual([REAL_DOC_ID, MOCK_IMPORT_DOC_ID]);
+    expect(calls[0]?.url).toBe(`${DEFAULT_API_BASE}/v1/documents?subject_code=${MOCK_IMPORT_SUBJECT}`);
+    const otherSubject = await mocked.listDocuments("MAU202");
+    expect(otherSubject.map((document) => document.docId)).toEqual([REAL_DOC_ID]);
+  });
+
+  it("listVaultChunks: câu của blueprint mẫu dùng chunk mẫu; blueprint thật cùng môn mẫu vẫn gọi backend", async () => {
+    const calls = stubFetch(() => Promise.resolve(jsonResponse(200, { total: 0, chunks: [] })));
+    const mocked = createApi(true);
+    const blueprint = await mocked.createBlueprint({ subject_code: MOCK_IMPORT_SUBJECT, theory_slots: [] });
+    const query = { subjectCode: blueprint.subjectCode, chapterCode: null, offset: 0, limit: 50 };
+
+    const sample = await mocked.listVaultChunks({ ...query, blueprintId: blueprint.blueprintId });
+    expect(sample.chunks.length).toBeGreaterThan(0);
+    expect(calls).toHaveLength(0);
+
+    const real = await mocked.listVaultChunks({ ...query, blueprintId: "bp_that" });
+    expect(real.chunks).toEqual([]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).not.toContain("blueprint");
+
+    await mocked.listVaultChunks(query);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("tắt dữ liệu mẫu: luôn gọi backend theo môn của blueprint, mã blueprint không gửi đi", async () => {
+    const calls = stubFetch(() => Promise.resolve(jsonResponse(200, { total: 0, chunks: [] })));
+    const query = { subjectCode: "MAU202", chapterCode: "ch1", offset: 0, limit: 50, blueprintId: "bp_bat_ky" };
+    await createApi(false).listVaultChunks(query);
+    expect(calls[0]?.url).toBe(
+      `${DEFAULT_API_BASE}/v1/vault/chunks?subject_code=MAU202&offset=0&limit=50&chapter_code=ch1`,
+    );
   });
 });

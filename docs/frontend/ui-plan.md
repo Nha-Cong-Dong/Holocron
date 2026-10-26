@@ -14,7 +14,7 @@
 |---|---|---|
 | Dependency | `next 15.5.28`, `react 19.1.10`, `react-dom 19.1.10`; dev: `@biomejs/biome 2.5.15`, `typescript 5.9.3`, `vitest 3.2.4`, `@types/*` | Không có thư viện component, icon, PDF.js, KaTeX hay testing-library. Kế hoạch chỉ dùng những thứ này, cộng dependency ở mục 8 |
 | Test | Vitest `environment: "node"`, chỉ nhận `src/**/*.test.ts` | Chỉ test được logic thuần ở `src/lib/` và `src/mocks/`. Không test component được nếu chưa thêm dependency |
-| Trang | Cập nhật 2026-10-26 chiều theo code: `/` (màn chạy lần đầu), `/ingestion` và `/ingestion?item=…` (form tải đề; kiểm duyệt item), `/twins?blueprint=…`, `/practice`, `/vault?subject=&doc=&page=&tab=` (theo nhánh F2, PR #48, chờ duyệt khi merge; không có quyết định riêng cho route này; trang chưa có trong `develop` @ `63cdf37`). Ở nhánh F2, `/vault` gộp danh sách tài liệu, xem lại trang và chunk theo `tab`, nên không có trang `/subjects`, `/documents` riêng. ID đi qua query string; hai route động cũ `/ingestion/[itemId]`, `/blueprints/[blueprintId]` đã bỏ | Build được khi static export (mục 4) |
+| Trang | Cập nhật 2026-10-26 chiều theo code: `/` (màn chạy lần đầu), `/ingestion` và `/ingestion?item=…` (form tải đề; kiểm duyệt item), `/twins?blueprint=…`, `/practice`, `/vault?subject=&doc=&page=&tab=` (`tab` là `documents` hoặc `chunks`, theo `src/lib/vault.ts`; có trong code từ PR #48, đã merge vào develop; người dùng chưa duyệt riêng danh sách route, đề xuất, spec §17 D8). `/vault` gộp danh sách tài liệu, xem lại trang và chunk theo `tab`, nên không có trang `/subjects`, `/documents` riêng. ID đi qua query string; hai route động cũ `/ingestion/[itemId]`, `/blueprints/[blueprintId]` đã bỏ | Build được khi static export (mục 4) |
 | `lib/api.ts` | `API_BASE = "/api/holocron"` ghi cứng; một hàm `request<T>` là chỗ duy nhất ép `as T` | Nơi duy nhất cần đổi để chạy dưới Tauri (mục 4) |
 | `next.config.ts` | `rewrites` `/api/holocron/:path*` → `HOLOCRON_API_URL` | Không chạy khi `output: "export"` (mục 4) |
 | `globals.css` | Biến màu sáng/tối theo `prefers-color-scheme`, font `system-ui, …, Roboto` | Giữ cơ chế, thay bộ token (mục 5) |
@@ -139,7 +139,7 @@ Luồng đề thi hiện có (`POST /v1/ingestion/upload`, `GET/PATCH /v1/ingest
 ### 4.1 Vấn đề
 
 1. `rewrites` trong `next.config.ts` cần Next server. Bản `output: "export"` nạp vào WebView của Tauri không có server, nên `/api/holocron/*` trả 404.
-2. Route động `/ingestion/[itemId]`, `/blueprints/[blueprintId]` không build được khi export nếu không liệt kê trước tham số (`generateStaticParams`). ID do backend sinh lúc chạy nên không liệt kê trước được. **Đã xử lý (cập nhật 2026-10-26 chiều):** mọi route dùng query string: `/`, `/ingestion?item=…`, `/twins?blueprint=…`, `/practice`, `/vault?subject=&doc=&page=&tab=` (spec §4; route `/vault` theo nhánh F2, PR #48, chờ duyệt khi merge).
+2. Route động `/ingestion/[itemId]`, `/blueprints/[blueprintId]` không build được khi export nếu không liệt kê trước tham số (`generateStaticParams`). ID do backend sinh lúc chạy nên không liệt kê trước được. **Đã xử lý (cập nhật 2026-10-26 chiều):** mọi route dùng query string: `/`, `/ingestion?item=…`, `/twins?blueprint=…`, `/practice`, `/vault?subject=&doc=&page=&tab=` (spec §4; route `/vault` có trong code từ PR #48, `tab` là `documents` hoặc `chunks`; người dùng chưa duyệt riêng danh sách route, đề xuất, spec §17 D8).
 3. Sidecar nên tự chọn cổng trống (`docs/tauri-spike-plan.md` mục 5.1), nên địa chỉ backend chỉ biết lúc chạy, không biết lúc build.
 4. Origin của WebView (`http://tauri.localhost` trên Windows, `tauri://localhost` trên Linux) khác origin backend. Spec §6.0 hiện ghi "cùng origin, không cần CORS". Header `X-Holocron-Token` (§13.1) khiến mọi request khác origin phải qua preflight.
 
@@ -165,7 +165,7 @@ Việc phải kiểm trong spike, liên quan tới frontend:
 
 1. Không Server Actions (`"use server"`), không Route Handlers (`app/**/route.ts`), không `middleware.ts`, không `cookies()`, `headers()`, `draftMode()`, không `revalidate` hay ISR.
 2. Không `fetch` phía server: không gọi API trong Server Component, `generateMetadata` hay lúc build. Mọi lời gọi backend chạy trong client component, qua `lib/api.ts`.
-3. Không route động `[param]`. ID đi qua query string, theo danh sách route ở spec §4: `/ingestion?item=…`, `/twins?blueprint=…`, `/vault?subject=&doc=&page=&tab=` (xem lại trang là `/vault?…&doc=…&page=…`; route `/vault` chờ duyệt khi merge PR #48). Component đọc `useSearchParams()` luôn nằm trong `<Suspense>` (Next 15 báo lỗi build nếu thiếu khi prerender).
+3. Không route động `[param]`. ID đi qua query string, theo danh sách route ở spec §4: `/ingestion?item=…`, `/twins?blueprint=…`, `/vault?subject=&doc=&page=&tab=` (xem lại trang là `/vault?…&doc=…&page=…`; route `/vault` có trong code từ PR #48, người dùng chưa duyệt riêng danh sách route, đề xuất, spec §17 D8). Component đọc `useSearchParams()` luôn nằm trong `<Suspense>` (Next 15 báo lỗi build nếu thiếu khi prerender).
 4. Không `next/image` có tối ưu ảnh (dùng `<img>`), không `next/font/google` hay font tải từ mạng.
 5. Không đọc `window`, `localStorage`, `navigator` trong lúc render; chỉ đọc trong `useEffect` hay handler, vì trang được prerender lúc build.
 6. **Base URL API và token chỉ đọc ở `src/lib/config.ts`**, theo thứ tự:
@@ -324,7 +324,7 @@ Mỗi giai đoạn một nhánh tách từ nhánh trước (xếp chồng); nhá
 | `src/mocks/fixtures/subjects.ts`, `documents.ts`, `vault.ts` | M3–M5 |
 | `src/components/documents/ImportForm.tsx`, `DocumentList.tsx`, `PageStrip.tsx`, `PageReview.tsx`, `LineEditor.tsx`, `ReviewReasons.tsx`, `TokenMismatchList.tsx`, `OcrMissingHelp.tsx` (+ css) | form có `chapter_code` bắt buộc; danh sách trang có trạng thái bằng chữ; dòng cờ thấp tô `--warning`; hai giá trị khi token lệch; hướng dẫn cài Tesseract khi `ocr` không khả dụng hoặc trang `failed` vì `OCR_ENGINE_MISSING`; trang `failed` có nút "Xoá tài liệu để nhập lại" |
 | `src/components/vault/ChunkList.tsx`, `ChunkView.tsx`, `ChunkLabelsForm.tsx`, `VaultSearch.tsx` (+ css) | xem chunk, sửa nhãn, tìm |
-| `src/app/vault/page.tsx` | một trang `/vault?subject=&doc=&page=&tab=`: danh sách tài liệu, xem lại trang (`doc`, `page`) và chunk theo `tab` (theo nhánh F2, PR #48; route chờ duyệt khi merge, spec §4). Không có trang `/subjects`, `/documents`, `/documents/review` riêng |
+| `src/app/vault/page.tsx` | một trang `/vault?subject=&doc=&page=&tab=`: danh sách tài liệu, xem lại trang (`doc`, `page`) và chunk theo `tab` (`documents` hoặc `chunks`, `src/lib/vault.ts`; có trong code từ PR #48; người dùng chưa duyệt riêng danh sách route, đề xuất, spec §4, §17 D8). Không có trang `/subjects`, `/documents`, `/documents/review` riêng |
 
 Màn xem lại trang chỉ hiện văn bản theo dòng, chưa có ảnh trang (render PDF bằng pdfjs là việc sau MVP, duyệt 2026-10-26 chiều). Điểm OCR như `ocr_score`, `coverage_ratio`: frontend chỉ định dạng giá trị backend trả để hiển thị, không tính lại, không quy đổi, không so ngưỡng (duyệt 2026-10-26 chiều; spec §5.7).
 

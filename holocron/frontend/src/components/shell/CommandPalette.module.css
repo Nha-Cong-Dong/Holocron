@@ -23,6 +23,10 @@
   list-style: none;
 }
 
+.list[hidden] {
+  display: none;
+}
+
 .command {
   display: grid;
   gap: 2px;

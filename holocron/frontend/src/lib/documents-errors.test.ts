@@ -83,3 +83,58 @@ describe("checkSubjectForm", () => {
     }
   });
 });
+
+describe("sửa nhãn chunk (vault_labels)", () => {
+  const VERSIONED = { context: "vault_labels", versioned: true } as const;
+
+  it("404: chunk không còn (tài liệu gốc đã bị xoá), không chép detail", () => {
+    const error = classifyHttpError(404, { detail: "không tìm thấy chunk" }, VERSIONED);
+    expect(error.kind).toBe("not_found");
+    expect(error.message).toContain("đã bị xoá");
+    expect(error.message).not.toContain("chunk");
+  });
+
+  it("409: lệch phiên bản, có nút tải lại bản mới nhất", () => {
+    const error = classifyHttpError(409, { detail: "expected_version 3, hiện tại 4" }, VERSIONED);
+    expect(error.kind).toBe("version_conflict");
+    expect(error.action).toBe("reload");
+    expect(error.message).toContain("Nhãn");
+    expect(error.message).not.toContain("expected_version");
+  });
+
+  it("422 dạng [{loc, msg, type}]: câu nêu luật của chương và khoá dạng bài, không lộ tên field", () => {
+    const body = {
+      detail: [{ loc: ["body", "topic_keys", 0], msg: "String should match pattern", type: "string_pattern_mismatch" }],
+    };
+    const error = classifyHttpError(422, body, VERSIONED);
+    expect(error.kind).toBe("validation");
+    expect(error.action).toBe("none");
+    expect(error.message).toContain("ch2.1");
+    expect(error.message).toContain("32 khoá");
+    expect(error.message).not.toContain("topic_keys");
+    expect(error.message).not.toContain("pattern");
+  });
+});
+
+describe("xác nhận trang và xác nhận tài liệu có câu riêng", () => {
+  it("xác nhận trang 409: nhắc cả trường hợp trang không có dòng nào có văn bản; có nút tải lại", () => {
+    const error = classifyHttpError(409, { detail: "x" }, { context: "page_confirm", versioned: true });
+    expect(error.message).toContain("không có dòng nào có văn bản");
+    expect(error.action).toBe("reload");
+  });
+
+  it("xác nhận tài liệu: 409 là còn trang đang đọc; 404 là tài liệu không còn", () => {
+    const conflict = classifyHttpError(409, { detail: "còn trang pending" }, { context: "document_confirm" });
+    expect(conflict.message).toContain("còn trang đang đọc");
+    expect(conflict.action).toBe("reload");
+    const missing = classifyHttpError(404, { detail: "x" }, { context: "document_confirm" });
+    expect(missing.kind).toBe("not_found");
+    expect(missing.message).toContain("tài liệu");
+  });
+
+  it("sửa dòng 422: chỉ nói về độ dài dòng, không còn vế giới hạn của kho tri thức", () => {
+    const error = classifyHttpError(422, { detail: [] }, { context: "document_review", versioned: true });
+    expect(error.message).toContain("2000 ký tự");
+    expect(error.message).not.toContain("kho tri thức");
+  });
+});

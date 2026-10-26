@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 
+import { INITIAL_PAGES } from "@/mocks/fixtures/documents";
+
+import { createPendingPagePoller } from "./documents";
+import { type PageView, parsePageExtraction } from "./documents-data";
 import { createPoller, POLL_INTERVAL_MS, POLL_MAX_DELAY_MS, pollDelay, type Schedule } from "./poll";
 
 /** Bộ hẹn giờ giả: giữ các hẹn đang chờ, test tự chạy từng hẹn. */
@@ -167,5 +171,91 @@ describe("createPoller", () => {
     poller.start();
     await flush();
     expect(timer.active()).toHaveLength(0);
+  });
+});
+
+/** Một `PageView` dựng từ trang mẫu, đổi `status`. */
+function pageWithStatus(status: string): PageView {
+  const view = parsePageExtraction({ ...structuredClone(INITIAL_PAGES[0]), status });
+  if (view === null) throw new Error("trang mẫu hỏng");
+  return view;
+}
+
+describe("createPendingPagePoller (trang đang đọc)", () => {
+  it("lượt đầu sau một chu kỳ; hỏi tiếp khi còn pending; dừng khi trang rời pending", async () => {
+    const timer = fakeSchedule();
+    const statuses = ["pending", "ok"];
+    let calls = 0;
+    const seen: string[] = [];
+    const poller = createPendingPagePoller({
+      load: () => Promise.resolve(pageWithStatus(statuses[calls++] ?? "ok")),
+      onValue: (page) => seen.push(page.status),
+      onError: () => undefined,
+      schedule: timer.schedule,
+    });
+    poller.start();
+    poller.start();
+    expect(calls).toBe(0);
+    expect(timer.active()).toHaveLength(1);
+    expect(timer.fire()).toBe(POLL_INTERVAL_MS);
+    await flush();
+    expect(calls).toBe(1);
+    expect(timer.fire()).toBe(POLL_INTERVAL_MS);
+    await flush();
+    expect(seen).toEqual(["pending", "ok"]);
+    expect(timer.active()).toHaveLength(0);
+    expect(poller.isRunning()).toBe(false);
+  });
+
+  it("stop() trước lượt đầu huỷ hẹn; stop() khi đang chờ bỏ phản hồi (đổi trang, đổi tài liệu, rời màn)", async () => {
+    const timer = fakeSchedule();
+    const seen: string[] = [];
+    const response = deferred<PageView>();
+    const poller = createPendingPagePoller({
+      load: () => response.promise,
+      onValue: (page) => seen.push(page.status),
+      onError: () => undefined,
+      schedule: timer.schedule,
+    });
+    poller.start();
+    poller.stop();
+    expect(timer.active()).toHaveLength(0);
+    expect(poller.isRunning()).toBe(false);
+
+    poller.start();
+    timer.fire();
+    poller.stop();
+    response.resolve(pageWithStatus("pending"));
+    await flush();
+    expect(seen).toEqual([]);
+    expect(timer.active()).toHaveLength(0);
+  });
+
+  it("lỗi liên tiếp thì bỏ cuộc (gaveUp) và start() lại chạy được (nút thử lại)", async () => {
+    const timer = fakeSchedule();
+    const errors: boolean[] = [];
+    let fail = true;
+    const seen: string[] = [];
+    const poller = createPendingPagePoller({
+      load: () => (fail ? Promise.reject(new Error("mất kết nối")) : Promise.resolve(pageWithStatus("ok"))),
+      onValue: (page) => seen.push(page.status),
+      onError: (_error, gaveUp) => errors.push(gaveUp),
+      schedule: timer.schedule,
+      maxConsecutiveErrors: 2,
+    });
+    poller.start();
+    timer.fire();
+    await flush();
+    timer.fire();
+    await flush();
+    expect(errors).toEqual([false, true]);
+    expect(poller.isRunning()).toBe(false);
+    expect(timer.active()).toHaveLength(0);
+
+    fail = false;
+    poller.start();
+    timer.fire();
+    await flush();
+    expect(seen).toEqual(["ok"]);
   });
 });

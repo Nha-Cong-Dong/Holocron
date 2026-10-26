@@ -1,0 +1,33 @@
+{
+  "_note": "Văn bản tự soạn cho script đánh giá, về một môn giả định; không trích từ tài liệu có bản quyền.",
+  "subject_code": "HYD2010",
+  "chapter_code": "ch1",
+  "pages": [
+    {
+      "page_number": 1,
+      "lines": [
+        "1.1 Vòng tuần hoàn nước đô thị",
+        "Vòng tuần hoàn nước đô thị là chu trình di chuyển của nước giữa mưa, bề mặt, hệ thống thoát nước và nguồn tiếp nhận trong phạm vi một thành phố.",
+        "Khác với lưu vực tự nhiên, phần lớn bề mặt đô thị được phủ bê tông nên nước thấm xuống đất rất ít."
+      ]
+    },
+    {
+      "page_number": 2,
+      "lines": [
+        "1.2 Hệ số dòng chảy",
+        "Hệ số dòng chảy là tỉ số giữa lượng nước chảy tràn trên bề mặt và tổng lượng mưa rơi xuống cùng diện tích đó.",
+        "Bề mặt không thấm nước có hệ số dòng chảy cao hơn bãi cỏ hay đất trống.",
+        "",
+        "Thời gian tập trung nước là khoảng thời gian để nước từ điểm xa nhất của lưu vực chảy tới cửa xả."
+      ]
+    },
+    {
+      "page_number": 3,
+      "lines": [
+        "1.3 Công trình giữ nước",
+        "Hồ điều hoà là hồ chứa được thiết kế để tạm giữ nước mưa rồi xả dần, nhằm giảm lưu lượng đỉnh đổ vào cống.",
+        "Vỉa hè thấm nước là lớp mặt đường có lỗ rỗng cho phép nước mưa ngấm xuống lớp đá bên dưới."
+      ]
+    }
+  ]
+}

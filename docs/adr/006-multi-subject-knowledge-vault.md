@@ -1,7 +1,7 @@
 # ADR 006: Knowledge Vault đa môn
 
-- Trạng thái: Chấp nhận (2026-10-23). Bổ sung mục 9 (so khớp I3 sau chuẩn hoá NFC), người dùng đồng ý ngày 2026-10-24.
-- Ngày: 2026-10-23; cập nhật 2026-10-24
+- Trạng thái: Chấp nhận (2026-10-23). Bổ sung mục 9 (so khớp I3 sau chuẩn hoá NFC), người dùng đồng ý ngày 2026-10-24. Sửa câu chữ nhà cung cấp LLM ở mục 2 và phần Hệ quả theo quyết định ngày 2026-10-25 (LLM tuỳ chọn, nhà cung cấp do cấu hình quyết định).
+- Ngày: 2026-10-23; cập nhật 2026-10-24, 2026-10-25
 
 ## Bối cảnh
 
@@ -15,7 +15,7 @@ Mục tiêu G1 (`SPECIFICATION.md` §1.5) yêu cầu mọi twin đều có tríc
 ## Quyết định
 
 1. **Nguồn vào duy nhất là bộ nhập PDF đã qua xem lại** (ADR-008). Văn bản của chunk là văn bản người dùng đã xác nhận ở màn hình xem lại, không phải đầu ra thô của OCR hay VLM. Có thêm đường nhập văn bản thuần (dán hoặc file `.txt`) dùng cho test và tài liệu mẫu.
-2. **Nhãn do DeepSeek đề xuất, người dùng xác nhận.** Trên văn bản đã tách, DeepSeek đề xuất:
+2. **Nhãn do LLM đề xuất, người dùng xác nhận.** LLM là tuỳ chọn; nhà cung cấp do cấu hình quyết định, không có nhà cung cấp mặc định (duyệt 2026-10-25; hiện là gateway kiểu OpenAI của ban tổ chức, model `claude-haiku-5-5`). Contract hiện chỉ có adapter kiểu OpenAI Chat Completions sau `Protocol` `ChatCompletionClient` (tên đề xuất, spec §11.5); DeepSeek hay server local tương thích OpenAI dùng được qua adapter này; Anthropic gốc (API không theo giao thức OpenAI) cần một adapter riêng cài cùng `Protocol`, chưa có. Không có LLM thì người dùng tự nhập. Khi có LLM, trên văn bản đã tách, LLM đề xuất:
    - `subject_code`: mã học phần (khớp mẫu `^[A-Z]{2,6}[0-9]{2,4}$` sẵn có, ví dụ `IT3070`). Nếu tài liệu không ghi mã, người dùng nhập.
    - `chapter_code` theo heading (`ch3`, `ch3.2`).
    - `category` `THEORY`/`PRACTICE`, `topic_keys`.
@@ -49,7 +49,7 @@ Mục tiêu G1 (`SPECIFICATION.md` §1.5) yêu cầu mọi twin đều có tríc
 - Twin có trích dẫn ngay khi người dùng đã nhập tài liệu của môn; G1 không còn bị chặn ở `NoCitationProvider`.
 - Chất lượng trích dẫn phụ thuộc chất lượng nhãn `topic_keys`. Màn hình xem lại là nơi sửa nhãn sai, và tỉ lệ slot vào `review_tickets` vì thiếu nguồn là chỉ số cần theo dõi (spec §14).
 - Tìm bằng từ khoá kém khi tài liệu dùng từ đồng nghĩa với cách đặt tên topic. Đây là rủi ro được chấp nhận cho MVP.
-- Dữ liệu rời máy: văn bản chunk được gửi tới DeepSeek để gắn nhãn (spec §13.1).
+- Dữ liệu rời máy: khi có LLM, văn bản chunk được gửi tới endpoint LLM đã cấu hình (hiện là gateway của ban tổ chức) để gắn nhãn (spec §13.1; duyệt 2026-10-25). Không cấu hình LLM thì không dữ liệu nào rời máy.
 - Contract cụ thể (endpoint nhập, liệt kê, xoá tài liệu; bảng `documents`, `chunks`, `concept_pairs`) được viết ở spec §5.8, §5.13, §6.5 và §6.6 (Đợt 2b, 2026-10-24); tên endpoint và phần vượt ADR ghi "đề xuất" chờ duyệt.
 - Kiểm chứng: test I3 sẵn có (`test_chunk_rejects_quote_not_in_text`) và test NFC ở mục 9; thêm test cho thấy trích dẫn LLM đề xuất mà không khớp nguyên văn thì bị loại, slot không có chunk phù hợp thì vào `review_tickets`, và bộ tách từ cho cùng token với chữ NFC và NFD, với `hoà`/`hòa`, `thuỷ`/`thủy`, nhưng khác token với `ma`/`mà`.
 

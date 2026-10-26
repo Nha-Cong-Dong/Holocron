@@ -51,6 +51,7 @@ from ..services.document_import import (
     ImportUnavailableError,
     InvalidPageEditError,
     PageStateError,
+    PageTooLargeError,
     accept_document,
     confirm_document,
     confirm_page,
@@ -229,7 +230,7 @@ def _review_error(exc: Exception) -> HTTPException:
     """Lỗi của sửa dòng và xác nhận (§6.5) thành mã HTTP; `detail` là chuỗi tiếng Việt (§6.0)."""
     if isinstance(exc, DocumentNotFoundError):
         return HTTPException(status_code=404, detail=PAGE_NOT_FOUND_DETAIL)
-    if isinstance(exc, InvalidPageEditError):
+    if isinstance(exc, InvalidPageEditError | PageTooLargeError):
         return HTTPException(status_code=422, detail=str(exc))
     return HTTPException(status_code=409, detail=str(exc))
 
@@ -237,6 +238,7 @@ def _review_error(exc: Exception) -> HTTPException:
 _REVIEW_ERRORS = (
     DocumentNotFoundError,
     InvalidPageEditError,
+    PageTooLargeError,
     PageStateError,
     VersionConflictError,
     DocumentChapterMissingError,

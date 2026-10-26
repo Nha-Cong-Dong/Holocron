@@ -63,7 +63,7 @@ from ..domain.repositories import (
     VersionConflictError,
 )
 from ..domain.schemas import DocumentMeta, SourceKind
-from ..domain.vault import MAX_PAGE_LINES, ConfirmedDocumentText, ConfirmedPage
+from ..domain.vault import MAX_LINE_CHARS, MAX_PAGE_LINES, ConfirmedDocumentText, ConfirmedPage
 from ..infrastructure.document_readers.config import PdfReaderConfig
 from ..infrastructure.document_readers.pdf_reader import PDF_MAGIC, PdfInputError, PdfReader, PdfWorkerError
 from ..infrastructure.document_readers.tiers import failed_page
@@ -90,6 +90,11 @@ CHAPTER_MISSING_DETAIL = "Tài liệu được nhập trước khi có chapter_c
 SETTLE_PENDING_DETAIL = (
     "Văn bản của tài liệu đã vào Knowledge Vault nhưng tài liệu chưa hoàn tất xác nhận; hãy gọi lại xác nhận tài "
     "liệu, không sửa thêm được"
+)
+# Giới hạn trang của Knowledge Vault lấy từ `domain.vault` (`ConfirmedPage`), không ghi lại con số ở đây.
+PAGE_TOO_LARGE_DETAIL = (
+    f"Trang vượt giới hạn của Knowledge Vault (tối đa {MAX_PAGE_LINES} dòng có văn bản, mỗi dòng tối đa "
+    f"{MAX_LINE_CHARS} ký tự) nên không xác nhận được"
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -160,6 +165,13 @@ class PageStateError(Exception):
 
 class InvalidPageEditError(ValueError):
     """Body của `PATCH …/lines` sai so với trang đang lưu (§6.5, 422): `line_index` không tồn tại, quá nhiều dòng."""
+
+
+class PageTooLargeError(Exception):
+    """Trang vượt giới hạn trang của Knowledge Vault (`ConfirmedPage`): không xác nhận được (422)."""
+
+    def __init__(self) -> None:
+        super().__init__(PAGE_TOO_LARGE_DETAIL)
 
 
 class DocumentChapterMissingError(Exception):
@@ -710,6 +722,11 @@ def _fail_pending(store: DocumentRepository, document_id: str, reason: FailureRe
             _write_page(store, document_id, failed_page(document_id, page.page_number, reason))
 
 
+def _with_text_layer(document: ImportedDocument, pages: list[PageExtraction]) -> DocumentMeta:
+    """`meta` với `has_text_layer` tính lại từ các trang: true khi ≥ 1 trang dùng tầng 1 (§5.8)."""
+    return document.meta.model_copy(update={"has_text_layer": any(p.tier_used == "text_layer" for p in pages)})
+
+
 def _write_final_status(store: DocumentRepository, document_id: str, status: Literal["review", "failed"]) -> bool:
     """Ghi trạng thái cuối của lần đọc và `has_text_layer` (true khi ≥ 1 trang dùng tầng 1, §5.8); `True` khi đã ghi.
 
@@ -723,7 +740,7 @@ def _write_final_status(store: DocumentRepository, document_id: str, status: Lit
         if document is None:
             return False
         pages = store.list_pages(document_id, PageExtraction)
-        meta = document.meta.model_copy(update={"has_text_layer": any(p.tier_used == "text_layer" for p in pages)})
+        meta = _with_text_layer(document, pages)
         final = "confirmed" if document.status == "confirmed" else status
         try:
             store.update_imported_document(
@@ -749,16 +766,35 @@ def _write_final_status(store: DocumentRepository, document_id: str, status: Lit
     return False
 
 
+# Lỗi bất ngờ của bước settle sau khi đọc mà vẫn giữ tài liệu `review` (`_settle_after_read`): lỗi dữ liệu và lỗi
+# tính toán (`pydantic.ValidationError` và `QuoteMismatchError` là `ValueError`). Lỗi khác (ví dụ `AttributeError`,
+# lỗi lập trình) vẫn tới `run_job`.
+_SETTLE_DATA_ERRORS: tuple[type[Exception], ...] = (ValueError, TypeError, LookupError, ArithmeticError, RuntimeError)
+
+
 def _settle_after_read(store: DocumentRepository, vault: VaultRepository, document_id: str) -> None:
     """Đọc xong: tài liệu đủ điều kiện (mọi trang có văn bản đã xác nhận từ trước) thì nhập Vault và thành
     `confirmed` (`settle_document`). Lỗi ở bước này không làm hỏng lần đọc: tài liệu giữ `review` (các trang đã
-    đọc và đã xác nhận giữ nguyên), lần gọi xác nhận kế tiếp settle lại."""
+    đọc và đã xác nhận giữ nguyên), lần gọi xác nhận kế tiếp settle lại.
+
+    Mọi trang đã được đọc và ghi xong trước bước này, nên lỗi dữ liệu của settle không được thoát ra `run_job` (nơi
+    lỗi lạ làm tài liệu `failed`, trái §5.7). Lỗi đã biết (kho, thiếu `chapter_code`, tài liệu vừa bị xoá) ghi cảnh
+    báo. Lỗi bất ngờ thuộc `_SETTLE_DATA_ERRORS` (ví dụ `ValidationError` khi văn bản đã xác nhận không dựng được
+    `ConfirmedDocumentText`) ghi lỗi chỉ kèm tên lớp ngoại lệ, không kèm thông điệp hay traceback vì chúng có thể
+    chứa văn bản của tài liệu.
+    """
     try:
         settle_document(store, vault, document_id)
     except (StorageError, DocumentChapterMissingError, DocumentNotFoundError) as exc:
         _LOGGER.warning(
             "đã đọc xong tài liệu %s nhưng chưa hoàn tất xác nhận (%s); tài liệu giữ review, gọi lại xác nhận để "
             "hoàn tất",
+            document_id,
+            type(exc).__name__,
+        )
+    except _SETTLE_DATA_ERRORS as exc:
+        _LOGGER.error(
+            "đã đọc xong tài liệu %s nhưng bước nhập Vault lỗi bất ngờ (%s); tài liệu giữ review",
             document_id,
             type(exc).__name__,
         )
@@ -777,10 +813,16 @@ def _finish(
         _settle_after_read(store, vault, document_id)
 
 
-def mark_document_failed(store: DocumentRepository, document_id: str) -> None:
-    """Tài liệu không đọc tiếp được: trang còn `pending` thành `failed` (`PAGE_ERROR`), tài liệu thành `failed`."""
-    _fail_pending(store, document_id, "PAGE_ERROR")
-    _finish(store, document_id, "failed")
+def mark_document_failed(store: DocumentRepository, document_id: str, locks: KeyedLocks | None = None) -> None:
+    """Tài liệu không đọc tiếp được: trang còn `pending` thành `failed` (`PAGE_ERROR`), tài liệu thành `failed`.
+
+    Chạy dưới khoá của tài liệu (`locks`, thường là `ReadJob.locks`) như bước kết thúc lần đọc và các request sửa,
+    xác nhận: lần ghi trạng thái `failed` không chen vào giữa một lần xác nhận đang settle tài liệu. `locks = None`
+    (test, script) ⇒ không lấy khoá (chỉ còn so version).
+    """
+    with locks.hold(document_id) if locks is not None else contextlib.nullcontext():
+        _fail_pending(store, document_id, "PAGE_ERROR")
+        _finish(store, document_id, "failed")
 
 
 def _close_pages(pages: Iterator[PageExtraction]) -> None:
@@ -807,7 +849,7 @@ def _open_pages(
         except (PdfInputError, ValueError, FileNotFoundError):
             _close_pages(pages)
             _LOGGER.warning("không mở lại được tài liệu %s để đọc", job.document_id)
-            mark_document_failed(job.store, job.document_id)
+            mark_document_failed(job.store, job.document_id, job.locks)
             return None
         except (PdfWorkerError, OSError) as exc:
             _close_pages(pages)
@@ -907,7 +949,7 @@ def run_job(run: Callable[[], None], job: ReadJob, should_stop: Callable[[], boo
             return
         _LOGGER.exception("lỗi khi đọc tài liệu %s", job.document_id)
         try:
-            mark_document_failed(job.store, job.document_id)
+            mark_document_failed(job.store, job.document_id, job.locks)
         except Exception:
             _LOGGER.exception("không đánh dấu được tài liệu %s là failed", job.document_id)
 
@@ -1012,7 +1054,7 @@ def requeue_pending(
         document_id = document.meta.doc_id
         if not files.exists(document.meta.sha256):
             _LOGGER.warning("mất file gốc của tài liệu %s; đánh dấu failed", document_id)
-            mark_document_failed(store, document_id)
+            mark_document_failed(store, document_id, locks)
             continue
         path = files.path_for(document.meta.sha256)
         jobs.submit(
@@ -1212,6 +1254,19 @@ def _ready_to_confirm(pages: list[PageExtraction]) -> bool:
     return any(page.confirmed for page in pages) and all(page.confirmed for page in text_pages)
 
 
+def _confirmed_lines(page: PageExtraction) -> list[str]:
+    """Các dòng của trang đi vào văn bản xác nhận: bỏ dòng có `text` rỗng (§6.5)."""
+    return [line.text for line in page.lines if line.text]
+
+
+def _fits_vault(page: PageExtraction) -> bool:
+    """Văn bản xác nhận của trang nằm trong giới hạn của `ConfirmedPage` (`domain.vault`). Bộ đọc trả tới
+    `MAX_PAGE_LINES` của `document_readers` (lớn hơn) dòng mỗi trang, nên trang phải được kiểm TRƯỚC khi ghi xác
+    nhận; nếu không, bước settle mới ném lỗi validate, sau khi trang đã thành `confirmed`."""
+    lines = _confirmed_lines(page)
+    return len(lines) <= MAX_PAGE_LINES and all(len(line) <= MAX_LINE_CHARS for line in lines)
+
+
 def confirmed_text(document: ImportedDocument, pages: list[PageExtraction]) -> ConfirmedDocumentText | None:
     """Văn bản đã xác nhận của tài liệu cho bộ cắt chunk (§12.1); `None` khi không có trang nào để cắt.
 
@@ -1219,9 +1274,7 @@ def confirmed_text(document: ImportedDocument, pages: list[PageExtraction]) -> C
     `chapter_code` của tài liệu, `category = THEORY`, `topic_keys = []` (mặc định của `ConfirmedDocumentText`).
     """
     confirmed_pages = [
-        ConfirmedPage(page_number=page.page_number, lines=[line.text for line in page.lines if line.text])
-        for page in pages
-        if page.confirmed
+        ConfirmedPage(page_number=page.page_number, lines=_confirmed_lines(page)) for page in pages if page.confirmed
     ]
     if not confirmed_pages:
         return None
@@ -1275,7 +1328,10 @@ def _settle_once(store: DocumentRepository, vault: VaultRepository, document_id:
     _ingest(vault, document, pages)
     if document.status == "confirmed":
         return document
-    return store.update_imported_document(document.model_copy(update={"status": "confirmed"}), document.version)
+    # `has_text_layer` tính ngay ở đây (§5.8): tài liệu đi thẳng `processing → confirmed` (bước kết thúc lần đọc chưa
+    # ghi được vì kho bận) không còn lần ghi trạng thái cuối nào sửa lại nó.
+    settled = document.model_copy(update={"status": "confirmed", "meta": _with_text_layer(document, pages)})
+    return store.update_imported_document(settled, document.version)
 
 
 def _settle_confirmed(store: DocumentRepository, vault: VaultRepository, document_id: str) -> None:
@@ -1319,7 +1375,7 @@ def confirm_page(
     Trang đã xác nhận ⇒ trả nguyên trang (200, không đổi gì). Lỗi, đều kiểm TRƯỚC khi ghi trang:
     `DocumentNotFoundError`; `DocumentChapterMissingError`; `PageStateError` khi trang `pending`, `failed`, không
     có dòng nào có chữ, hoặc văn bản tài liệu đã đóng (`_check_text_open`); `VersionConflictError` khi version của
-    trang lệch. Sau khi xác nhận, tài liệu đủ điều kiện thì văn bản vào Vault và tài liệu thành `confirmed`
+    trang lệch; `PageTooLargeError` (422) khi trang vượt giới hạn trang của Vault (`_fits_vault`). Sau khi xác nhận, tài liệu đủ điều kiện thì văn bản vào Vault và tài liệu thành `confirmed`
     (`_settle_confirmed`: settle lỗi sau khi đã ghi trang không bị báo thành version lệch).
     """
     with runtime.locks.hold(document_id):
@@ -1334,6 +1390,8 @@ def confirm_page(
             if not _has_text(page):
                 raise PageStateError("trang không có dòng nào có văn bản để xác nhận")
             _check_text_open(document, vault)
+            if not _fits_vault(page):
+                raise PageTooLargeError()
             page = _store_confirmed(store, page, now)
         _settle_confirmed(store, vault, document_id)
         return page
@@ -1350,7 +1408,9 @@ def confirm_document(
 ) -> DocumentImport:
     """`POST /v1/documents/{id}/confirm` (§6.5): xác nhận mọi trang `ok` chưa xác nhận có văn bản.
 
-    Trang `needs_review` phải xác nhận từng trang; trang `failed` và trang không có chữ không xác nhận được. Lỗi,
+    Trang `needs_review` phải xác nhận từng trang; trang `failed` và trang không có chữ không xác nhận được. Trang
+    vượt giới hạn trang của Vault (`_fits_vault`) bị bỏ qua kèm cảnh báo trong log (response vẫn cho thấy trang đó
+    chưa xác nhận); xác nhận riêng trang đó trả 422 với `detail` nêu giới hạn. Lỗi,
     đều kiểm TRƯỚC khi ghi trang: `DocumentNotFoundError`; `DocumentChapterMissingError`; `PageStateError` khi còn
     trang `pending`, hoặc còn trang để xác nhận mà văn bản tài liệu đã đóng. Gọi lại là idempotent. Settle lỗi sau
     khi đã ghi trang được xử lý như `confirm_page` (`_settle_confirmed`); response là trạng thái đang lưu.
@@ -1360,7 +1420,18 @@ def confirm_document(
         pages = store.list_pages(document_id, PageExtraction)
         if any(page.status == "pending" for page in pages):
             raise PageStateError("tài liệu còn trang đang được đọc, chưa xác nhận được")
-        to_confirm = [page for page in pages if page.status == "ok" and not page.confirmed and _has_text(page)]
+        to_confirm: list[PageExtraction] = []
+        for page in pages:
+            if page.status != "ok" or page.confirmed or not _has_text(page):
+                continue
+            if _fits_vault(page):
+                to_confirm.append(page)
+            else:
+                _LOGGER.warning(
+                    "xác nhận theo lô bỏ qua trang %d của tài liệu %s: vượt giới hạn trang của Knowledge Vault",
+                    page.page_number,
+                    document_id,
+                )
         if to_confirm:
             _check_text_open(document, vault)
         for page in to_confirm:

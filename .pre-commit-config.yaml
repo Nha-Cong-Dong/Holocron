@@ -27,7 +27,7 @@ repos:
       - id: mypy-strict
         name: mypy --strict (holocron_core)
         language: python
-        additional_dependencies: ["mypy==2.4.0", "pydantic>=2.7", "fastapi>=0.110", "python-multipart>=0.0.9"]
+        additional_dependencies: ["mypy==2.4.0", "pydantic>=2.7", "fastapi>=0.110", "python-multipart>=0.0.9", "pypdfium2==5.14.0"]
         entry: mypy --strict holocron/backend/holocron_core
         pass_filenames: false
         files: ^holocron/backend/holocron_core/

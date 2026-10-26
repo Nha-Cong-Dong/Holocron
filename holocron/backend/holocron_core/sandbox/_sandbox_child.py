@@ -81,76 +81,28 @@ def _preload() -> dict[str, types.SimpleNamespace]:
     return loaded
 
 
-if sys.platform == "win32":
+def _load_apply_limits() -> Callable[[int, int], None]:
+    """Nạp `apply_limits` từ `os_limits.py` nằm cạnh file này, theo đường dẫn file.
 
-    def _apply_limits(mem_bytes: int, cpu_seconds: int) -> None:
-        """Windows không có `resource`: dùng Job Object giới hạn RAM + CPU user-time cho chính tiến trình này.
+    Child chạy bằng `python -S -s -P` với môi trường rỗng nên không import được package `holocron_core`.
+    Thiếu file hoặc thiếu hàm thì ném lỗi ngay khi khởi động (fail closed): tiến trình cha nhận CRASHED.
+    """
+    import importlib.util
+    import os.path
 
-        Không có RLIMIT_FSIZE/CORE tương đương; ghi file vẫn bị chặn ở L1/L2 (không có open/import os).
-        Nếu tạo hoặc gán Job thất bại (ví dụ đã nằm trong job khác không cho lồng) thì bỏ qua:
-        wall-clock timeout của tiến trình cha (sandbox.run_template) là lớp chặn cuối cùng.
-        """
-        import ctypes
-        from ctypes import wintypes
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "os_limits.py")
+    spec = importlib.util.spec_from_file_location("holocron_os_limits", path)
+    if spec is None or spec.loader is None:
+        raise ImportError("không nạp được os_limits.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    apply: Callable[[int, int], None] = module.apply_limits
+    if not callable(apply):
+        raise TypeError("os_limits.apply_limits không gọi được")
+    return apply
 
-        class BasicLimits(ctypes.Structure):
-            _fields_ = [
-                ("PerProcessUserTimeLimit", ctypes.c_int64),
-                ("PerJobUserTimeLimit", ctypes.c_int64),
-                ("LimitFlags", wintypes.DWORD),
-                ("MinimumWorkingSetSize", ctypes.c_size_t),
-                ("MaximumWorkingSetSize", ctypes.c_size_t),
-                ("ActiveProcessLimit", wintypes.DWORD),
-                ("Affinity", ctypes.c_size_t),
-                ("PriorityClass", wintypes.DWORD),
-                ("SchedulingClass", wintypes.DWORD),
-            ]
-            PerProcessUserTimeLimit: int
-            LimitFlags: int
 
-        class IoCounters(ctypes.Structure):
-            _fields_ = [
-                (n, ctypes.c_uint64)
-                for n in ("ReadOps", "WriteOps", "OtherOps", "ReadBytes", "WriteBytes", "OtherBytes")
-            ]
-
-        class ExtendedLimits(ctypes.Structure):
-            _fields_ = [
-                ("BasicLimitInformation", BasicLimits),
-                ("IoInfo", IoCounters),
-                ("ProcessMemoryLimit", ctypes.c_size_t),
-                ("JobMemoryLimit", ctypes.c_size_t),
-                ("PeakProcessMemoryUsed", ctypes.c_size_t),
-                ("PeakJobMemoryUsed", ctypes.c_size_t),
-            ]
-            BasicLimitInformation: BasicLimits
-            ProcessMemoryLimit: int
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
-        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
-        kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
-        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
-
-        job = kernel32.CreateJobObjectW(None, None)
-        if not job:
-            return
-        info = ExtendedLimits()
-        # 0x100 PROCESS_MEMORY, 0x2 PROCESS_TIME (đơn vị 100ns), 0x2000 KILL_ON_JOB_CLOSE
-        info.BasicLimitInformation.LimitFlags = 0x100 | 0x2 | 0x2000
-        info.BasicLimitInformation.PerProcessUserTimeLimit = cpu_seconds * 10_000_000
-        info.ProcessMemoryLimit = mem_bytes
-        if kernel32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)):
-            kernel32.AssignProcessToJobObject(job, kernel32.GetCurrentProcess())
-
-else:
-    import resource
-
-    def _apply_limits(mem_bytes: int, cpu_seconds: int) -> None:
-        resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
-        resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds))
-        resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+_apply_limits = _load_apply_limits()
 
 
 def _make_builtins(preloaded: dict[str, types.SimpleNamespace]) -> Json:

@@ -7,11 +7,17 @@ từ `holocron_core.routers.api` không phải đổi; hàm DI re-export là đ�
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from ..domain.ingestion import IngestionItem, IngestionItemCreate
+from ..domain.repositories import StorageBusyError
 from ..domain.twins import IdempotencyRecord
 from ..infrastructure.memory_store import IDEMPOTENCY_TTL, IngestionStore
+from ..infrastructure.storage import SQLiteStore
 from . import blueprints, ingestion, runtime
 from .blueprints import create_twins
 from .deps import (
@@ -22,6 +28,7 @@ from .deps import (
     ExtractorDep,
     RuntimeConfigDep,
     StoreDep,
+    _default_store,
     get_citation_provider,
     get_clock,
     get_extractor,
@@ -52,6 +59,7 @@ __all__ = [
     "MAX_FILENAME_LENGTH",
     "MAX_UPLOAD_BYTES",
     "REGISTRY",
+    "STORE_BUSY_DETAIL",
     "AuthorDep",
     "CitationDep",
     "ClockDep",
@@ -86,7 +94,33 @@ __all__ = [
     "upload_document",
 ]
 
-app = FastAPI(title="Holocron Ingestion Gate", version="0.1.0a0")
+
+STORE_BUSY_DETAIL = "Kho dữ liệu đang bận, thử lại"
+
+
+@asynccontextmanager
+async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
+    """Mở kho ngay khi khởi động: DB SQLite mới hơn code thì app từ chối khởi động (SPECIFICATION §5.13).
+
+    Khi tắt app, đóng kết nối SQLite của kho mặc định và bỏ nó khỏi cache, để lần khởi động sau trong cùng tiến trình
+    (test, `--reload`) mở lại kết nối mới thay vì dùng kết nối đã đóng. Kho in-memory không có gì để đóng.
+    """
+    store = get_store()
+    try:
+        yield
+    finally:
+        if isinstance(store, SQLiteStore):
+            store.close()
+            _default_store.cache_clear()
+
+
+async def _store_busy(_: Request, exc: Exception) -> JSONResponse:
+    """Kho bị tiến trình khác giữ khoá ghi quá `busy_timeout`: 503 để client thử lại, không thành 500 trần."""
+    return JSONResponse(status_code=503, content={"detail": STORE_BUSY_DETAIL})
+
+
+app = FastAPI(title="Holocron Ingestion Gate", version="0.1.0a0", lifespan=_lifespan)
+app.add_exception_handler(StorageBusyError, _store_busy)
 app.include_router(runtime.router)
 app.include_router(ingestion.router)
 app.include_router(blueprints.router)

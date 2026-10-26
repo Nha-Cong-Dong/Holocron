@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import re
+import unicodedata
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Literal
@@ -49,6 +50,19 @@ def _new_id(prefix: str) -> str:
 
 def _collapse_ws(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
+
+
+def normalize_quote(text: str) -> str:
+    """Dạng so khớp trích dẫn nguyên văn (I3, ADR-006 mục 9): Unicode NFC rồi gộp khoảng trắng.
+
+    Chỉ chuẩn hoá tương đương chính tắc (NFC): không NFKC, không bỏ dấu, không `casefold`.
+    """
+    return _collapse_ws(unicodedata.normalize("NFC", text))
+
+
+def quote_in_text(quote: str, text: str) -> bool:
+    """`quote` là chuỗi con của `text` sau khi đưa cả hai về NFC và gộp khoảng trắng (I3)."""
+    return normalize_quote(quote) in normalize_quote(text)
 
 
 class StrictModel(BaseModel):
@@ -158,6 +172,10 @@ class KnowledgeChunk(StrictModel):
     linked_chunk_ids: list[str] = Field(default_factory=list)
     token_count: int = Field(ge=1)
     embedding_model: str | None = None
+    # §5.8: nhãn (chương, loại, topic) do LLM hoặc code đề xuất, người dùng xác nhận qua `PATCH …/labels` (§6.6).
+    label_status: Literal["proposed", "confirmed"] = "proposed"
+    mapping_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    version: int = Field(default=1, ge=1)
 
     @field_validator("tags")
     @classmethod
@@ -187,8 +205,8 @@ class KnowledgeChunk(StrictModel):
             raise ValueError("linked_chunk_ids không được trỏ về chính nó")
         if self.page_end is not None and self.page_end < self.page_number:
             raise ValueError("page_end < page_number")
-        if _collapse_ws(self.verbatim_quote) not in _collapse_ws(self.raw_text):
-            raise ValueError("verbatim_quote phải là chuỗi con (đã chuẩn hoá khoảng trắng) của raw_text")
+        if not quote_in_text(self.verbatim_quote, self.raw_text):
+            raise ValueError("verbatim_quote phải là chuỗi con (đã chuẩn hoá NFC và khoảng trắng) của raw_text")
         return self
 
     def to_citation(self) -> Citation:

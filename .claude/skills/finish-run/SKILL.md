@@ -22,7 +22,7 @@ Quy tắc cứng:
 - Tìm brief tương ứng trong `.claude/state/briefs/` (theo tên nhánh hoặc nội dung). Không có thì ghi "không có brief".
 
 ## 2. Cổng chất lượng (CLAUDE.md §5 Cấp 2), chạy thật
-Windows luôn gọi qua `python -m …` với venv của repo (`D:/prj/Holocron/.venv/Scripts/python.exe`). Chạy trong `holocron/backend` của worktree:
+Luôn gọi qua `python -m …` với venv ở gốc repo chính (Windows: `<repo>/.venv/Scripts/python.exe`; Linux: `<repo>/.venv/bin/python`). Chạy trong `holocron/backend` của worktree:
 - `python -m pytest --cov -q`
 - `python -m ruff check .`
 - `python -m ruff format --check .`
@@ -31,7 +31,7 @@ Windows luôn gọi qua `python -m …` với venv của repo (`D:/prj/Holocron/
 Nếu diff chạm `holocron/frontend/` (cần `node_modules`; thiếu thì `npm ci`), chạy trong `holocron/frontend`:
 - `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`
 
-Nếu diff chạm pipeline, schema hay template (`services/pipeline*`, `domain/`, `infrastructure/templates/`, `examples/`):
+Nếu diff chạm pipeline, schema, template hay bộ sinh câu (`services/pipeline*`, `services/theory_generator.py`, `services/twin_batch.py`, `domain/`, `infrastructure/templates/`, `examples/`, `scripts/run_walkthrough.py`):
 - `python -m scripts.run_walkthrough` rồi `git diff --exit-code -- examples`
 
 Nếu diff đổi prompt LLM, bộ đọc tài liệu (`infrastructure/document_readers/`) hay luồng tổng hợp template (CLAUDE.md §5 Cấp 2 mục 6):
@@ -43,7 +43,7 @@ Ghi cho từng lệnh: lệnh, đạt/không đạt, output lỗi nguyên văn (
 Gọi subagent `reviewer` (Agent tool, `subagent_type: reviewer`) chỉ với: tên nhánh, đường dẫn worktree, phạm vi `origin/develop...<nhánh>`, đường dẫn brief. KHÔNG kèm nhận định, tóm tắt hay kết luận của agent chính.
 
 ## 4. Mutation
-- Lập danh sách module nguồn trong diff khớp vùng bất biến ở CLAUDE.md §9: Ingestion Gate, validator trong `domain/`, `sandbox/` và ASTGuard, `services/pipeline*`, kiểm trích dẫn nguyên văn (I3), `holocron/frontend/src/lib/gate.ts`.
+- Lập danh sách module nguồn trong diff khớp vùng bất biến ở CLAUDE.md §9: Ingestion Gate, validator trong `domain/`, `sandbox/` và ASTGuard, `services/pipeline*`, `services/twin_batch.py`, `services/theory_generator.py` (I2/I4), template trong `infrastructure/templates/` (I4), kiểm trích dẫn nguyên văn (I3), bộ nhập PDF (`services/cross_check_gate.py`, `infrastructure/document_readers/`; I5), `holocron/frontend/src/lib/gate.ts`. Bảng §9 có thêm file test mới thì module nguồn tương ứng cũng thuộc danh sách.
 - Có module khớp: gọi subagent `mutation-tester` (`subagent_type: mutation-tester`) chỉ với tên nhánh và danh sách module đó. Không khớp: bỏ qua và ghi lý do.
 - Không bao giờ chạy mutation trên toàn repo.
 

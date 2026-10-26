@@ -32,7 +32,7 @@ from ..domain.documents import (
     PageExtraction,
     PageLinesPatch,
 )
-from ..domain.repositories import DocumentExistsError, DocumentRepository, VersionConflictError
+from ..domain.repositories import AppStore, DocumentExistsError, VersionConflictError
 from ..domain.schemas import SourceKind
 from ..infrastructure.document_readers.config import MIB, PdfReaderConfig, load_ocr_settings
 from ..infrastructure.document_readers.pdf_reader import PdfReader, PdfWorkerError, WorkerPdfReader
@@ -108,9 +108,9 @@ def create_import_runtime(data_dir: Path | None, config: PdfReaderConfig | None 
     return ImportRuntime(files=files, queue=BackgroundImportQueue(), reader_config=reader_config)
 
 
-def requeue_on_startup(store: DocumentRepository, runtime: ImportRuntime) -> list[str]:
+def requeue_on_startup(store: AppStore, runtime: ImportRuntime) -> list[str]:
     """Khi khởi động: dọn file gốc mồ côi, rồi xếp lại tài liệu đang đọc dở từ file gốc đã lưu (§6.5; chỉ có ý nghĩa
-    với kho SQLite).
+    với kho SQLite). Việc đọc mang theo Vault (cùng kho) và khoá theo tài liệu của runtime (`ReadJob`).
 
     Cấu hình OCR sai thì không xếp lại (khác với `POST`, nơi bộ đọc chạy không có OCR): đọc lại khi cấu hình đang sai
     sẽ làm trang cần OCR thành `failed` vĩnh viễn. Ghi cảnh báo (chỉ nêu tên biến, không nêu giá trị) và để app vẫn
@@ -122,7 +122,7 @@ def requeue_on_startup(store: DocumentRepository, runtime: ImportRuntime) -> lis
     except ConfigError as exc:
         _LOGGER.warning("không xếp lại tài liệu đang đọc dở: %s", exc)
         return []
-    return requeue_pending(store, runtime.files, reader, runtime.queue, runtime.retry)
+    return requeue_pending(store, runtime.files, reader, runtime.queue, runtime.retry, vault=store, locks=runtime.locks)
 
 
 def get_import_runtime(request: Request) -> ImportRuntime:
@@ -156,6 +156,7 @@ ReaderDep = Annotated[PdfReader, Depends(get_pdf_reader)]
 def import_document(
     response: Response,
     store: StoreDep,
+    vault: VaultDep,
     runtime: RuntimeDep,
     reader: ReaderDep,
     clock: ClockDep,
@@ -180,7 +181,7 @@ def import_document(
         title=title,
     )
     try:
-        outcome = accept_document(request, store=store, runtime=runtime, reader=reader, now=clock())
+        outcome = accept_document(request, store=store, runtime=runtime, reader=reader, now=clock(), vault=vault)
     except DocumentImportError as exc:
         raise HTTPException(status_code=ERROR_STATUS[exc.code], detail=str(exc)) from exc
     except ImportUnavailableError as exc:
@@ -245,6 +246,7 @@ _REVIEW_ERRORS = (
 @router.patch("/v1/documents/{document_id}/pages/{page_number}/lines", response_model=PageExtraction)
 def patch_page_lines(
     store: StoreDep,
+    vault: VaultDep,
     runtime: RuntimeDep,
     clock: ClockDep,
     document_id: str,
@@ -252,7 +254,7 @@ def patch_page_lines(
     body: PageLinesPatch,
 ) -> PageExtraction:
     try:
-        return edit_page_lines(store, runtime, document_id, page_number, body, now=clock())
+        return edit_page_lines(store, vault, runtime, document_id, page_number, body, now=clock())
     except _REVIEW_ERRORS as exc:
         raise _review_error(exc) from exc
 

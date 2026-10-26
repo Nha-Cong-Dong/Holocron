@@ -43,6 +43,8 @@ from holocron_core.services.theory_generator import (
     THEORY_SAME_SUBJECT_CONCEPT,
     TheoryQuestion,
     TheoryQuestionForm,
+    _fills_pool_text,
+    _match_key,
     candidate_pool,
     feasible_forms,
     generate_theory_question,
@@ -1210,6 +1212,39 @@ def test_definition_choice_keeps_a_distractor_whose_only_match_is_its_own_unchan
             seen += option in result.options.values()
             assert _vault_correct_keys(result) == {result.correct_key}
     assert seen > 0
+
+
+def test_fill_rule_compares_without_edge_punctuation_and_ignores_unchanged_blanks() -> None:
+    """Luật điền thử, gọi trực tiếp: dấu câu ở hai đầu không làm trượt cả hai chiều; chỗ điền không đổi văn bản không
+    phải căn cứ; dấu câu ở giữa vẫn được so."""
+    space_short = "Không gian là hình thức tồn tại của vật chất."
+    time_long = "Thời gian là hình thức tồn tại của vật chất xét về độ dài diễn biến."
+    time_short = "Thời gian là hình thức tồn tại của vật chất."
+    space_long = "Không gian là hình thức tồn tại của vật chất xét về quảng tính."
+    # Chiều thứ nhất: đoạn đã điền (bỏ dấu chấm cuối) nằm trong trích dẫn dài hơn.
+    assert _fills_pool_text(space_short, ["Không gian"], "Thời gian", [_match_key(time_long)])
+    # Chiều thứ hai: trích dẫn có dấu chấm cuối nằm ở đầu đoạn đã điền dài hơn.
+    assert _fills_pool_text(space_long, ["Không gian"], "Thời gian", [_match_key(time_short)])
+    # Dấu câu ở giữa giữ nguyên: dấu phẩy làm hai đoạn khác nhau.
+    comma = "Thời gian là hình thức, tồn tại của vật chất xét về độ dài diễn biến."
+    assert not _fills_pool_text(space_short, ["Không gian"], "Thời gian", [_match_key(comma)])
+    # Điền lại đúng thuật ngữ vốn ở chỗ che: không đổi văn bản, không phải căn cứ (kể cả khi khớp chính trích dẫn đó).
+    motion = "Vận động là phương thức tồn tại của vật chất."
+    assert not _fills_pool_text(motion, ["Vật chất"], "vật chất", [_match_key(motion)])
+    # Trích dẫn chỉ nằm trong phần giữ nguyên, không chạm chỗ điền làm đổi văn bản.
+    assert not _fills_pool_text(
+        motion, ["Vận động", "Vật chất"], "Vật chất", [_match_key("phương thức tồn tại của vật chất")]
+    )
+
+
+def test_fill_rule_treats_a_composing_boundary_as_a_conflict() -> None:
+    """Chỗ nối ghép được ký tự ("A" điền trước dấu sắc kết hợp U+0301 vốn đứng sau "Q"): cờ vị trí không còn tách theo
+    mảnh nên luật coi là xung đột khi cần xét chiều thứ hai (loại thừa, không bao giờ ra câu hai đáp án đúng)."""
+    quote = "Q́ là hình thức tồn tại của vật chất"
+    assert unicodedata.is_normalized("NFC", quote)
+    kept_only = [_match_key("là hình thức tồn tại của vật chất")]
+    assert _fills_pool_text(quote, ["Q"], "A", kept_only)
+    assert not _fills_pool_text(quote, ["Q"], "A", [_match_key("không liên quan gì tới đoạn này")])
 
 
 def test_model_rejects_a_distractor_citation_overlapping_the_answer_citation() -> None:

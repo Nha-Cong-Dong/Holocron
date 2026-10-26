@@ -61,6 +61,7 @@ desktop.ini
 .claude/*
 !.claude/CLAUDE.md
 !.claude/agents/
+!.claude/skills/
 !.claude/settings.json
 *.session
 # App desktop Claude ghi output vào repo

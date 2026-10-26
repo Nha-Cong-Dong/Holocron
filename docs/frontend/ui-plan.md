@@ -1,6 +1,6 @@
 # Kế hoạch UI frontend desktop (F0)
 
-- Trạng thái: kế hoạch, chưa có code. Viết ngày 2026-10-26.
+- Trạng thái: kế hoạch. Viết ngày 2026-10-26; cập nhật chiều 2026-10-26 theo quyết định của người dùng (phạm vi MVP-1 ở spec §1.5, dependency mục 8, điểm OCR, route `/vault` theo nhánh F2 chờ duyệt).
 - Phạm vi: các giai đoạn F1–F5 của frontend desktop (Next.js 15, đóng gói Tauri sau này).
 - Nguồn chân lý: `SPECIFICATION.md` v0.7 (bổ sung 2026-10-26), §0, §1, §4, §5.4–§5.14, §6, §11.4, §13.1, §16, §17; ADR-005…008; `.claude/CLAUDE.md` §1, §2.1, §2.3, §4.2, §4.3. Kế hoạch này không đổi contract nào. Chỗ nào cần đổi contract thì ghi ở mục 9 để người dùng quyết.
 - Dữ liệu khảo sát: OpenAPI xuất từ `app.openapi()`, không chạy server, trên hai nhánh:
@@ -12,9 +12,9 @@
 
 | Mục | Hiện trạng | Hệ quả cho kế hoạch |
 |---|---|---|
-| Dependency | `next 15.5.28`, `react 19.1.10`, `react-dom 19.1.10`; dev: `@biomejs/biome 2.5.15`, `typescript 5.9.3`, `vitest 3.2.4`, `@types/*` | Không có thư viện component, icon, PDF.js, KaTeX hay testing-library. Kế hoạch chỉ dùng những thứ này (đề xuất thêm ở mục 8) |
+| Dependency | `next 15.5.28`, `react 19.1.10`, `react-dom 19.1.10`; dev: `@biomejs/biome 2.5.15`, `typescript 5.9.3`, `vitest 3.2.4`, `@types/*` | Không có thư viện component, icon, PDF.js, KaTeX hay testing-library. Kế hoạch chỉ dùng những thứ này, cộng dependency ở mục 8 |
 | Test | Vitest `environment: "node"`, chỉ nhận `src/**/*.test.ts` | Chỉ test được logic thuần ở `src/lib/` và `src/mocks/`. Không test component được nếu chưa thêm dependency |
-| Trang | `/` (upload đề, danh sách dạng bài gắn cứng RR), `/ingestion/[itemId]`, `/blueprints/[blueprintId]` | Hai route động không build được khi static export (mục 4) |
+| Trang | Cập nhật 2026-10-26 chiều theo code: `/` (màn chạy lần đầu), `/ingestion` và `/ingestion?item=…` (form tải đề; kiểm duyệt item), `/twins?blueprint=…`, `/practice`, `/vault?subject=&doc=&page=&tab=` (`tab` là `documents` hoặc `chunks`, theo `src/lib/vault.ts`; có trong code từ PR #48, đã merge vào develop; người dùng chưa duyệt riêng danh sách route, đề xuất, spec §17 D8). `/vault` gộp danh sách tài liệu, xem lại trang và chunk theo `tab`, nên không có trang `/subjects`, `/documents` riêng. ID đi qua query string; hai route động cũ `/ingestion/[itemId]`, `/blueprints/[blueprintId]` đã bỏ | Build được khi static export (mục 4) |
 | `lib/api.ts` | `API_BASE = "/api/holocron"` ghi cứng; một hàm `request<T>` là chỗ duy nhất ép `as T` | Nơi duy nhất cần đổi để chạy dưới Tauri (mục 4) |
 | `next.config.ts` | `rewrites` `/api/holocron/:path*` → `HOLOCRON_API_URL` | Không chạy khi `output: "export"` (mục 4) |
 | `globals.css` | Biến màu sáng/tối theo `prefers-color-scheme`, font `system-ui, …, Roboto` | Giữ cơ chế, thay bộ token (mục 5) |
@@ -68,7 +68,7 @@ Ký hiệu cột "Đã có ở": **b3**, **b6** là nhánh có endpoint (đã ki
 |---|---|---|---|---|
 | Tạo bộ đề lý thuyết | POST `/v1/blueprints` | `BlueprintCreate {subject_code, item_ids, theory_slots[], duration_minutes?}` → 201 `ExamBlueprint` | CHƯA CÓ | §5.9, §6.7. `TheorySlotSpec` có `format` (duyệt 2026-10-26). 409 `CapabilityError` khi có slot `ESSAY` mà `essay_grading_offline` không khả dụng |
 | Sinh câu | POST `/v1/blueprints/{id}/twins` | `TwinBatchRequest` (+ header `Idempotency-Key`) → 201 `TwinBatch` | b3, b6 (lệch) | Code chưa có `question_kind`, `trace` dạng union (`TheoryTrace`), `template_id`/`topic_key` nullable, `artifacts`, `essay`, `MisconceptionRef.citation` (§5.11, §5.14); `TwinBatch` chưa có `batch_id`, `created_at` (§6.7). Slot lý thuyết chưa được xử lý: bộ sinh có ở b6 nhưng chưa nối vào twin |
-| Chấm câu tự luận | POST `/v1/twins/{twin_id}/essay-grade` | `EssayGradeRequest {answer_text}` → `EssayGradeResult` | CHƯA CÓ | §5.14, §6.9. Đường dẫn đã duyệt; mã lỗi còn đề xuất. "MVP nếu còn thời gian" (mốc 29/10) |
+| Chấm câu tự luận | POST `/v1/twins/{twin_id}/essay-grade` | `EssayGradeRequest {answer_text}` → `EssayGradeResult` | CHƯA CÓ | §5.14, §6.9. Đường dẫn đã duyệt; mã lỗi còn đề xuất. Không thuộc MVP-1; lịch 30/10–2/11 (chốt 2026-10-26, spec §16) |
 | Mở lại một lượt sinh đã có | GET `/v1/blueprints/{id}/twins/{batch_id}` | → `TwinBatch` | CHƯA CÓ | §6.7 |
 
 ### F5. Lịch sử và cài đặt
@@ -78,7 +78,7 @@ Ký hiệu cột "Đã có ở": **b3**, **b6** là nhánh có endpoint (đã ki
 | Danh sách bộ đề đã tạo | GET `/v1/blueprints?subject_code=` | → `BlueprintSummary[]` | CHƯA CÓ | §6.7; model `BlueprintSummary` còn đề xuất (§17 D8) |
 | Chi tiết bộ đề | GET `/v1/blueprints/{id}` | → `ExamBlueprint` | CHƯA CÓ | §6.7 |
 | Các lượt sinh của bộ đề | GET `/v1/blueprints/{id}/twins` | → `TwinBatchSummary[]` | CHƯA CÓ | §6.7; model còn đề xuất |
-| Lịch sử lượt làm bài (đã chọn gì, đúng/sai) | — | — | CHƯA CÓ, cũng chưa có contract | §5.13: "Lịch sử luyện tập là việc sau MVP"; kết quả chấm tự luận không được lưu. Không dựng fixture vì không có shape để theo (mục 9, câu 4) |
+| Lịch sử lượt làm bài (đã chọn gì, đúng/sai) và ôn lại câu sai | — | — | CHƯA CÓ, cũng chưa có contract | Thuộc MVP-1 (chốt 2026-10-26, spec §1.5); contract là đề xuất riêng, chờ duyệt. Đúng/sai và mọi con số do backend tính (I1). Kết quả chấm tự luận không được lưu (§5.13). Không dựng fixture khi chưa có shape (mục 9, câu 4) |
 | Hình thức thi của môn | PATCH `/v1/subjects/{code}` | `{editor_id, expected_version, display_name?, exam_format?}` → `Subject` | CHƯA CÓ | §6.8, đề xuất |
 | Trạng thái khả năng, hướng dẫn cài Tesseract | GET `/v1/runtime` | → `RuntimeInfo` | b3, b6 (lệch) | Như F1 |
 | Cấu hình key LLM | — | — | không có endpoint, theo thiết kế | §13.1: key nằm ở biến môi trường (webapp) hoặc kho khoá của hệ điều hành (Tauri). Màn cài đặt chỉ hiện trạng thái và thông báo dữ liệu rời máy |
@@ -103,7 +103,7 @@ Luồng đề thi hiện có (`POST /v1/ingestion/upload`, `GET/PATCH /v1/ingest
 | M8 | Câu lý thuyết trong twin: `question_kind`, `TheoryTrace`, `template_id`/`topic_key` nullable, `MisconceptionRef.citation`, `artifacts`, `TwinBatch.batch_id`/`created_at` | §5.11, §6.7 | đã duyệt 2026-10-25 | `fixtures/twins.ts`: một `TwinBatch` gồm 2 câu MCQ4 lý thuyết (dạng điền khuyết và chọn định nghĩa đúng) và một `ReviewTicket` "không đủ căn cứ trong Vault" |
 | M9 | `TwinQuestion.essay` (`EssaySpec`, `EssayPoint`), POST `/v1/twins/{id}/essay-grade`, `EssayGradeResult` | §5.14, §6.9 | field đã duyệt; tên model và mã lỗi đề xuất | `fixtures/twins.ts` thêm một câu `ESSAY` theo đúng ví dụ JSON ở §6.9; `fixtures/essay.ts`: 2 kết quả (khớp 1/2 ý; khớp 2/2 ý) |
 | M10 | GET `/v1/blueprints`, `/v1/blueprints/{id}`, `/v1/blueprints/{id}/twins`, `/v1/blueprints/{id}/twins/{batch_id}` (`BlueprintSummary`, `TwinBatchSummary`) | §6.7 | đường dẫn đã duyệt; hai model tóm tắt đề xuất | `fixtures/history.ts` |
-| M11 | Lịch sử lượt làm bài | không có | spec ghi là việc sau MVP (§5.13) | Không có fixture. Không bịa shape |
+| M11 | Lịch sử lượt làm bài và ôn lại câu sai | không có | thuộc MVP-1 (chốt 2026-10-26, spec §1.5); contract đề xuất riêng, chờ duyệt | Không có fixture. Không bịa shape |
 | M12 | File gốc của tài liệu để render trang và mở trích dẫn | không có | §5.7, §12.2 giả định có file gốc ở phía client | Không có fixture (mục 9, câu 5) |
 | M13 | Chế độ lưu trữ (in-memory hay SQLite) và tên bên nhận dữ liệu LLM trong `RuntimeInfo` | không có | §13.1 yêu cầu UI nêu tên bên nhận; §5.13 in-memory làm mất dữ liệu khi tắt backend | Không có fixture (mục 9, câu 6) |
 | M14 | Header `X-Holocron-Token` và kiểm `Host` | §13.1 | đã duyệt; chưa có code | Không cần fixture; `lib/config.ts` chuẩn bị chỗ gắn header (mục 4) |
@@ -139,7 +139,7 @@ Luồng đề thi hiện có (`POST /v1/ingestion/upload`, `GET/PATCH /v1/ingest
 ### 4.1 Vấn đề
 
 1. `rewrites` trong `next.config.ts` cần Next server. Bản `output: "export"` nạp vào WebView của Tauri không có server, nên `/api/holocron/*` trả 404.
-2. Route động `/ingestion/[itemId]`, `/blueprints/[blueprintId]` không build được khi export nếu không liệt kê trước tham số (`generateStaticParams`). ID do backend sinh lúc chạy nên không liệt kê trước được.
+2. Route động `/ingestion/[itemId]`, `/blueprints/[blueprintId]` không build được khi export nếu không liệt kê trước tham số (`generateStaticParams`). ID do backend sinh lúc chạy nên không liệt kê trước được. **Đã xử lý (cập nhật 2026-10-26 chiều):** mọi route dùng query string: `/`, `/ingestion?item=…`, `/twins?blueprint=…`, `/practice`, `/vault?subject=&doc=&page=&tab=` (spec §4; route `/vault` có trong code từ PR #48, `tab` là `documents` hoặc `chunks`; người dùng chưa duyệt riêng danh sách route, đề xuất, spec §17 D8).
 3. Sidecar nên tự chọn cổng trống (`docs/tauri-spike-plan.md` mục 5.1), nên địa chỉ backend chỉ biết lúc chạy, không biết lúc build.
 4. Origin của WebView (`http://tauri.localhost` trên Windows, `tauri://localhost` trên Linux) khác origin backend. Spec §6.0 hiện ghi "cùng origin, không cần CORS". Header `X-Holocron-Token` (§13.1) khiến mọi request khác origin phải qua preflight.
 
@@ -165,7 +165,7 @@ Việc phải kiểm trong spike, liên quan tới frontend:
 
 1. Không Server Actions (`"use server"`), không Route Handlers (`app/**/route.ts`), không `middleware.ts`, không `cookies()`, `headers()`, `draftMode()`, không `revalidate` hay ISR.
 2. Không `fetch` phía server: không gọi API trong Server Component, `generateMetadata` hay lúc build. Mọi lời gọi backend chạy trong client component, qua `lib/api.ts`.
-3. Không route động `[param]`. ID đi qua query string: `/documents/review?id=…&page=…`, `/practice?blueprint=…&batch=…`. Component đọc `useSearchParams()` luôn nằm trong `<Suspense>` (Next 15 báo lỗi build nếu thiếu khi prerender).
+3. Không route động `[param]`. ID đi qua query string, theo danh sách route ở spec §4: `/ingestion?item=…`, `/twins?blueprint=…`, `/vault?subject=&doc=&page=&tab=` (xem lại trang là `/vault?…&doc=…&page=…`; route `/vault` có trong code từ PR #48, người dùng chưa duyệt riêng danh sách route, đề xuất, spec §17 D8). Component đọc `useSearchParams()` luôn nằm trong `<Suspense>` (Next 15 báo lỗi build nếu thiếu khi prerender).
 4. Không `next/image` có tối ưu ảnh (dùng `<img>`), không `next/font/google` hay font tải từ mạng.
 5. Không đọc `window`, `localStorage`, `navigator` trong lúc render; chỉ đọc trong `useEffect` hay handler, vì trang được prerender lúc build.
 6. **Base URL API và token chỉ đọc ở `src/lib/config.ts`**, theo thứ tự:
@@ -324,9 +324,9 @@ Mỗi giai đoạn một nhánh tách từ nhánh trước (xếp chồng); nhá
 | `src/mocks/fixtures/subjects.ts`, `documents.ts`, `vault.ts` | M3–M5 |
 | `src/components/documents/ImportForm.tsx`, `DocumentList.tsx`, `PageStrip.tsx`, `PageReview.tsx`, `LineEditor.tsx`, `ReviewReasons.tsx`, `TokenMismatchList.tsx`, `OcrMissingHelp.tsx` (+ css) | form có `chapter_code` bắt buộc; danh sách trang có trạng thái bằng chữ; dòng cờ thấp tô `--warning`; hai giá trị khi token lệch; hướng dẫn cài Tesseract khi `ocr` không khả dụng hoặc trang `failed` vì `OCR_ENGINE_MISSING`; trang `failed` có nút "Xoá tài liệu để nhập lại" |
 | `src/components/vault/ChunkList.tsx`, `ChunkView.tsx`, `ChunkLabelsForm.tsx`, `VaultSearch.tsx` (+ css) | xem chunk, sửa nhãn, tìm |
-| `src/app/subjects/page.tsx`, `src/app/documents/page.tsx`, `src/app/documents/review/page.tsx`, `src/app/vault/page.tsx` | trang |
+| `src/app/vault/page.tsx` | một trang `/vault?subject=&doc=&page=&tab=`: danh sách tài liệu, xem lại trang (`doc`, `page`) và chunk theo `tab` (`documents` hoặc `chunks`, `src/lib/vault.ts`; có trong code từ PR #48; người dùng chưa duyệt riêng danh sách route, đề xuất, spec §4, §17 D8). Không có trang `/subjects`, `/documents`, `/documents/review` riêng |
 
-Màn xem lại trang chỉ hiện văn bản theo dòng, chưa có ảnh trang cho tới khi M12 được quyết. Số liệu như `ocr_score`, `coverage_ratio` hiện nguyên giá trị backend trả, không quy đổi, không so ngưỡng ở frontend (§5.7).
+Màn xem lại trang chỉ hiện văn bản theo dòng, chưa có ảnh trang (render PDF bằng pdfjs là việc sau MVP, duyệt 2026-10-26 chiều). Điểm OCR như `ocr_score`, `coverage_ratio`: frontend chỉ định dạng giá trị backend trả để hiển thị, không tính lại, không quy đổi, không so ngưỡng (duyệt 2026-10-26 chiều; spec §5.7).
 
 ### F3 `feat/frontend-f3-concept-pairs`: cặp khái niệm
 
@@ -364,7 +364,7 @@ Màn kết quả MCQ hiện từng câu đúng/sai. Có hiện tổng số câu 
 | `src/components/settings/CapabilityTable.tsx`, `DataEgressNotice.tsx`, `SubjectSettings.tsx`, `TesseractHelp.tsx` (+ css) | bảng khả năng kèm `detail_vi`; thông báo dữ liệu rời máy của §13.1; đổi `exam_format`; hướng dẫn cài Tesseract và `vie.traineddata` |
 | `src/app/history/page.tsx`, `src/app/settings/page.tsx` | trang |
 
-Lịch sử lượt làm bài không làm trong F5 vì chưa có contract (M11).
+Lịch sử lượt làm bài thuộc MVP-1 (chốt 2026-10-26) nhưng chưa có contract (M11); làm khi contract được duyệt.
 
 ### Logic thuần và test vitest: tổng hợp
 
@@ -391,28 +391,29 @@ Lịch sử lượt làm bài không làm trong F5 vì chưa có contract (M11).
 - Không `any`, `@ts-ignore`, `@ts-expect-error`, `as unknown as`, `biome-ignore`; `as T` chỉ ở chỗ parse JSON trong `lib/api.ts` (CLAUDE.md §4.2).
 - `editor_id` dùng hằng `LOCAL_EDITOR_ID` đã có.
 
-## 8. Đề xuất dependency (chưa cài; chuyển sang `proposed-diffs.md`)
+## 8. Dependency frontend (quyết định 2026-10-26 chiều)
 
-| Gói | Giấy phép | Lý do | Khi nào cần | Nếu không duyệt |
+| Gói | Giấy phép | Lý do | Trạng thái | Khi chưa có |
 |---|---|---|---|---|
-| `pdfjs-dist` | Apache-2.0 | Render ảnh trang để đặt dòng theo `bbox` ở màn xem lại (§5.7) và mở trích dẫn đúng trang, tô `verbatim_quote` (§12.2). Worker phải đóng gói cục bộ, không tải từ CDN | Sau khi có cách lấy file gốc (M12) | Màn xem lại chỉ có văn bản theo dòng; trích dẫn chỉ hiện quote và số trang |
-| `@testing-library/react` + `jsdom` (hoặc `happy-dom`) | MIT | Test component cho phím tắt, ẩn đáp án trước khi nộp, nút bị vô hiệu theo khả năng. Vitest phải nhận thêm `*.test.tsx` | Từ F1 nếu muốn test ở mức component | Logic đã tách ra `src/lib/` và có test; phần nối vào component kiểm bằng tay |
-| `katex` | MIT | Render LaTeX trong `stem` của câu tính toán (Xác suất thống kê, ARM) | Luồng A, khi có twin tính toán ngoài fixture | Hiện LaTeX dạng chữ như hiện nay; câu lý thuyết của lát cắt dọc không cần |
-| `@tauri-apps/api` | MIT/Apache-2.0 | Chỉ khi chọn phương án C (IPC) ở mục 4.2 | Sau spike | Phương án B và A dùng initialization script, không cần gói này |
+| `@testing-library/react` + `jsdom` | MIT | Test component cho phím tắt, ẩn đáp án trước khi nộp, nút bị vô hiệu theo khả năng. Vitest phải nhận thêm `*.test.tsx` | **Đã duyệt** (2026-10-26 chiều): cài vào `devDependencies`, ghim version chính xác | Logic đã tách ra `src/lib/` và có test; phần nối vào component kiểm bằng tay |
+| `pdfjs-dist` | Apache-2.0 | Render ảnh trang để đặt dòng theo `bbox` ở màn xem lại (§5.7) và mở trích dẫn đúng trang, tô `verbatim_quote` (§12.2). Worker phải đóng gói cục bộ, không tải từ CDN | Để khi cần (2026-10-26 chiều); render PDF là việc sau MVP | Màn xem lại chỉ có văn bản theo dòng; trích dẫn chỉ hiện quote và số trang |
+| `katex` | MIT | Render LaTeX trong `stem` của câu tính toán (Xác suất thống kê, ARM) | Để khi cần (2026-10-26 chiều); câu tính toán là việc sau MVP-1 | Hiện LaTeX dạng chữ như hiện nay; câu lý thuyết không cần |
+| `@tauri-apps/api` | MIT/Apache-2.0 | Chỉ khi chọn phương án C (IPC) ở mục 4.2 | Để khi cần (2026-10-26 chiều); đã chọn phương án B nên hiện không cần | Phương án B và A dùng initialization script, không cần gói này |
 
 Mỗi gói ghim version chính xác lúc cài và kiểm lại giấy phép trên registry ngày cài (CLAUDE.md §2.2).
 
 ## 9. Câu hỏi cần người dùng quyết
 
-1. **Nối WebView với backend dưới Tauri:** thử phương án B (backend phục vụ bản export, cùng origin) trước, A (CORS) làm dự phòng? Cả hai đều cần duyệt: B đổi kiến trúc backend, A đổi §6.0 và cần ADR.
+1. **Nối WebView với backend dưới Tauri:** thử phương án B (backend phục vụ bản export, cùng origin) trước, A (CORS) làm dự phòng? Cả hai đều cần duyệt: B đổi kiến trúc backend, A đổi §6.0 và cần ADR. **Đã quyết (duyệt 2026-10-26 chiều):** chọn phương án B; A là dự phòng (`docs/tauri-spike-plan.md` mục 3a, spec §6.0).
 2. **Kiểu của contract chưa có trong backend:** đặt ở `src/types/contract-pending.ts` rồi chuyển sang `holocron.ts` khi backend có, hay thêm thẳng vào `holocron.ts` kèm chú thích "chưa có ở backend" (trái nguyên tắc khớp 1:1)?
 3. **Tổng kết phiên luyện tập MCQ:** frontend có được đếm số câu đúng trong phiên để hiện "Đúng x/y câu" không? Đây là số về câu trả lời của người học, không phải nội dung câu hỏi, nhưng §5.14 thêm `matched_count` riêng "để frontend không tự đếm". Mặc định của kế hoạch: không hiện tổng.
-4. **Lịch sử lượt làm bài:** spec ghi là việc sau MVP. Ở F5 chỉ làm lịch sử bộ đề và lượt sinh (§6.7), hay cần một contract mới cho lượt làm bài (backend lưu) hoặc cho phép lưu ở `localStorage` của WebView?
-5. **File gốc cho ảnh trang và trích dẫn một chạm:** duyệt thêm endpoint (ví dụ `GET /v1/documents/{id}/file`) cùng `pdfjs-dist`, hay để sau MVP và chỉ xem lại theo văn bản?
-6. **`RuntimeInfo` thiếu hai thông tin UI cần:** chế độ lưu trữ (in-memory thì mất Vault khi tắt backend, người dùng đang ôn thật) và tên bên nhận dữ liệu LLM mà §13.1 yêu cầu UI nêu (nhưng `/v1/runtime` không được lộ endpoint). Thêm field (đổi contract §5.12), hay ghi cố định trên UI?
+4. **Lịch sử lượt làm bài:** spec ghi là việc sau MVP. Ở F5 chỉ làm lịch sử bộ đề và lượt sinh (§6.7), hay cần một contract mới cho lượt làm bài (backend lưu) hoặc cho phép lưu ở `localStorage` của WebView? **Đã quyết (duyệt 2026-10-26 chiều):** lịch sử lượt làm bài là việc sau MVP. **Quyết định sau đó (chốt 2026-10-26, ~13:40) thay quyết định này:** lịch sử làm bài và ôn lại câu sai thuộc MVP-1; contract là đề xuất riêng, chờ duyệt; đúng/sai và mọi con số do backend tính (spec §1.5, §4).
+5. **File gốc cho ảnh trang và trích dẫn một chạm:** duyệt thêm endpoint (ví dụ `GET /v1/documents/{id}/file`) cùng `pdfjs-dist`, hay để sau MVP và chỉ xem lại theo văn bản? **Đã quyết (duyệt 2026-10-26 chiều):** render PDF bằng pdfjs là việc sau MVP; MVP xem lại theo văn bản, trích dẫn hiện quote kèm số trang (spec §1.6, §4, §12.2).
+6. **`RuntimeInfo` thiếu hai thông tin UI cần:** chế độ lưu trữ (in-memory thì mất Vault khi tắt backend, người dùng đang ôn thật) và tên bên nhận dữ liệu LLM mà §13.1 yêu cầu UI nêu (nhưng `/v1/runtime` không được lộ endpoint). Thêm field (đổi contract §5.12), hay ghi cố định trên UI? **Đã quyết (duyệt 2026-10-26 chiều):** `RuntimeInfo` thêm chế độ lưu trữ và bên nhận dữ liệu LLM; tên field, kiểu và nguồn là đề xuất (chi tiết) ở spec §5.12, chờ duyệt.
 7. **Câu chữ băng thông báo:** dùng "Đang chạy offline, không có LLM" theo đề xuất D10(a) thay cho "chế độ demo"?
 8. **Cờ mock:** đồng ý tên `NEXT_PUBLIC_HOLOCRON_MOCKS` và nguyên tắc chỉ mock endpoint chưa có, endpoint đã có luôn gọi backend thật kể cả khi bật cờ?
 9. **Danh sách môn khi chưa có `/v1/subjects`:** tạm lấy `subject_code` từ `GET /v1/documents`, và tạo môn chỉ bằng cách nhập tài liệu đầu tiên?
 10. **Ý nghĩa phím `C` và `Ctrl+K`:** `C` mở trích dẫn của câu vừa nộp; `Ctrl+K` là hộp lệnh gồm điều hướng và tìm trong Vault. Có cần thêm phím cho màn xem lại trang (dòng trước, dòng sau, xác nhận trang) không?
-11. **Đổi URL của trang có sẵn:** đồng ý chuyển `/ingestion/[itemId]` thành `/ingestion?item=…` và `/blueprints/[blueprintId]` thành `/twins?blueprint=…` ngay ở F1 để giữ được static export?
+11. **Đổi URL của trang có sẵn:** đồng ý chuyển `/ingestion/[itemId]` thành `/ingestion?item=…` và `/blueprints/[blueprintId]` thành `/twins?blueprint=…` ngay ở F1 để giữ được static export? **Đã quyết, đã làm (2026-10-26):** route dùng query string (spec §4).
 12. **Thứ tự merge backend:** F2 và F3 cần b3 và b6 vào `develop` trước (b3 có bộ nhập và Vault, b6 có `propose` và kiểu `Capability`). Nếu chưa merge, F2 và F3 dùng mock cho các endpoint đó; chấp nhận được không?
+13. **Dependency test component (mục 8):** **Đã quyết (duyệt 2026-10-26 chiều):** `@testing-library/react` + `jsdom` được duyệt, vào `devDependencies`; ghim version chính xác lúc cài và kiểm lại giấy phép (CLAUDE.md §2.2). `pdfjs-dist`, `katex`, `@tauri-apps/api` để khi cần.

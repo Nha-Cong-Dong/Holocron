@@ -21,7 +21,7 @@
 
 Đặc tả và contract: [`SPECIFICATION.md`](SPECIFICATION.md). Quy ước phát triển: [`.claude/CLAUDE.md`](.claude/CLAUDE.md).
 
-**Người dùng:** sinh viên tự ôn bằng tài liệu của chính mình. App chạy trên máy cá nhân; đích là app desktop đóng gói bằng Tauri (đang ở bước kế hoạch spike). Người dùng đầu tiên là chính người làm dự án, một sinh viên năm 3.
+**Người dùng:** sinh viên tự ôn bằng tài liệu của chính mình. App chạy trên máy cá nhân; MVP-1 là bản Windows zip portable chạy offline (Python embeddable, backend phục vụ giao diện tĩnh); app desktop Tauri làm sau MVP-1 (3–6/11). Người dùng đầu tiên là chính người làm dự án, một sinh viên năm 3.
 
 ## Điểm khác biệt
 
@@ -34,8 +34,8 @@ Nhãn: **ĐÃ CÓ** là chạy được trên nhánh `develop` hôm nay. **SẼ 
 | Xét duyệt trước khi tính: con người xác nhận dữ liệu đọc từ đề trước khi đề được dùng (bất biến I5) | **ĐÃ CÓ.** Ingestion Gate có màn sửa và duyệt từng item, chặn sinh câu khi còn lỗi BLOCKING; hiện dùng extractor giả lập. Hàng đợi xét duyệt theo trang cho PDF: **SẼ LÀM** |
 | OCR tiếng Việt có dấu, chạy offline, đối chiếu chéo hai lượt đọc trên các con số, kèm màn xem lại theo trang | **SẼ LÀM** (ADR-008: Tesseract `vie` cùng RapidOCR so số) |
 | Câu lý thuyết trắc nghiệm sinh tất định từ cặp khái niệm–trích dẫn đã xác nhận | **SẼ LÀM** (ADR-007) |
-| Câu tự luận "Trình bày khái niệm X" được chấm hoàn toàn offline: báo "khớp x/y ý" cùng các ý còn thiếu, không cho điểm tuyệt đối | **SẼ LÀM nếu kịp mốc 29/10** (spec §5.14); không kịp thì chuyển sau MVP |
-| Câu tính toán do code chạy trong sandbox tính, LLM không tính nhẩm (bất biến I1) | **ĐÃ CÓ** cơ chế sandbox, template Round Robin và SJF dùng làm fixture. Template cho môn demo (ARM, XSTK): **SẼ LÀM** ở luồng song song, không chặn MVP cơ bản; chờ quyết ADR-005 bước 3 và D6 (spec §16), có thể lùi sau MVP nếu trễ |
+| Câu tự luận "Trình bày khái niệm X" được chấm hoàn toàn offline: báo "khớp x/y ý" cùng các ý còn thiếu, không cho điểm tuyệt đối | **SẼ LÀM** 30/10–2/11, sau MVP-1 (spec §1.5, §5.14) |
+| Câu tính toán do code chạy trong sandbox tính, LLM không tính nhẩm (bất biến I1) | **ĐÃ CÓ** cơ chế sandbox, template Round Robin và SJF dùng làm fixture. Template cho môn demo (ARM, XSTK): **SẼ LÀM** sau MVP-1 (30/10–2/11, phần khả thi nhất trước; D6 đã duyệt 2026-10-26, spec §16) |
 | Kiến trúc không gắn với một môn: dạng bài nằm trong template và dữ liệu, không nằm trong code | **SẼ LÀM.** Đây là nguyên tắc thiết kế; vẫn còn nợ gắn cứng CPU Scheduling (ARCH-001, ADR-005) |
 | Mọi môn, nhiều định dạng tài liệu (DOCX, PPTX, ảnh), chấm tự luận bằng LLM (AnswerJudge), model chạy local | **HƯỚNG** |
 
@@ -50,8 +50,8 @@ Nhãn: **ĐÃ CÓ** là chạy được trên nhánh `develop` hôm nay. **SẼ 
 - **Đọc đề vẫn là giả lập:** extractor là `MockDualPassExtractor`, trả cùng một đề Round Robin mẫu cho mọi file hợp lệ; chưa có adapter VLM thật.
 - **Sinh câu hỏi:** đã có `POST /v1/blueprints/{id}/twins` và trang xem twin; chưa có `POST /v1/blueprints` nên chưa tạo được blueprint từ đề đã duyệt qua API. Chưa có adapter LLM viết template nên pipeline dùng template đã kiểm chứng làm fallback.
 - **Chưa có Knowledge Vault đa môn**, chưa có ôn lý thuyết hay chấm câu trả lời.
-- **Phạm vi MVP là đa môn** (`SPECIFICATION.md` §1): desktop app Tauri cho sinh viên tự ôn luyện, ba môn demo. Thiết kế ở ADR-005/006/007/008 (*Chấp nhận*). Contract cho bộ nhập PDF, Vault, blueprint, SQLite, essay và chế độ khả năng nằm ở `SPECIFICATION.md` §5–§6; phần lớn chưa có code.
-- **Lộ trình** (`SPECIFICATION.md` §16): ưu tiên lát cắt dọc PDF → Vault → câu lý thuyết MCQ → màn luyện tập. Mốc MVP cơ bản là 28/10; đủ phạm vi dự kiến trong 1–4/11; dư địa đến 7/11.
+- **Phạm vi:** spec v0.7 là contract mục tiêu đa môn; mục tiêu trước mắt là **MVP-1** (`SPECIFICATION.md` §1.5): zip portable Windows, offline, không cần API key, luồng PDF → xem lại → Vault → cặp khái niệm → câu MCQ4 lý thuyết → làm bài → đáp án kèm trích dẫn và số trang → lịch sử + ôn câu sai. Thiết kế ở ADR-005/006/007/008 (*Chấp nhận*). Contract cho bộ nhập PDF, Vault, blueprint, SQLite, essay và chế độ khả năng nằm ở `SPECIFICATION.md` §5–§6; phần lớn chưa có code.
+- **Lộ trình** (`SPECIFICATION.md` §16, chốt 2026-10-26): MVP-1 26–29/10; tự luận offline, giải thích đáp án bằng LLM tuỳ chọn và câu tính toán (phần khả thi nhất) 30/10–2/11; Tauri và sửa lỗi 3–6/11; đóng băng code 7–8/11; hạn nộp 8/11.
 
 ## Cấu trúc dự án
 

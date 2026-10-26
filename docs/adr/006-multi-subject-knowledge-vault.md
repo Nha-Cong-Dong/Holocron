@@ -1,7 +1,7 @@
 # ADR 006: Knowledge Vault đa môn
 
-- Trạng thái: Chấp nhận (2026-10-23). Bổ sung mục 9 (so khớp I3 sau chuẩn hoá NFC), người dùng đồng ý ngày 2026-10-24. Sửa câu chữ nhà cung cấp LLM ở mục 2 và phần Hệ quả theo quyết định ngày 2026-10-25 (LLM tuỳ chọn, nhà cung cấp do cấu hình quyết định).
-- Ngày: 2026-10-23; cập nhật 2026-10-24, 2026-10-25
+- Trạng thái: Chấp nhận (2026-10-23). Bổ sung mục 9 (so khớp I3 sau chuẩn hoá NFC), người dùng đồng ý ngày 2026-10-24. Sửa câu chữ nhà cung cấp LLM ở mục 2 và phần Hệ quả theo quyết định ngày 2026-10-25 (LLM tuỳ chọn, nhà cung cấp do cấu hình quyết định). Sửa câu chữ mục 2 về `chapter_code` theo quyết định ngày 2026-10-26 (chiều): `chapter_code` lấy từ field bắt buộc khi nhập tài liệu, LLM chỉ đề xuất đổi chương cho từng chunk. Trạng thái không đổi.
+- Ngày: 2026-10-23; cập nhật 2026-10-24, 2026-10-25, 2026-10-26
 
 ## Bối cảnh
 
@@ -17,7 +17,7 @@ Mục tiêu G1 (`SPECIFICATION.md` §1.5) yêu cầu mọi twin đều có tríc
 1. **Nguồn vào duy nhất là bộ nhập PDF đã qua xem lại** (ADR-008). Văn bản của chunk là văn bản người dùng đã xác nhận ở màn hình xem lại, không phải đầu ra thô của OCR hay VLM. Có thêm đường nhập văn bản thuần (dán hoặc file `.txt`) dùng cho test và tài liệu mẫu.
 2. **Nhãn do LLM đề xuất, người dùng xác nhận.** LLM là tuỳ chọn; nhà cung cấp do cấu hình quyết định, không có nhà cung cấp mặc định (duyệt 2026-10-25; hiện là gateway kiểu OpenAI của ban tổ chức, model `claude-haiku-5-5`). Contract hiện chỉ có adapter kiểu OpenAI Chat Completions sau `Protocol` `ChatCompletionClient` (tên đề xuất, spec §11.5); DeepSeek hay server local tương thích OpenAI dùng được qua adapter này; Anthropic gốc (API không theo giao thức OpenAI) cần một adapter riêng cài cùng `Protocol`, chưa có. Không có LLM thì người dùng tự nhập. Khi có LLM, trên văn bản đã tách, LLM đề xuất:
    - `subject_code`: mã học phần (khớp mẫu `^[A-Z]{2,6}[0-9]{2,4}$` sẵn có, ví dụ `IT3070`). Nếu tài liệu không ghi mã, người dùng nhập.
-   - `chapter_code` theo heading (`ch3`, `ch3.2`).
+   - Đổi `chapter_code` cho từng chunk (`ch3`, `ch3.2`). `chapter_code` ban đầu KHÔNG do LLM đề xuất: nó lấy từ field bắt buộc người dùng nhập khi nhập tài liệu, một file = một chương (duyệt 2026-10-26; spec §5.7, §6.5), và mọi chunk cắt từ file nhận giá trị đó. LLM (nếu có) chỉ đề xuất đổi chương cho từng chunk; người dùng xác nhận qua sửa nhãn chunk (spec §6.6) (sửa câu chữ, duyệt 2026-10-26 chiều; thay câu cũ "`chapter_code` theo heading").
    - `category` `THEORY`/`PRACTICE`, `topic_keys`.
    - Các cặp **khái niệm – trích dẫn định nghĩa** dùng cho câu lý thuyết. Chỉ cặp đã được người dùng xác nhận mới được dùng để sinh câu (ADR-007 mục 1).
 

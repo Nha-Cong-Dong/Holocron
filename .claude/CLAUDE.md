@@ -23,17 +23,18 @@
 
 | | LLM Gate (KHÔNG tin cậy) | Deterministic Core (tin cậy) |
 |---|---|---|
-| Thành phần | `DocumentExtractor` (VLM), bộ phân tách/phân loại tài liệu môn học, `TemplateAuthor` (LLM viết template và bộ giải tham chiếu), bộ soạn câu hỏi lý thuyết, `AnswerJudge` (chấm câu trả lời của người học) | `ingestion_gate`, `pipeline`, `sandbox`, bậc *đã kiểm chứng* của `template_library`, bộ sinh câu hỏi tất định (điền khuyết, ghép khái niệm), bộ tính điểm, `domain` |
+| Thành phần | `DocumentExtractor` (VLM), bộ phân tách/phân loại tài liệu môn học, `TemplateAuthor` (LLM viết template và bộ giải tham chiếu), bộ soạn câu hỏi lý thuyết, `AnswerJudge` (chấm câu trả lời của người học) | `ingestion_gate`, `pipeline`, `sandbox`, bậc *đã kiểm chứng* của `template_library`, bộ sinh câu hỏi tất định (điền khuyết, ghép khái niệm), bộ tính điểm, bộ chấm tự luận offline (n-gram), `domain` |
 | Được làm | Đọc ảnh/tài liệu thành văn bản, bảng, công thức, cấu trúc; phân tách và phân loại nội dung; gắn nhãn môn/chương/khái niệm/topic; viết mã template; soạn câu hỏi lý thuyết và rubric; chấm từng ý của rubric (đạt / thiếu / sai) kèm bằng chứng | Mọi phép tính, artifact lời giải (bảng, timeline, biểu đồ), đáp án, phương án nhiễu, trộn phương án, điểm số |
 | Đầu ra đi đâu | Luôn vào một cổng kiểm: nội dung trích từ tài liệu → kiểm nguyên văn (I3); bảng/công thức/giá trị đề → Ingestion Gate; mã → ASTGuard + sandbox + kiểm chứng; câu hỏi lý thuyết và rubric → mỗi ý neo vào trích dẫn nguyên văn; verdict chấm → kiểm bằng chứng rồi code tính điểm | Trực tiếp tới người dùng |
 
 Quy tắc cứng:
-- KHÔNG ĐƯỢC để bất kỳ con số hiển thị nào (đáp án, phương án, kết quả trung gian, bảng hay biểu đồ lời giải) được tính ngoài sandbox hoặc do LLM viết (I1). Kể cả "tính hộ cho nhanh" trong router, service hay frontend.
+- KHÔNG ĐƯỢC để bất kỳ con số hiển thị nào (đáp án, phương án, kết quả trung gian, bảng hay biểu đồ lời giải) được tính ngoài sandbox hoặc do LLM viết (I1). Kể cả "tính hộ cho nhanh" trong router, service hay frontend. Ngoại lệ duy nhất (duyệt 2026-10-25): kết quả chấm câu trả lời của người học (ví dụ `matched_count`/`total_points` của chấm tự luận offline) do bộ tính điểm thuộc Deterministic Core tính bằng code ngoài sandbox; ngoại lệ này KHÔNG áp dụng cho con số nào trong nội dung câu hỏi, đáp án hay lời giải.
 - KHÔNG ĐƯỢC sinh câu hỏi, đáp án hay lời giải hiển thị như kết quả từ dữ liệu VLM khi Gate còn issue BLOCKING (I5). Sandbox ĐƯỢC chạy trên dữ liệu chưa duyệt chỉ để kiểm tra (self-solve, neo đáp án của đề gốc, xem trước có nhãn "chưa duyệt"); kết quả đó KHÔNG ĐƯỢC lưu thành câu hỏi hay xuất ra ngoài.
 - Frontend chỉ hiển thị số do backend trả; KHÔNG ĐƯỢC tự tính lại.
 - Template do LLM sinh có hai bậc: *ứng viên* (lưu ngoài `infrastructure/templates/`, chỉ dùng để kiểm chứng và xem trước) và *đã kiểm chứng* (qua đủ các lớp kiểm chứng ở `SPECIFICATION.md` và được người duyệt). Chỉ template đã kiểm chứng được dùng để sinh câu hỏi phát hành và làm fallback.
 - Mọi khẳng định kiến thức hiển thị cho người dùng (định nghĩa, tóm tắt, câu hỏi khái niệm và đáp án của nó) PHẢI kèm trích dẫn nguyên văn từ tài liệu nguồn (I3); không trích dẫn được thì không hiển thị như kiến thức đã kiểm chứng.
 - Chấm câu trả lời của người học: LLM chỉ trả verdict cho từng ý của rubric kèm bằng chứng; điểm số và kết luận đúng/sai do code tính từ các verdict đó, LLM KHÔNG trả điểm. Verdict có bằng chứng không phải chuỗi con (đã chuẩn hoá NFC và khoảng trắng) của câu trả lời người học hoặc của tài liệu nguồn bị loại. Đáp án mẫu là trích dẫn nguyên văn từ tài liệu, không phải văn bản LLM diễn đạt lại.
+- Không có LLM: chấm tự luận offline chỉ báo khớp x/y ý kèm các ý còn thiếu, KHÔNG có điểm tuyệt đối.
 
 ### 2.2 Phân tầng package (backend)
 
@@ -41,11 +42,12 @@ Quy tắc cứng:
 |---|---|---|
 | `domain/` | thư viện chuẩn, `pydantic` | mọi tầng khác |
 | `sandbox/` | thư viện chuẩn, `pydantic` | `services/`, `routers/`, mạng |
-| `infrastructure/` | `domain/` | `services/`, `routers/` |
+| `infrastructure/` | `domain/`, `sandbox.os_limits` (module giới hạn OS dùng chung, ADR-008 mục 3; duyệt 2026-10-25) | `services/`, `routers/` |
 | `services/` | `domain/`, `sandbox/`, `infrastructure/` | `routers/`, `fastapi` |
 | `routers/` | tất cả tầng dưới | — |
 
 - Phụ thuộc bên ngoài (VLM, LLM, storage) PHẢI đi qua `Protocol` và được cấp bằng `Depends` hoặc tham số; test thay bằng `app.dependency_overrides` hoặc stub, KHÔNG ĐƯỢC gọi mạng trong test.
+- LLM/VLM là tuỳ chọn: thiếu cấu hình thì khả năng tương ứng báo không khả dụng, phần còn lại chạy offline.
 - Đánh giá với LLM/VLM thật (bộ đề và bộ tài liệu kiểm tra nhiều môn) chạy NGOÀI `pytest`, bằng script opt-in trong `holocron/backend/scripts/`, đọc API key từ biến môi trường; không chạy trong CI hay pre-commit. Kết quả ghi ra file; không commit key.
 - Bộ đọc tài liệu (PDF, PPTX, DOCX, ảnh) xử lý file KHÔNG tin cậy: đặt ở `infrastructure/` sau một `Protocol`, có giới hạn kích thước, số trang và thời gian; không thực thi macro, script hay nội dung nhúng; test bằng file mẫu cục bộ nhỏ.
 - Dependency mới: ghim version, license tương thích MIT (KHÔNG GPL/AGPL), ghi lý do trong PR.
@@ -110,7 +112,7 @@ npm run lint && npm run typecheck && npm test && npm run build   # frontend; npm
 Cài hook một lần ở gốc repo: `python -m pip install pre-commit` rồi `python -m pre_commit install` (cài cả `commit-msg` và `pre-push` theo `default_install_hook_types`). Hook commit chạy định dạng/EOL, `ruff`, `mypy --strict`, `biome`, `tsc`, kiểm version và Conventional Commits; hook push chạy `pytest` và `next build`. CI chạy lại toàn bộ trên Linux và Windows.
 
 **Cấp 1 — trong lúc sửa từng file (nhanh):**
-- Python: `ruff check <file>` + `pytest` cho file test liên quan trực tiếp (sửa `sandbox.py` ⇒ `tests/test_sandbox_security.py`; sửa `routers/api.py` ⇒ `tests/test_upload.py`, `tests/test_api_item_state.py`, `tests/test_schemas_and_gate.py`).
+- Python: `ruff check <file>` + `pytest` cho file test liên quan trực tiếp (sửa `sandbox.py` ⇒ `tests/test_sandbox_security.py`; sửa `routers/` ⇒ `tests/test_upload.py`, `tests/test_api_item_state.py`, `tests/test_schemas_and_gate.py`, `tests/test_router_split.py`).
 - TypeScript: `npm run typecheck`.
 - Đọc nội dung hiện tại trước khi ghi đè file có sẵn; không xoá nội dung người dùng khi chưa được yêu cầu.
 
@@ -146,7 +148,7 @@ Làm xanh kết quả bằng cách che lỗi là không được chấp nhận. 
 - Dùng `# type: ignore`, `# noqa`, `cast(Any, …)` trong Python; `any`, `@ts-ignore`, `@ts-expect-error`, `as unknown as`, `eslint-disable`, `biome-ignore` trong TypeScript.
 - Hạ mức kiểm tra trong `pyproject.toml` hay `tsconfig.json`: thêm `ignore`/`per-file-ignores`/`exclude` cho ruff, `ignore_errors`/`disable_error_code`/`overrides` nới lỏng cho mypy, tắt `strict` của TypeScript.
 - Sửa, xoá, `skip`/`xfail` test sẵn có chỉ để kết quả xanh. Test fail nghĩa là code sai, hoặc spec đổi — khi đó nêu rõ và được người dùng đồng ý trước. Chỉ được thêm test mới, hoặc đổi định dạng thuần tuý (do `ruff format`) mà không đổi AST.
-- Viết code tắt: placeholder, hàm rỗng, `pass`/`...` thay cho logic, `# TODO` mới (TODO hiện có duy nhất là optimistic locking Tuần 4 trong `routers/api.py`, đã được duyệt).
+- Viết code tắt: placeholder, hàm rỗng, `pass`/`...` thay cho logic, `# TODO` mới (TODO hiện có duy nhất là optimistic locking Tuần 4 trong `routers/ingestion.py`, đã được duyệt; xoá khi nhánh SQLite làm xong optimistic locking).
 
 **Ngoại lệ đã được người dùng duyệt (chỉ những mục này):**
 - Đúng một `# noqa: S102` tại dòng `exec` trong `sandbox/_sandbox_child.py` (chủ đích kiến trúc của sandbox).
@@ -167,7 +169,7 @@ Thay đổi chạm một bất biến PHẢI giữ các test cưỡng chế dư�
 | I1 | `tests/test_pipeline_twin_assembly.py`, `tests/test_pipeline_fallback.py`, `tests/test_sandbox_security.py`, `tests/test_sandbox_limits.py` |
 | I2 | `tests/test_pipeline_twin_assembly.py` (misconception lạ), `tests/test_domain_validators.py`; câu lý thuyết: `tests/test_theory_generator.py` (mọi phương án nhiễu mang mã thuộc `THEORY_MISCONCEPTIONS`; thêm cùng bộ sinh câu lý thuyết, ADR-007) |
 | I3 | `test_chunk_rejects_quote_not_in_text` và `test_chunk_accepts_quote_in_nfd_against_nfc_text` trong `tests/test_schemas_and_gate.py` |
-| I4 | `tests/test_rr_template.py` + `python -m scripts.run_walkthrough` rồi `git diff --exit-code -- holocron/backend/examples`; câu lý thuyết: `tests/test_theory_generator.py` (cùng `(generator_version, pool_sha256, seed)` cho cùng câu; NFC và NFD cho cùng `pool_sha256`; thêm cặp ở môn khác không đổi `pool_sha256`; thêm cùng bộ sinh câu lý thuyết, ADR-007) |
+| I4 | `tests/test_rr_template.py` + `python -m scripts.run_walkthrough` rồi `git diff --exit-code -- holocron/backend/examples`; câu lý thuyết: `tests/test_theory_generator.py` (cùng `(generator_version, pool_sha256, seed)` cho cùng câu; NFC và NFD cho cùng `pool_sha256`; thêm cặp ở môn khác không đổi `pool_sha256`; thêm cùng bộ sinh câu lý thuyết, ADR-007); chấm tự luận offline: `tests/test_essay_grader.py` (khi làm essay) |
 | I5 | `tests/test_schemas_and_gate.py`, `tests/test_api_item_state.py`, `tests/test_i5_enforcement.py` (topic lạ, self-solve `SKIPPED`), `tests/test_input_limits.py`; phía frontend `src/lib/gate.test.ts` (`canApprove`); bộ nhập PDF (ADR-008 mục 14): `tests/test_pdf_ocr.py` (`test_ocr_charset_covers_vietnamese`, `test_low_line_coverage_marks_page_needs_review`, `test_numeric_token_mismatch_raises_dual_pass_mismatch`, `test_cross_check_unavailable_blocks_auto_pass`), `tests/test_pdf_tiers.py` (`test_page_flags_select_tier`), `tests/test_pdf_input_limits.py` (`test_bad_pdf_limits`) |
 | Phân tầng package (§2.2) | `tests/test_architecture.py` |
 

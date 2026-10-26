@@ -128,6 +128,25 @@ def test_text_layer_wait_capped_by_document_deadline_ends_the_document(
     assert spare.requested == []
 
 
+def test_remaining_budget_never_exceeds_the_document_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: _FakeClock
+) -> None:
+    # Với đồng hồ lớn, (t0 + 0.3) - t0 = 0.30000000000291 trên số thực: hạn chờ không được vượt hạn tổng.
+    clock.now = 100000.123
+    assert (clock.now + 0.3) - clock.now > 0.3  # điều kiện tái hiện lỗi làm tròn
+    first = _ClockSession(clock, ["timeout"])
+    spare = _ClockSession(clock, [PageMessage(page=_page(1)), PageMessage(page=_page(2))])
+    budgets = _patch_start(monkeypatch, [first, spare])
+    config = PdfReaderConfig(document_timeout_s=0.3, text_layer_page_timeout_s=5.0)
+    assert _summary(WorkerPdfReader(config), _pdf_stub(tmp_path)) == [
+        (1, "failed", "PAGE_TIMEOUT"),
+        (2, "failed", "PAGE_TIMEOUT"),
+        (3, "failed", "PAGE_TIMEOUT"),
+    ]
+    assert first.timeouts == [config.document_timeout_s]
+    assert budgets == [config.max_pages] and spare.requested == []
+
+
 def test_ocr_wait_capped_by_document_deadline_ends_the_document(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: _FakeClock
 ) -> None:

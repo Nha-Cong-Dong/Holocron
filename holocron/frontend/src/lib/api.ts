@@ -10,6 +10,15 @@
 
 import { apiBase, authHeaders, USE_MOCKS } from "@/lib/config";
 import {
+  type DocumentImportOutcome,
+  type DocumentSummaryView,
+  type DocumentView,
+  type PageView,
+  parseDocumentImport,
+  parseDocumentSummaries,
+  parsePageExtraction,
+} from "@/lib/documents-data";
+import {
   ApiError,
   type ClassifyOptions,
   classifyHttpError,
@@ -27,12 +36,42 @@ import {
   parsePracticeBatch,
 } from "@/lib/practice-data";
 import { normalizeRuntimeInfo, type RuntimeView } from "@/lib/runtime";
-import { parseSubjectList } from "@/lib/subjects";
-import { fillRuntimeGaps, mockApi, mockPracticeBatch } from "@/mocks";
-import { isMockBlueprint } from "@/mocks/store";
-import type { BlueprintCreate, EssayGradeRequest, Subject } from "@/types/contract-pending";
+import { parseSubject, parseSubjectList } from "@/lib/subjects";
+import {
+  type ChunkFilter,
+  type ChunkLabelChange,
+  type ChunkListView,
+  type ChunkView,
+  chunkQueryString,
+  parseChunkList,
+  parseKnowledgeChunk,
+  parseSearchHits,
+  type SearchQuery,
+  type SearchResultView,
+  searchQueryString,
+} from "@/lib/vault";
+import {
+  fillRuntimeGaps,
+  mockApi,
+  mockDocumentApi,
+  mockPracticeBatch,
+  mockSubjectApi,
+  mockVaultSourceChunks,
+} from "@/mocks";
+import { isMockBlueprint, isMockDocument } from "@/mocks/store";
+import type {
+  BlueprintCreate,
+  DocumentConfirmRequest,
+  EssayGradeRequest,
+  LineEdit,
+  PageConfirmRequest,
+  PageLinesPatch,
+  Subject,
+  SubjectCreate,
+} from "@/types/contract-pending";
 import type {
   CellPatch,
+  ChunkLabelsPatch,
   IngestionItem,
   NonCloneableRequest,
   TablePatchRequest,
@@ -53,7 +92,8 @@ interface RequestSpec {
   headers?: Record<string, string>;
 }
 
-async function request<T>(path: string, spec: RequestSpec, options: ClassifyOptions = {}): Promise<T> {
+/** Gửi request; mã lỗi HTTP và lỗi mạng thành `ApiError` đã phân loại. Trả `Response` thành công (chưa đọc thân). */
+async function send(path: string, spec: RequestSpec, options: ClassifyOptions = {}): Promise<Response> {
   const base = apiBase();
   // Header xác thực gộp sau cùng để header riêng của request không ghi đè được token.
   const init: RequestInit = { method: spec.method, headers: { ...spec.headers, ...authHeaders() } };
@@ -75,11 +115,21 @@ async function request<T>(path: string, spec: RequestSpec, options: ClassifyOpti
     }
     throw new ApiError(response.status, classifyHttpError(response.status, body, options));
   }
+  return response;
+}
+
+/** Thân JSON của phản hồi thành công, chưa kiểm dạng; thân không phải JSON ⇒ lỗi phản hồi không hợp lệ. */
+async function readJson(response: Response): Promise<unknown> {
   try {
-    return (await response.json()) as T;
+    const body: unknown = await response.json();
+    return body;
   } catch {
     throw new ApiError(response.status, invalidResponseError());
   }
+}
+
+async function request<T>(path: string, spec: RequestSpec, options: ClassifyOptions = {}): Promise<T> {
+  return (await readJson(await send(path, spec, options))) as T;
 }
 
 function jsonSpec(method: "POST" | "PATCH", payload: unknown, headers: Record<string, string> = {}): RequestSpec {
@@ -98,10 +148,26 @@ function validated<T>(value: T | null): T {
 
 /** Tham số của `GET /v1/vault/chunks` (§6.6) mà màn luyện tập dùng để tìm văn bản nguồn của trích dẫn. */
 export interface ChunkQuery {
+  /** Môn của blueprint sinh ra câu (ADR-006 mục 6), không phải môn đang chọn ở thanh bên. */
   subjectCode: string;
+  /**
+   * Blueprint sinh ra câu. Không gửi lên backend; chỉ dùng để chọn nguồn khi bật dữ liệu mẫu (câu của blueprint mẫu
+   * trích dẫn chunk mẫu).
+   */
+  blueprintId?: string;
   chapterCode: string | null;
   offset: number;
   limit: number;
+}
+
+/** Dữ liệu của form nhập tài liệu, đã kiểm ở `lib/documents.ts`. */
+export interface DocumentImportInput {
+  file: File;
+  subjectCode: string;
+  sourceKind: string;
+  chapterCode: string;
+  /** `null` để backend lấy tên file bỏ đuôi. */
+  title: string | null;
 }
 
 /** Mọi hàm gọi backend. Mock chỉ được thay phần tử của endpoint chưa có ở backend. */
@@ -142,8 +208,41 @@ export interface HolocronApi {
   ) => Promise<PracticeBatch>;
   /** `POST /v1/twins/{twin_id}/essay-grade` (§6.9; chưa có ở backend), đã kiểm dạng. */
   gradeEssay: (twinId: string, answerText: string) => Promise<EssayGradeView>;
-  /** `GET /v1/vault/chunks` (§6.6; chưa có ở backend của nhánh này), đã kiểm dạng. */
+  /** `GET /v1/vault/chunks` (§6.6) cho màn luyện tập (tìm văn bản nguồn của trích dẫn), đã kiểm dạng. */
   listVaultChunks: (query: ChunkQuery) => Promise<ChunkPageView>;
+  /** `POST /v1/subjects` (§6.8, đường dẫn còn đề xuất; chưa có ở backend), đã kiểm dạng. */
+  createSubject: (payload: SubjectCreate) => Promise<Subject>;
+  /** `GET /v1/documents?subject_code=` (§6.5), đã kiểm dạng; mới nhất trước. */
+  listDocuments: (subjectCode: string) => Promise<DocumentSummaryView[]>;
+  /** `POST /v1/documents` (§6.5): 202 ⇒ `created = true`; 200 (cùng nội dung, cùng môn) ⇒ `created = false`. */
+  importDocument: (input: DocumentImportInput) => Promise<DocumentImportOutcome>;
+  /** `GET /v1/documents/{document_id}` (§6.5), dùng để hỏi trạng thái khi đang đọc. */
+  getDocument: (documentId: string) => Promise<DocumentView>;
+  /** `GET /v1/documents/{document_id}/pages/{page_number}` (§6.5). */
+  getDocumentPage: (documentId: string, pageNumber: number) => Promise<PageView>;
+  /** `PATCH /v1/documents/{document_id}/pages/{page_number}/lines` (§6.5; chưa có ở backend của nhánh). */
+  patchPageLines: (
+    documentId: string,
+    pageNumber: number,
+    expectedVersion: number,
+    edits: LineEdit[],
+    appendedLines: string[],
+  ) => Promise<PageView>;
+  /** `POST /v1/documents/{document_id}/pages/{page_number}/confirm` (§6.5; chưa có ở backend của nhánh). */
+  confirmPage: (documentId: string, pageNumber: number, expectedVersion: number) => Promise<PageView>;
+  /** `POST /v1/documents/{document_id}/confirm` (§6.5; chưa có ở backend của nhánh): chỉ xác nhận trang `ok`. */
+  confirmDocument: (documentId: string) => Promise<DocumentView>;
+  /** `DELETE /v1/documents/{document_id}` (§6.5): 204. */
+  deleteDocument: (documentId: string) => Promise<void>;
+  /** `GET /v1/vault/chunks` (§6.6) cho màn Vault, đã kiểm dạng. */
+  browseVaultChunks: (filter: ChunkFilter) => Promise<ChunkListView>;
+  /** `GET /v1/vault/search` (§6.6), đã kiểm dạng; không có `score`. */
+  searchVault: (query: SearchQuery) => Promise<SearchResultView>;
+  /**
+   * `PATCH /v1/vault/chunks/{chunk_id}/labels` (§6.6): sửa và xác nhận nhãn; body chỉ gồm field đã đổi kèm
+   * `expected_version` (dựng ở `lib/vault.ts`). Trả chunk đã kiểm dạng.
+   */
+  patchChunkLabels: (chunkId: string, change: ChunkLabelChange) => Promise<ChunkView>;
 }
 
 /**
@@ -248,6 +347,115 @@ export const realApi: HolocronApi = {
     );
     return validated(parseChunkPage(raw));
   },
+
+  createSubject: async (payload) => {
+    const raw = await request<unknown>("/v1/subjects", jsonSpec("POST", payload), { context: "subject_create" });
+    return validated(parseSubject(raw));
+  },
+
+  listDocuments: async (subjectCode) => {
+    const params = new URLSearchParams({ subject_code: subjectCode });
+    const raw = await request<unknown>(
+      `/v1/documents?${params.toString()}`,
+      { method: "GET" },
+      { context: "document_list" },
+    );
+    return validated(parseDocumentSummaries(raw));
+  },
+
+  importDocument: async (input) => {
+    const form = new FormData();
+    form.append("file", input.file);
+    form.append("subject_code", input.subjectCode);
+    form.append("source_kind", input.sourceKind);
+    form.append("chapter_code", input.chapterCode);
+    if (input.title !== null) form.append("title", input.title);
+    const response = await send("/v1/documents", { method: "POST", body: form }, { context: "document_upload" });
+    const document = validated(parseDocumentImport(await readJson(response)));
+    return { created: response.status === 202, document };
+  },
+
+  getDocument: async (documentId) => {
+    const raw = await request<unknown>(
+      `/v1/documents/${segment(documentId)}`,
+      { method: "GET" },
+      { context: "document_review" },
+    );
+    return validated(parseDocumentImport(raw));
+  },
+
+  getDocumentPage: async (documentId, pageNumber) => {
+    const raw = await request<unknown>(
+      `/v1/documents/${segment(documentId)}/pages/${pageNumber}`,
+      { method: "GET" },
+      { context: "document_review" },
+    );
+    return validated(parsePageExtraction(raw));
+  },
+
+  patchPageLines: async (documentId, pageNumber, expectedVersion, edits, appendedLines) => {
+    const payload: PageLinesPatch = {
+      editor_id: LOCAL_EDITOR_ID,
+      expected_version: expectedVersion,
+      edits,
+      appended_lines: appendedLines,
+    };
+    const raw = await request<unknown>(
+      `/v1/documents/${segment(documentId)}/pages/${pageNumber}/lines`,
+      jsonSpec("PATCH", payload),
+      { versioned: true, context: "document_review" },
+    );
+    return validated(parsePageExtraction(raw));
+  },
+
+  confirmPage: async (documentId, pageNumber, expectedVersion) => {
+    const payload: PageConfirmRequest = { editor_id: LOCAL_EDITOR_ID, expected_version: expectedVersion };
+    const raw = await request<unknown>(
+      `/v1/documents/${segment(documentId)}/pages/${pageNumber}/confirm`,
+      jsonSpec("POST", payload),
+      { versioned: true, context: "page_confirm" },
+    );
+    return validated(parsePageExtraction(raw));
+  },
+
+  confirmDocument: async (documentId) => {
+    const payload: DocumentConfirmRequest = { editor_id: LOCAL_EDITOR_ID };
+    const raw = await request<unknown>(`/v1/documents/${segment(documentId)}/confirm`, jsonSpec("POST", payload), {
+      context: "document_confirm",
+    });
+    return validated(parseDocumentImport(raw));
+  },
+
+  deleteDocument: async (documentId) => {
+    await send(`/v1/documents/${segment(documentId)}`, { method: "DELETE" }, { context: "document_delete" });
+  },
+
+  browseVaultChunks: async (filter) => {
+    const raw = await request<unknown>(
+      `/v1/vault/chunks?${chunkQueryString(filter)}`,
+      { method: "GET" },
+      { context: "vault_browse" },
+    );
+    return validated(parseChunkList(raw));
+  },
+
+  searchVault: async (query) => {
+    const raw = await request<unknown>(
+      `/v1/vault/search?${searchQueryString(query)}`,
+      { method: "GET" },
+      { context: "vault_browse" },
+    );
+    return validated(parseSearchHits(raw));
+  },
+
+  patchChunkLabels: async (chunkId, change) => {
+    const payload: ChunkLabelsPatch = { editor_id: LOCAL_EDITOR_ID, ...change };
+    const raw = await request<unknown>(`/v1/vault/chunks/${segment(chunkId)}/labels`, jsonSpec("PATCH", payload), {
+      versioned: true,
+      context: "vault_labels",
+    });
+    return validated(parseKnowledgeChunk(raw));
+  },
 };
 
 /**
@@ -256,15 +464,43 @@ export const realApi: HolocronApi = {
  */
 export function createApi(useMocks: boolean): HolocronApi {
   if (!useMocks) return realApi;
+  const documents = mockDocumentApi;
   return {
     ...realApi,
     ...mockApi,
+    ...mockSubjectApi,
     getRuntime: () => loadRuntime(fillRuntimeGaps),
     // Sinh câu đã có ở backend (câu tính toán): chỉ blueprint do dữ liệu mẫu tạo mới lấy batch mẫu (M8).
     generatePracticeBatch: (blueprintId, payload, idempotencyKey) =>
       isMockBlueprint(blueprintId)
         ? mockPracticeBatch()
         : realApi.generatePracticeBatch(blueprintId, payload, idempotencyKey),
+    // Các endpoint dưới đây đã có ở backend: chỉ bản ghi do dữ liệu mẫu tạo ra (chọn theo mã) mới lấy fixture.
+    // `GET /v1/vault/chunks`: chỉ câu của blueprint mẫu (chọn theo mã blueprint, không theo môn: môn mẫu vẫn có thể
+    // chứa tài liệu thật) tìm trích dẫn trong chunk mẫu.
+    listVaultChunks: (query) =>
+      query.blueprintId !== undefined && isMockBlueprint(query.blueprintId)
+        ? mockVaultSourceChunks()
+        : realApi.listVaultChunks(query),
+    // `GET /v1/documents`: danh sách thật (mới nhất trước), thêm tài liệu mẫu của môn ở cuối để mở được màn xem lại
+    // mẫu.
+    listDocuments: async (subjectCode) => [
+      ...(await realApi.listDocuments(subjectCode)),
+      ...documents.listDocuments(subjectCode),
+    ],
+    getDocument: (id) => (isMockDocument(id) ? documents.getDocument(id) : realApi.getDocument(id)),
+    getDocumentPage: (id, page) =>
+      isMockDocument(id) ? documents.getDocumentPage(id, page) : realApi.getDocumentPage(id, page),
+    deleteDocument: (id) => (isMockDocument(id) ? documents.deleteDocument(id) : realApi.deleteDocument(id)),
+    // Sửa dòng và xác nhận (§6.5) chưa có ở backend của nhánh: tài liệu mẫu dùng fixture; tài liệu thật vẫn gọi
+    // backend (backend chưa có endpoint thì trả 404 và giao diện báo backend chưa hỗ trợ).
+    patchPageLines: (id, page, version, edits, appended) =>
+      isMockDocument(id)
+        ? documents.patchPageLines(id, page, version)
+        : realApi.patchPageLines(id, page, version, edits, appended),
+    confirmPage: (id, page, version) =>
+      isMockDocument(id) ? documents.confirmPage(id, page, version) : realApi.confirmPage(id, page, version),
+    confirmDocument: (id) => (isMockDocument(id) ? documents.confirmDocument(id) : realApi.confirmDocument(id)),
   };
 }
 

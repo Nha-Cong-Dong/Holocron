@@ -229,8 +229,17 @@ export function essaySubmission(draft: string): EssaySubmission {
 
 // ------------------------------------------------------------------------------- slot không sinh được
 
-/** Gợi ý chung cho slot lý thuyết không sinh được; không nêu ngưỡng cụ thể (lý do cụ thể do backend ghi). */
-export const VAULT_HINT_VI = "Xác nhận thêm cặp khái niệm cho chương này trong Vault rồi tạo lại đề.";
+/**
+ * Phần gợi ý nói rõ giao diện chưa có màn tạo cặp khái niệm. Không gợi ý xác nhận nhãn chunk: việc đó không tạo ra
+ * cặp khái niệm.
+ */
+export const PAIR_SCREEN_MISSING_VI = "Giao diện chưa có màn tạo cặp khái niệm nên chưa bổ sung được từ đây.";
+
+/**
+ * Gợi ý chung cho slot lý thuyết không sinh được: nêu đúng tình trạng (chương chưa có cặp khái niệm đã xác nhận, màn tạo
+ * cặp chưa có); không nêu ngưỡng cụ thể (lý do cụ thể do backend ghi).
+ */
+export const VAULT_HINT_VI = `Chương này chưa có đủ cặp khái niệm đã xác nhận. ${PAIR_SCREEN_MISSING_VI}`;
 
 /**
  * Nối lý do backend ghi với một câu gợi ý: thêm dấu chấm khi lý do chưa kết thúc bằng dấu câu, để không ra "..".

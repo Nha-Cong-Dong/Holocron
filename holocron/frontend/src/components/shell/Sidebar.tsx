@@ -39,8 +39,7 @@ export function Sidebar({ pathname, subjects, onReloadSubjects, subjectCode, onS
         {subjects.kind === "error" && subjects.error.kind === "not_found" && (
           // Backend chưa có `GET /v1/subjects` (§6.8): trạng thái trống bình thường, không phải lỗi cần báo động.
           <p className={styles.note}>
-            Chưa có danh sách môn. Bạn vẫn nhập đề thi được ở mục "Nhập đề thi"; môn học sẽ hiện ở đây khi backend hỗ
-            trợ.
+            Chưa có danh sách môn. Mở mục "Vault" để nhập tài liệu theo mã môn, hoặc nhập đề thi ở mục "Nhập đề thi".
           </p>
         )}
         {subjects.kind === "error" && subjects.error.kind !== "not_found" && (
@@ -62,7 +61,9 @@ export function Sidebar({ pathname, subjects, onReloadSubjects, subjectCode, onS
           </div>
         )}
         {subjects.kind === "ready" && subjects.subjects.length === 0 && (
-          <p className={styles.note}>Chưa có môn nào. Môn được tạo khi nhập tài liệu đầu tiên.</p>
+          <p className={styles.note}>
+            Chưa có môn nào. Tạo môn ở mục "Vault", hoặc môn tự được tạo khi nhập tài liệu đầu tiên.
+          </p>
         )}
         {subjects.kind === "ready" && subjects.subjects.length > 0 && (
           <ul className={styles.list}>

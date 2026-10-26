@@ -5,7 +5,7 @@
  * Mỗi kiểu ghi mục spec và trạng thái duyệt.
  */
 
-import type { RuntimeInfo } from "@/types/holocron";
+import type { DocumentImport, PageExtraction, PageSummary, ReviewReason, RuntimeInfo } from "@/types/holocron";
 
 // --------------------------------------------------------------------------------- §5.12 Capability
 
@@ -90,6 +90,80 @@ export interface Subject {
   version: number;
   created_at: string;
   updated_at: string;
+}
+
+/** Body của `POST /v1/subjects` (§6.8, đường dẫn và body còn đề xuất). Field bỏ trống thì backend lấy mặc định. */
+export interface SubjectCreate {
+  subject_code: string;
+  display_name?: string;
+  exam_format?: ExamFormat;
+}
+
+// ------------------------------------------------------------------------- §5.7, §6.5 bộ nhập PDF
+
+/**
+ * `ReviewReason` theo §5.7 v0.7: thêm `LOW_TEXT_SCORE` (duyệt 2026-10-25), backend của nhánh chưa có mã này.
+ * Thứ tự là thứ tự khai báo của spec (backend sắp `review_reasons` theo thứ tự này).
+ */
+export type ReviewReasonPending = ReviewReason | "LOW_TEXT_SCORE";
+
+export const REVIEW_REASONS: readonly ReviewReasonPending[] = [
+  "LOW_TEXT_SCORE",
+  "LOW_OCR_SCORE",
+  "LOW_LINE_COVERAGE",
+  "HIGH_INK_OUTSIDE_TEXT",
+  "FIGURE_ON_SCAN",
+  "FORMULA_ON_SCAN",
+  "TIER3_UNAVAILABLE",
+  "LOW_CONF_LINES",
+  "TOKEN_MISMATCH",
+  "CROSS_CHECK_UNAVAILABLE",
+  "HIGH_PAGE_CER",
+  "OCR_ENGINE_MISSING",
+];
+
+/**
+ * `DocumentImport` với `chapter_code` (§5.7; field form bắt buộc của `POST /v1/documents` duyệt 2026-10-26, vị trí
+ * field ở `DocumentImport` còn đề xuất). Backend của nhánh chưa nhận field form này và chưa trả field này.
+ */
+export interface DocumentImportPending extends Omit<DocumentImport, "pages"> {
+  chapter_code: string;
+  pages: PageSummaryPending[];
+}
+
+/** `PageSummary` với `ReviewReason` của §5.7 v0.7 (có `LOW_TEXT_SCORE`). */
+export interface PageSummaryPending extends Omit<PageSummary, "review_reasons"> {
+  review_reasons: ReviewReasonPending[];
+}
+
+/** `PageExtraction` với `ReviewReason` của §5.7 v0.7 (có `LOW_TEXT_SCORE`). */
+export interface PageExtractionPending extends Omit<PageExtraction, "review_reasons"> {
+  review_reasons: ReviewReasonPending[];
+}
+
+/** Một dòng sửa trong `PATCH …/lines` (§6.5); `text` rỗng nghĩa là dòng không vào văn bản xác nhận. */
+export interface LineEdit {
+  line_index: number;
+  text: string;
+}
+
+/** Body của `PATCH /v1/documents/{document_id}/pages/{page_number}/lines` (§6.5, quy tắc duyệt 2026-10-26). */
+export interface PageLinesPatch {
+  editor_id: string;
+  expected_version: number;
+  edits: LineEdit[];
+  appended_lines: string[];
+}
+
+/** Body của `POST /v1/documents/{document_id}/pages/{page_number}/confirm` (§6.5). */
+export interface PageConfirmRequest {
+  editor_id: string;
+  expected_version: number;
+}
+
+/** Body của `POST /v1/documents/{document_id}/confirm` (§6.5): chỉ xác nhận các trang `ok`. */
+export interface DocumentConfirmRequest {
+  editor_id: string;
 }
 
 // ------------------------------------------------------------------- §5.9 Blueprint (lát cắt dọc)

@@ -4,10 +4,11 @@
  */
 
 import type { UiError } from "@/lib/errors";
-import { SUBJECT_CODE_PATTERN } from "@/lib/limits";
-import type { ExamFormat, Subject } from "@/types/contract-pending";
+import { SUBJECT_CODE_PATTERN, SUBJECT_DISPLAY_NAME_MAX_CHARS } from "@/lib/limits";
+import type { ExamFormat, Subject, SubjectCreate } from "@/types/contract-pending";
 
-const EXAM_FORMATS: readonly ExamFormat[] = ["mcq", "essay", "mixed"];
+/** Giá trị `exam_format` theo thứ tự khai báo (§5.14). */
+export const EXAM_FORMATS: readonly ExamFormat[] = ["mcq", "essay", "mixed"];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -54,4 +55,41 @@ export type SubjectsState =
 export function selectedSubject(state: SubjectsState, subjectCode: string | null): Subject | null {
   if (state.kind !== "ready" || subjectCode === null) return null;
   return state.subjects.find((subject) => subject.subject_code === subjectCode) ?? null;
+}
+
+/** Nhãn lựa chọn hình thức thi khi tạo môn (§5.14); mặc định của backend khi bỏ trống là `mixed`. */
+export const EXAM_FORMAT_OPTION_VI: Record<ExamFormat, string> = {
+  mcq: "Trắc nghiệm",
+  essay: "Tự luận",
+  mixed: "Kết hợp trắc nghiệm và tự luận",
+};
+
+export interface SubjectFormInput {
+  subjectCode: string;
+  displayName: string;
+  examFormat: ExamFormat;
+}
+
+export type SubjectFormCheck =
+  | { ok: true; payload: SubjectCreate }
+  | { ok: false; errors: Partial<Record<"code" | "name", string>> };
+
+/**
+ * Kiểm form tạo môn và dựng body `POST /v1/subjects` (§6.8). Mã môn viết hoa trước khi kiểm (người dùng hay gõ chữ
+ * thường); tên hiển thị bỏ trống thì không gửi (backend lấy mặc định); `exam_format` luôn gửi tường minh.
+ */
+export function checkSubjectForm(input: SubjectFormInput): SubjectFormCheck {
+  const code = input.subjectCode.trim().toUpperCase();
+  const name = input.displayName.trim();
+  const errors: Partial<Record<"code" | "name", string>> = {};
+  if (!SUBJECT_CODE_PATTERN.test(code)) {
+    errors.code = "Mã môn gồm 2–6 chữ cái in hoa rồi 2–4 chữ số, ví dụ MAU101.";
+  }
+  if ([...name].length > SUBJECT_DISPLAY_NAME_MAX_CHARS) {
+    errors.name = `Tên môn tối đa ${SUBJECT_DISPLAY_NAME_MAX_CHARS} ký tự.`;
+  }
+  if (errors.code !== undefined || errors.name !== undefined) return { ok: false, errors };
+  const payload: SubjectCreate = { subject_code: code, exam_format: input.examFormat };
+  if (name !== "") payload.display_name = name;
+  return { ok: true, payload };
 }

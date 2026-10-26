@@ -16,6 +16,7 @@
 - `holocron/backend/holocron_core/` (FastAPI + Pydantic v2, Python >= 3.12): `domain/` (model), `sandbox/` (ASTGuard + tiến trình con), `infrastructure/` (bộ đọc tài liệu, kho template, template chạy TRONG sandbox, cấu hình), `services/` (nhập tài liệu, extraction, ingestion gate, pipeline, sinh batch), `routers/` (FastAPI endpoints). Test ở `holocron/backend/tests/` (gồm `test_architecture.py` cưỡng chế phân tầng); walkthrough ở `holocron/backend/scripts/`; ví dụ tất định ở `holocron/backend/examples/`.
 - `holocron/frontend/` (Next.js 15 App Router, TypeScript strict): `src/app/` (trang), `src/components/`, `src/lib/` (client API và logic thuần), `src/types/holocron.ts` (khớp 1:1 với Pydantic).
 - `docs/adr/` (quyết định kiến trúc), `docs/releases/` (phát hành), `scripts/` (công cụ gốc repo), `.github/` (CI).
+- `.claude/agents/` (subagent), `.claude/skills/` (skill gọi khi cần), `.claude/state/` (brief, tiến độ, report kiểm tra).
 
 ## 2. Ranh giới kiến trúc
 
@@ -124,6 +125,15 @@ Cài hook một lần ở gốc repo: `python -m pip install pre-commit` rồi `
 5. Nếu đổi đầu ra pipeline/schema/template: `python -m scripts.run_walkthrough` rồi xem `git diff examples/` — chỉ được đổi khi thay đổi là chủ đích (walkthrough đã đóng băng id, thời gian, `sandbox_duration_ms`).
 6. Nếu đổi prompt, bộ đọc tài liệu hay luồng tổng hợp template: chạy script đánh giá opt-in (§2.2) khi có API key và báo số liệu trước/sau; không có key thì ghi rõ là chưa đo.
 
+**Cấp 3 — kiểm tra độc lập bằng subagent (sau khi Cấp 2 xanh):**
+- Xong một nhánh triển khai, trước khi đề xuất mở PR: chạy `/finish-run <nhánh>`. Skill này chạy lại Cấp 2, gọi `reviewer`, gọi `mutation-tester` khi diff chạm vùng bất biến ở §9, rồi ghi report vào `.claude/state/reports/`. Báo người dùng kết luận một dòng kèm đường dẫn report.
+- Trước khi giao brief mới cho `backend-impl`/`frontend-impl`: gọi `reviewer` ở chế độ review brief.
+- Thiết kế hoặc review giao diện: nạp skill `holocron-ui`.
+- Giao việc cho `reviewer` và `mutation-tester` chỉ bằng tên nhánh, brief và đường dẫn; KHÔNG ĐƯỢC kèm nhận định, tóm tắt hay kết luận của agent chính.
+- KHÔNG ĐƯỢC chạy `mutation-tester` trên toàn repo; chỉ trên các module được giao.
+- Report kết luận "CẦN SỬA" thì sửa rồi chạy lại `/finish-run`; kết luận "CẦN NGƯỜI DÙNG QUYẾT" thì dừng và hỏi (§3). Không chỉnh report để đổi kết luận.
+- Sửa định nghĩa agent/skill trong `.claude/` chỉ được thêm tiêu chí kiểm; bớt hoặc nới tiêu chí cần người dùng đồng ý.
+
 KHÔNG ĐƯỢC `--no-verify`, `SKIP=`, `continue-on-error: true`, hạ `fail_under` trong `pyproject.toml` hay hạ ngưỡng trong `scripts/release_bench.py` để làm xanh kết quả.
 
 ## 6. Git
@@ -166,9 +176,9 @@ Thay đổi chạm một bất biến PHẢI giữ các test cưỡng chế dư�
 
 | Bất biến | Test cưỡng chế |
 |---|---|
-| I1 | `tests/test_pipeline_twin_assembly.py`, `tests/test_pipeline_fallback.py`, `tests/test_sandbox_security.py`, `tests/test_sandbox_limits.py` |
+| I1 | `tests/test_pipeline_twin_assembly.py`, `tests/test_pipeline_fallback.py`, `tests/test_sandbox_security.py`, `tests/test_sandbox_limits.py`; chấm tự luận offline: `tests/test_essay_grader.py` (kết quả chấm chỉ gồm `matched_count`/`total_points` và danh sách ý, không có số nào ghi vào nội dung câu hỏi; khi làm essay) |
 | I2 | `tests/test_pipeline_twin_assembly.py` (misconception lạ), `tests/test_domain_validators.py`; câu lý thuyết: `tests/test_theory_generator.py` (mọi phương án nhiễu mang mã thuộc `THEORY_MISCONCEPTIONS`; thêm cùng bộ sinh câu lý thuyết, ADR-007) |
-| I3 | `test_chunk_rejects_quote_not_in_text` và `test_chunk_accepts_quote_in_nfd_against_nfc_text` trong `tests/test_schemas_and_gate.py` |
+| I3 | `test_chunk_rejects_quote_not_in_text` và `test_chunk_accepts_quote_in_nfd_against_nfc_text` trong `tests/test_schemas_and_gate.py`; câu ESSAY: `tests/test_essay_grader.py` (mọi ý là chuỗi con sau NFC của `definition_quote`; khi làm essay) |
 | I4 | `tests/test_rr_template.py` + `python -m scripts.run_walkthrough` rồi `git diff --exit-code -- holocron/backend/examples`; câu lý thuyết: `tests/test_theory_generator.py` (cùng `(generator_version, pool_sha256, seed)` cho cùng câu; NFC và NFD cho cùng `pool_sha256`; thêm cặp ở môn khác không đổi `pool_sha256`; thêm cùng bộ sinh câu lý thuyết, ADR-007); chấm tự luận offline: `tests/test_essay_grader.py` (khi làm essay) |
 | I5 | `tests/test_schemas_and_gate.py`, `tests/test_api_item_state.py`, `tests/test_i5_enforcement.py` (topic lạ, self-solve `SKIPPED`), `tests/test_input_limits.py`; phía frontend `src/lib/gate.test.ts` (`canApprove`); bộ nhập PDF (ADR-008 mục 14): `tests/test_pdf_ocr.py` (`test_ocr_charset_covers_vietnamese`, `test_low_line_coverage_marks_page_needs_review`, `test_numeric_token_mismatch_raises_dual_pass_mismatch`, `test_cross_check_unavailable_blocks_auto_pass`), `tests/test_pdf_tiers.py` (`test_page_flags_select_tier`), `tests/test_pdf_input_limits.py` (`test_bad_pdf_limits`) |
 | Phân tầng package (§2.2) | `tests/test_architecture.py` |

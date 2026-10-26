@@ -23,9 +23,15 @@ Thuộc Deterministic Core: hàm thuần, không gọi LLM, không gọi mạng,
   hạn chương, cộng thuật ngữ bị che với dạng điền khuyết) mà luật lấy phương án nhiễu ở mục "Không đủ căn cứ" cho đủ 3
   phương án nhiễu hợp lệ; tính khả thi được xác định trước khi rút số ngẫu nhiên nào; (c) không dạng nào khả thi thì
   trả `ReviewTicket` với lý do "không đủ căn cứ trong Vault".
-- **Đúng một đáp án:** cặp có `definition_quote` trùng, chứa hoặc nằm trong trích dẫn của cặp đáp án (so sau NFC, gộp
-  khoảng trắng, không phân biệt hoa thường) cũng là một đáp án đúng. Dạng chọn định nghĩa (phương án là định nghĩa của
-  từng cặp) bỏ đúng cặp đó. Hai dạng có phương án là thuật ngữ (ghép khái niệm, điền khuyết) xét theo **khái niệm** (khoá
+- **Đúng một đáp án:** mọi phép so đoạn văn của luật này (trích dẫn với trích dẫn, đoạn đã điền với trích dẫn) làm
+  trên dạng đã chuẩn hoá: NFC, gộp khoảng trắng, không phân biệt hoa thường, bỏ khoảng trắng và dấu câu ở hai đầu mỗi
+  đoạn (dấu câu ở giữa giữ nguyên), để dấu chấm cuối câu hay ngoặc bao ngoài không làm trượt phép so chuỗi con. Cặp có
+  `definition_quote` trùng, chứa hoặc nằm trong trích dẫn của cặp đáp án cũng là một đáp án đúng. Dạng chọn định nghĩa
+  (phương án là định nghĩa của từng cặp) bỏ đúng cặp đó, và bỏ cả cặp mà khi điền tên khái niệm được hỏi vào mọi chỗ
+  `____` của phương án thì ra một đoạn khớp một trích dẫn của nhóm ứng viên theo hai chiều của luật điền thử dưới đây
+  (ví dụ hỏi "Không gian" thì "____ là hình thức tồn tại của vật chất" của "Thời gian" điền ra một đoạn nằm trong trích
+  dẫn của chính "Không gian"; chỗ che vốn là tên khái niệm được hỏi thì điền lại không đổi văn bản, không tính là căn
+  cứ). Hai dạng có phương án là thuật ngữ (ghép khái niệm, điền khuyết) xét theo **khái niệm** (khoá
   `term` sau cùng phép chuẩn hoá), vì đáp án đúng của chúng xác định theo khái niệm: khái niệm có ít nhất một cặp trong
   nhóm ứng viên xung đột với đáp án thì mọi cặp của khái niệm đó bị loại khỏi phương án nhiễu (ví dụ "Hình thức tồn
   tại" có một cặp trùng trích dẫn với "Không gian" và một cặp khác trích dẫn: hỏi "Không gian" thì không cặp nào của
@@ -107,7 +113,9 @@ GENERATOR_VERSION = "theory_mcq4_v2"
 `v2`: dạng câu do RNG chọn trong các dạng khả thi thay vì do người gọi truyền vào; dạng ghép khái niệm loại thuật ngữ
 mà khi điền vào chỗ trống của thân câu cho ra một trích dẫn của nhóm ứng viên; luật điền thử xét hai chiều (đoạn đã
 điền nằm trong, hoặc chứa ở vị trí chạm thuật ngữ vừa điền, một trích dẫn của nhóm ứng viên) và hai dạng có phương án là
-thuật ngữ loại theo khái niệm (các thay đổi luật này gộp vào `v2` khi nhánh chưa merge)."""
+thuật ngữ loại theo khái niệm; mọi phép so xung đột bỏ khoảng trắng và dấu câu ở hai đầu đoạn được so, và dạng chọn
+định nghĩa có luật điền thử riêng (điền tên khái niệm được hỏi vào phương án) (các thay đổi luật này gộp vào `v2` khi
+nhánh chưa merge)."""
 
 THEORY_SAME_CHAPTER_CONCEPT = "THEORY_SAME_CHAPTER_CONCEPT"
 THEORY_SAME_SUBJECT_CONCEPT = "THEORY_SAME_SUBJECT_CONCEPT"
@@ -166,8 +174,61 @@ def _option_key(text: str) -> str:
 
 
 def _overlaps(first: str, second: str) -> bool:
-    """Hai đoạn văn trùng nhau, hoặc đoạn này chứa đoạn kia, sau cùng phép chuẩn hoá của `_option_key`."""
+    """Hai thuật ngữ trùng nhau, hoặc thuật ngữ này chứa thuật ngữ kia, sau cùng phép chuẩn hoá của `_option_key`."""
     first_key, second_key = _option_key(first), _option_key(second)
+    return first_key in second_key or second_key in first_key
+
+
+def _is_edge_char(char: str) -> bool:
+    """Ký tự bị bỏ ở hai đầu đoạn văn khi so xung đột: khoảng trắng hoặc dấu câu (nhóm Unicode `P*`)."""
+    return char.isspace() or unicodedata.category(char).startswith("P")
+
+
+def _trim_edges(key: str) -> str:
+    """Bỏ khoảng trắng và dấu câu ở hai đầu `key`; phần giữa giữ nguyên."""
+    start, end = 0, len(key)
+    while start < end and _is_edge_char(key[start]):
+        start += 1
+    while end > start and _is_edge_char(key[end - 1]):
+        end -= 1
+    return key[start:end]
+
+
+def _match_key(text: str) -> str:
+    """Khoá so xung đột của một đoạn văn (trích dẫn, thân câu đã điền): `_option_key` (NFC, gộp khoảng trắng, không
+    phân biệt hoa thường) rồi bỏ khoảng trắng và dấu câu ở hai đầu, để dấu chấm cuối câu hay ngoặc bao ngoài không làm
+    trượt phép so chuỗi con. Dấu câu ở giữa giữ nguyên."""
+    return _trim_edges(_option_key(text))
+
+
+def _fold_pieces(pieces: Sequence[tuple[str, bool]]) -> list[tuple[str, bool]]:
+    """Như `_match_key` của chuỗi ghép từ `pieces`, nhưng giữ cho từng ký tự cờ của mảnh sinh ra nó.
+
+    Các bước: NFC từng mảnh, `casefold`, gộp mỗi dãy khoảng trắng (`str.isspace`, cùng tập ký tự với `\\s` của `re` mà
+    `normalize_quote` dùng) thành một dấu cách mang cờ `True` nếu một ký tự trong dãy mang cờ `True`, rồi bỏ khoảng
+    trắng và dấu câu ở hai đầu. Ghép các mảnh đã NFC chỉ bằng NFC của cả chuỗi khi chỗ nối không ghép được ký tự;
+    `_fills_pool_text` kiểm điều đó trước khi dùng cờ.
+    """
+    folded: list[tuple[str, bool]] = []
+    for piece, flag in pieces:
+        for char in _nfc(piece).casefold():
+            if not char.isspace():
+                folded.append((char, flag))
+            elif folded and folded[-1][0] == " ":
+                folded[-1] = (" ", folded[-1][1] or flag)
+            else:
+                folded.append((" ", flag))
+    start, end = 0, len(folded)
+    while start < end and _is_edge_char(folded[start][0]):
+        start += 1
+    while end > start and _is_edge_char(folded[end - 1][0]):
+        end -= 1
+    return folded[start:end]
+
+
+def _quotes_overlap(first: str, second: str) -> bool:
+    """Hai trích dẫn trùng nhau, hoặc trích dẫn này chứa trích dẫn kia, so theo `_match_key`."""
+    first_key, second_key = _match_key(first), _match_key(second)
     return first_key in second_key or second_key in first_key
 
 
@@ -214,7 +275,7 @@ class TheoryQuestion(StrictModel):
             ):
                 raise ValueError("dạng chọn định nghĩa đúng chỉ dùng phương án nhiễu cùng chương")
         for citation in self.distractor_citations.values():
-            if _overlaps(citation.verbatim_quote, self.citation.verbatim_quote):
+            if _quotes_overlap(citation.verbatim_quote, self.citation.verbatim_quote):
                 raise ValueError("trích dẫn của phương án nhiễu trùng hoặc lồng với trích dẫn đáp án: hai đáp án đúng")
         if self.form is TheoryQuestionForm.FILL_BLANK:
             correct = self.options[self.correct_key]
@@ -288,8 +349,8 @@ def mask_terms(text: str, terms: Sequence[str]) -> str:
     return _replace_terms(text, terms, BLANK)
 
 
-def _replace_terms(text: str, terms: Sequence[str], replacement: str) -> str:
-    """Như `mask_terms` nhưng thay bằng `replacement` tuỳ ý (dùng để thử điền một thuật ngữ vào chỗ trống)."""
+def _merged_spans(text: str, terms: Sequence[str]) -> list[tuple[int, int]]:
+    """Vị trí của mọi `term` trong `text` (như `find_term_spans`), sắp tăng dần, các vị trí chồng nhau được gộp."""
     spans = sorted(span for term in terms for span in find_term_spans(term, text))
     merged: list[tuple[int, int]] = []
     for start, end in spans:
@@ -297,9 +358,14 @@ def _replace_terms(text: str, terms: Sequence[str], replacement: str) -> str:
             merged[-1] = (merged[-1][0], max(merged[-1][1], end))
         else:
             merged.append((start, end))
+    return merged
+
+
+def _replace_terms(text: str, terms: Sequence[str], replacement: str) -> str:
+    """Như `mask_terms` nhưng thay bằng `replacement` tuỳ ý."""
     pieces: list[str] = []
     cursor = 0
-    for start, end in merged:
+    for start, end in _merged_spans(text, terms):
         pieces.append(text[cursor:start])
         pieces.append(replacement)
         cursor = end
@@ -476,96 +542,135 @@ def _definition_explanation(pair: ConceptPair) -> str:
 def _quote_conflict(anchor: ConceptPair) -> Callable[[ConceptPair, str], bool]:
     """Cặp có trích dẫn trùng, chứa hoặc nằm trong trích dẫn của cặp đáp án cũng là đáp án đúng: không làm nhiễu.
 
-    Giống `_overlaps(pair.definition_quote, anchor.definition_quote)`; khoá của trích dẫn đáp án chỉ tính một lần.
+    Giống `_quotes_overlap(pair.definition_quote, anchor.definition_quote)` (so theo `_match_key`, bỏ dấu câu ở hai
+    đầu); khoá của trích dẫn đáp án chỉ tính một lần.
     """
-    anchor_key = _option_key(anchor.definition_quote)
+    anchor_key = _match_key(anchor.definition_quote)
 
     def conflict(pair: ConceptPair, _text: str) -> bool:
-        pair_key = _option_key(pair.definition_quote)
+        pair_key = _match_key(pair.definition_quote)
         return pair_key in anchor_key or anchor_key in pair_key
 
     return conflict
 
 
-_FILL_SENTINEL = "\x00"
-"""Ký tự thay chỗ che khi dựng đoạn "chưa điền": không phải khoảng trắng nên không bị gộp, không có trong văn bản đọc từ
-tài liệu, nên một trích dẫn xuất hiện trong đoạn đó thì không chạm chỗ điền."""
+def _fills_pool_text(quote: str, hidden: Sequence[str], text: str, pool_keys: Sequence[str]) -> bool:
+    """Điền `text` vào mọi chỗ che các thuật ngữ `hidden` trong `quote` cho ra một đoạn khớp trích dẫn của nhóm ứng viên
+    (`pool_keys`, đã qua `_match_key`), xét hai chiều: khi đó `text` cũng là một đáp án đúng.
 
+    Đoạn đã điền được so theo `_match_key` (NFC, gộp khoảng trắng, không phân biệt hoa thường, bỏ khoảng trắng và dấu
+    câu ở hai đầu), nên dấu chấm cuối thân câu hay cuối trích dẫn không làm trượt phép so. Một chỗ điền **làm đổi văn
+    bản** khi khoá `_option_key` của văn bản gốc ở chỗ che khác khoá của `text`; điền lại đúng thuật ngữ vốn ở đó (dạng
+    chọn định nghĩa che cả tên khái niệm được hỏi) không đổi gì nên không phải căn cứ.
 
-def _count_occurrences(needle: str, haystack: str) -> int:
-    """Số lần `needle` xuất hiện trong `haystack`, tính cả các lần chồng lên nhau."""
-    count, start = 0, haystack.find(needle)
-    while start != -1:
-        count += 1
-        start = haystack.find(needle, start + 1)
-    return count
+    - Đoạn đã điền nằm trong một trích dẫn của nhóm ứng viên, khi có ít nhất một chỗ điền làm đổi văn bản.
+    - Một trích dẫn của nhóm ứng viên xuất hiện trong đoạn đã điền ở vị trí phủ ít nhất một ký tự của một chỗ điền làm
+      đổi văn bản. Trích dẫn chỉ nằm trong phần giữ nguyên của `quote` (ví dụ "phương thức tồn tại của vật chất" trong
+      "____ là phương thức tồn tại của vật chất.") xuất hiện như nhau với mọi thuật ngữ nên không phải căn cứ để loại
+      `text`.
 
-
-def _fills_pool_text(quote: str, hidden: str, text: str, pool_texts: Sequence[str]) -> bool:
-    """Điền `text` vào mọi chỗ che `hidden` trong `quote` cho ra một đoạn khớp trích dẫn của nhóm ứng viên (`pool_texts`,
-    đã qua `_option_key`), xét hai chiều: khi đó `text` cũng là một đáp án đúng.
-
-    - Đoạn đã điền nằm trong một trích dẫn của nhóm ứng viên.
-    - Đoạn đã điền chứa một trích dẫn của nhóm ứng viên ở vị trí chạm vào `text` vừa điền: số lần trích dẫn đó xuất hiện
-      trong đoạn đã điền lớn hơn trong cùng đoạn với chỗ che thay bằng `_FILL_SENTINEL`. Trích dẫn chỉ nằm trong phần
-      giữ nguyên của `quote` (ví dụ "phương thức tồn tại của vật chất" trong "____ là phương thức tồn tại của vật
-      chất.") xuất hiện như nhau với mọi thuật ngữ nên không phải căn cứ để loại `text`.
+    Vị trí chỗ điền được theo dõi bằng cờ trên từng ký tự (`_fold_pieces`), không dùng ký tự thay chỗ; cờ chỉ dựng khi
+    có trích dẫn nằm trong đoạn đã điền. Cờ chỉ đúng khi NFC của từng mảnh ghép lại vẫn là NFC (chỗ nối không ghép được
+    ký tự kết hợp với ký tự đứng trước; khi đó chuỗi ghép bằng NFC của cả chuỗi, nên cũng bằng `filled`); khi không
+    đúng, hàm coi `text` là xung đột (loại thừa còn hơn ra câu hai đáp án đúng).
     """
-    filled = _option_key(_replace_terms(quote, [hidden], text))
-    unfilled = _option_key(_replace_terms(quote, [hidden], _FILL_SENTINEL))
-    return any(
-        filled in pool_text or _count_occurrences(pool_text, filled) > _count_occurrences(pool_text, unfilled)
-        for pool_text in pool_texts
-    )
+    text_key = _option_key(text)
+    pieces: list[tuple[str, bool]] = []
+    cursor = 0
+    for start, end in _merged_spans(quote, hidden):
+        pieces.append((quote[cursor:start], False))
+        pieces.append((text, _option_key(quote[start:end]) != text_key))
+        cursor = end
+    pieces.append((quote[cursor:], False))
+    if not any(changed for _, changed in pieces):
+        return False
+    filled = _match_key("".join(piece for piece, _ in pieces))
+    if any(filled in pool_key for pool_key in pool_keys):
+        return True
+    contained = [pool_key for pool_key in pool_keys if pool_key and pool_key in filled]
+    if not contained:
+        return False
+    # Chỉ dựng cờ từng ký tự khi có trích dẫn nằm trong đoạn đã điền (chiều thứ hai).
+    if not unicodedata.is_normalized("NFC", "".join(_nfc(piece) for piece, _ in pieces)):
+        return True
+    folded = _fold_pieces(pieces)
+    marked = "".join(char for char, _ in folded)
+    changed_at = [changed for _, changed in folded]
+    for pool_key in contained:
+        start = marked.find(pool_key)
+        while start != -1:
+            if any(changed_at[start : start + len(pool_key)]):
+                return True
+            start = marked.find(pool_key, start + 1)
+    return False
 
 
-def _concept_match_conflict(anchor: ConceptPair, pool_texts: Sequence[str]) -> Callable[[ConceptPair, str], bool]:
+def _concept_match_conflict(anchor: ConceptPair, pool_keys: Sequence[str]) -> Callable[[ConceptPair, str], bool]:
     """Quy tắc "đúng một đáp án" của dạng ghép khái niệm.
 
     Cặp xung đột khi trích dẫn của nó lồng với trích dẫn đáp án, hoặc khi thuật ngữ của nó điền vào chỗ `____` của thân
-    câu (chỗ che `anchor.term` trong `anchor.definition_quote`) khớp một phần tử của `pool_texts` theo hai chiều của
+    câu (chỗ che `anchor.term` trong `anchor.definition_quote`) khớp một phần tử của `pool_keys` theo hai chiều của
     `_fills_pool_text`, cùng cách so như dạng điền khuyết. `_concept_conflict_checker` loại cả khái niệm của cặp xung
     đột. Ví dụ: "Không gian là hình thức tồn tại của vật chất." và "Thời gian là hình thức tồn tại của vật chất."
     đều trong nhóm ứng viên thì "Thời gian" cũng điền đúng chỗ trống của câu hỏi về "Không gian". Trích dẫn không
-    chứa `anchor.term` (thân câu không có chỗ che, xem giới hạn che tên khái niệm) thì chỉ áp luật trích dẫn lồng nhau.
+    chứa `anchor.term` (thân câu không có chỗ che, xem giới hạn che tên khái niệm) thì không có chỗ điền nào, chỉ còn
+    luật trích dẫn lồng nhau.
     """
     quote_conflict = _quote_conflict(anchor)
-    has_blank = bool(find_term_spans(anchor.term, anchor.definition_quote))
 
     def conflict(pair: ConceptPair, text: str) -> bool:
         if quote_conflict(pair, text):
             return True
-        return has_blank and _fills_pool_text(anchor.definition_quote, anchor.term, text, pool_texts)
+        return _fills_pool_text(anchor.definition_quote, [anchor.term], text, pool_keys)
 
     return conflict
 
 
 def _fill_blank_conflict(
-    anchor: ConceptPair, hidden: str, pool_texts: Sequence[str]
+    anchor: ConceptPair, hidden: str, pool_keys: Sequence[str]
 ) -> Callable[[ConceptPair, str], bool]:
     """Quy tắc tương đương cho phương án là thuật ngữ (dạng điền khuyết).
 
     Cặp xung đột khi trích dẫn của nó lồng với trích dẫn đáp án, khi thuật ngữ của nó trùng/chứa/nằm trong thuật ngữ bị
-    che, hoặc khi thuật ngữ đó điền vào chỗ trống khớp một phần tử của `pool_texts` (trích dẫn của nhóm ứng viên, đã qua
-    `_option_key`) theo hai chiều của `_fills_pool_text`. `_concept_conflict_checker` loại cả khái niệm của cặp xung đột.
+    che, hoặc khi thuật ngữ đó điền vào chỗ trống khớp một phần tử của `pool_keys` theo hai chiều của
+    `_fills_pool_text`. `_concept_conflict_checker` loại cả khái niệm của cặp xung đột.
     """
     quote_conflict = _quote_conflict(anchor)
 
     def conflict(pair: ConceptPair, text: str) -> bool:
         if quote_conflict(pair, text) or _overlaps(text, hidden):
             return True
-        return _fills_pool_text(anchor.definition_quote, hidden, text, pool_texts)
+        return _fills_pool_text(anchor.definition_quote, [hidden], text, pool_keys)
 
     return conflict
 
 
-def _pool_texts(pool: Sequence[ConceptPair]) -> list[str]:
-    """Văn bản dùng để nhận ra đáp án đúng thứ hai của dạng ghép khái niệm và điền khuyết (thuật ngữ điền vào chỗ trống
-    cho ra một đoạn khớp văn bản này, xem `_fills_pool_text`): chỉ `definition_quote` của các cặp trong nhóm
-    ứng viên, tức đúng dữ liệu đã nằm trong `pool_sha256`. `raw_text` của chunk không được dùng: chunk không thuộc
-    `pool_sha256`, nên nếu dùng thì thêm một chunk cùng môn sẽ làm câu đổi dù `(generator_version, pool_sha256, seed)`
-    giữ nguyên (I4)."""
-    return [_option_key(pair.definition_quote) for pair in pool]
+def _definition_choice_conflict(anchor: ConceptPair, pool_keys: Sequence[str]) -> Callable[[ConceptPair, str], bool]:
+    """Quy tắc "đúng một đáp án" của dạng chọn định nghĩa (phương án là định nghĩa của từng cặp, xét đúng cặp đó).
+
+    Cặp xung đột khi trích dẫn của nó lồng với trích dẫn đáp án, hoặc khi điền `anchor.term` vào mọi chỗ `____` của
+    phương án (chỗ che `pair.term` và `anchor.term` trong `pair.definition_quote`, như `_masked_definition`) khớp một
+    phần tử của `pool_keys` theo hai chiều của `_fills_pool_text`. Ví dụ hỏi định nghĩa của "Không gian" thì phương án
+    "____ là hình thức tồn tại của vật chất" (của "Thời gian") điền "Không gian" ra "Không gian là hình thức tồn tại
+    của vật chất", nằm trong trích dẫn "Không gian là hình thức tồn tại của vật chất xét về quảng tính." của đáp án:
+    phương án đó cũng đúng.
+    """
+    quote_conflict = _quote_conflict(anchor)
+
+    def conflict(pair: ConceptPair, text: str) -> bool:
+        if quote_conflict(pair, text):
+            return True
+        return _fills_pool_text(pair.definition_quote, [pair.term, anchor.term], anchor.term, pool_keys)
+
+    return conflict
+
+
+def _pool_keys(pool: Sequence[ConceptPair]) -> list[str]:
+    """Văn bản dùng để nhận ra đáp án đúng thứ hai qua luật điền thử (`_fills_pool_text`): `_match_key` của
+    `definition_quote` của các cặp trong nhóm ứng viên, tức đúng dữ liệu đã nằm trong `pool_sha256`. `raw_text` của
+    chunk không được dùng: chunk không thuộc `pool_sha256`, nên nếu dùng thì thêm một chunk cùng môn sẽ làm câu đổi dù
+    `(generator_version, pool_sha256, seed)` giữ nguyên (I4)."""
+    return [_match_key(pair.definition_quote) for pair in pool]
 
 
 def _fill_blank_candidates(
@@ -603,7 +708,7 @@ def _drafts(form: TheoryQuestionForm, anchors: Sequence[ConceptPair], pool: Sequ
     đã được rút mới dựng đủ mọi bản nháp. Thứ tự và nội dung bản nháp không phụ thuộc cách đọc.
     """
     if form is TheoryQuestionForm.FILL_BLANK:
-        pool_texts = _pool_texts(pool)
+        pool_keys = _pool_keys(pool)
         yield from (
             _Draft(
                 anchor=anchor,
@@ -615,14 +720,14 @@ def _drafts(form: TheoryQuestionForm, anchors: Sequence[ConceptPair], pool: Sequ
                 explanation=f"Thuật ngữ bị che là «{hidden}». Đoạn trích nguyên văn: “{anchor.definition_quote}”",
                 excluded_concepts=frozenset({_option_key(anchor.term), _option_key(hidden)}),
                 option_text=_term_of,
-                also_correct=_fill_blank_conflict(anchor, hidden, pool_texts),
+                also_correct=_fill_blank_conflict(anchor, hidden, pool_keys),
                 allow_other_chapters=True,
                 conflicts_by_concept=True,
             )
             for anchor, hidden in _fill_blank_candidates(anchors, pool)
         )
     elif form is TheoryQuestionForm.CONCEPT_MATCH:
-        pool_texts = _pool_texts(pool)
+        pool_keys = _pool_keys(pool)
         yield from (
             _Draft(
                 anchor=anchor,
@@ -631,13 +736,14 @@ def _drafts(form: TheoryQuestionForm, anchors: Sequence[ConceptPair], pool: Sequ
                 explanation=_definition_explanation(anchor),
                 excluded_concepts=frozenset({_option_key(anchor.term)}),
                 option_text=_term_of,
-                also_correct=_concept_match_conflict(anchor, pool_texts),
+                also_correct=_concept_match_conflict(anchor, pool_keys),
                 allow_other_chapters=True,
                 conflicts_by_concept=True,
             )
             for anchor in anchors
         )
     else:
+        pool_keys = _pool_keys(pool)
         yield from (
             _Draft(
                 anchor=anchor,
@@ -646,7 +752,7 @@ def _drafts(form: TheoryQuestionForm, anchors: Sequence[ConceptPair], pool: Sequ
                 explanation=_definition_explanation(anchor),
                 excluded_concepts=frozenset({_option_key(anchor.term)}),
                 option_text=_masked_definition(anchor.term),
-                also_correct=_quote_conflict(anchor),
+                also_correct=_definition_choice_conflict(anchor, pool_keys),
                 allow_other_chapters=False,
                 conflicts_by_concept=False,
             )

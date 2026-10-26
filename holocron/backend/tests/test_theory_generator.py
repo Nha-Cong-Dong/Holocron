@@ -13,6 +13,7 @@ Văn bản mẫu tự viết cho test (không phải tài liệu môn học có 
 
 import inspect
 import random
+import re
 import unicodedata
 from collections import Counter
 from datetime import UTC, datetime
@@ -805,35 +806,63 @@ def _space_time_question(seed: int) -> TheoryQuestion | ReviewTicket:
     return generate_theory_question(SPACE_TIME_PAIRS, OVERLAP_CHUNKS, subject_code=SUBJECT, seed=seed, **TICKET_CONTEXT)
 
 
+def _trim_edges(chars: list[tuple[str, bool]]) -> list[tuple[str, bool]]:
+    """Bỏ ở hai đầu mọi ký tự không phải chữ hay số (dấu câu, khoảng trắng, ký hiệu).
+
+    Định nghĩa riêng của test, cố ý rộng hơn code (code chỉ bỏ dấu câu Unicode `P*` và khoảng trắng): bộ kiểm không chép
+    luật của code, và nếu lệch thì lệch về phía chặt hơn.
+    """
+    start, end = 0, len(chars)
+    while start < end and not chars[start][0].isalnum():
+        start += 1
+    while end > start and not chars[end - 1][0].isalnum():
+        end -= 1
+    return chars[start:end]
+
+
+def _comparable(text: str) -> str:
+    """Dạng so của test: NFC, gộp khoảng trắng, không phân biệt hoa thường, bỏ ký tự không phải chữ/số ở hai đầu."""
+    return "".join(char for char, _ in _trim_edges([(char, False) for char in normalize_quote(text).casefold()]))
+
+
 def _overlap(first: str, second: str) -> bool:
-    first_key, second_key = normalize_quote(first).casefold(), normalize_quote(second).casefold()
+    first_key, second_key = _comparable(first), _comparable(second)
     return first_key in second_key or second_key in first_key
 
 
 _FILL_START, _FILL_END = "\x01", "\x02"
 
 
-def _in_pool_quotes(masked: str, text: str) -> bool:
-    """Điền `text` vào mọi chỗ `____` của `masked` rồi so với trích dẫn của mọi cặp của fixture (NFC, gộp khoảng trắng,
-    không phân biệt hoa thường), hai chiều: đoạn đã điền nằm trong một trích dẫn, hoặc một trích dẫn nằm trong đoạn đã
-    điền ở vị trí phủ ít nhất một ký tự của `text` vừa điền.
+def _fills_a_quote(masked: str, text: str, quotes: list[str], *, changed: list[bool] | None = None) -> bool:
+    """Điền `text` vào mọi chỗ `____` của `masked` rồi so với `quotes` theo `_comparable`, hai chiều: đoạn đã điền nằm
+    trong một trích dẫn, hoặc một trích dẫn nằm trong đoạn đã điền ở vị trí phủ ít nhất một ký tự của một chỗ điền
+    **làm đổi văn bản**. `changed[i]` cho biết chỗ `____` thứ i có làm đổi văn bản không (mặc định: mọi chỗ). Không chỗ
+    điền nào làm đổi văn bản thì đoạn đã điền chính là văn bản nguồn, không phải căn cứ.
 
-    Vị trí của `text` được đánh dấu bằng hai ký tự điều khiển trước khi chuẩn hoá, rồi mọi vị trí xuất hiện của trích
-    dẫn được duyệt từng ký tự (cách làm khác hẳn code), để bộ kiểm không cùng lỗ hổng với code.
+    Vị trí chỗ điền được đánh dấu bằng hai ký tự điều khiển trước khi chuẩn hoá, rồi mọi vị trí xuất hiện của trích dẫn
+    được duyệt từng ký tự (cách làm khác hẳn code), để bộ kiểm không cùng lỗ hổng với code.
     """
-    marked = normalize_quote(masked.replace(BLANK, _FILL_START + text + _FILL_END)).casefold()
-    chars: list[str] = []
-    inserted: list[bool] = []
+    parts = masked.split(BLANK)
+    flags = changed if changed is not None else [True] * (len(parts) - 1)
+    assert len(flags) == len(parts) - 1
+    if not any(flags):
+        return False
+    pieces = [parts[0]]
+    for flag, part in zip(flags, parts[1:], strict=True):
+        pieces.append(_FILL_START + text + _FILL_END if flag else text)
+        pieces.append(part)
+    chars: list[tuple[str, bool]] = []
     inside = False
-    for char in marked:
+    for char in normalize_quote("".join(pieces)).casefold():
         if char in (_FILL_START, _FILL_END):
             inside = char == _FILL_START
             continue
-        chars.append(char)
-        inserted.append(inside)
-    filled = "".join(chars)
-    for pair in OVERLAP_PAIRS:
-        quote = normalize_quote(pair.definition_quote).casefold()
+        chars.append((char, inside))
+    trimmed = _trim_edges(chars)
+    filled = "".join(char for char, _ in trimmed)
+    inserted = [flag for _, flag in trimmed]
+    for raw_quote in quotes:
+        quote = _comparable(raw_quote)
         if filled in quote:
             return True
         for start in range(len(filled) - len(quote) + 1):
@@ -842,36 +871,57 @@ def _in_pool_quotes(masked: str, text: str) -> bool:
     return False
 
 
-def _vault_correct_keys(question: TheoryQuestion) -> set[OptionKey]:
+def _changed_blanks(option: str, source: str, asked_term: str) -> list[bool]:
+    """Với phương án dạng chọn định nghĩa: chỗ `____` thứ i có làm đổi văn bản khi điền `asked_term` không.
+
+    Khôi phục văn bản gốc của từng chỗ che bằng cách khớp phần giữ nguyên của phương án với trích dẫn nguồn; chỗ che vốn
+    là chính `asked_term` (không phân biệt hoa thường) thì điền lại không đổi gì.
+    """
+    pattern = "(.+?)".join(re.escape(part) for part in option.split(BLANK))
+    match = re.fullmatch(pattern, source, flags=re.DOTALL)
+    assert match is not None, (option, source)
+    return [original.casefold() != asked_term.casefold() for original in match.groups()]
+
+
+def _vault_correct_keys(
+    question: TheoryQuestion,
+    pairs: list[ConceptPair] = OVERLAP_PAIRS,
+    chunks: dict[str, KnowledgeChunk] = OVERLAP_CHUNKS,
+) -> set[OptionKey]:
     """Các phương án đúng theo dữ liệu Vault (không dựa vào `correct_key` do bộ sinh ghi).
 
-    Định nghĩa độc lập với code, theo khái niệm: với hai dạng có phương án là thuật ngữ, một phương án là đúng nếu thay
-    nó vào chỗ `____` của thân câu khớp trích dẫn của một cặp theo hai chiều của `_in_pool_quotes` (dạng điền khuyết:
-    thêm chiều nằm trong văn bản chunk, rộng hơn); dạng ghép khái niệm còn đúng nếu có bất kỳ cặp nào mang thuật ngữ
-    đó có trích dẫn trùng hay lồng với trích dẫn đáp án. Với dạng chọn định nghĩa, một phương án là đúng nếu nguồn của
-    nó trùng hay lồng với trích dẫn đáp án.
+    Định nghĩa độc lập với code, theo khái niệm, mọi phép so theo `_comparable` (bỏ dấu câu ở hai đầu):
+
+    - Ghép khái niệm: đúng nếu thay thuật ngữ vào chỗ `____` của thân câu khớp trích dẫn của một cặp theo hai chiều
+      của `_fills_a_quote`, hoặc có bất kỳ cặp nào mang thuật ngữ đó có trích dẫn trùng hay lồng với trích dẫn đáp án.
+    - Chọn định nghĩa: đúng nếu nguồn của phương án trùng hay lồng với trích dẫn đáp án, hoặc điền khái niệm được hỏi
+      vào chỗ `____` của phương án khớp trích dẫn của một cặp theo hai chiều của `_fills_a_quote`.
+    - Điền khuyết: như ghép khái niệm, thêm chiều đoạn đã điền nằm trong văn bản chunk (rộng hơn), hoặc thuật ngữ lồng
+      với đáp án.
     """
     cited = question.citation.verbatim_quote
+    quotes = [pair.definition_quote for pair in pairs]
     correct: set[OptionKey] = set()
     for key, text in question.options.items():
         if question.form is TheoryQuestionForm.CONCEPT_MATCH:
-            # Đúng nếu điền thuật ngữ vào chỗ trống của đoạn trích ra một trích dẫn của Vault, hoặc có cặp mang thuật
-            # ngữ này mà trích dẫn trùng hay lồng với đoạn trích ở thân câu.
             masked = question.stem.split("> ", 1)[1]
-            fills = BLANK in masked and _in_pool_quotes(masked, text)
-            nested = any(_same_concept(p.term, text) and _overlap(p.definition_quote, cited) for p in OVERLAP_PAIRS)
+            fills = BLANK in masked and _fills_a_quote(masked, text, quotes)
+            nested = any(_same_concept(p.term, text) and _overlap(p.definition_quote, cited) for p in pairs)
             hit = fills or nested
         elif question.form is TheoryQuestionForm.DEFINITION_CHOICE:
-            # Đúng nếu định nghĩa nằm ở phương án này thuộc về một trích dẫn trùng hoặc lồng với trích dẫn đáp án.
+            asked = question.stem.split("«", 1)[1].split("»", 1)[0]
             source = cited if key is question.correct_key else question.distractor_citations[key].verbatim_quote
-            hit = _overlap(source, cited)
+            changed = _changed_blanks(text, source, asked)
+            hit = _overlap(source, cited) or _fills_a_quote(text, asked, quotes, changed=changed)
         else:
-            # Đúng nếu điền thuật ngữ vào chỗ trống khớp một trích dẫn (hai chiều) hay ra một đoạn có trong văn bản
-            # chunk, hoặc thuật ngữ lồng với đáp án.
             masked = question.stem.split("> ", 1)[1]
-            filled = normalize_quote(masked.replace(BLANK, text)).casefold()
-            in_vault = any(filled in normalize_quote(c.raw_text).casefold() for c in OVERLAP_CHUNKS.values())
-            hit = in_vault or _in_pool_quotes(masked, text) or _overlap(text, question.options[question.correct_key])
+            filled = _comparable(masked.replace(BLANK, text))
+            in_vault = any(filled in _comparable(chunk.raw_text) for chunk in chunks.values())
+            hit = (
+                in_vault
+                or _fills_a_quote(masked, text, quotes)
+                or _overlap(text, question.options[question.correct_key])
+            )
         if hit:
             correct.add(key)
     return correct
@@ -919,7 +969,7 @@ def test_concept_with_one_conflicting_pair_is_never_a_term_distractor() -> None:
     variants = [pair for pair in OVERLAP_PAIRS if pair.term == "Hình thức tồn tại"]
     assert [_overlap(pair.definition_quote, space.definition_quote) for pair in variants] == [True, False]
     stem_quote = mask_terms(space.definition_quote, [space.term])
-    assert not _in_pool_quotes(stem_quote, "Hình thức tồn tại")
+    assert not _fills_a_quote(stem_quote, "Hình thức tồn tại", [pair.definition_quote for pair in OVERLAP_PAIRS])
 
     result = _overlap_question(REVIEWER_SEED)
     assert isinstance(result, TheoryQuestion), result
@@ -1023,6 +1073,143 @@ def test_fill_blank_skips_a_term_that_also_fills_the_blank() -> None:
             seen = True
             assert "Thời gian" not in result.options.values()
     assert seen
+
+
+# --------------------------------------------------------------------------- #
+# Đúng một đáp án: dấu câu ở hai đầu trích dẫn không làm trượt phép so (sửa sau review)
+# --------------------------------------------------------------------------- #
+
+PUNCT_BASE_LINES = [
+    "Vật chất là phạm trù triết học dùng để chỉ thực tại khách quan.",
+    "Vận động là phương thức tồn tại của vật chất.",
+    "Ý thức là sự phản ánh năng động, sáng tạo thế giới khách quan vào bộ óc con người.",
+    "Chân lý là tri thức phù hợp với hiện thực khách quan.",
+]
+PUNCT_BASE_TERMS = ["Vật chất", "Vận động", "Ý thức", "Chân lý"]
+
+
+def _punct_fixture(
+    chunk_id: str, space_line: str, time_line: str, time_quote: str
+) -> tuple[list[ConceptPair], dict[str, KnowledgeChunk]]:
+    """Bốn khái niệm nền cộng "Không gian" (trích dẫn là cả dòng `space_line`) và "Thời gian" (trích dẫn `time_quote`
+    nằm trong dòng `time_line`)."""
+    chunk = _lines_chunk(chunk_id, "ch1", [*PUNCT_BASE_LINES, space_line, time_line], 8)
+    definitions = [*zip(PUNCT_BASE_TERMS, PUNCT_BASE_LINES, strict=True), ("Không gian", space_line)]
+    definitions.append(("Thời gian", time_quote))
+    return _pairs_in(chunk, definitions), {chunk.chunk_id: chunk}
+
+
+PUNCT_FIXTURES: dict[str, tuple[list[ConceptPair], dict[str, KnowledgeChunk]]] = {
+    # Lỗi 1 (chiều thứ nhất): thân câu hỏi "Không gian" có dấu chấm cuối, nằm trong trích dẫn dài hơn của "Thời gian"
+    # sau khi điền "Thời gian"; so nguyên dạng thì dấu chấm làm trượt.
+    "inside_with_final_period": _punct_fixture(
+        "chk_punct_inside",
+        "Không gian là hình thức tồn tại của vật chất.",
+        "Thời gian là hình thức tồn tại của vật chất xét về độ dài diễn biến.",
+        "Thời gian là hình thức tồn tại của vật chất xét về độ dài diễn biến.",
+    ),
+    # Lỗi 2 (chiều thứ hai): trích dẫn của "Thời gian" có dấu chấm cuối, nằm ở đầu thân câu hỏi "Không gian" dài hơn.
+    "contains_with_final_period": _punct_fixture(
+        "chk_punct_contains",
+        "Không gian là hình thức tồn tại của vật chất xét về quảng tính.",
+        "Theo nghĩa hẹp, Thời gian là hình thức tồn tại của vật chất.",
+        "Thời gian là hình thức tồn tại của vật chất.",
+    ),
+    # Lỗi 3 (dạng chọn định nghĩa) trên cùng dữ liệu với fixture `CONTAINS`: trích dẫn "Thời gian" không có dấu chấm.
+    "contains_without_final_period": _punct_fixture(
+        "chk_punct_contains_bare",
+        "Không gian là hình thức tồn tại của vật chất xét về quảng tính.",
+        "Theo nghĩa hẹp, Thời gian là hình thức tồn tại của vật chất",
+        "Thời gian là hình thức tồn tại của vật chất",
+    ),
+    # Dấu câu ở đầu và cuối: trích dẫn của "Không gian" nằm trong ngoặc, trích dẫn của "Thời gian" có dấu phẩy ở giữa.
+    "parenthesized_quote": _punct_fixture(
+        "chk_punct_paren",
+        "(Không gian là hình thức tồn tại của vật chất)",
+        "Thời gian là hình thức tồn tại của vật chất, xét về độ dài diễn biến.",
+        "Thời gian là hình thức tồn tại của vật chất, xét về độ dài diễn biến.",
+    ),
+}
+SPACE_TIME_SWAP = {"Không gian": "Thời gian", "Thời gian": "Không gian"}
+
+
+def _punct_questions(name: str, chapter_code: str | None) -> list[TheoryQuestion]:
+    pairs, chunks = PUNCT_FIXTURES[name]
+    questions: list[TheoryQuestion] = []
+    for seed in OVERLAP_SEEDS:
+        result = generate_theory_question(
+            pairs, chunks, subject_code=SUBJECT, seed=seed, chapter_code=chapter_code, **TICKET_CONTEXT
+        )
+        if isinstance(result, ReviewTicket):
+            _assert_ticket(result)
+            continue
+        questions.append(result)
+    return questions
+
+
+def _asked_concept(question: TheoryQuestion) -> str:
+    """Khái niệm có trích dẫn làm đáp án: thuật ngữ đáp án (ghép khái niệm) hoặc khái niệm trong thân câu."""
+    if question.form is TheoryQuestionForm.DEFINITION_CHOICE:
+        return question.stem.split("«", 1)[1].split("»", 1)[0]
+    return question.options[question.correct_key]
+
+
+@pytest.mark.parametrize("chapter_code", [None, "ch1"])
+@pytest.mark.parametrize("name", list(PUNCT_FIXTURES))
+def test_edge_punctuation_never_gives_two_correct_answers(name: str, chapter_code: str | None) -> None:
+    """Mọi câu trên các fixture dấu câu có đúng một phương án đúng theo `_vault_correct_keys` (so sau khi bỏ dấu câu ở
+    hai đầu); câu hỏi "Không gian"/"Thời gian" ở dạng ghép khái niệm và chọn định nghĩa đều xuất hiện (không rỗng)."""
+    pairs, chunks = PUNCT_FIXTURES[name]
+    asked: Counter[tuple[TheoryQuestionForm, str]] = Counter()
+    for question in _punct_questions(name, chapter_code):
+        assert _vault_correct_keys(question, pairs, chunks) == {question.correct_key}, (
+            question.form,
+            question.stem,
+            question.options,
+        )
+        for citation in question.distractor_citations.values():
+            assert not _overlap(citation.verbatim_quote, question.citation.verbatim_quote)
+        if question.form is not TheoryQuestionForm.FILL_BLANK and _asked_concept(question) in SPACE_TIME_SWAP:
+            asked[question.form, _asked_concept(question)] += 1
+    expected = {
+        (form, concept)
+        for form in (TheoryQuestionForm.CONCEPT_MATCH, TheoryQuestionForm.DEFINITION_CHOICE)
+        for concept in SPACE_TIME_SWAP
+    }
+    assert set(asked) == expected, asked
+
+
+@pytest.mark.parametrize("name", list(PUNCT_FIXTURES))
+def test_space_and_time_never_answer_each_other_with_edge_punctuation(name: str) -> None:
+    """Hỏi "Không gian" thì "Thời gian" (thuật ngữ hay định nghĩa) không làm phương án nhiễu, và ngược lại."""
+    pairs, _ = PUNCT_FIXTURES[name]
+    quotes = {pair.term: pair.definition_quote for pair in pairs}
+    for question in _punct_questions(name, None):
+        concept = _asked_concept(question)
+        if question.form is TheoryQuestionForm.FILL_BLANK or concept not in SPACE_TIME_SWAP:
+            continue
+        other = SPACE_TIME_SWAP[concept]
+        assert other not in question.options.values(), (question.form, question.options)
+        cited = {citation.verbatim_quote for citation in question.distractor_citations.values()}
+        assert quotes[other] not in cited, (question.form, question.options)
+
+
+def test_definition_choice_keeps_a_distractor_whose_only_match_is_its_own_unchanged_text() -> None:
+    """Không loại quá tay: hỏi định nghĩa của "Vật chất", phương án "____ là phương thức tồn tại của ____." (định nghĩa
+    của "Vận động") điền "Vật chất" vào chỗ che thứ hai chỉ khôi phục văn bản gốc; đoạn "phương thức tồn tại của vật
+    chất" (trích dẫn của "Phương thức tồn tại") nằm ở đó không phải căn cứ, nên phương án vẫn được dùng."""
+    option = "____ là phương thức tồn tại của ____."
+    seen = 0
+    for seed in OVERLAP_SEEDS:
+        result = _overlap_question(seed)
+        if (
+            isinstance(result, TheoryQuestion)
+            and result.form is TheoryQuestionForm.DEFINITION_CHOICE
+            and _asked_concept(result) == "Vật chất"
+        ):
+            seen += option in result.options.values()
+            assert _vault_correct_keys(result) == {result.correct_key}
+    assert seen > 0
 
 
 def test_model_rejects_a_distractor_citation_overlapping_the_answer_citation() -> None:

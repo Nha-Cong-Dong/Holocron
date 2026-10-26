@@ -13,6 +13,7 @@ import { appendSentence, VAULT_HINT_VI } from "@/lib/practice";
 import type { PracticeBatch, PracticeBlueprint, PracticeTicket } from "@/lib/practice-data";
 import { freshRuntime } from "@/lib/runtime";
 import { selectedSubject } from "@/lib/subjects";
+import { vaultHref } from "@/lib/vault";
 import type { BlueprintCreate, Subject } from "@/types/contract-pending";
 
 import { BlueprintBuilder } from "./BlueprintBuilder";
@@ -90,8 +91,8 @@ export function PracticeView() {
   if (subjects.subjects.length === 0) {
     return (
       <EmptyState title="Chưa có môn học nào.">
-        Môn được tạo khi bạn nhập tài liệu đầu tiên của môn đó. Sau khi xác nhận cặp khái niệm trong Vault, quay lại đây
-        để luyện tập.
+        Tạo môn và nhập tài liệu ở mục <Link href="/vault">Vault</Link>. Sau khi xác nhận cặp khái niệm trong Vault,
+        quay lại đây để luyện tập.
       </EmptyState>
     );
   }
@@ -172,11 +173,15 @@ function ReadyBatch({ batch, blueprint, subject, onNewExam }: ReadyBatchProps) {
               : "Lượt sinh này không có câu nào để luyện."
           }
         >
-          {onlyTheory
-            ? `Lý do của từng câu ở bên dưới. ${VAULT_HINT_VI}`
-            : "Thử tạo đề với chương khác, hoặc xem lý do của từng câu bên dưới."}
+          {onlyTheory ? (
+            <>
+              Lý do của từng câu ở bên dưới. <VaultHint subjectCode={subject.subject_code} />
+            </>
+          ) : (
+            "Thử tạo đề với chương khác, hoặc xem lý do của từng câu bên dưới."
+          )}
         </EmptyState>
-        <TicketNotice tickets={batch.tickets} showVaultHint={!onlyTheory} />
+        <TicketNotice tickets={batch.tickets} showVaultHint={!onlyTheory} subjectCode={subject.subject_code} />
         {hasSkipped && <SkippedNotice />}
         <div className={styles.actions}>
           <button type="button" className={styles.primary} onClick={onNewExam}>
@@ -188,7 +193,7 @@ function ReadyBatch({ batch, blueprint, subject, onNewExam }: ReadyBatchProps) {
   }
   return (
     <div className={styles.page}>
-      <TicketNotice tickets={batch.tickets} showVaultHint />
+      <TicketNotice tickets={batch.tickets} showVaultHint subjectCode={subject.subject_code} />
       {hasSkipped && <SkippedNotice />}
       <PracticeSession
         questions={batch.questions}
@@ -201,7 +206,25 @@ function ReadyBatch({ batch, blueprint, subject, onNewExam }: ReadyBatchProps) {
 }
 
 /** Slot không sinh được (`review_tickets`): hiện lý do backend ghi, không hiện câu hỏng. */
-function TicketNotice({ tickets, showVaultHint }: { tickets: PracticeTicket[]; showVaultHint: boolean }) {
+/** `VAULT_HINT_VI` với chữ "Vault" là liên kết tới kho tri thức của môn. */
+function VaultHint({ subjectCode }: { subjectCode: string }) {
+  const [before, after] = VAULT_HINT_VI.split("Vault");
+  return (
+    <>
+      {before}
+      <Link href={vaultHref({ subject: subjectCode, tab: "chunks" })}>Vault</Link>
+      {after}
+    </>
+  );
+}
+
+interface TicketNoticeProps {
+  tickets: PracticeTicket[];
+  showVaultHint: boolean;
+  subjectCode: string;
+}
+
+function TicketNotice({ tickets, showVaultHint, subjectCode }: TicketNoticeProps) {
   if (tickets.length === 0) return null;
   return (
     <section className={styles.tickets} aria-labelledby="practice-tickets-title">
@@ -212,7 +235,14 @@ function TicketNotice({ tickets, showVaultHint }: { tickets: PracticeTicket[]; s
         {tickets.map((ticket) => (
           <li key={ticket.slotIndex}>
             Câu thứ {ticket.slotIndex} trong đề:{" "}
-            {showVaultHint && ticket.theory ? appendSentence(ticket.reason, VAULT_HINT_VI) : ticket.reason}
+            {showVaultHint && ticket.theory ? (
+              <>
+                {appendSentence(ticket.reason, "")}
+                <VaultHint subjectCode={subjectCode} />
+              </>
+            ) : (
+              ticket.reason
+            )}
           </li>
         ))}
       </ul>

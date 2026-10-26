@@ -5,6 +5,7 @@ import Link from "next/link";
 import { CapabilityNoticeBox } from "@/components/common/CapabilityNotice";
 import { ErrorNotice } from "@/components/common/ErrorNotice";
 import { Loading } from "@/components/common/LoadState";
+import { TesseractHelp } from "@/components/common/TesseractHelp";
 import { useShell } from "@/components/shell/ShellContext";
 import { IS_DEVELOPMENT } from "@/lib/config";
 import type { ErrorKind } from "@/lib/errors";
@@ -104,6 +105,10 @@ export function StartScreen() {
       <section className={styles.section} aria-labelledby="start-next">
         <h2 id="start-next">Bước tiếp theo</h2>
         <ul className={styles.nextSteps}>
+          <li>
+            <Link href="/vault">Vault</Link>: tạo môn, kéo file PDF tài liệu vào, xem lại và xác nhận từng trang để văn
+            bản vào kho tri thức.
+          </li>
           <li>
             <Link href="/practice">Luyện tập</Link>: chọn môn ở thanh bên, tạo đề từ các cặp khái niệm đã xác nhận rồi
             làm từng câu.
@@ -259,27 +264,6 @@ function UnavailableGroup({ title, intro, capabilities }: UnavailableGroupProps)
           />
         ))}
       </div>
-    </div>
-  );
-}
-
-function TesseractHelp() {
-  return (
-    <div className={styles.help}>
-      <h3>Cài Tesseract để đọc trang scan</h3>
-      <ol>
-        <li>Cài Tesseract OCR cho hệ điều hành của bạn.</li>
-        <li>
-          Thêm dữ liệu tiếng Việt <code>vie.traineddata</code> vào thư mục <code>tessdata</code> của Tesseract.
-        </li>
-        <li>
-          Nếu Tesseract không nằm trong PATH, đặt <code>HOLOCRON_TESSERACT_CMD</code> (file chạy) hoặc{" "}
-          <code>HOLOCRON_TESSDATA_DIR</code> cho backend, rồi khởi động lại backend.
-        </li>
-      </ol>
-      <p className={styles.muted}>
-        Chưa cài thì trang PDF có lớp chữ vẫn đọc được; trang scan sẽ báo lỗi cho tới khi cài xong.
-      </p>
     </div>
   );
 }

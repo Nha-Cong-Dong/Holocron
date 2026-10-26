@@ -737,6 +737,12 @@ OVERLAP_CH2_DEFINITIONS = [
     # Trích dẫn nằm trong trích dẫn của "Nhận thức".
     ("Hiện thực khách quan", "phản ánh hiện thực khách quan vào bộ óc"),
 ]
+# Biến thể thứ hai của "Hình thức tồn tại", ở một chunk riêng: trích dẫn không lồng với trích dẫn của "Không gian" và
+# thuật ngữ không điền ra trích dẫn nào, nên chỉ luật loại theo khái niệm (cặp kia của "Hình thức tồn tại" trùng trích
+# dẫn với "Không gian") giữ cho câu hỏi "Không gian" chỉ có một đáp án đúng. `chunk_id` và trích dẫn trùng phản ví dụ
+# của reviewer, nên nhóm ứng viên (và `pool_sha256`) giống hệt nhóm ứng viên của phản ví dụ đó.
+OVERLAP_VARIANT_LINE = "Hình thức tồn tại là cách thức vật chất biểu hiện sự tồn tại của mình."
+OVERLAP_VARIANT_DEFINITIONS = [("Hình thức tồn tại", OVERLAP_VARIANT_LINE)]
 
 
 def _lines_chunk(chunk_id: str, chapter: str, lines: list[str], page: int, *, subject: str = SUBJECT) -> KnowledgeChunk:
@@ -778,10 +784,13 @@ OVERLAP_CHUNKS = {
     for chunk in (
         _lines_chunk("chk_overlap_ch1", "ch1", OVERLAP_CH1_LINES, 4),
         _lines_chunk("chk_overlap_ch2", "ch2", OVERLAP_CH2_LINES, 12),
+        _lines_chunk("chk_extra", "ch1", [OVERLAP_VARIANT_LINE], 5),
     )
 }
-OVERLAP_PAIRS = _pairs_in(OVERLAP_CHUNKS["chk_overlap_ch1"], OVERLAP_CH1_DEFINITIONS) + _pairs_in(
-    OVERLAP_CHUNKS["chk_overlap_ch2"], OVERLAP_CH2_DEFINITIONS
+OVERLAP_PAIRS = (
+    _pairs_in(OVERLAP_CHUNKS["chk_overlap_ch1"], OVERLAP_CH1_DEFINITIONS)
+    + _pairs_in(OVERLAP_CHUNKS["chk_overlap_ch2"], OVERLAP_CH2_DEFINITIONS)
+    + _pairs_in(OVERLAP_CHUNKS["chk_extra"], OVERLAP_VARIANT_DEFINITIONS)
 )
 
 
@@ -801,19 +810,46 @@ def _overlap(first: str, second: str) -> bool:
     return first_key in second_key or second_key in first_key
 
 
-def _in_pool_quotes(text: str) -> bool:
-    """`text` (sau NFC, gộp khoảng trắng, không phân biệt hoa thường) nằm trong trích dẫn của một cặp của fixture."""
-    key = normalize_quote(text).casefold()
-    return any(key in normalize_quote(p.definition_quote).casefold() for p in OVERLAP_PAIRS)
+_FILL_START, _FILL_END = "\x01", "\x02"
+
+
+def _in_pool_quotes(masked: str, text: str) -> bool:
+    """Điền `text` vào mọi chỗ `____` của `masked` rồi so với trích dẫn của mọi cặp của fixture (NFC, gộp khoảng trắng,
+    không phân biệt hoa thường), hai chiều: đoạn đã điền nằm trong một trích dẫn, hoặc một trích dẫn nằm trong đoạn đã
+    điền ở vị trí phủ ít nhất một ký tự của `text` vừa điền.
+
+    Vị trí của `text` được đánh dấu bằng hai ký tự điều khiển trước khi chuẩn hoá, rồi mọi vị trí xuất hiện của trích
+    dẫn được duyệt từng ký tự (cách làm khác hẳn code), để bộ kiểm không cùng lỗ hổng với code.
+    """
+    marked = normalize_quote(masked.replace(BLANK, _FILL_START + text + _FILL_END)).casefold()
+    chars: list[str] = []
+    inserted: list[bool] = []
+    inside = False
+    for char in marked:
+        if char in (_FILL_START, _FILL_END):
+            inside = char == _FILL_START
+            continue
+        chars.append(char)
+        inserted.append(inside)
+    filled = "".join(chars)
+    for pair in OVERLAP_PAIRS:
+        quote = normalize_quote(pair.definition_quote).casefold()
+        if filled in quote:
+            return True
+        for start in range(len(filled) - len(quote) + 1):
+            if filled[start : start + len(quote)] == quote and any(inserted[start : start + len(quote)]):
+                return True
+    return False
 
 
 def _vault_correct_keys(question: TheoryQuestion) -> set[OptionKey]:
     """Các phương án đúng theo dữ liệu Vault (không dựa vào `correct_key` do bộ sinh ghi).
 
-    Định nghĩa độc lập với code: với hai dạng có phương án là thuật ngữ, một phương án là đúng nếu thay nó vào chỗ
-    `____` của thân câu ra một đoạn nằm trong trích dẫn của một cặp (dạng điền khuyết: trong văn bản chunk, rộng hơn),
-    hoặc nếu nó gắn với một trích dẫn trùng hay lồng với trích dẫn đáp án; với dạng chọn định nghĩa, một phương án là
-    đúng nếu nguồn của nó trùng hay lồng với trích dẫn đáp án.
+    Định nghĩa độc lập với code, theo khái niệm: với hai dạng có phương án là thuật ngữ, một phương án là đúng nếu thay
+    nó vào chỗ `____` của thân câu khớp trích dẫn của một cặp theo hai chiều của `_in_pool_quotes` (dạng điền khuyết:
+    thêm chiều nằm trong văn bản chunk, rộng hơn); dạng ghép khái niệm còn đúng nếu có bất kỳ cặp nào mang thuật ngữ
+    đó có trích dẫn trùng hay lồng với trích dẫn đáp án. Với dạng chọn định nghĩa, một phương án là đúng nếu nguồn của
+    nó trùng hay lồng với trích dẫn đáp án.
     """
     cited = question.citation.verbatim_quote
     correct: set[OptionKey] = set()
@@ -822,7 +858,7 @@ def _vault_correct_keys(question: TheoryQuestion) -> set[OptionKey]:
             # Đúng nếu điền thuật ngữ vào chỗ trống của đoạn trích ra một trích dẫn của Vault, hoặc có cặp mang thuật
             # ngữ này mà trích dẫn trùng hay lồng với đoạn trích ở thân câu.
             masked = question.stem.split("> ", 1)[1]
-            fills = BLANK in masked and _in_pool_quotes(masked.replace(BLANK, text))
+            fills = BLANK in masked and _in_pool_quotes(masked, text)
             nested = any(_same_concept(p.term, text) and _overlap(p.definition_quote, cited) for p in OVERLAP_PAIRS)
             hit = fills or nested
         elif question.form is TheoryQuestionForm.DEFINITION_CHOICE:
@@ -830,10 +866,12 @@ def _vault_correct_keys(question: TheoryQuestion) -> set[OptionKey]:
             source = cited if key is question.correct_key else question.distractor_citations[key].verbatim_quote
             hit = _overlap(source, cited)
         else:
-            # Đúng nếu điền thuật ngữ vào chỗ trống cho ra một đoạn có trong Vault, hoặc thuật ngữ lồng với đáp án.
-            filled = normalize_quote(question.stem.split("> ", 1)[1].replace(BLANK, text)).casefold()
+            # Đúng nếu điền thuật ngữ vào chỗ trống khớp một trích dẫn (hai chiều) hay ra một đoạn có trong văn bản
+            # chunk, hoặc thuật ngữ lồng với đáp án.
+            masked = question.stem.split("> ", 1)[1]
+            filled = normalize_quote(masked.replace(BLANK, text)).casefold()
             in_vault = any(filled in normalize_quote(c.raw_text).casefold() for c in OVERLAP_CHUNKS.values())
-            hit = in_vault or _overlap(text, question.options[question.correct_key])
+            hit = in_vault or _in_pool_quotes(masked, text) or _overlap(text, question.options[question.correct_key])
         if hit:
             correct.add(key)
     return correct
@@ -862,6 +900,83 @@ def test_overlapping_quotes_never_give_two_correct_answers(chapter_code: str | N
     assert set(counts) == set(feasible_forms(OVERLAP_PAIRS, SUBJECT, chapter_code=chapter_code))
     assert counts
     assert min(counts.values()) >= MIN_OVERLAP_PER_FORM, counts
+
+
+REVIEWER_SEED = 56
+REVIEWER_POOL_SHA256 = "02bc8e5050f08358662743fe86387241fb6f8918a2bce61cc918f7de3060ed29"
+
+
+def test_concept_with_one_conflicting_pair_is_never_a_term_distractor() -> None:
+    """Phản ví dụ của reviewer: seed 56 trên nhóm ứng viên chồng lấn có biến thể thứ hai của "Hình thức tồn tại".
+
+    Cặp đầu của "Hình thức tồn tại" trùng trích dẫn với "Không gian" (bị loại); biến thể thứ hai tự nó không xung đột
+    (trích dẫn không lồng, thuật ngữ không điền ra trích dẫn nào). Luật xét từng cặp từng nhận biến thể đó, nên câu hỏi
+    "Không gian" có phương án "Hình thức tồn tại" cũng đúng (đáp án D, đúng cả C và D). Phương án là thuật ngữ nên luật
+    phải loại cả khái niệm.
+    """
+    assert pool_sha256(OVERLAP_PAIRS, SUBJECT) == REVIEWER_POOL_SHA256
+    space = next(pair for pair in OVERLAP_PAIRS if pair.term == "Không gian")
+    variants = [pair for pair in OVERLAP_PAIRS if pair.term == "Hình thức tồn tại"]
+    assert [_overlap(pair.definition_quote, space.definition_quote) for pair in variants] == [True, False]
+    stem_quote = mask_terms(space.definition_quote, [space.term])
+    assert not _in_pool_quotes(stem_quote, "Hình thức tồn tại")
+
+    result = _overlap_question(REVIEWER_SEED)
+    assert isinstance(result, TheoryQuestion), result
+    assert result.form is TheoryQuestionForm.CONCEPT_MATCH
+    assert result.options[result.correct_key] == "Không gian"
+    assert "Hình thức tồn tại" not in result.options.values(), result.options
+    assert _vault_correct_keys(result) == {result.correct_key}
+
+    for chapter_code in CHAPTERS:
+        for seed in OVERLAP_SEEDS:
+            question = _overlap_question(seed, chapter_code=chapter_code)
+            # Chỉ hai dạng có phương án là thuật ngữ mới có đáp án "Không gian".
+            if isinstance(question, TheoryQuestion) and question.options[question.correct_key] == "Không gian":
+                assert "Hình thức tồn tại" not in question.options.values(), (chapter_code, seed)
+
+
+# Thân câu hỏi "Không gian" dài hơn trích dẫn của "Thời gian": điền "Thời gian" vào chỗ trống ra một đoạn CHỨA trích dẫn
+# đó (chiều thứ hai của luật điền thử). "Phương thức tồn tại" có trích dẫn nằm trong phần giữ nguyên của thân câu hỏi
+# "Vận động", không chạm chỗ điền, nên không làm mọi thuật ngữ bị loại.
+CONTAINS_LINES = [
+    "Vật chất là phạm trù triết học dùng để chỉ thực tại khách quan.",
+    "Vận động là phương thức tồn tại của vật chất.",
+    "Ý thức là sự phản ánh năng động, sáng tạo thế giới khách quan vào bộ óc con người.",
+    "Không gian là hình thức tồn tại của vật chất xét về quảng tính.",
+    "Theo nghĩa hẹp, Thời gian là hình thức tồn tại của vật chất",
+    "Chân lý là tri thức phù hợp với hiện thực khách quan.",
+]
+CONTAINS_CHUNK = _lines_chunk("chk_contains_ch1", "ch1", CONTAINS_LINES, 7)
+CONTAINS_PAIRS = _pairs_in(
+    CONTAINS_CHUNK,
+    [
+        ("Vật chất", CONTAINS_LINES[0]),
+        ("Vận động", CONTAINS_LINES[1]),
+        ("Phương thức tồn tại", "phương thức tồn tại của vật chất"),
+        ("Ý thức", CONTAINS_LINES[2]),
+        ("Không gian", CONTAINS_LINES[3]),
+        ("Thời gian", "Thời gian là hình thức tồn tại của vật chất"),
+        ("Chân lý", CONTAINS_LINES[5]),
+    ],
+)
+
+
+def test_fill_rule_also_rejects_a_term_whose_filled_stem_contains_a_pool_quote() -> None:
+    chunks = {CONTAINS_CHUNK.chunk_id: CONTAINS_CHUNK}
+    seen: Counter[str] = Counter()
+    for seed in OVERLAP_SEEDS:
+        result = generate_theory_question(CONTAINS_PAIRS, chunks, subject_code=SUBJECT, seed=seed, **TICKET_CONTEXT)
+        assert isinstance(result, TheoryQuestion), result
+        if result.form is not TheoryQuestionForm.CONCEPT_MATCH:
+            continue
+        answer = result.options[result.correct_key]
+        seen[answer] += 1
+        if answer == "Không gian":
+            assert "Thời gian" not in result.options.values(), (seed, result.options)
+        if answer == "Thời gian":
+            assert "Không gian" not in result.options.values(), (seed, result.options)
+    assert {"Không gian", "Thời gian", "Vận động"} <= set(seen), seen
 
 
 def test_concept_match_skips_a_term_that_also_fills_the_blank() -> None:

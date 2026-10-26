@@ -4,6 +4,7 @@ import { ESSAY_GRADE_FIXTURES } from "@/mocks/fixtures/essay";
 import { ESSAY_SPACED_REVIEW_TWIN_ID, TWIN_BATCH_FIXTURE } from "@/mocks/fixtures/twins";
 
 import { localError } from "./errors";
+import { createLatestCounter } from "./latest";
 import {
   answerOutcome,
   buildBlueprintCreate,
@@ -13,6 +14,7 @@ import {
   formatChoices,
   initialPracticeState,
   isAnswered,
+  mismatchedGradeError,
   type PracticeAction,
   type PracticeState,
   practiceKeyEffect,
@@ -145,58 +147,113 @@ describe("practiceReducer: trắc nghiệm", () => {
 
 describe("practiceReducer: tự luận", () => {
   const atEssay = (): PracticeState => run(initialPracticeState(questions()), { type: "go_to", index: 2 });
+  const twinId = ESSAY_SPACED_REVIEW_TWIN_ID;
 
   it("soạn, gửi chấm, nhận kết quả theo twin_id", () => {
-    const twinId = ESSAY_SPACED_REVIEW_TWIN_ID;
     let state = run(
       atEssay(),
       { type: "edit_essay", text: "Ôn cách nhau ngày càng xa" },
-      { type: "essay_started", twinId },
+      { type: "essay_started", twinId, submission: 1 },
     );
-    expect(state.entries[2]).toMatchObject({ kind: "essay", status: "grading" });
+    expect(state.entries[2]).toMatchObject({ kind: "essay", status: "grading", submission: 1 });
     state = run(state, { type: "edit_essay", text: "sửa khi đang chấm" });
     expect(state.entries[2]).toMatchObject({ draft: "Ôn cách nhau ngày càng xa" });
-    state = run(state, { type: "essay_graded", twinId, result: gradeView() });
+    state = run(state, { type: "essay_graded", twinId, submission: 1, result: gradeView() });
     expect(state.entries[2]).toMatchObject({ status: "graded", result: { matchedCount: 1, totalPoints: 2 } });
   });
 
   it("kết quả về sau khi đã chuyển câu vẫn gắn đúng câu tự luận đó", () => {
-    const twinId = ESSAY_SPACED_REVIEW_TWIN_ID;
-    let state = run(atEssay(), { type: "edit_essay", text: "x" }, { type: "essay_started", twinId }, { type: "next" });
-    state = run(state, { type: "essay_graded", twinId, result: gradeView() });
+    let state = run(
+      atEssay(),
+      { type: "edit_essay", text: "x" },
+      { type: "essay_started", twinId, submission: 1 },
+      { type: "next" },
+    );
+    state = run(state, { type: "essay_graded", twinId, submission: 1, result: gradeView() });
     expect(state.index).toBe(3);
     expect(state.entries[2]).toMatchObject({ status: "graded" });
     expect(state.entries[3]).toMatchObject({ status: "editing" });
   });
 
   it("lỗi chấm giữ nguyên bản nháp để sửa rồi nộp lại", () => {
-    const twinId = ESSAY_SPACED_REVIEW_TWIN_ID;
     const error = localError("Câu trả lời đang trống.");
     const state = run(
       atEssay(),
       { type: "edit_essay", text: "bản nháp" },
-      { type: "essay_started", twinId },
-      {
-        type: "essay_failed",
-        twinId,
-        error,
-      },
+      { type: "essay_started", twinId, submission: 1 },
+      { type: "essay_failed", twinId, submission: 1, error },
     );
-    expect(state.entries[2]).toEqual({ kind: "essay", draft: "bản nháp", status: "editing", result: null, error });
+    expect(state.entries[2]).toEqual({
+      kind: "essay",
+      draft: "bản nháp",
+      status: "editing",
+      result: null,
+      error,
+      submission: 1,
+    });
   });
 
-  it("kết quả của câu khác hoặc chưa gửi chấm thì bị bỏ qua", () => {
-    const twinId = ESSAY_SPACED_REVIEW_TWIN_ID;
-    expect(run(atEssay(), { type: "essay_graded", twinId, result: gradeView() }).entries[2]).toMatchObject({
-      status: "editing",
-    });
+  it("kết quả khi câu chưa gửi chấm thì bị bỏ qua", () => {
+    const state = run(atEssay(), { type: "essay_graded", twinId, submission: 1, result: gradeView() });
+    expect(state.entries[2]).toMatchObject({ status: "editing", result: null, error: null });
+  });
+
+  it("kết quả mang twin_id của câu khác: báo phản hồi không hợp lệ, giữ bản nháp, cho nộp lại", () => {
     const mismatched = { ...gradeView(), twinId: "twin_khac" };
-    const state = run(
+    let state = run(
       atEssay(),
-      { type: "essay_started", twinId },
-      { type: "essay_graded", twinId, result: mismatched },
+      { type: "edit_essay", text: "bản nháp" },
+      { type: "essay_started", twinId, submission: 1 },
+      { type: "essay_graded", twinId, submission: 1, result: mismatched },
     );
-    expect(state.entries[2]).toMatchObject({ status: "grading" });
+    expect(state.entries[2]).toEqual({
+      kind: "essay",
+      draft: "bản nháp",
+      status: "editing",
+      result: null,
+      error: mismatchedGradeError(),
+      submission: 1,
+    });
+    expect(mismatchedGradeError().message).toContain("không hợp lệ");
+    expect(mismatchedGradeError().action).toBe("retry");
+    // Nộp lại được và lần này nhận kết quả đúng câu.
+    state = run(
+      state,
+      { type: "essay_started", twinId, submission: 2 },
+      { type: "essay_graded", twinId, submission: 2, result: gradeView() },
+    );
+    expect(state.entries[2]).toMatchObject({ status: "graded", draft: "bản nháp", error: null });
+  });
+
+  it("sau khi làm lại từ đầu, phản hồi của lượt gửi cũ không được gán cho câu trả lời mới", () => {
+    const counter = createLatestCounter();
+    const oldTicket = counter.begin();
+    let state = run(
+      atEssay(),
+      { type: "edit_essay", text: "câu trả lời cũ" },
+      { type: "essay_started", twinId, submission: oldTicket },
+      { type: "restart" },
+      { type: "go_to", index: 2 },
+    );
+    // Phản hồi cũ về khi câu đã được làm lại nhưng chưa gửi: bỏ qua.
+    state = run(state, { type: "essay_graded", twinId, submission: oldTicket, result: gradeView() });
+    expect(state.entries[2]).toMatchObject({ status: "editing", result: null });
+
+    const newTicket = counter.begin();
+    state = run(
+      state,
+      { type: "edit_essay", text: "câu trả lời mới" },
+      { type: "essay_started", twinId, submission: newTicket },
+    );
+    // Phản hồi cũ (thành công hay lỗi) về khi lượt mới đang chờ: vẫn bỏ qua, câu vẫn đang chấm lượt mới.
+    state = run(
+      state,
+      { type: "essay_graded", twinId, submission: oldTicket, result: gradeView() },
+      { type: "essay_failed", twinId, submission: oldTicket, error: localError("lỗi cũ") },
+    );
+    expect(state.entries[2]).toMatchObject({ status: "grading", submission: newTicket, error: null, result: null });
+    state = run(state, { type: "essay_graded", twinId, submission: newTicket, result: gradeView() });
+    expect(state.entries[2]).toMatchObject({ status: "graded", draft: "câu trả lời mới" });
   });
 });
 
@@ -318,6 +375,13 @@ describe("gửi câu trả lời tự luận", () => {
       { type: "edit_essay", text: "  " },
       { type: "essay_rejected", error },
     );
-    expect(state.entries[2]).toEqual({ kind: "essay", draft: "  ", status: "editing", result: null, error });
+    expect(state.entries[2]).toEqual({
+      kind: "essay",
+      draft: "  ",
+      status: "editing",
+      result: null,
+      error,
+      submission: null,
+    });
   });
 });

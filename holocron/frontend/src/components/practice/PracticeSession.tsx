@@ -6,6 +6,7 @@ import { describeTarget } from "@/components/shell/keyboard";
 import { useShell } from "@/components/shell/ShellContext";
 import { api, toUiError } from "@/lib/api";
 import { localError } from "@/lib/errors";
+import { createLatestCounter } from "@/lib/latest";
 import {
   entrySummary,
   essaySubmission,
@@ -48,6 +49,9 @@ export function PracticeSession({ questions, blueprint, subjectCode, onNewExam }
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+  // Mã lượt gửi chấm, tăng dần trong cả phiên (kể cả qua "Làm lại từ đầu"): reducer chỉ áp phản hồi mang đúng mã
+  // của lượt đang chờ ở câu đó, nên kết quả của lượt cũ không bị gán cho câu trả lời mới.
+  const submissions = useRef(createLatestCounter());
 
   const chapterOf = useCallback(
     (slotIndex: number): string | null =>
@@ -66,11 +70,14 @@ export function PracticeSession({ questions, blueprint, subjectCode, onNewExam }
       return;
     }
     const twinId = question.twinId;
-    dispatch({ type: "essay_started", twinId });
+    const ticket = submissions.current.begin();
+    dispatch({ type: "essay_started", twinId, submission: ticket });
     api
       .gradeEssay(twinId, submission.answer)
-      .then((result) => dispatch({ type: "essay_graded", twinId, result }))
-      .catch((error: unknown) => dispatch({ type: "essay_failed", twinId, error: toUiError(error) }));
+      .then((result) => dispatch({ type: "essay_graded", twinId, submission: ticket, result }))
+      .catch((error: unknown) =>
+        dispatch({ type: "essay_failed", twinId, submission: ticket, error: toUiError(error) }),
+      );
   }, []);
 
   useEffect(() => {

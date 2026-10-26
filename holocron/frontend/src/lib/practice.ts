@@ -6,7 +6,7 @@
  * - không đếm tổng số câu đúng của lượt (kế hoạch UI mục 9 câu 3: chờ người dùng quyết).
  */
 
-import type { UiError } from "@/lib/errors";
+import { invalidResponseError, type UiError } from "@/lib/errors";
 import { essayHeadline } from "@/lib/essay";
 import { CHAPTER_CODE_PATTERN, MAX_THEORY_SLOTS } from "@/lib/limits";
 import type { EssayGradeView, PracticeQuestion } from "@/lib/practice-data";
@@ -95,7 +95,18 @@ export type EssayStatus = "editing" | "grading" | "graded";
 
 export type AnswerEntry =
   | { kind: "mcq"; selected: OptionKey | null; submitted: boolean }
-  | { kind: "essay"; draft: string; status: EssayStatus; result: EssayGradeView | null; error: UiError | null };
+  | {
+      kind: "essay";
+      draft: string;
+      status: EssayStatus;
+      result: EssayGradeView | null;
+      error: UiError | null;
+      /**
+       * Mã lượt gửi chấm gần nhất của câu này (`null` khi chưa gửi). Phản hồi mang mã khác là của lượt cũ (ví dụ gửi
+       * trước khi "Làm lại từ đầu") và bị bỏ, để kết quả cũ không bị gán cho câu trả lời mới.
+       */
+      submission: number | null;
+    };
 
 export interface PracticeState {
   questions: PracticeQuestion[];
@@ -112,9 +123,9 @@ export type PracticeAction =
   | { type: "select"; key: OptionKey }
   | { type: "submit_mcq" }
   | { type: "edit_essay"; text: string }
-  | { type: "essay_started"; twinId: string }
-  | { type: "essay_graded"; twinId: string; result: EssayGradeView }
-  | { type: "essay_failed"; twinId: string; error: UiError }
+  | { type: "essay_started"; twinId: string; submission: number }
+  | { type: "essay_graded"; twinId: string; submission: number; result: EssayGradeView }
+  | { type: "essay_failed"; twinId: string; submission: number; error: UiError }
   | { type: "essay_rejected"; error: UiError }
   | { type: "next" }
   | { type: "previous" }
@@ -122,10 +133,18 @@ export type PracticeAction =
   | { type: "toggle_source" }
   | { type: "restart" };
 
+/** Kết quả chấm trả về mang `twin_id` của câu khác: coi là phản hồi không hợp lệ, cho nộp lại (giữ hành động "Thử lại"). */
+export function mismatchedGradeError(): UiError {
+  return {
+    ...invalidResponseError(),
+    message: "Phản hồi chấm không hợp lệ: kết quả trả về không thuộc câu này. Bản nháp vẫn còn, bấm nộp để chấm lại.",
+  };
+}
+
 function emptyEntry(question: PracticeQuestion): AnswerEntry {
   return question.kind === "mcq"
     ? { kind: "mcq", selected: null, submitted: false }
-    : { kind: "essay", draft: "", status: "editing", result: null, error: null };
+    : { kind: "essay", draft: "", status: "editing", result: null, error: null, submission: null };
 }
 
 export function initialPracticeState(questions: PracticeQuestion[]): PracticeState {
@@ -172,14 +191,16 @@ export function practiceReducer(state: PracticeState, action: PracticeAction): P
       if (target?.kind !== "essay") return state;
       if (action.type === "essay_started") {
         if (target.status !== "editing") return state;
-        return replaceEntry(state, index, { ...target, status: "grading", error: null });
+        return replaceEntry(state, index, { ...target, status: "grading", error: null, submission: action.submission });
       }
-      if (target.status !== "grading") return state;
-      if (action.type === "essay_graded") {
-        if (action.result.twinId !== action.twinId) return state;
+      // Chỉ phản hồi của lượt gửi đang chờ mới được áp; lượt cũ (kể cả trước "Làm lại từ đầu") bị bỏ.
+      if (target.status !== "grading" || target.submission !== action.submission) return state;
+      if (action.type === "essay_graded" && action.result.twinId === action.twinId) {
         return replaceEntry(state, index, { ...target, status: "graded", result: action.result, error: null });
       }
-      return replaceEntry(state, index, { ...target, status: "editing", error: action.error });
+      // Lỗi chấm, hoặc kết quả mang `twin_id` của câu khác (phản hồi không hợp lệ): giữ bản nháp để nộp lại.
+      const error = action.type === "essay_failed" ? action.error : mismatchedGradeError();
+      return replaceEntry(state, index, { ...target, status: "editing", error });
     }
     case "next":
       if (state.finished) return state;

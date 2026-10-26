@@ -95,7 +95,7 @@ describe("pageWarnings", () => {
     expect(pageWarnings(base)).toEqual([]);
   });
 
-  it("trang OCR có câu nhắc chữ hiếm Ỵ/ỵ; lý do thành nhãn tiếng Việt", () => {
+  it("trang OCR có nhãn đọc bằng OCR, không kèm câu nhắc ghi cứng; lý do thành nhãn tiếng Việt", () => {
     const warnings = pageWarnings({
       ...base,
       status: "needs_review",
@@ -103,7 +103,7 @@ describe("pageWarnings", () => {
       reviewReasons: ["CROSS_CHECK_UNAVAILABLE", "LOW_OCR_SCORE"],
     });
     expect(warnings.map((w) => w.tone)).toEqual(["info", "warning", "warning"]);
-    expect(warnings[0]?.label).toContain("Ỵ");
+    expect(warnings[0]?.label).toBe("Đọc bằng OCR (ảnh scan)");
     expect(warnings[1]?.label).toBe(REVIEW_REASON_LABEL_VI.CROSS_CHECK_UNAVAILABLE);
     for (const warning of warnings) expectNoRawCode(warning.label);
   });

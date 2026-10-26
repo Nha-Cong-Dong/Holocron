@@ -1,11 +1,14 @@
 /**
  * Tài liệu mẫu cho bộ nhập PDF (M4, M5 của kế hoạch UI; spec §5.7, §6.5). Văn bản tự viết, không lấy từ tài liệu có
- * bản quyền; mã môn trung tính. Mọi con số (điểm, `version`, số đếm) là giá trị dựng sẵn theo contract, handler giả
- * không tính lại số nào: sửa dòng trả bản "sau khi sửa" dựng sẵn, xác nhận chỉ đặt `confirmed` và mốc thời gian cố
- * định. Có test theo validator của §5.7 (`mocks/documents-fixtures.test.ts`).
+ * bản quyền; mã môn trung tính. Mọi con số (điểm, `version`, số đếm) và mọi `status` là giá trị dựng sẵn theo contract;
+ * handler giả không tính lại gì. Có test theo validator của §5.7 (`mocks/documents-fixtures.test.ts`).
  *
  * Bốn trang: (1) `ok`, đọc từ lớp chữ; (2) `needs_review`, OCR, có dòng conf thấp và token lệch; (3) `needs_review` vì
- * `LOW_TEXT_SCORE`; (4) `failed` vì `OCR_ENGINE_MISSING`.
+ * `LOW_TEXT_SCORE`, đã được xác nhận từng trang từ trước; (4) `failed` vì `OCR_ENGINE_MISSING`.
+ *
+ * Handler giả chỉ đi theo MỘT kịch bản tuyến tính cố định (`MOCK_DOCUMENT_SCENARIO`): xem trang → sửa dòng trang 2 →
+ * xác nhận các trang đọc tốt theo lô ⇒ tài liệu `confirmed`. Mỗi bước có bản dựng sẵn của mọi trang, của
+ * `DocumentImport` và của `DocumentSummary`; thao tác ngoài kịch bản trả bản hiện tại.
  */
 
 import type { DocumentImportPending, PageExtractionPending, PageSummaryPending } from "@/types/contract-pending";
@@ -123,6 +126,7 @@ const PAGE_2_EDITED: PageExtractionPending = {
   review_reasons: [],
 };
 
+/** Trang 3 đã được người dùng xem lại và xác nhận từng trang từ trước (§6.5: trang `needs_review` xác nhận từng trang). */
 const PAGE_3: PageExtractionPending = {
   document_id: MOCK_IMPORT_DOC_ID,
   page_number: 3,
@@ -144,29 +148,8 @@ const PAGE_3: PageExtractionPending = {
   cross_check: { status: "not_applicable", secondary_engine: null, mismatches: [] },
   review_reasons: ["LOW_TEXT_SCORE"],
   failure_reason: null,
-  confirmed: false,
-  confirmed_at: null,
-};
-
-/** Trang 3 "sau khi sửa": dòng 0 do người dùng sửa; lý do cấp trang `LOW_TEXT_SCORE` giữ nguyên (§6.5). */
-const PAGE_3_EDITED: PageExtractionPending = {
-  ...PAGE_3,
-  version: 2,
-  lines: [
-    line(0, "Mẹo: đặt nhắc lịch ngay sau buổi học đầu tiên.", 0.82, "text_layer", [], true),
-    line(1, "Ôn đúng hẹn quan trọng hơn ôn lâu.", 0.82, "text_layer"),
-  ],
-};
-
-/** Trang 1 "sau khi sửa": dòng 0 do người dùng sửa; trang vẫn `ok`. */
-const PAGE_1_EDITED: PageExtractionPending = {
-  ...PAGE_1,
-  version: 2,
-  lines: [
-    line(0, "Bài 3. Lập lịch ôn tập", 0.97, "text_layer", [], true),
-    line(1, "Lịch ôn tập là bảng ghi các ngày ôn lại một nội dung sau lần học đầu tiên.", 0.97, "text_layer"),
-    line(2, "Khoảng cách giữa hai lần ôn tăng dần theo thời gian.", 0.97, "text_layer"),
-  ],
+  confirmed: true,
+  confirmed_at: MOCK_CONFIRMED_AT,
 };
 
 const PAGE_4: PageExtractionPending = {
@@ -193,11 +176,9 @@ const PAGE_4: PageExtractionPending = {
 
 export const INITIAL_PAGES: readonly PageExtractionPending[] = [PAGE_1, PAGE_2, PAGE_3, PAGE_4];
 
-/** Bản "sau khi sửa" dựng sẵn của từng trang (theo `page_number`); trang lỗi không có vì không sửa được. */
+/** Bản "sau khi sửa" dựng sẵn (theo `page_number`): chỉ trang 2, trang duy nhất được sửa trong kịch bản. */
 export const EDITED_PAGES: Readonly<Record<number, PageExtractionPending>> = {
-  1: PAGE_1_EDITED,
   2: PAGE_2_EDITED,
-  3: PAGE_3_EDITED,
 };
 
 /** Bản đã xác nhận của một trang: chỉ đặt `confirmed` và mốc thời gian cố định, không đổi field nào khác. */
@@ -216,7 +197,7 @@ export function pageSummaryOf(page: PageExtractionPending): PageSummaryPending {
   };
 }
 
-/** `DocumentImport` của tài liệu mẫu theo các trang hiện tại; `status` truyền vào từ handler. */
+/** `DocumentImport` của tài liệu mẫu dựng từ các trang và `status` dựng sẵn của một bước kịch bản. */
 export function mockDocumentImport(
   pages: readonly PageExtractionPending[],
   status: DocumentImportPending["status"],
@@ -232,15 +213,51 @@ export function mockDocumentImport(
   };
 }
 
+/** Bước của kịch bản tài liệu mẫu, theo đúng thứ tự. */
+export type MockDocumentStep = "initial" | "page2_edited" | "confirmed";
+
+export interface MockDocumentSnapshot {
+  pages: readonly PageExtractionPending[];
+  document: DocumentImportPending;
+  summary: DocumentSummary;
+}
+
+function snapshot(
+  pages: readonly PageExtractionPending[],
+  status: DocumentImportPending["status"],
+  counts: Pick<DocumentSummary, "pages_pending" | "pages_needs_review" | "pages_failed" | "pages_confirmed">,
+): MockDocumentSnapshot {
+  return {
+    pages,
+    document: mockDocumentImport(pages, status),
+    summary: { meta: MOCK_DOCUMENT_META, status, ...counts },
+  };
+}
+
 /**
- * `DocumentSummary` dựng sẵn cho trạng thái ban đầu. Số đếm là giá trị cố định của fixture (có test đối chiếu với
- * `INITIAL_PAGES`); handler giả không đếm lại sau khi sửa hay xác nhận.
+ * Kịch bản cố định. Số đếm và `status` là giá trị dựng sẵn (có test đối chiếu với trang của từng bước): sau bước cuối,
+ * mọi trang có văn bản (1, 2, 3) đã xác nhận nên tài liệu `confirmed` (§6.5); trang 4 đọc lỗi không tính.
  */
-export const MOCK_DOCUMENT_SUMMARY: DocumentSummary = {
-  meta: MOCK_DOCUMENT_META,
-  status: "review",
-  pages_pending: 0,
-  pages_needs_review: 2,
-  pages_failed: 1,
-  pages_confirmed: 0,
+export const MOCK_DOCUMENT_SCENARIO: Readonly<Record<MockDocumentStep, MockDocumentSnapshot>> = {
+  initial: snapshot(INITIAL_PAGES, "review", {
+    pages_pending: 0,
+    pages_needs_review: 2,
+    pages_failed: 1,
+    pages_confirmed: 1,
+  }),
+  page2_edited: snapshot([PAGE_1, PAGE_2_EDITED, PAGE_3, PAGE_4], "review", {
+    pages_pending: 0,
+    pages_needs_review: 1,
+    pages_failed: 1,
+    pages_confirmed: 1,
+  }),
+  confirmed: snapshot([confirmedPage(PAGE_1), confirmedPage(PAGE_2_EDITED), PAGE_3, PAGE_4], "confirmed", {
+    pages_pending: 0,
+    pages_needs_review: 1,
+    pages_failed: 1,
+    pages_confirmed: 3,
+  }),
 };
+
+/** `DocumentSummary` của bước đầu (có test đối chiếu với `INITIAL_PAGES`). */
+export const MOCK_DOCUMENT_SUMMARY: DocumentSummary = MOCK_DOCUMENT_SCENARIO.initial.summary;

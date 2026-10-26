@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { type FormEvent, useCallback, useEffect, useId, useRef, useState } from "react";
+import { type FormEvent, type KeyboardEvent, useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { ErrorNotice } from "@/components/common/ErrorNotice";
 import { EmptyState, Loading } from "@/components/common/LoadState";
@@ -13,13 +13,20 @@ import { VAULT_BROWSE_PAGE_SIZE, VAULT_SEARCH_LIMIT } from "@/lib/limits";
 import { CAPABILITY_LABEL_VI, capabilityOf, freshRuntime } from "@/lib/runtime";
 import { locateQuote } from "@/lib/source";
 import {
+  buildLabelChange,
+  CHUNK_CATEGORY_OPTIONS,
   type ChunkListView,
   type ChunkView,
+  canEditLabels,
   categoryLabel,
   checkSearchText,
   groupByChapter,
   hasNextPage,
+  type LabelDraft,
+  type LabelField,
+  labelDraftOf,
   labelStatusLabel,
+  nextPageOffset,
   pageRangeLabel,
   parseChapterFilter,
   previousOffset,
@@ -50,26 +57,37 @@ const LABEL_FILTERS: { value: LabelStatus | ""; label: string }[] = [
 
 /**
  * Mục "Kho tri thức" của một môn (§6.6): duyệt chunk theo chương và theo trang (`GET /v1/vault/chunks`, phân trang
- * bằng `offset`/`limit` của backend) và tìm kiếm (`GET /v1/vault/search`, không hiện điểm). Văn bản chunk là văn bản
- * người dùng đã xác nhận ở bước xem lại trang; đoạn trích tiêu biểu được tô theo luật so khớp của I3.
+ * bằng `offset`/`limit` của backend), tìm kiếm (`GET /v1/vault/search`, không hiện điểm) và sửa, xác nhận nhãn của
+ * từng chunk (`PATCH /v1/vault/chunks/{chunk_id}/labels`). Văn bản chunk là văn bản người dùng đã xác nhận ở bước xem
+ * lại trang, không sửa được ở đây; đoạn trích tiêu biểu được tô theo luật so khớp của I3.
  */
 export function ChunkBrowser({ subjectCode }: { subjectCode: string }) {
   const { runtime } = useShell();
   const search = capabilityOf(freshRuntime(runtime), "vault_search");
+  // Tăng sau mỗi lần sửa nhãn thành công: danh sách và kết quả tìm kiếm đọc lại từ backend, không vá tại chỗ.
+  const [revision, setRevision] = useState(0);
+  const onLabelsSaved = useCallback(() => setRevision((value) => value + 1), []);
   return (
     <>
-      <VaultSearch subjectCode={subjectCode} />
+      <VaultSearch subjectCode={subjectCode} revision={revision} onLabelsSaved={onLabelsSaved} />
       {search.state === "unavailable" && (
         <p className={styles.hint}>
           {CAPABILITY_LABEL_VI.vault_search}: {search.detail ?? "chưa dùng được"}
         </p>
       )}
-      <ChunkList subjectCode={subjectCode} />
+      <ChunkList subjectCode={subjectCode} revision={revision} onLabelsSaved={onLabelsSaved} />
     </>
   );
 }
 
-function ChunkList({ subjectCode }: { subjectCode: string }) {
+interface ChunkSectionProps {
+  subjectCode: string;
+  /** Đổi sau mỗi lần sửa nhãn thành công ở bất kỳ đâu trong mục này. */
+  revision: number;
+  onLabelsSaved: () => void;
+}
+
+function ChunkList({ subjectCode, revision, onLabelsSaved }: ChunkSectionProps) {
   const ids = useId();
   const [filter, setFilter] = useState<BrowseFilter>({ chapterCode: null, labelStatus: null, offset: 0 });
   const [chapterText, setChapterText] = useState("");
@@ -96,6 +114,14 @@ function ChunkList({ subjectCode }: { subjectCode: string }) {
     const counter = calls.current;
     return () => counter.invalidate();
   }, [load]);
+
+  // Sửa nhãn thành công (ở danh sách hay ở kết quả tìm kiếm): đọc lại trang hiện tại từ backend.
+  const seenRevision = useRef(revision);
+  useEffect(() => {
+    if (seenRevision.current === revision) return;
+    seenRevision.current = revision;
+    load();
+  }, [revision, load]);
 
   function applyFilter(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
@@ -150,7 +176,7 @@ function ChunkList({ subjectCode }: { subjectCode: string }) {
 
       {state.kind === "loading" && <Loading label="Đang tải văn bản trong kho tri thức…" />}
       {state.kind === "error" && <ErrorNotice error={state.error} onRetry={load} onReload={load} />}
-      {state.kind === "ready" && state.value.chunks.length === 0 && (
+      {state.kind === "ready" && state.value.received === 0 && (
         <EmptyState title={filtered ? "Không có đoạn văn bản nào khớp bộ lọc." : "Kho tri thức của môn này còn trống."}>
           {filtered ? (
             "Bỏ bớt bộ lọc để xem các đoạn khác."
@@ -162,7 +188,7 @@ function ChunkList({ subjectCode }: { subjectCode: string }) {
           )}
         </EmptyState>
       )}
-      {state.kind === "ready" && state.value.chunks.length > 0 && (
+      {state.kind === "ready" && state.value.received > 0 && (
         <>
           <p className={styles.muted}>Tổng {state.value.total} đoạn văn bản khớp bộ lọc.</p>
           {state.value.hasSkipped && (
@@ -175,7 +201,7 @@ function ChunkList({ subjectCode }: { subjectCode: string }) {
               </h3>
               <ul className={styles.chunkList}>
                 {group.chunks.map((chunk) => (
-                  <ChunkCard key={chunk.chunkId} chunk={chunk} />
+                  <ChunkCard key={chunk.chunkId} chunk={chunk} onLabelsSaved={onLabelsSaved} onReload={load} />
                 ))}
               </ul>
             </section>
@@ -192,8 +218,8 @@ function ChunkList({ subjectCode }: { subjectCode: string }) {
             <button
               type="button"
               className={`${styles.secondary} ${styles.small}`}
-              disabled={!hasNextPage(filter.offset, state.value.chunks.length, state.value.total)}
-              onClick={() => setFilter({ ...filter, offset: filter.offset + state.value.chunks.length })}
+              disabled={!hasNextPage(filter.offset, state.value.received, state.value.total)}
+              onClick={() => setFilter({ ...filter, offset: nextPageOffset(filter.offset, state.value.received) })}
             >
               Trang sau
             </button>
@@ -204,7 +230,7 @@ function ChunkList({ subjectCode }: { subjectCode: string }) {
   );
 }
 
-function VaultSearch({ subjectCode }: { subjectCode: string }) {
+function VaultSearch({ subjectCode, revision, onLabelsSaved }: ChunkSectionProps) {
   const ids = useId();
   const [text, setText] = useState("");
   const [inputError, setInputError] = useState<string | null>(null);
@@ -233,6 +259,14 @@ function VaultSearch({ subjectCode }: { subjectCode: string }) {
     },
     [subjectCode],
   );
+
+  // Sửa nhãn thành công: chạy lại truy vấn gần nhất (nếu đã tìm) để kết quả là bản backend trả.
+  const seenRevision = useRef(revision);
+  useEffect(() => {
+    if (seenRevision.current === revision) return;
+    seenRevision.current = revision;
+    if (lastQuery.current !== null) run(lastQuery.current);
+  }, [revision, run]);
 
   function submit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
@@ -286,7 +320,7 @@ function VaultSearch({ subjectCode }: { subjectCode: string }) {
           )}
           <ul className={styles.chunkList} aria-label="Kết quả tìm kiếm">
             {state.value.hits.map((hit) => (
-              <ChunkCard key={hit.chunk.chunkId} chunk={hit.chunk} />
+              <ChunkCard key={hit.chunk.chunkId} chunk={hit.chunk} onLabelsSaved={onLabelsSaved} onReload={retry} />
             ))}
           </ul>
         </>
@@ -295,9 +329,30 @@ function VaultSearch({ subjectCode }: { subjectCode: string }) {
   );
 }
 
-/** Một chunk: chương, trang, nhãn, và văn bản nguyên văn (đoạn trích tiêu biểu được tô nếu định vị được). */
-function ChunkCard({ chunk }: { chunk: ChunkView }) {
+interface ChunkCardProps {
+  chunk: ChunkView;
+  /** Sửa nhãn thành công: mục cha đọc lại danh sách từ backend. */
+  onLabelsSaved: () => void;
+  /** Nút "Tải lại bản mới nhất" của lỗi 409 khi sửa nhãn: đọc lại danh sách chứa chunk này. */
+  onReload: () => void;
+}
+
+/**
+ * Một chunk: chương, trang, nhãn, và văn bản nguyên văn (đoạn trích tiêu biểu được tô nếu định vị được). Nhãn sửa và
+ * xác nhận được khi backend trả `version`; văn bản và đoạn trích không có ô sửa (§6.6).
+ */
+function ChunkCard({ chunk, onLabelsSaved, onReload }: ChunkCardProps) {
   const segments = locateQuote(chunk.rawText, chunk.verbatimQuote);
+  const [editing, setEditing] = useState(false);
+  const editButton = useRef<HTMLButtonElement>(null);
+  const wasEditing = useRef(false);
+
+  // Đóng form (huỷ hoặc Esc) thì trả focus về nút mở form.
+  useEffect(() => {
+    if (!editing && wasEditing.current) editButton.current?.focus();
+    wasEditing.current = editing;
+  }, [editing]);
+
   return (
     <li className={styles.chunk}>
       <p className={styles.meta}>
@@ -327,6 +382,161 @@ function ChunkCard({ chunk }: { chunk: ChunkView }) {
           Dạng bài: <span className={styles.code}>{chunk.topicKeys.join(", ")}</span>
         </p>
       )}
+      {editing ? (
+        <LabelEditor
+          chunk={chunk}
+          onCancel={() => setEditing(false)}
+          onSaved={() => {
+            setEditing(false);
+            onLabelsSaved();
+          }}
+          onReload={() => {
+            setEditing(false);
+            onReload();
+          }}
+        />
+      ) : canEditLabels(chunk) ? (
+        <div className={styles.actions}>
+          <button
+            ref={editButton}
+            type="button"
+            className={`${styles.secondary} ${styles.small}`}
+            onClick={() => setEditing(true)}
+          >
+            {chunk.labelStatus === "confirmed" ? "Sửa nhãn" : "Sửa hoặc xác nhận nhãn"}
+          </button>
+        </div>
+      ) : (
+        <p className={styles.hint}>Backend không trả phiên bản của đoạn này nên chưa sửa được nhãn ở đây.</p>
+      )}
     </li>
+  );
+}
+
+interface LabelEditorProps {
+  chunk: ChunkView;
+  onCancel: () => void;
+  onSaved: () => void;
+  onReload: () => void;
+}
+
+/**
+ * Form sửa nhãn một chunk: chương, loại nội dung, khoá dạng bài. Lưu gửi `PATCH …/labels` chỉ với field đã đổi kèm
+ * `expected_version`; không đổi gì thì lưu nghĩa là xác nhận nhãn hiện tại (backend đặt `label_status = confirmed`).
+ */
+function LabelEditor({ chunk, onCancel, onSaved, onReload }: LabelEditorProps) {
+  const ids = useId();
+  const [draft, setDraft] = useState<LabelDraft>(() => labelDraftOf(chunk));
+  const [errors, setErrors] = useState<Partial<Record<LabelField, string>>>({});
+  const [saveError, setSaveError] = useState<UiError | null>(null);
+  const [saving, setSaving] = useState(false);
+  const firstInput = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    firstInput.current?.focus();
+  }, []);
+
+  async function save(): Promise<void> {
+    if (saving) return;
+    const check = buildLabelChange(chunk, draft);
+    setErrors(check.ok ? {} : check.errors);
+    if (!check.ok) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await api.patchChunkLabels(chunk.chunkId, check.change);
+      onSaved();
+    } catch (caught) {
+      setSaveError(toUiError(caught));
+      setSaving(false);
+    }
+  }
+
+  function onKeyDown(event: KeyboardEvent<HTMLFormElement>): void {
+    if (event.key !== "Escape" || saving) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onCancel();
+  }
+
+  return (
+    <form
+      className={styles.form}
+      onSubmit={(event) => {
+        event.preventDefault();
+        void save();
+      }}
+      onKeyDown={onKeyDown}
+      noValidate
+      aria-label={`Sửa nhãn đoạn ${pageRangeLabel(chunk)}`}
+    >
+      <div className={styles.fields}>
+        <label className={styles.field}>
+          <span className={styles.fieldLabel}>Chương</span>
+          <input
+            ref={firstInput}
+            className={`${styles.input} ${styles.codeInput}`}
+            value={draft.chapterCode}
+            onChange={(event) => setDraft({ ...draft, chapterCode: event.target.value })}
+            aria-invalid={errors.chapter !== undefined}
+            aria-describedby={`${ids}-chapter`}
+            spellCheck={false}
+            disabled={saving}
+          />
+          <span id={`${ids}-chapter`} className={errors.chapter === undefined ? styles.hint : styles.fieldError}>
+            {errors.chapter ?? "Dạng ch1 hoặc ch2.1."}
+          </span>
+        </label>
+        <label className={styles.field}>
+          <span className={styles.fieldLabel}>Loại nội dung</span>
+          <select
+            className={styles.select}
+            value={draft.category}
+            onChange={(event) => setDraft({ ...draft, category: event.target.value })}
+            aria-invalid={errors.category !== undefined}
+            disabled={saving}
+          >
+            {draft.category === "" && <option value="">Giữ loại hiện tại</option>}
+            {CHUNK_CATEGORY_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          {errors.category !== undefined && <span className={styles.fieldError}>{errors.category}</span>}
+        </label>
+        <label className={styles.field}>
+          <span className={styles.fieldLabel}>Khoá dạng bài</span>
+          <textarea
+            className={`${styles.input} ${styles.wideInput}`}
+            rows={3}
+            value={draft.topicKeysText}
+            onChange={(event) => setDraft({ ...draft, topicKeysText: event.target.value })}
+            aria-invalid={errors.topicKeys !== undefined}
+            aria-describedby={`${ids}-topics`}
+            spellCheck={false}
+            disabled={saving}
+          />
+          <span id={`${ids}-topics`} className={errors.topicKeys === undefined ? styles.hint : styles.fieldError}>
+            {errors.topicKeys ??
+              "Mỗi dòng một khoá, dạng mon.chuong.dang_bai (chữ thường không dấu). Để trống nếu đoạn không thuộc dạng bài nào."}
+          </span>
+        </label>
+      </div>
+      {errors.version !== undefined && <p className={styles.fieldError}>{errors.version}</p>}
+      {saveError !== null && <ErrorNotice error={saveError} onRetry={() => void save()} onReload={onReload} />}
+      <div className={styles.actions}>
+        <button type="submit" className={`${styles.primary} ${styles.small}`} disabled={saving}>
+          {saving ? "Đang lưu…" : "Lưu và xác nhận nhãn"}
+        </button>
+        <button type="button" className={`${styles.secondary} ${styles.small}`} onClick={onCancel} disabled={saving}>
+          Huỷ
+        </button>
+      </div>
+      <p className={styles.hint}>
+        Không đổi ô nào mà bấm lưu nghĩa là xác nhận nhãn hiện tại. Văn bản và đoạn trích không sửa được ở đây vì đã
+        được xác nhận ở bước xem lại trang.
+      </p>
+    </form>
   );
 }

@@ -18,6 +18,8 @@ import {
   MAX_THEORY_SLOTS,
   QUANTUM_MAX,
   QUANTUM_MIN,
+  TOPIC_KEY_MAX_CHARS,
+  TOPIC_KEYS_MAX,
   VAULT_SEARCH_MAX_CHARS,
 } from "@/lib/limits";
 import { MAX_TWIN_COUNT, MIN_TWIN_COUNT } from "@/lib/twin";
@@ -75,7 +77,10 @@ export type ErrorContext =
   | "vault_browse"
   | "document_list"
   | "document_review"
+  | "page_confirm"
+  | "document_confirm"
   | "document_delete"
+  | "vault_labels"
   | "subject_create";
 
 export interface ClassifyOptions {
@@ -172,7 +177,20 @@ const CONTEXT_MESSAGES: Record<ErrorContext, Partial<Record<ContextualKind, stri
   document_review: {
     not_found:
       "Không tìm thấy tài liệu hoặc trang này (có thể đã bị xoá), hoặc backend đang chạy chưa hỗ trợ sửa và xác nhận trang.",
-    validation: `Nội dung sửa không hợp lệ: mỗi dòng tối đa ${LINE_TEXT_MAX_CHARS} ký tự, hoặc trang vượt giới hạn của kho tri thức. Rút ngắn dòng rồi lưu lại.`,
+    validation: `Nội dung sửa không hợp lệ: mỗi dòng tối đa ${LINE_TEXT_MAX_CHARS} ký tự. Rút ngắn dòng rồi lưu lại.`,
+  },
+  page_confirm: {
+    not_found:
+      "Không tìm thấy tài liệu hoặc trang này (có thể đã bị xoá), hoặc backend đang chạy chưa hỗ trợ xác nhận trang.",
+  },
+  document_confirm: {
+    not_found:
+      "Không tìm thấy tài liệu này (có thể đã bị xoá), hoặc backend đang chạy chưa hỗ trợ xác nhận cả tài liệu.",
+  },
+  vault_labels: {
+    not_found:
+      "Đoạn văn bản này không còn trong kho tri thức (có thể tài liệu gốc đã bị xoá). Tải lại danh sách để xem các đoạn còn lại.",
+    validation: `Nhãn chưa hợp lệ. Mã chương có dạng ch1 hoặc ch2.1; mỗi khoá dạng bài gồm ít nhất ba phần chữ thường, chữ số hoặc gạch dưới nối bằng dấu chấm, tối đa ${TOPIC_KEYS_MAX} khoá, mỗi khoá tối đa ${TOPIC_KEY_MAX_CHARS} ký tự.`,
   },
   document_delete: {
     not_found: "Tài liệu này không còn ở backend (có thể đã bị xoá). Tải lại danh sách tài liệu.",
@@ -198,6 +216,19 @@ const CONTEXT_CONFLICTS: Partial<Record<ErrorContext, { kind: ErrorKind; message
     kind: "version_conflict",
     message:
       "Trang đã thay đổi (được sửa ở nơi khác, đã xác nhận, hoặc còn đang đọc) nên thao tác chưa được ghi. Tải lại bản mới nhất rồi làm lại.",
+  },
+  page_confirm: {
+    kind: "version_conflict",
+    message:
+      "Chưa xác nhận được trang: trang đã được sửa ở nơi khác, còn đang đọc, đọc lỗi, hoặc trang không có dòng nào có văn bản. Tải lại bản mới nhất rồi làm lại.",
+  },
+  document_confirm: {
+    kind: "state_conflict",
+    message: "Chưa xác nhận được tài liệu vì còn trang đang đọc. Chờ đọc xong, tải lại rồi xác nhận.",
+  },
+  vault_labels: {
+    kind: "version_conflict",
+    message: "Nhãn của đoạn này vừa được sửa ở nơi khác nên thay đổi chưa được ghi. Tải lại bản mới nhất rồi sửa lại.",
   },
   document_delete: {
     kind: "state_conflict",

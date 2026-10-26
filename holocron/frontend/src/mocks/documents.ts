@@ -1,7 +1,11 @@
 /**
  * Handler giả cho tài liệu mẫu (M4, M5; spec §6.5). `lib/api.ts` chỉ gọi các hàm này cho mã tài liệu mẫu
- * (`isMockDocument`); mọi tài liệu khác gọi backend thật. Handler chỉ chọn giữa các bản fixture dựng sẵn và kiểm các
- * điều kiện lỗi 409/404 của contract; không tính lại `review_reasons`, `status` của trang hay số đếm nào.
+ * (`isMockDocument`); mọi tài liệu khác gọi backend thật.
+ *
+ * Handler không tính `status`, `review_reasons` hay số đếm nào: nó chỉ đi theo MỘT kịch bản tuyến tính cố định
+ * (`MOCK_DOCUMENT_SCENARIO`: xem trang → sửa dòng trang 2 → xác nhận theo lô ⇒ `confirmed`) và trả bản dựng sẵn của
+ * bước hiện tại. Thao tác ngoài kịch bản trả bản hiện tại, không đổi gì. Ngoài ra chỉ kiểm các điều kiện lỗi 404/409
+ * của contract (tài liệu đã xoá, trang không có, trang đang đọc, đọc lỗi, đã xác nhận, lệch `version`).
  * Dữ liệu trả về đi qua đúng bước kiểm dạng như dữ liệu thật.
  */
 
@@ -16,13 +20,7 @@ import {
 import { ApiError, type ClassifyOptions, classifyHttpError, invalidResponseError } from "@/lib/errors";
 import type { PageExtractionPending } from "@/types/contract-pending";
 
-import {
-  confirmedPage,
-  EDITED_PAGES,
-  MOCK_DOCUMENT_SUMMARY,
-  MOCK_IMPORT_SUBJECT,
-  mockDocumentImport,
-} from "./fixtures/documents";
+import { MOCK_DOCUMENT_SCENARIO, MOCK_IMPORT_SUBJECT, type MockDocumentSnapshot } from "./fixtures/documents";
 import { type MockDocumentSession, mockDocumentSession } from "./store";
 
 function checked<T>(value: T | null): T {
@@ -35,36 +33,37 @@ function reject(status: number, detail: string, options: ClassifyOptions): Promi
 }
 
 const REVIEW: ClassifyOptions = { context: "document_review" };
-const REVIEW_VERSIONED: ClassifyOptions = { context: "document_review", versioned: true };
+const EDIT_VERSIONED: ClassifyOptions = { context: "document_review", versioned: true };
+const CONFIRM_PAGE: ClassifyOptions = { context: "page_confirm", versioned: true };
+const CONFIRM_DOCUMENT: ClassifyOptions = { context: "document_confirm" };
 
 function liveSession(documentId: string): MockDocumentSession | null {
   const session = mockDocumentSession(documentId);
   return session.deleted ? null : session;
 }
 
-function sortedPages(session: MockDocumentSession): PageExtractionPending[] {
-  return [...session.pages.values()].sort((a, b) => a.page_number - b.page_number);
+function current(session: MockDocumentSession): MockDocumentSnapshot {
+  return MOCK_DOCUMENT_SCENARIO[session.step];
 }
 
-/** `confirmed` khi mọi trang có văn bản (không lỗi) đã xác nhận, ngược lại `review` (§6.5 "Xác nhận"). */
-function documentStatus(pages: readonly PageExtractionPending[]): "review" | "confirmed" {
-  const textPages = pages.filter((page) => page.status !== "failed");
-  return textPages.length > 0 && textPages.every((page) => page.confirmed) ? "confirmed" : "review";
+function pageOf(session: MockDocumentSession, pageNumber: number): PageExtractionPending | undefined {
+  return current(session).pages.find((page) => page.page_number === pageNumber);
 }
 
 function documentView(session: MockDocumentSession): DocumentView {
-  const pages = sortedPages(session);
-  return checked(parseDocumentImport(mockDocumentImport(pages, documentStatus(pages))));
+  return checked(parseDocumentImport(structuredClone(current(session).document)));
 }
 
 function pageView(page: PageExtractionPending): PageView {
   return checked(parsePageExtraction(structuredClone(page)));
 }
 
-/** Tài liệu mẫu của môn (chỉ môn của fixture, khi chưa bị xoá trong phiên). Số đếm là bản dựng sẵn. */
+/** Tài liệu mẫu của môn (chỉ môn của fixture, khi chưa bị xoá trong phiên): tóm tắt dựng sẵn của bước hiện tại. */
 function listDocuments(subjectCode: string): DocumentSummaryView[] {
-  if (subjectCode !== MOCK_IMPORT_SUBJECT || mockDocumentSession(MOCK_DOCUMENT_SUMMARY.meta.doc_id).deleted) return [];
-  return checked(parseDocumentSummaries([structuredClone(MOCK_DOCUMENT_SUMMARY)]));
+  if (subjectCode !== MOCK_IMPORT_SUBJECT) return [];
+  const session = mockDocumentSession(MOCK_DOCUMENT_SCENARIO.initial.summary.meta.doc_id);
+  if (session.deleted) return [];
+  return checked(parseDocumentSummaries([structuredClone(current(session).summary)]));
 }
 
 function getDocument(documentId: string): Promise<DocumentView> {
@@ -74,7 +73,8 @@ function getDocument(documentId: string): Promise<DocumentView> {
 }
 
 function getDocumentPage(documentId: string, pageNumber: number): Promise<PageView> {
-  const page = liveSession(documentId)?.pages.get(pageNumber);
+  const session = liveSession(documentId);
+  const page = session === null ? undefined : pageOf(session, pageNumber);
   if (page === undefined) return reject(404, "không tìm thấy tài liệu hoặc trang", REVIEW);
   return Promise.resolve(pageView(page));
 }
@@ -89,46 +89,38 @@ function pageConflict(page: PageExtractionPending, expectedVersion: number, allo
 }
 
 /**
- * M5: `PATCH …/lines` trả bản "sau khi sửa" dựng sẵn của trang (không theo chữ người dùng gõ; giao diện báo rõ khi
- * bật dữ liệu mẫu). Trang đã ở bản sau khi sửa thì trả lại nguyên trang.
+ * M5: `PATCH …/lines`. Bước "sửa dòng trang 2" của kịch bản chuyển sang bản dựng sẵn sau khi sửa (không theo chữ người
+ * dùng gõ; màn Vault báo rõ khi bật dữ liệu mẫu). Sửa trang khác, hay sửa lại trang 2, trả trang hiện tại.
  */
 function patchPageLines(documentId: string, pageNumber: number, expectedVersion: number): Promise<PageView> {
   const session = liveSession(documentId);
-  const page = session?.pages.get(pageNumber);
+  const page = session === null ? undefined : pageOf(session, pageNumber);
   if (session === null || page === undefined) return reject(404, "không tìm thấy tài liệu hoặc trang", REVIEW);
   const conflict = pageConflict(page, expectedVersion, false);
-  if (conflict !== null) return reject(409, conflict, REVIEW_VERSIONED);
-  const edited = EDITED_PAGES[pageNumber];
-  const next = edited !== undefined && page.version < edited.version ? structuredClone(edited) : page;
-  session.pages.set(pageNumber, next);
-  return Promise.resolve(pageView(next));
+  if (conflict !== null) return reject(409, conflict, EDIT_VERSIONED);
+  if (session.step === "initial" && pageNumber === 2) session.step = "page2_edited";
+  return Promise.resolve(pageView(pageOf(session, pageNumber) ?? page));
 }
 
-/** M5: xác nhận một trang (`ok` hoặc `needs_review`); gọi lại trên trang đã xác nhận trả 200 không đổi gì. */
+/** M5: xác nhận từng trang không thuộc kịch bản: sau khi kiểm lỗi của contract, trả trang hiện tại. */
 function confirmPage(documentId: string, pageNumber: number, expectedVersion: number): Promise<PageView> {
   const session = liveSession(documentId);
-  const page = session?.pages.get(pageNumber);
+  const page = session === null ? undefined : pageOf(session, pageNumber);
   if (session === null || page === undefined) return reject(404, "không tìm thấy tài liệu hoặc trang", REVIEW);
   if (page.confirmed && page.status !== "failed") return Promise.resolve(pageView(page));
   const conflict = pageConflict(page, expectedVersion, true);
-  if (conflict !== null) return reject(409, conflict, REVIEW_VERSIONED);
+  if (conflict !== null) return reject(409, conflict, CONFIRM_PAGE);
   if (!page.lines.some((line) => line.text.trim() !== "")) {
-    return reject(409, "trang không có dòng nào có văn bản", REVIEW_VERSIONED);
+    return reject(409, "trang không có dòng nào có văn bản", CONFIRM_PAGE);
   }
-  const next = confirmedPage(page);
-  session.pages.set(pageNumber, next);
-  return Promise.resolve(pageView(next));
+  return Promise.resolve(pageView(page));
 }
 
-/** M5: xác nhận mọi trang `ok` chưa xác nhận; còn trang đang đọc thì 409. */
+/** M5: bước "xác nhận theo lô" của kịch bản (sau khi đã sửa trang 2) chuyển sang bản `confirmed` dựng sẵn. */
 function confirmDocument(documentId: string): Promise<DocumentView> {
   const session = liveSession(documentId);
-  if (session === null) return reject(404, "không tìm thấy tài liệu", REVIEW);
-  const pages = sortedPages(session);
-  if (pages.some((page) => page.status === "pending")) return reject(409, "tài liệu còn trang đang đọc", REVIEW);
-  for (const page of pages) {
-    if (page.status === "ok" && !page.confirmed) session.pages.set(page.page_number, confirmedPage(page));
-  }
+  if (session === null) return reject(404, "không tìm thấy tài liệu", CONFIRM_DOCUMENT);
+  if (session.step === "page2_edited") session.step = "confirmed";
   return Promise.resolve(documentView(session));
 }
 

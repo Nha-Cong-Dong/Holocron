@@ -6,9 +6,9 @@
  * truyền vào (khớp cờ `llm_configured` backend thật trả), mặc định `offline`.
  */
 
-import type { PageExtractionPending, Subject } from "@/types/contract-pending";
+import type { Subject } from "@/types/contract-pending";
 
-import { INITIAL_PAGES, MOCK_IMPORT_DOC_ID } from "./fixtures/documents";
+import { MOCK_IMPORT_DOC_ID, type MockDocumentStep } from "./fixtures/documents";
 import { RUNTIME_SCENARIOS, type RuntimeScenario } from "./fixtures/runtime";
 
 export const MOCK_RUNTIME_QUERY = "mock_runtime";
@@ -50,22 +50,18 @@ export function currentPracticeScenario(): PracticeScenario {
   return practiceScenarioFromSearch(window.location.search);
 }
 
-/** Mã các blueprint do handler giả tạo trong phiên: chỉ những mã này được sinh câu bằng dữ liệu mẫu. */
+/**
+ * Mã các blueprint do handler giả tạo trong phiên: chỉ những mã này được sinh câu bằng dữ liệu mẫu, và chỉ câu của
+ * chúng tìm trích dẫn trong chunk mẫu.
+ */
 const mockBlueprintIds = new Set<string>();
-/** Môn của các blueprint mẫu: trích dẫn của câu luyện tập mẫu chỉ tìm được trong chunk mẫu của môn đó. */
-const mockBlueprintSubjects = new Set<string>();
 
-export function rememberMockBlueprint(blueprintId: string, subjectCode?: string): void {
+export function rememberMockBlueprint(blueprintId: string): void {
   mockBlueprintIds.add(blueprintId);
-  if (subjectCode !== undefined) mockBlueprintSubjects.add(subjectCode);
 }
 
 export function isMockBlueprint(blueprintId: string): boolean {
   return mockBlueprintIds.has(blueprintId);
-}
-
-export function isMockBlueprintSubject(subjectCode: string): boolean {
-  return mockBlueprintSubjects.has(subjectCode);
 }
 
 // ------------------------------------------------------------------------- môn học và tài liệu mẫu
@@ -80,21 +76,27 @@ export function isMockDocument(documentId: string): boolean {
   return MOCK_DOCUMENT_IDS.has(documentId);
 }
 
-/** Trạng thái phiên của tài liệu mẫu: bản `PageExtraction` hiện tại của từng trang và cờ đã xoá. */
+/**
+ * Trạng thái phiên của tài liệu mẫu: bước hiện tại của kịch bản cố định (`fixtures/documents.ts`) và cờ đã xoá. Bước
+ * chỉ tiến theo đúng thứ tự kịch bản; handler không dựng bản ghi mới mà trả bản dựng sẵn của bước.
+ */
 export interface MockDocumentSession {
   deleted: boolean;
-  pages: Map<number, PageExtractionPending>;
+  step: MockDocumentStep;
 }
 
 const documentSessions = new Map<string, MockDocumentSession>();
 
-/** Phiên của tài liệu mẫu; lần đầu dựng từ fixture (bản sao, không sửa fixture). */
+/** Phiên của tài liệu mẫu; lần đầu ở bước đầu của kịch bản. */
 export function mockDocumentSession(documentId: string): MockDocumentSession {
   const existing = documentSessions.get(documentId);
   if (existing !== undefined) return existing;
-  const pages = new Map<number, PageExtractionPending>();
-  for (const page of INITIAL_PAGES) pages.set(page.page_number, structuredClone(page));
-  const session: MockDocumentSession = { deleted: false, pages };
+  const session: MockDocumentSession = { deleted: false, step: "initial" };
   documentSessions.set(documentId, session);
   return session;
+}
+
+/** Đưa mọi tài liệu mẫu về bước đầu (để test không phụ thuộc thứ tự chạy). */
+export function resetMockDocumentSessions(): void {
+  documentSessions.clear();
 }

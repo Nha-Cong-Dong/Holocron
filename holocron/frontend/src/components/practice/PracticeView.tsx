@@ -9,14 +9,14 @@ import { useShell } from "@/components/shell/ShellContext";
 import { api, toUiError } from "@/lib/api";
 import type { UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
-import { appendSentence, VAULT_HINT_VI } from "@/lib/practice";
+import { appendSentence, PAIR_SCREEN_MISSING_VI, VAULT_HINT_VI } from "@/lib/practice";
 import type { PracticeBatch, PracticeBlueprint, PracticeTicket } from "@/lib/practice-data";
 import { freshRuntime } from "@/lib/runtime";
 import { selectedSubject } from "@/lib/subjects";
-import { vaultHref } from "@/lib/vault";
-import type { BlueprintCreate, Subject } from "@/types/contract-pending";
+import type { BlueprintCreate } from "@/types/contract-pending";
 
 import { BlueprintBuilder } from "./BlueprintBuilder";
+import { CitationBlueprintContext } from "./CitationPanel";
 import styles from "./Practice.module.css";
 import { PracticeSession } from "./PracticeSession";
 
@@ -133,7 +133,6 @@ export function PracticeView() {
           key={stage.batch.batchId ?? stage.blueprint.blueprintId}
           batch={stage.batch}
           blueprint={stage.blueprint}
-          subject={subject}
           onNewExam={restart}
         />
       )}
@@ -156,11 +155,10 @@ function SubjectsUnavailable({ error, onRetry }: { error: UiError; onRetry: () =
 interface ReadyBatchProps {
   batch: PracticeBatch;
   blueprint: PracticeBlueprint;
-  subject: Subject;
   onNewExam: () => void;
 }
 
-function ReadyBatch({ batch, blueprint, subject, onNewExam }: ReadyBatchProps) {
+function ReadyBatch({ batch, blueprint, onNewExam }: ReadyBatchProps) {
   const hasSkipped = batch.skipped.malformed > 0 || batch.skipped.unsupported > 0;
   if (batch.questions.length === 0) {
     const onlyTheory = batch.tickets.length > 0 && batch.tickets.every((ticket) => ticket.theory);
@@ -173,15 +171,11 @@ function ReadyBatch({ batch, blueprint, subject, onNewExam }: ReadyBatchProps) {
               : "Lượt sinh này không có câu nào để luyện."
           }
         >
-          {onlyTheory ? (
-            <>
-              Lý do của từng câu ở bên dưới. <VaultHint subjectCode={subject.subject_code} />
-            </>
-          ) : (
-            "Thử tạo đề với chương khác, hoặc xem lý do của từng câu bên dưới."
-          )}
+          {onlyTheory
+            ? `Lý do của từng câu ở bên dưới. ${PAIR_SCREEN_MISSING_VI}`
+            : "Thử tạo đề với chương khác, hoặc xem lý do của từng câu bên dưới."}
         </EmptyState>
-        <TicketNotice tickets={batch.tickets} showVaultHint={!onlyTheory} subjectCode={subject.subject_code} />
+        <TicketNotice tickets={batch.tickets} showVaultHint={!onlyTheory} />
         {hasSkipped && <SkippedNotice />}
         <div className={styles.actions}>
           <button type="button" className={styles.primary} onClick={onNewExam}>
@@ -193,38 +187,29 @@ function ReadyBatch({ batch, blueprint, subject, onNewExam }: ReadyBatchProps) {
   }
   return (
     <div className={styles.page}>
-      <TicketNotice tickets={batch.tickets} showVaultHint subjectCode={subject.subject_code} />
+      <TicketNotice tickets={batch.tickets} showVaultHint />
       {hasSkipped && <SkippedNotice />}
-      <PracticeSession
-        questions={batch.questions}
-        blueprint={blueprint}
-        subjectCode={subject.subject_code}
-        onNewExam={onNewExam}
-      />
+      {/* Đoạn nguồn của trích dẫn tìm theo môn và mã của blueprint sinh ra câu, không theo môn đang chọn (ADR-006). */}
+      <CitationBlueprintContext.Provider value={blueprint.blueprintId}>
+        <PracticeSession
+          questions={batch.questions}
+          blueprint={blueprint}
+          subjectCode={blueprint.subjectCode}
+          onNewExam={onNewExam}
+        />
+      </CitationBlueprintContext.Provider>
     </div>
-  );
-}
-
-/** Slot không sinh được (`review_tickets`): hiện lý do backend ghi, không hiện câu hỏng. */
-/** `VAULT_HINT_VI` với chữ "Vault" là liên kết tới kho tri thức của môn. */
-function VaultHint({ subjectCode }: { subjectCode: string }) {
-  const [before, after] = VAULT_HINT_VI.split("Vault");
-  return (
-    <>
-      {before}
-      <Link href={vaultHref({ subject: subjectCode, tab: "chunks" })}>Vault</Link>
-      {after}
-    </>
   );
 }
 
 interface TicketNoticeProps {
   tickets: PracticeTicket[];
+  /** Thêm `VAULT_HINT_VI` sau lý do của ticket lý thuyết (tắt khi khối rỗng ở trên đã nói điều đó). */
   showVaultHint: boolean;
-  subjectCode: string;
 }
 
-function TicketNotice({ tickets, showVaultHint, subjectCode }: TicketNoticeProps) {
+/** Slot không sinh được (`review_tickets`): hiện lý do backend ghi, không hiện câu hỏng. */
+function TicketNotice({ tickets, showVaultHint }: TicketNoticeProps) {
   if (tickets.length === 0) return null;
   return (
     <section className={styles.tickets} aria-labelledby="practice-tickets-title">
@@ -235,14 +220,7 @@ function TicketNotice({ tickets, showVaultHint, subjectCode }: TicketNoticeProps
         {tickets.map((ticket) => (
           <li key={ticket.slotIndex}>
             Câu thứ {ticket.slotIndex} trong đề:{" "}
-            {showVaultHint && ticket.theory ? (
-              <>
-                {appendSentence(ticket.reason, "")}
-                <VaultHint subjectCode={subjectCode} />
-              </>
-            ) : (
-              ticket.reason
-            )}
+            {showVaultHint && ticket.theory ? appendSentence(ticket.reason, VAULT_HINT_VI) : ticket.reason}
           </li>
         ))}
       </ul>

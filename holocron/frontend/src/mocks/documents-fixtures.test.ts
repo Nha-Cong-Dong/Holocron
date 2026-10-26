@@ -14,13 +14,14 @@ import {
   EDITED_PAGES,
   INITIAL_PAGES,
   MOCK_DOCUMENT_META,
+  MOCK_DOCUMENT_SCENARIO,
   MOCK_DOCUMENT_SUMMARY,
   MOCK_IMPORT_DOC_ID,
   MOCK_IMPORT_SUBJECT,
   mockDocumentImport,
 } from "./fixtures/documents";
 import { mockApi, mockSubjectApi } from "./index";
-import { isMockDocument } from "./store";
+import { isMockDocument, resetMockDocumentSessions } from "./store";
 
 function allPages(): PageExtractionPending[] {
   return [...INITIAL_PAGES, ...Object.values(EDITED_PAGES)];
@@ -127,15 +128,31 @@ describe("handler giả của tài liệu mẫu", () => {
     await expect(mockDocumentApi.patchPageLines(MOCK_IMPORT_DOC_ID, 4, 1)).rejects.toMatchObject({ status: 409 });
   });
 
-  it("xác nhận: trang lỗi 409; trang cần xem kỹ nhận; xác nhận tài liệu chỉ xác nhận trang ok", async () => {
-    await expect(mockDocumentApi.confirmPage(MOCK_IMPORT_DOC_ID, 4, 1)).rejects.toMatchObject({ status: 409 });
-    const page3 = await mockDocumentApi.confirmPage(MOCK_IMPORT_DOC_ID, 3, 1);
-    expect(page3).toMatchObject({ confirmed: true, status: "needs_review" });
-    const again = await mockDocumentApi.confirmPage(MOCK_IMPORT_DOC_ID, 3, 1);
-    expect(again.confirmedAt).toBe(page3.confirmedAt);
-    const document = await mockDocumentApi.confirmDocument(MOCK_IMPORT_DOC_ID);
-    expect(document.pages.map((page) => page.confirmed)).toEqual([true, true, true, false]);
-    expect(document.status).toBe("confirmed");
+  it("kịch bản cố định: sửa dòng trang 2 rồi xác nhận theo lô ⇒ confirmed; bước ngoài kịch bản trả bản hiện tại", async () => {
+    resetMockDocumentSessions();
+    try {
+      await expect(mockDocumentApi.confirmPage(MOCK_IMPORT_DOC_ID, 4, 1)).rejects.toMatchObject({ status: 409 });
+      // Ngoài kịch bản: xác nhận theo lô trước khi sửa trang 2, xác nhận riêng trang 1 ⇒ không đổi gì.
+      expect((await mockDocumentApi.confirmDocument(MOCK_IMPORT_DOC_ID)).status).toBe("review");
+      expect(await mockDocumentApi.confirmPage(MOCK_IMPORT_DOC_ID, 1, 1)).toMatchObject({ confirmed: false });
+      const page3 = await mockDocumentApi.confirmPage(MOCK_IMPORT_DOC_ID, 3, 1);
+      expect(page3).toMatchObject({ confirmed: true, status: "needs_review" });
+
+      const edited = await mockDocumentApi.patchPageLines(MOCK_IMPORT_DOC_ID, 2, 1);
+      expect(edited).toMatchObject({ version: 2, status: "ok" });
+      expect((await mockDocumentApi.patchPageLines(MOCK_IMPORT_DOC_ID, 1, 1)).version).toBe(1);
+      expect(mockDocumentApi.listDocuments(MOCK_IMPORT_SUBJECT)[0]).toMatchObject({ pagesNeedsReview: 1 });
+
+      const document = await mockDocumentApi.confirmDocument(MOCK_IMPORT_DOC_ID);
+      expect(document.pages.map((page) => page.confirmed)).toEqual([true, true, true, false]);
+      expect(document.status).toBe("confirmed");
+      expect(mockDocumentApi.listDocuments(MOCK_IMPORT_SUBJECT)[0]).toMatchObject({
+        status: "confirmed",
+        pagesConfirmed: 3,
+      });
+    } finally {
+      resetMockDocumentSessions();
+    }
   });
 
   it("xoá: sau khi xoá thì không còn trong danh sách và đọc lại là 404", async () => {
@@ -155,5 +172,26 @@ describe("handler giả của môn học", () => {
       status: 409,
       info: { kind: "duplicate" },
     });
+  });
+});
+
+describe("kịch bản tài liệu mẫu dựng sẵn", () => {
+  for (const [step, snapshot] of Object.entries(MOCK_DOCUMENT_SCENARIO)) {
+    it(`bước ${step}: số đếm và status dựng sẵn khớp các trang của bước (§6.5)`, () => {
+      const count = (predicate: (page: PageExtractionPending) => boolean) => snapshot.pages.filter(predicate).length;
+      expect(snapshot.summary.pages_pending).toBe(count((page) => page.status === "pending"));
+      expect(snapshot.summary.pages_needs_review).toBe(count((page) => page.status === "needs_review"));
+      expect(snapshot.summary.pages_failed).toBe(count((page) => page.status === "failed"));
+      expect(snapshot.summary.pages_confirmed).toBe(count((page) => page.confirmed));
+      const textPages = snapshot.pages.filter((page) => page.status !== "failed");
+      const allConfirmed = textPages.length > 0 && textPages.every((page) => page.confirmed);
+      expect(snapshot.document.status).toBe(allConfirmed ? "confirmed" : "review");
+      expect(snapshot.summary.status).toBe(snapshot.document.status);
+      expect(snapshot.document.pages.map((page) => page.page_number)).toEqual([1, 2, 3, 4]);
+    });
+  }
+
+  it("bước cuối là confirmed", () => {
+    expect(MOCK_DOCUMENT_SCENARIO.confirmed.document.status).toBe("confirmed");
   });
 });

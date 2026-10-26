@@ -18,7 +18,8 @@ export const POLL_MAX_CONSECUTIVE_ERRORS = 4;
 /** Hẹn giờ; trả hàm huỷ. Test truyền bộ hẹn giờ giả. */
 export type Schedule = (run: () => void, delayMs: number) => () => void;
 
-const defaultSchedule: Schedule = (run, delayMs) => {
+/** Bộ hẹn giờ thật (`setTimeout`). */
+export const defaultSchedule: Schedule = (run, delayMs) => {
   const handle = setTimeout(run, delayMs);
   return () => clearTimeout(handle);
 };

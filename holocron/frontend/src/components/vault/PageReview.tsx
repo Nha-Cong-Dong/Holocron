@@ -15,12 +15,15 @@ import {
   checkLineText,
   confirmDocumentBlock,
   confirmPageBlock,
+  createPendingPagePoller,
+  createSingleFlight,
   crossCheckLabel,
   DOCUMENT_STATUS_LABEL_VI,
   EDIT_BLOCK_MESSAGE_VI,
   engineLabel,
   lineEditBlock,
   lineHighlight,
+  lineSaveDecision,
   mismatchesByLine,
   PAGE_STATUS_LABEL_VI,
   pageWarnings,
@@ -30,6 +33,7 @@ import {
 import type { DocumentView, LineView, PageStatusView, PageView } from "@/lib/documents-data";
 import type { UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
+import type { Poller } from "@/lib/poll";
 import { vaultHref } from "@/lib/vault";
 
 import { DeleteDialog } from "./DocumentList";
@@ -69,8 +73,12 @@ export function PageReview({ documentId, pageNumber }: PageReviewProps) {
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [pollError, setPollError] = useState<UiError | null>(null);
+  const pagePoller = useRef<Poller | null>(null);
   const docCalls = useRef(createLatestCounter());
   const pageCalls = useRef(createLatestCounter());
+  // Cờ đổi ngay (không chờ render) để Enter rồi bấm "Lưu" liền tay chỉ gửi một thao tác ghi.
+  const writes = useRef(createSingleFlight());
 
   const loadDocument = useCallback(() => {
     const ticket = docCalls.current.begin();
@@ -111,6 +119,38 @@ export function PageReview({ documentId, pageNumber }: PageReviewProps) {
     return () => counter.invalidate();
   }, [loadPage]);
 
+  const pendingPage = page.kind === "ready" && page.value.status === "pending";
+
+  // Trang đang đọc: tự hỏi lại 1–2 s một lần (§6.5). Dừng khi trang rời `pending` (đổi giá trị này), đổi trang hay tài
+  // liệu (`loadPage` đặt lại về đang tải) hoặc rời màn.
+  useEffect(() => {
+    if (!pendingPage) return;
+    setPollError(null);
+    const poller = createPendingPagePoller({
+      load: () => api.getDocumentPage(documentId, pageNumber),
+      onValue: (value) => {
+        pageCalls.current.invalidate();
+        setPage({ kind: "ready", value });
+        if (value.status !== "pending") loadDocument();
+      },
+      onError: (error, gaveUp) => {
+        if (gaveUp) setPollError(toUiError(error));
+      },
+    });
+    pagePoller.current = poller;
+    poller.start();
+    return () => {
+      poller.stop();
+      pagePoller.current = null;
+    };
+  }, [pendingPage, documentId, pageNumber, loadDocument]);
+
+  /** Nút thử lại sau khi poller bỏ cuộc vì lỗi liên tiếp: chạy lại đúng poller của trang đang xem. */
+  const retryPoll = useCallback(() => {
+    setPollError(null);
+    pagePoller.current?.start();
+  }, []);
+
   /** Đọc lại bản mới nhất của trang và tài liệu (nút "Tải lại bản mới nhất"); không gửi lại thao tác ghi. */
   const reloadAll = useCallback(() => {
     setActionError(null);
@@ -121,6 +161,7 @@ export function PageReview({ documentId, pageNumber }: PageReviewProps) {
   /** Chạy một thao tác ghi; thành công thì áp trang trả về và đọc lại tài liệu để cập nhật danh sách trang. */
   const runWrite = useCallback(
     async (write: () => Promise<PageView>, done: string): Promise<boolean> => {
+      if (!writes.current.tryEnter()) return false;
       setBusy(true);
       setActionError(null);
       setNotice(null);
@@ -135,6 +176,7 @@ export function PageReview({ documentId, pageNumber }: PageReviewProps) {
         setActionError(toUiError(caught));
         return false;
       } finally {
+        writes.current.leave();
         setBusy(false);
       }
     },
@@ -142,6 +184,7 @@ export function PageReview({ documentId, pageNumber }: PageReviewProps) {
   );
 
   const confirmAll = useCallback(async () => {
+    if (!writes.current.tryEnter()) return;
     setBusy(true);
     setActionError(null);
     setNotice(null);
@@ -154,6 +197,7 @@ export function PageReview({ documentId, pageNumber }: PageReviewProps) {
     } catch (caught) {
       setActionError(toUiError(caught));
     } finally {
+      writes.current.leave();
       setBusy(false);
     }
   }, [documentId, loadPage]);
@@ -236,6 +280,21 @@ export function PageReview({ documentId, pageNumber }: PageReviewProps) {
           {actionError !== null && <ErrorNotice error={actionError} onRetry={reloadAll} onReload={reloadAll} />}
           {page.kind === "loading" && <Loading label={`Đang tải trang ${pageNumber}…`} />}
           {page.kind === "error" && <ErrorNotice error={page.error} onRetry={loadPage} onReload={loadPage} />}
+          {pendingPage && pollError !== null && (
+            <div className={styles.form}>
+              <p className={styles.warningNote}>
+                Đã dừng tự cập nhật trang đang đọc vì không hỏi được backend nhiều lần liền.
+              </p>
+              <ErrorNotice error={pollError} onRetry={retryPoll} onReload={retryPoll} />
+              {pollError.action === "none" && (
+                <div className={styles.actions}>
+                  <button type="button" className={styles.secondary} onClick={retryPoll}>
+                    Thử lại
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
           {page.kind === "ready" && (
             <PagePanel
               key={`${page.value.pageNumber}:${page.value.version}`}
@@ -266,6 +325,10 @@ export function PageReview({ documentId, pageNumber }: PageReviewProps) {
         onDeleted={() => {
           setDeleting(false);
           router.push(subjectHref);
+        }}
+        onReload={() => {
+          setDeleting(false);
+          reloadAll();
         }}
       />
     </div>
@@ -363,7 +426,9 @@ function PagePanel({ page, busy, onSaveLines, onConfirm, onDelete, onReload }: P
       )}
       {page.status === "pending" && (
         <div className={styles.actions}>
-          <p className={styles.note}>{EDIT_BLOCK_MESSAGE_VI.pending}</p>
+          <p className={styles.note}>
+            {EDIT_BLOCK_MESSAGE_VI.pending} Trang tự cập nhật vài giây một lần trong lúc đọc.
+          </p>
           <button type="button" className={styles.secondary} onClick={onReload}>
             Tải lại
           </button>
@@ -406,6 +471,7 @@ function PagePanel({ page, busy, onSaveLines, onConfirm, onDelete, onReload }: P
               line={line}
               highlight={lineHighlight(line, mismatches)}
               editable={editBlock === null && !busy}
+              busy={busy}
               editing={editing === line.lineIndex}
               onStartEdit={() => setEditing(line.lineIndex)}
               onCancel={() => setEditing(null)}
@@ -456,6 +522,8 @@ interface LineRowProps {
   line: LineView;
   highlight: ReturnType<typeof lineHighlight>;
   editable: boolean;
+  /** Đang có thao tác ghi: Enter và nút "Lưu" không gửi thêm. */
+  busy: boolean;
   editing: boolean;
   onStartEdit: () => void;
   onCancel: () => void;
@@ -463,7 +531,7 @@ interface LineRowProps {
 }
 
 /** Một dòng: chữ backend trả, cờ thành nhãn tiếng Việt; sửa tại chỗ (`Enter` lưu, `Esc` huỷ). */
-function LineRow({ line, highlight, editable, editing, onStartEdit, onCancel, onSave }: LineRowProps) {
+function LineRow({ line, highlight, editable, busy, editing, onStartEdit, onCancel, onSave }: LineRowProps) {
   const [draft, setDraft] = useState(line.text);
   const [error, setError] = useState<string | null>(null);
   const input = useRef<HTMLInputElement>(null);
@@ -482,9 +550,10 @@ function LineRow({ line, highlight, editable, editing, onStartEdit, onCancel, on
   }, [editing, line.text]);
 
   function save(): void {
-    const problem = checkLineText(draft);
-    setError(problem);
-    if (problem === null) void onSave(draft);
+    const decision = lineSaveDecision(draft, busy);
+    if (decision.kind === "blocked") return;
+    setError(decision.kind === "invalid" ? decision.message : null);
+    if (decision.kind === "save") void onSave(draft);
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
@@ -533,8 +602,8 @@ function LineRow({ line, highlight, editable, editing, onStartEdit, onCancel, on
       <div className={styles.actions}>
         {editing ? (
           <>
-            <button type="button" className={`${styles.primary} ${styles.small}`} onClick={save}>
-              Lưu
+            <button type="button" className={`${styles.primary} ${styles.small}`} onClick={save} disabled={busy}>
+              {busy ? "Đang lưu…" : "Lưu"}
             </button>
             <button type="button" className={`${styles.secondary} ${styles.small}`} onClick={onCancel}>
               Huỷ

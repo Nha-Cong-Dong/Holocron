@@ -52,3 +52,12 @@ export const VAULT_SEARCH_LIMIT = 20;
 
 /** `GET /v1/vault/chunks` (§6.6): số chunk mỗi trang khi duyệt Vault (`limit` 1–200, mặc định 50). */
 export const VAULT_BROWSE_PAGE_SIZE = 50;
+
+/**
+ * `topic_keys` của `PATCH /v1/vault/chunks/{chunk_id}/labels` (§6.6). Spec chưa ghi các số này; chép từ backend:
+ * mẫu `TOPIC_KEY_PATTERN` ở `holocron_core/domain/schemas.py`, `MAX_TOPIC_KEYS` (32 khoá mỗi request) và
+ * `MAX_TOPIC_KEY_CHARS` (128 ký tự mỗi khoá) ở `holocron_core/domain/vault.py`.
+ */
+export const TOPIC_KEY_PATTERN = /^[a-z0-9_]+(\.[a-z0-9_]+){2,}$/;
+export const TOPIC_KEYS_MAX = 32;
+export const TOPIC_KEY_MAX_CHARS = 128;

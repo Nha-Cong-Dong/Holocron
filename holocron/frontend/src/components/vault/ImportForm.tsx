@@ -180,7 +180,7 @@ export function ImportForm({ subjectCode, onImported }: ImportFormProps) {
             ))}
           </select>
           <span id={`${ids}-kind-hint`} className={errors.sourceKind === undefined ? styles.hint : styles.fieldError}>
-            {errors.sourceKind ?? "Đề thi cũ không được cắt vào kho tri thức."}
+            {errors.sourceKind ?? "Chọn loại gần nhất với tài liệu; loại được lưu kèm tài liệu."}
           </span>
         </label>
         <label className={styles.field}>

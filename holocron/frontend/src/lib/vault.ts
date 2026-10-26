@@ -1,12 +1,21 @@
 /**
  * Logic thuần của màn Vault (spec §5.8, §6.6): kiểm dạng `KnowledgeChunk`, `ChunkListResponse`, `SearchHit` ở ranh
  * giới, dựng query cho `GET /v1/vault/chunks` và `GET /v1/vault/search`, phân trang bằng `offset`/`limit` của backend,
- * nhóm chunk theo chương (giữ thứ tự backend trả), địa chỉ của màn `/vault` qua query string (static export).
+ * nhóm chunk theo chương (giữ thứ tự backend trả), kiểm và dựng body sửa nhãn chunk
+ * (`PATCH /v1/vault/chunks/{chunk_id}/labels`), địa chỉ của màn `/vault` qua query string (static export).
  */
 
 import { charLength } from "@/lib/documents";
-import { CHAPTER_CODE_PATTERN, DOCUMENT_ID_PATTERN, SUBJECT_CODE_PATTERN, VAULT_SEARCH_MAX_CHARS } from "@/lib/limits";
-import type { ChunkCategory, LabelStatus, SearchIndex } from "@/types/holocron";
+import {
+  CHAPTER_CODE_PATTERN,
+  DOCUMENT_ID_PATTERN,
+  SUBJECT_CODE_PATTERN,
+  TOPIC_KEY_MAX_CHARS,
+  TOPIC_KEY_PATTERN,
+  TOPIC_KEYS_MAX,
+  VAULT_SEARCH_MAX_CHARS,
+} from "@/lib/limits";
+import type { ChunkCategory, ChunkLabelsPatch, LabelStatus, SearchIndex } from "@/types/holocron";
 
 // ------------------------------------------------------------------------------------- kiểm dạng
 
@@ -24,11 +33,15 @@ export interface ChunkView {
   topicKeys: string[];
   /** `proposed`, `confirmed` hoặc mã lạ. */
   labelStatus: string;
+  /** `version` để gửi `expected_version` khi sửa nhãn; `null` khi backend không trả số nguyên ≥ 1 (chunk chỉ xem). */
+  version: number | null;
 }
 
 export interface ChunkListView {
   total: number;
   chunks: ChunkView[];
+  /** Số phần tử backend trả trong trang này, kể cả phần tử sai dạng đã bị bỏ (để tính `offset` trang sau). */
+  received: number;
   /** Có chunk sai dạng đã bị bỏ. */
   hasSkipped: boolean;
 }
@@ -74,6 +87,7 @@ export function parseKnowledgeChunk(value: unknown): ChunkView | null {
     category: isText(value.category) ? value.category : "unknown",
     topicKeys,
     labelStatus: isText(value.label_status) ? value.label_status : "unknown",
+    version: isInteger(value.version, 1) ? value.version : null,
   };
 }
 
@@ -85,7 +99,12 @@ export function parseChunkList(value: unknown): ChunkListView | null {
     const chunk = parseKnowledgeChunk(raw);
     if (chunk !== null) chunks.push(chunk);
   }
-  return { total: value.total, chunks, hasSkipped: chunks.length !== value.chunks.length };
+  return {
+    total: value.total,
+    chunks,
+    received: value.chunks.length,
+    hasSkipped: chunks.length !== value.chunks.length,
+  };
 }
 
 const SEARCH_INDEXES: readonly SearchIndex[] = ["primary", "no_diacritics"];
@@ -190,9 +209,17 @@ export function parseChapterFilter(text: string): { ok: true; chapter: string | 
   return CHAPTER_CODE_PATTERN.test(chapter) ? { ok: true, chapter } : { ok: false };
 }
 
-/** Còn trang sau không: theo `total` backend trả và số chunk đã nhận ở trang hiện tại. */
+/**
+ * Còn trang sau không: theo `total` backend trả và số phần tử backend trả ở trang hiện tại (`ChunkListView.received`,
+ * kể cả phần tử sai dạng đã bị bỏ), không theo số chunk parse được.
+ */
 export function hasNextPage(offset: number, received: number, total: number): boolean {
   return received > 0 && offset + received < total;
+}
+
+/** `offset` của trang sau: cộng số phần tử backend trả ở trang này, để chunk sai dạng không làm lặp lại trang. */
+export function nextPageOffset(offset: number, received: number): number {
+  return offset + received;
 }
 
 export function previousOffset(offset: number, limit: number): number {
@@ -213,6 +240,109 @@ export function groupByChapter(chunks: readonly ChunkView[]): ChapterGroup[] {
     else group.chunks.push(chunk);
   }
   return groups;
+}
+
+// ------------------------------------------------------------------------------------ sửa nhãn (§6.6)
+
+const CHUNK_CATEGORIES: readonly ChunkCategory[] = ["THEORY", "PRACTICE"];
+
+function isChunkCategory(value: string): value is ChunkCategory {
+  return CHUNK_CATEGORIES.some((category) => category === value);
+}
+
+/** Lựa chọn "Loại nội dung" của form sửa nhãn, đúng thứ tự khai báo `ChunkCategory`. */
+export const CHUNK_CATEGORY_OPTIONS: readonly { value: ChunkCategory; label: string }[] = CHUNK_CATEGORIES.map(
+  (value) => ({ value, label: CATEGORY_LABEL_VI[value] }),
+);
+
+/** Nội dung các ô của form sửa nhãn một chunk. */
+export interface LabelDraft {
+  chapterCode: string;
+  /** Mã `ChunkCategory`; rỗng khi backend trả mã lạ và người dùng chưa chọn (giữ nguyên ở backend). */
+  category: string;
+  /** Khoá dạng bài, mỗi dòng (hoặc cách nhau bằng dấu phẩy, khoảng trắng) một khoá. */
+  topicKeysText: string;
+}
+
+/** Bản nháp ban đầu của form: nhãn hiện tại của chunk. */
+export function labelDraftOf(chunk: Pick<ChunkView, "chapterCode" | "category" | "topicKeys">): LabelDraft {
+  return {
+    chapterCode: chunk.chapterCode,
+    category: isChunkCategory(chunk.category) ? chunk.category : "",
+    topicKeysText: chunk.topicKeys.join("\n"),
+  };
+}
+
+export type TopicKeysCheck = { ok: true; keys: string[] } | { ok: false; message: string };
+
+/**
+ * Khoá dạng bài từ ô nhập: tách theo xuống dòng, dấu phẩy hoặc khoảng trắng, bỏ phần rỗng và khoá trùng (giữ thứ tự
+ * nhập). Mỗi khoá đúng mẫu và độ dài của backend, tối đa `TOPIC_KEYS_MAX` khoá.
+ */
+export function parseTopicKeys(text: string): TopicKeysCheck {
+  const keys: string[] = [];
+  for (const part of text.split(/[\s,]+/u)) {
+    if (part !== "" && !keys.includes(part)) keys.push(part);
+  }
+  if (keys.length > TOPIC_KEYS_MAX) return { ok: false, message: `Tối đa ${TOPIC_KEYS_MAX} khoá dạng bài.` };
+  const tooLong = keys.find((key) => charLength(key) > TOPIC_KEY_MAX_CHARS);
+  if (tooLong !== undefined) {
+    return { ok: false, message: `Mỗi khoá dạng bài tối đa ${TOPIC_KEY_MAX_CHARS} ký tự.` };
+  }
+  const invalid = keys.find((key) => !TOPIC_KEY_PATTERN.test(key));
+  if (invalid !== undefined) {
+    return {
+      ok: false,
+      message: `Khoá “${invalid}” chưa đúng dạng: ít nhất ba phần gồm chữ thường không dấu, chữ số hoặc gạch dưới, nối bằng dấu chấm.`,
+    };
+  }
+  return { ok: true, keys };
+}
+
+export type LabelField = "chapter" | "category" | "topicKeys" | "version";
+
+/** Body của `PATCH …/labels` trừ `editor_id` (do `lib/api.ts` thêm). */
+export type ChunkLabelChange = Omit<ChunkLabelsPatch, "editor_id">;
+
+export type LabelPatchCheck =
+  | { ok: true; change: ChunkLabelChange }
+  | { ok: false; errors: Partial<Record<LabelField, string>> };
+
+function sameKeys(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((key, index) => key === b[index]);
+}
+
+/**
+ * Kiểm form sửa nhãn và dựng body: chỉ gồm field đã đổi so với chunk (backend coi field thiếu là giữ nguyên), luôn có
+ * `expected_version`. Xoá hết khoá dạng bài ⇒ `topic_keys: []` có chủ đích. Không đổi gì ⇒ body chỉ có
+ * `expected_version`, nghĩa là xác nhận nhãn hiện tại. Chunk không có `version` hợp lệ thì không sửa được.
+ */
+export function buildLabelChange(
+  chunk: Pick<ChunkView, "chapterCode" | "category" | "topicKeys" | "version">,
+  draft: LabelDraft,
+): LabelPatchCheck {
+  const errors: Partial<Record<LabelField, string>> = {};
+  if (chunk.version === null) {
+    errors.version = "Backend không trả phiên bản của đoạn này nên chưa sửa được nhãn. Tải lại danh sách.";
+  }
+  const chapter = draft.chapterCode.trim();
+  if (!CHAPTER_CODE_PATTERN.test(chapter)) errors.chapter = "Mã chương có dạng ch1, ch12 hoặc ch2.1.";
+  const category = draft.category;
+  if (category !== "" && !isChunkCategory(category)) errors.category = "Chọn loại nội dung.";
+  const keys = parseTopicKeys(draft.topicKeysText);
+  if (!keys.ok) errors.topicKeys = keys.message;
+  if (chunk.version === null || !keys.ok || Object.keys(errors).length > 0) return { ok: false, errors };
+
+  const change: ChunkLabelChange = { expected_version: chunk.version };
+  if (chapter !== chunk.chapterCode) change.chapter_code = chapter;
+  if (isChunkCategory(category) && category !== chunk.category) change.category = category;
+  if (!sameKeys(keys.keys, chunk.topicKeys)) change.topic_keys = keys.keys;
+  return { ok: true, change };
+}
+
+/** Chunk có sửa nhãn được không (cần `version` hợp lệ để gửi `expected_version`). */
+export function canEditLabels(chunk: Pick<ChunkView, "version">): boolean {
+  return chunk.version !== null;
 }
 
 // ---------------------------------------------------------------------------- địa chỉ màn /vault

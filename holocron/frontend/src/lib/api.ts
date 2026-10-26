@@ -39,9 +39,12 @@ import { normalizeRuntimeInfo, type RuntimeView } from "@/lib/runtime";
 import { parseSubject, parseSubjectList } from "@/lib/subjects";
 import {
   type ChunkFilter,
+  type ChunkLabelChange,
   type ChunkListView,
+  type ChunkView,
   chunkQueryString,
   parseChunkList,
+  parseKnowledgeChunk,
   parseSearchHits,
   type SearchQuery,
   type SearchResultView,
@@ -55,7 +58,7 @@ import {
   mockSubjectApi,
   mockVaultSourceChunks,
 } from "@/mocks";
-import { isMockBlueprint, isMockBlueprintSubject, isMockDocument } from "@/mocks/store";
+import { isMockBlueprint, isMockDocument } from "@/mocks/store";
 import type {
   BlueprintCreate,
   DocumentConfirmRequest,
@@ -68,6 +71,7 @@ import type {
 } from "@/types/contract-pending";
 import type {
   CellPatch,
+  ChunkLabelsPatch,
   IngestionItem,
   NonCloneableRequest,
   TablePatchRequest,
@@ -144,7 +148,13 @@ function validated<T>(value: T | null): T {
 
 /** Tham số của `GET /v1/vault/chunks` (§6.6) mà màn luyện tập dùng để tìm văn bản nguồn của trích dẫn. */
 export interface ChunkQuery {
+  /** Môn của blueprint sinh ra câu (ADR-006 mục 6), không phải môn đang chọn ở thanh bên. */
   subjectCode: string;
+  /**
+   * Blueprint sinh ra câu. Không gửi lên backend; chỉ dùng để chọn nguồn khi bật dữ liệu mẫu (câu của blueprint mẫu
+   * trích dẫn chunk mẫu).
+   */
+  blueprintId?: string;
   chapterCode: string | null;
   offset: number;
   limit: number;
@@ -228,6 +238,11 @@ export interface HolocronApi {
   browseVaultChunks: (filter: ChunkFilter) => Promise<ChunkListView>;
   /** `GET /v1/vault/search` (§6.6), đã kiểm dạng; không có `score`. */
   searchVault: (query: SearchQuery) => Promise<SearchResultView>;
+  /**
+   * `PATCH /v1/vault/chunks/{chunk_id}/labels` (§6.6): sửa và xác nhận nhãn; body chỉ gồm field đã đổi kèm
+   * `expected_version` (dựng ở `lib/vault.ts`). Trả chunk đã kiểm dạng.
+   */
+  patchChunkLabels: (chunkId: string, change: ChunkLabelChange) => Promise<ChunkView>;
 }
 
 /**
@@ -398,7 +413,7 @@ export const realApi: HolocronApi = {
     const raw = await request<unknown>(
       `/v1/documents/${segment(documentId)}/pages/${pageNumber}/confirm`,
       jsonSpec("POST", payload),
-      { versioned: true, context: "document_review" },
+      { versioned: true, context: "page_confirm" },
     );
     return validated(parsePageExtraction(raw));
   },
@@ -406,7 +421,7 @@ export const realApi: HolocronApi = {
   confirmDocument: async (documentId) => {
     const payload: DocumentConfirmRequest = { editor_id: LOCAL_EDITOR_ID };
     const raw = await request<unknown>(`/v1/documents/${segment(documentId)}/confirm`, jsonSpec("POST", payload), {
-      context: "document_review",
+      context: "document_confirm",
     });
     return validated(parseDocumentImport(raw));
   },
@@ -432,6 +447,15 @@ export const realApi: HolocronApi = {
     );
     return validated(parseSearchHits(raw));
   },
+
+  patchChunkLabels: async (chunkId, change) => {
+    const payload: ChunkLabelsPatch = { editor_id: LOCAL_EDITOR_ID, ...change };
+    const raw = await request<unknown>(`/v1/vault/chunks/${segment(chunkId)}/labels`, jsonSpec("PATCH", payload), {
+      versioned: true,
+      context: "vault_labels",
+    });
+    return validated(parseKnowledgeChunk(raw));
+  },
 };
 
 /**
@@ -452,9 +476,12 @@ export function createApi(useMocks: boolean): HolocronApi {
         ? mockPracticeBatch()
         : realApi.generatePracticeBatch(blueprintId, payload, idempotencyKey),
     // Các endpoint dưới đây đã có ở backend: chỉ bản ghi do dữ liệu mẫu tạo ra (chọn theo mã) mới lấy fixture.
-    // `GET /v1/vault/chunks`: chỉ trích dẫn của câu luyện tập mẫu (môn của blueprint mẫu) tìm trong chunk mẫu.
+    // `GET /v1/vault/chunks`: chỉ câu của blueprint mẫu (chọn theo mã blueprint, không theo môn: môn mẫu vẫn có thể
+    // chứa tài liệu thật) tìm trích dẫn trong chunk mẫu.
     listVaultChunks: (query) =>
-      isMockBlueprintSubject(query.subjectCode) ? mockVaultSourceChunks() : realApi.listVaultChunks(query),
+      query.blueprintId !== undefined && isMockBlueprint(query.blueprintId)
+        ? mockVaultSourceChunks()
+        : realApi.listVaultChunks(query),
     // `GET /v1/documents`: danh sách thật (mới nhất trước), thêm tài liệu mẫu của môn ở cuối để mở được màn xem lại
     // mẫu.
     listDocuments: async (subjectCode) => [

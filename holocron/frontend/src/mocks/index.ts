@@ -41,7 +41,7 @@ function checked<T>(value: T | null): T {
 /** M7: `POST /v1/blueprints` (§6.7) chưa có. Luôn trả blueprint mẫu, không dựng theo lựa chọn trên form. */
 function createBlueprint(): Promise<PracticeBlueprint> {
   const blueprint = checked(parseBlueprint(structuredClone(BLUEPRINT_FIXTURE)));
-  rememberMockBlueprint(blueprint.blueprintId, blueprint.subjectCode);
+  rememberMockBlueprint(blueprint.blueprintId);
   return Promise.resolve(blueprint);
 }
 
@@ -76,7 +76,8 @@ function gradeEssay(twinId: string): Promise<EssayGradeView> {
 
 /**
  * Chunk nguồn của câu luyện tập mẫu: luôn trả toàn bộ chunk mẫu trong một trang. `GET /v1/vault/chunks` đã có ở
- * backend, nên `createApi` chỉ dùng hàm này cho môn của blueprint mẫu (trích dẫn của câu mẫu trỏ vào chunk mẫu).
+ * backend, nên `createApi` chỉ dùng hàm này cho câu của blueprint mẫu (chọn theo mã blueprint, không theo môn; trích
+ * dẫn của câu mẫu trỏ vào chunk mẫu).
  */
 export function mockVaultSourceChunks(): Promise<ChunkPageView> {
   const page = { total: CHUNK_FIXTURES.length, chunks: structuredClone(CHUNK_FIXTURES) };
@@ -120,7 +121,7 @@ export const mockApi: Partial<HolocronApi> = {
   listSubjects,
   createBlueprint,
   gradeEssay,
-  // Hàm gốc của chunk mẫu; `createApi` chỉ dùng nó cho môn của blueprint mẫu (endpoint đã có ở backend).
+  // Hàm gốc của chunk mẫu; `createApi` chỉ dùng nó cho câu của blueprint mẫu (endpoint đã có ở backend).
   listVaultChunks: mockVaultSourceChunks,
 };
 

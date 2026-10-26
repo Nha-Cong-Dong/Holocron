@@ -143,6 +143,10 @@ function DocumentItem({ summary, progress, onChanged }: DocumentItemProps) {
           setDeleting(false);
           onChanged();
         }}
+        onReload={() => {
+          setDeleting(false);
+          onChanged();
+        }}
       />
     </li>
   );
@@ -224,10 +228,12 @@ interface DeleteDialogProps {
   documentId: string;
   onClose: () => void;
   onDeleted: () => void;
+  /** Nút "Tải lại bản mới nhất" của lỗi 409 (tài liệu đang đọc): chỉ đọc lại trạng thái, không coi là đã xoá. */
+  onReload: () => void;
 }
 
 /** Xác nhận xoá (`DELETE /v1/documents/{id}`): xoá cả trang, chunk và cặp khái niệm của tài liệu (§6.5). */
-export function DeleteDialog({ open, title, documentId, onClose, onDeleted }: DeleteDialogProps) {
+export function DeleteDialog({ open, title, documentId, onClose, onDeleted, onReload }: DeleteDialogProps) {
   const ids = useId();
   const [error, setError] = useState<UiError | null>(null);
   const [busy, setBusy] = useState(false);
@@ -245,27 +251,31 @@ export function DeleteDialog({ open, title, documentId, onClose, onDeleted }: De
     }
   }
 
+  /** Đóng hộp thoại (Esc, "Huỷ"): bỏ lỗi cũ để lần mở sau không hiện lại. */
+  function close(): void {
+    setError(null);
+    onClose();
+  }
+
+  function reload(): void {
+    setError(null);
+    onReload();
+  }
+
   return (
-    <Modal
-      open={open}
-      onClose={() => {
-        setError(null);
-        onClose();
-      }}
-      labelledBy={`${ids}-title`}
-    >
+    <Modal open={open} onClose={close} labelledBy={`${ids}-title`}>
       <div className={styles.form}>
         <h2 id={`${ids}-title`}>Xoá tài liệu “{title}”?</h2>
         <p>
           Xoá cả văn bản các trang, phần của tài liệu trong kho tri thức và các cặp khái niệm lấy từ đó. Câu hỏi đã sinh
           vẫn giữ trích dẫn. Muốn đọc lại trang lỗi, xoá rồi nhập lại file.
         </p>
-        {error !== null && <ErrorNotice error={error} onRetry={() => void remove()} onReload={onDeleted} />}
+        {error !== null && <ErrorNotice error={error} onRetry={() => void remove()} onReload={reload} />}
         <div className={styles.actions}>
           <button type="button" className={styles.danger} onClick={() => void remove()} disabled={busy}>
             {busy ? "Đang xoá…" : "Xoá tài liệu"}
           </button>
-          <button type="button" className={styles.secondary} onClick={onClose} disabled={busy}>
+          <button type="button" className={styles.secondary} onClick={close} disabled={busy}>
             Huỷ
           </button>
         </div>

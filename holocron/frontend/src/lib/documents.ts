@@ -4,13 +4,21 @@
  *   không lộ mã thô);
  * - kiểm file và form phía client trước khi gửi (chỉ để báo sớm; backend vẫn kiểm cuối cùng);
  * - điều kiện bật/tắt nút sửa dòng, xác nhận trang, xác nhận tài liệu theo đúng các mã 409 của §6.5;
- * - dựng `edits` chỉ gồm dòng đã đổi.
+ * - dựng `edits` chỉ gồm dòng đã đổi; chặn gửi lưu dòng lần hai khi lần trước chưa xong;
+ * - tự hỏi lại trang đang đọc (`pending`) theo chu kỳ của `lib/poll.ts`.
  *
  * Không so ngưỡng nào (`LINE_CONF_MIN`, `OCR_SCORE_MIN`…): dòng conf thấp hay token lệch nhận biết qua `flags` và
  * `cross_check.mismatches` do backend tính.
  */
 
-import type { DocumentStatusView, DocumentView, LineView, MismatchView, PageStatusView } from "@/lib/documents-data";
+import type {
+  DocumentStatusView,
+  DocumentView,
+  LineView,
+  MismatchView,
+  PageStatusView,
+  PageView,
+} from "@/lib/documents-data";
 import {
   CHAPTER_CODE_PATTERN,
   DOCUMENT_TITLE_MAX_CHARS,
@@ -20,6 +28,7 @@ import {
   LINE_TEXT_MAX_CHARS,
   SUBJECT_CODE_PATTERN,
 } from "@/lib/limits";
+import { createPoller, defaultSchedule, POLL_INTERVAL_MS, type Poller, type Schedule } from "@/lib/poll";
 import type { LineEdit, ReviewReasonPending } from "@/types/contract-pending";
 import type { CrossCheckStatus, FailureReason, LineEngine, LineFlag, SourceKind, TierUsed } from "@/types/holocron";
 
@@ -111,9 +120,6 @@ export const SOURCE_KIND_LABEL_VI: Record<SourceKind, string> = {
 
 export const UNKNOWN_SOURCE_KIND_VI = "Loại tài liệu khác";
 
-/** Câu nhắc cố định cho trang đọc bằng OCR: bộ dữ liệu tiếng Việt được phép thiếu hai chữ hiếm này (§5.7). */
-export const OCR_RARE_LETTERS_NOTE_VI = "OCR có thể không nhận được chữ hiếm Ỵ, ỵ; kiểm lại các từ có chữ này.";
-
 /** Nhãn của một mã; mã không có trong bảng (kể cả tên thuộc tính của `Object.prototype`) ⇒ nhãn chung. */
 function labelFrom(table: Readonly<Record<string, string>>, code: string, fallback: string): string {
   return Object.hasOwn(table, code) ? (table[code] ?? fallback) : fallback;
@@ -178,8 +184,8 @@ interface WarningInput {
 }
 
 /**
- * Cảnh báo của một trang, theo thứ tự: đọc lỗi (kèm lý do nếu biết), đọc bằng OCR (kèm câu nhắc chữ hiếm), rồi từng
- * lý do cần xem kỹ. Chỉ dựa vào mã backend trả.
+ * Cảnh báo của một trang, theo thứ tự: đọc lỗi (kèm lý do nếu biết), đọc bằng OCR, rồi từng lý do cần xem kỹ. Chỉ dựa
+ * vào mã backend trả; không thêm cảnh báo nào mà contract chưa có field mang (ví dụ chữ OCR không nhận được).
  */
 export function pageWarnings(page: WarningInput): PageWarning[] {
   const warnings: PageWarning[] = [];
@@ -191,7 +197,7 @@ export function pageWarnings(page: WarningInput): PageWarning[] {
     warnings.push({ key: "failed", label, tone: "danger" });
   }
   if (page.tierUsed === "ocr") {
-    warnings.push({ key: "ocr", label: `Đọc bằng OCR (ảnh scan). ${OCR_RARE_LETTERS_NOTE_VI}`, tone: "info" });
+    warnings.push({ key: "ocr", label: "Đọc bằng OCR (ảnh scan)", tone: "info" });
   }
   for (const label of reviewReasonLabels(page.reviewReasons)) {
     warnings.push({ key: `reason:${label}`, label, tone: "warning" });
@@ -347,6 +353,41 @@ export function checkLineText(text: string): string | null {
   return null;
 }
 
+export type LineSaveDecision = { kind: "blocked" } | { kind: "invalid"; message: string } | { kind: "save" };
+
+/**
+ * Enter hoặc nút "Lưu" của một dòng: đang có thao tác ghi (`busy`) thì không gửi thêm lần nào (tránh lưu hai lần khi
+ * bấm liền tay); nội dung quá dài thì báo lỗi trên ô.
+ */
+export function lineSaveDecision(draft: string, busy: boolean): LineSaveDecision {
+  if (busy) return { kind: "blocked" };
+  const problem = checkLineText(draft);
+  return problem === null ? { kind: "save" } : { kind: "invalid", message: problem };
+}
+
+/**
+ * Chặn chạy chồng một thao tác ghi. `tryEnter` trả `false` khi lần trước chưa `leave`; khác với cờ `busy` của React
+ * (chỉ đổi sau lần render kế tiếp), cờ này đổi ngay nên hai lần bấm trong cùng một khung hình chỉ gửi một request.
+ */
+export interface SingleFlight {
+  tryEnter: () => boolean;
+  leave: () => void;
+}
+
+export function createSingleFlight(): SingleFlight {
+  let active = false;
+  return {
+    tryEnter: () => {
+      if (active) return false;
+      active = true;
+      return true;
+    },
+    leave: () => {
+      active = false;
+    },
+  };
+}
+
 /**
  * `edits` của `PATCH …/lines`: chỉ dòng có bản nháp khác văn bản hiện tại (so sau NFC, vì backend chuẩn hoá NFC),
  * bỏ chỉ số không có trên trang, sắp theo `line_index`. Văn bản gửi đi là bản nháp đã chuẩn hoá NFC.
@@ -392,5 +433,49 @@ export function lineHighlight(line: LineView, mismatches: ReadonlyMap<number, re
     lowConf: line.flags.includes("LOW_LINE_CONF"),
     mismatch: line.flags.includes("TOKEN_MISMATCH") || (mismatches.get(line.lineIndex)?.length ?? 0) > 0,
     labels,
+  };
+}
+
+// ------------------------------------------------------------------------------ trang đang đọc (§6.5)
+
+export interface PendingPagePollOptions {
+  load: () => Promise<PageView>;
+  onValue: (page: PageView) => void;
+  /** `gaveUp = true` khi đã dừng hỏi vì lỗi liên tiếp; giao diện hiện nút thử lại. */
+  onError: (error: unknown, gaveUp: boolean) => void;
+  schedule?: Schedule;
+  maxConsecutiveErrors?: number;
+}
+
+/**
+ * Hỏi lại một trang `pending` theo chu kỳ của `lib/poll.ts` (1,5 s, trong khoảng 1–2 s spec khuyến nghị). Lượt đầu
+ * chạy sau một chu kỳ (trang vừa được đọc xong ngay trước đó); dừng khi trang rời `pending` hoặc khi gọi `stop()` (đổi
+ * trang, đổi tài liệu, rời màn).
+ */
+export function createPendingPagePoller(options: PendingPagePollOptions): Poller {
+  const schedule = options.schedule ?? defaultSchedule;
+  const poller = createPoller<PageView>({
+    load: options.load,
+    shouldContinue: (page) => page.status === "pending",
+    onValue: options.onValue,
+    onError: options.onError,
+    schedule,
+    maxConsecutiveErrors: options.maxConsecutiveErrors,
+  });
+  let cancelFirst: (() => void) | null = null;
+  return {
+    start: () => {
+      if (cancelFirst !== null || poller.isRunning()) return;
+      cancelFirst = schedule(() => {
+        cancelFirst = null;
+        poller.start();
+      }, POLL_INTERVAL_MS);
+    },
+    stop: () => {
+      cancelFirst?.();
+      cancelFirst = null;
+      poller.stop();
+    },
+    isRunning: () => cancelFirst !== null || poller.isRunning(),
   };
 }

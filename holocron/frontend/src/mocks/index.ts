@@ -19,7 +19,8 @@ import {
   parseEssayGradeResult,
   parsePracticeBatch,
 } from "@/lib/practice-data";
-import { parseSubjectList } from "@/lib/subjects";
+import { parseSubject, parseSubjectList } from "@/lib/subjects";
+import type { Subject, SubjectCreate } from "@/types/contract-pending";
 
 import { BLUEPRINT_FIXTURE } from "./fixtures/blueprints";
 import { CHUNK_FIXTURES } from "./fixtures/chunks";
@@ -27,7 +28,9 @@ import { ESSAY_GRADE_FIXTURES } from "./fixtures/essay";
 import { RUNTIME_FIXTURES } from "./fixtures/runtime";
 import { SUBJECT_FIXTURES } from "./fixtures/subjects";
 import { EMPTY_TWIN_BATCH_FIXTURE, TWIN_BATCH_FIXTURE, UNAPPROVED_SOURCE_BODY } from "./fixtures/twins";
-import { currentPracticeScenario, currentRuntimeScenario, rememberMockBlueprint } from "./store";
+import { createdSubjects, currentPracticeScenario, currentRuntimeScenario, rememberMockBlueprint } from "./store";
+
+export { mockDocumentApi } from "./documents";
 
 /** Kết quả kiểm dạng của fixture; fixture sai dạng là lỗi của chính fixture, báo như phản hồi không hợp lệ. */
 function checked<T>(value: T | null): T {
@@ -38,7 +41,7 @@ function checked<T>(value: T | null): T {
 /** M7: `POST /v1/blueprints` (§6.7) chưa có. Luôn trả blueprint mẫu, không dựng theo lựa chọn trên form. */
 function createBlueprint(): Promise<PracticeBlueprint> {
   const blueprint = checked(parseBlueprint(structuredClone(BLUEPRINT_FIXTURE)));
-  rememberMockBlueprint(blueprint.blueprintId);
+  rememberMockBlueprint(blueprint.blueprintId, blueprint.subjectCode);
   return Promise.resolve(blueprint);
 }
 
@@ -71,20 +74,58 @@ function gradeEssay(twinId: string): Promise<EssayGradeView> {
   return Promise.resolve(checked(parseEssayGradeResult(structuredClone(fixture))));
 }
 
-/** `GET /v1/vault/chunks` (§6.6) chưa có ở backend của nhánh này. Luôn trả toàn bộ chunk mẫu trong một trang. */
-function listVaultChunks(): Promise<ChunkPageView> {
+/**
+ * Chunk nguồn của câu luyện tập mẫu: luôn trả toàn bộ chunk mẫu trong một trang. `GET /v1/vault/chunks` đã có ở
+ * backend, nên `createApi` chỉ dùng hàm này cho môn của blueprint mẫu (trích dẫn của câu mẫu trỏ vào chunk mẫu).
+ */
+export function mockVaultSourceChunks(): Promise<ChunkPageView> {
   const page = { total: CHUNK_FIXTURES.length, chunks: structuredClone(CHUNK_FIXTURES) };
   return Promise.resolve(checked(parseChunkPage(page)));
+}
+
+/** M3: môn mẫu cộng các môn tạo trong phiên, sắp theo `subject_code` như §6.8. */
+function listSubjects(): Promise<Subject[]> {
+  const all = [...structuredClone(SUBJECT_FIXTURES), ...structuredClone(createdSubjects)];
+  all.sort((a, b) => (a.subject_code < b.subject_code ? -1 : a.subject_code > b.subject_code ? 1 : 0));
+  return Promise.resolve(checked(parseSubjectList(all)));
+}
+
+/**
+ * M3: `POST /v1/subjects` (§6.8) chưa có. Mã đã có ⇒ 409; mặc định khi bỏ trống theo §5.14 (`display_name` =
+ * `subject_code`, `exam_format = mixed`); `version` 1, thời điểm tạo là lúc gọi.
+ */
+function createSubject(payload: SubjectCreate): Promise<Subject> {
+  const exists = [...SUBJECT_FIXTURES, ...createdSubjects].some((s) => s.subject_code === payload.subject_code);
+  if (exists) {
+    return Promise.reject(
+      new ApiError(409, classifyHttpError(409, { detail: "môn đã có" }, { context: "subject_create" })),
+    );
+  }
+  const now = new Date().toISOString();
+  const subject: Subject = {
+    subject_code: payload.subject_code,
+    display_name: payload.display_name ?? payload.subject_code,
+    exam_format: payload.exam_format ?? "mixed",
+    version: 1,
+    created_at: now,
+    updated_at: now,
+  };
+  createdSubjects.push(subject);
+  return Promise.resolve(checked(parseSubject(structuredClone(subject))));
 }
 
 /** Endpoint backend chưa có, thay trọn bằng fixture. */
 export const mockApi: Partial<HolocronApi> = {
   // M3: `GET /v1/subjects` (§6.8) chưa có.
-  listSubjects: () => Promise.resolve(checked(parseSubjectList(structuredClone(SUBJECT_FIXTURES)))),
+  listSubjects,
   createBlueprint,
   gradeEssay,
-  listVaultChunks,
+  // Hàm gốc của chunk mẫu; `createApi` chỉ dùng nó cho môn của blueprint mẫu (endpoint đã có ở backend).
+  listVaultChunks: mockVaultSourceChunks,
 };
+
+/** M3: `POST /v1/subjects` chưa có ở backend; gộp vào `api` cùng `mockApi` khi bật dữ liệu mẫu. */
+export const mockSubjectApi: Pick<HolocronApi, "createSubject"> = { createSubject };
 
 /** Field của `GET /v1/runtime` (§5.12) mà backend chưa trả; chỉ những field này được bù từ fixture. */
 export const RUNTIME_GAP_FIELDS = ["capabilities", "mock_extractor"] as const;

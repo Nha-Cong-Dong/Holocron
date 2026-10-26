@@ -1,4 +1,4 @@
-"""Kho SQLite (SPECIFICATION §5.13): thoả `AppStore`, `DocumentRepository` và `VaultRepository`.
+"""Kho SQLite (SPECIFICATION §5.13): thoả `AppStore` (gồm `DocumentRepository` và `VaultRepository`).
 
 Một kết nối cho mỗi kho, dùng chung giữa các luồng dưới một khoá; mọi lần ghi nằm trong `BEGIN IMMEDIATE`, mọi lần
 đọc nhiều câu nằm trong một giao dịch đọc để thấy cùng một bản chụp. Ghi có điều kiện dùng một câu
@@ -21,10 +21,12 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from ...domain.documents import PageEditAudit
 from ...domain.ingestion import IngestionItem, PatchAudit, UploadedDocument
 from ...domain.repositories import (
     IDEMPOTENCY_TTL,
     ConcurrentUpdateError,
+    DocumentExistsError,
     ImportedDocument,
     MissingReferenceError,
     PageStatus,
@@ -36,6 +38,7 @@ from ...domain.repositories import (
     VaultEntity,
     VaultSearchUnavailableError,
     VersionConflictError,
+    check_page_audit,
     same_item_state,
 )
 from ...domain.schemas import DocumentMeta, ExamBlueprint, KnowledgeChunk, TwinQuestion
@@ -418,21 +421,52 @@ class SQLiteStore:
             _ts(meta.uploaded_at),
         )
 
+    def _upsert_imported(self, conn: sqlite3.Connection, document: ImportedDocument) -> sqlite3.Row:
+        """Tạo dòng `documents`, hoặc bổ sung thông tin cho dòng cùng `document_id` (version tăng 1); trả dòng đã ghi."""
+        conn.execute(
+            "INSERT INTO documents (filename, media_type, size_bytes, subject_code, title, source_kind, "
+            "output_language, page_count, has_text_layer, status, uploaded_at, document_id, sha256) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (document_id) DO UPDATE SET filename = excluded.filename, "
+            "media_type = excluded.media_type, size_bytes = excluded.size_bytes, "
+            "subject_code = excluded.subject_code, title = excluded.title, source_kind = excluded.source_kind, "
+            "output_language = excluded.output_language, page_count = excluded.page_count, "
+            "has_text_layer = excluded.has_text_layer, status = excluded.status, "
+            "uploaded_at = excluded.uploaded_at, version = documents.version + 1",
+            (*self._imported_columns(document), document.meta.doc_id, document.meta.sha256),
+        )
+        row: sqlite3.Row = conn.execute(
+            f"{self._IMPORTED_SELECT} AND document_id = ?", (document.meta.doc_id,)
+        ).fetchone()
+        return row
+
     def save_imported_document(self, document: ImportedDocument) -> ImportedDocument:
         with self._write() as conn:
-            conn.execute(
-                "INSERT INTO documents (filename, media_type, size_bytes, subject_code, title, source_kind, "
-                "output_language, page_count, has_text_layer, status, uploaded_at, document_id, sha256) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT (document_id) DO UPDATE SET filename = excluded.filename, "
-                "media_type = excluded.media_type, size_bytes = excluded.size_bytes, "
-                "subject_code = excluded.subject_code, title = excluded.title, source_kind = excluded.source_kind, "
-                "output_language = excluded.output_language, page_count = excluded.page_count, "
-                "has_text_layer = excluded.has_text_layer, status = excluded.status, "
-                "uploaded_at = excluded.uploaded_at, version = documents.version + 1",
-                (*self._imported_columns(document), document.meta.doc_id, document.meta.sha256),
-            )
-            row = conn.execute(f"{self._IMPORTED_SELECT} AND document_id = ?", (document.meta.doc_id,)).fetchone()
+            row = self._upsert_imported(conn, document)
+        return self._imported_from_row(row)
+
+    def create_imported_document(
+        self, document: ImportedDocument, pending_pages: Sequence[BaseModel]
+    ) -> ImportedDocument:
+        """Một giao dịch `BEGIN IMMEDIATE`: kiểm chưa có tài liệu nhập, ghi dòng `documents` rồi từng trang; lỗi ở
+        bất kỳ câu nào ⇒ `ROLLBACK` (`connection._transaction`), không còn dòng nào."""
+        document_id = document.meta.doc_id
+        if len(pending_pages) != document.meta.page_count:
+            raise ValueError("số trang pending phải bằng page_count")
+        with self._write() as conn:
+            existing = conn.execute(
+                "SELECT 1 FROM documents WHERE document_id = ? AND subject_code IS NOT NULL", (document_id,)
+            ).fetchone()
+            if existing is not None:
+                raise DocumentExistsError(document_id)
+            row = self._upsert_imported(conn, document)
+            updated_at = _now()
+            for page_number, page in enumerate(pending_pages, start=1):
+                conn.execute(
+                    "INSERT INTO pages (document_id, page_number, status, extraction_json, confirmed, updated_at) "
+                    "VALUES (?, ?, 'pending', ?, 0, ?)",
+                    (document_id, page_number, _dump(page), updated_at),
+                )
         return self._imported_from_row(row)
 
     _IMPORTED_SELECT = (
@@ -543,7 +577,10 @@ class SQLiteStore:
         status: PageStatus,
         confirmed: bool,
         expected_version: int,
+        audit: PageEditAudit | None = None,
     ) -> int:
+        if audit is not None:
+            check_page_audit(audit, document_id, page_number, expected_version)
         with self._write() as conn:
             cursor = conn.execute(
                 "UPDATE pages SET status = ?, extraction_json = ?, confirmed = ?, updated_at = ?, "
@@ -559,7 +596,43 @@ class SQLiteStore:
                     "SELECT version FROM pages WHERE document_id = ? AND page_number = ?",
                     (document_id, page_number),
                 )
+            if audit is not None:
+                conn.execute(
+                    "INSERT INTO page_audits (document_id, page_number, from_version, to_version, editor_id, "
+                    "changes_json, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        document_id,
+                        page_number,
+                        audit.from_version,
+                        audit.to_version,
+                        audit.editor_id,
+                        json.dumps(audit.model_dump(mode="json")["changes"], ensure_ascii=False),
+                        _ts(audit.at),
+                    ),
+                )
         return expected_version + 1
+
+    def list_page_audits(self, document_id: str, page_number: int) -> list[PageEditAudit]:
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT document_id, page_number, from_version, to_version, editor_id, changes_json, at "
+                "FROM page_audits WHERE document_id = ? AND page_number = ? ORDER BY audit_id",
+                (document_id, page_number),
+            ).fetchall()
+        return [
+            PageEditAudit.model_validate(
+                {
+                    "document_id": row["document_id"],
+                    "page_number": row["page_number"],
+                    "from_version": row["from_version"],
+                    "to_version": row["to_version"],
+                    "editor_id": row["editor_id"],
+                    "changes": json.loads(str(row["changes_json"])),
+                    "at": row["at"],
+                }
+            )
+            for row in rows
+        ]
 
     def get_page[M: BaseModel](self, document_id: str, page_number: int, model: type[M]) -> M | None:
         with self._read() as conn:

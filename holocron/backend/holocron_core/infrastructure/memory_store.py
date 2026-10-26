@@ -9,19 +9,28 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 
-from ..domain.ingestion import IngestionItem, UploadedDocument
+from pydantic import BaseModel
+
+from ..domain.documents import PageEditAudit
+from ..domain.ingestion import IngestionItem, MediaType, UploadedDocument
 from ..domain.repositories import (
     IDEMPOTENCY_TTL,
     ConcurrentUpdateError,
+    DocumentExistsError,
+    ImportedDocument,
     MissingReferenceError,
+    PageStatus,
+    RecordInUseError,
     RecordNotFoundError,
     SearchIndex,
     StorageError,
     VaultEntity,
     VaultSearchUnavailableError,
     VersionConflictError,
+    check_page_audit,
     same_item_state,
 )
 from ..domain.schemas import ExamBlueprint, KnowledgeChunk
@@ -30,9 +39,26 @@ from ..domain.vault import ConceptPair, ConceptPairStatus, VaultEdit, check_defi
 
 __all__ = ["IDEMPOTENCY_TTL", "IngestionStore"]
 
+IMPORTED_MEDIA_TYPE: MediaType = "application/pdf"  # bộ nhập §6.5 chỉ nhận PDF trong MVP, như bản SQLite
+
+
+@dataclass(frozen=True)
+class _StoredPage:
+    """Một dòng `pages`: JSON của model trang (validate lại khi đọc, như bản SQLite) và các cột lọc."""
+
+    extraction_json: str
+    status: PageStatus
+    confirmed: bool
+    version: int
+
+
+def _dump(model: BaseModel) -> str:
+    """JSON của model, bỏ computed field (như `sqlite_store._dump`)."""
+    return model.model_dump_json(exclude=set(type(model).model_computed_fields))
+
 
 class IngestionStore:
-    """Kho in-memory cho item và tài liệu tải lên; được cấp qua `Depends(get_store)` để test thay được."""
+    """Kho in-memory cho item, tài liệu (tải lên và nhập qua §6.5) và Vault; cấp qua `Depends(get_store)`."""
 
     def __init__(self) -> None:
         self._items: dict[str, IngestionItem] = {}
@@ -43,7 +69,13 @@ class IngestionStore:
         self._chunks: dict[str, KnowledgeChunk] = {}
         self._pairs: dict[str, ConceptPair] = {}
         self._edits: dict[tuple[VaultEntity, str], VaultEdit] = {}
-        self._lock = threading.Lock()
+        # DocumentRepository: `_documents` là bảng `documents` (mọi tài liệu); `_imported` chỉ chứa tài liệu đã có
+        # thông tin của bộ nhập §6.5; `_document_versions` là cột `version` của `documents`.
+        self._imported: dict[str, ImportedDocument] = {}
+        self._document_versions: dict[str, int] = {}
+        self._pages: dict[tuple[str, int], _StoredPage] = {}
+        self._page_audits: dict[tuple[str, int], list[PageEditAudit]] = {}
+        self._lock = threading.RLock()
 
     def get_item(self, item_id: str) -> IngestionItem | None:
         return self._items.get(item_id)
@@ -77,7 +109,9 @@ class IngestionStore:
 
     def save_document(self, document: UploadedDocument) -> UploadedDocument:
         """Cùng nội dung ⇒ cùng `document_id`: giữ bản ghi đầu tiên (idempotent)."""
-        return self._documents.setdefault(document.document_id, document)
+        with self._lock:
+            self._document_versions.setdefault(document.document_id, 1)
+            return self._documents.setdefault(document.document_id, document)
 
     def get_document(self, document_id: str) -> UploadedDocument | None:
         return self._documents.get(document_id)
@@ -103,6 +137,163 @@ class IngestionStore:
 
     def save_idempotent(self, blueprint_id: str, key: str, record: IdempotencyRecord) -> None:
         self._idempotency[(blueprint_id, key)] = record
+
+    # ------------------------------------------------------------------ #
+    # DocumentRepository (cùng ngữ nghĩa với bản SQLite)
+    # ------------------------------------------------------------------ #
+
+    def _put_imported(self, document: ImportedDocument, version: int) -> ImportedDocument:
+        """Ghi tài liệu nhập với `version` kèm dòng `documents` tương ứng (`get_document` đọc lại được, như SQLite)."""
+        stored = document.model_copy(update={"version": version}, deep=True)
+        meta = stored.meta
+        self._documents[meta.doc_id] = UploadedDocument(
+            document_id=meta.doc_id,
+            sha256=meta.sha256,
+            filename=stored.filename,
+            media_type=IMPORTED_MEDIA_TYPE,
+            size_bytes=stored.size_bytes,
+            uploaded_at=meta.uploaded_at,
+        )
+        self._imported[meta.doc_id] = stored
+        self._document_versions[meta.doc_id] = version
+        return stored.model_copy(deep=True)
+
+    def _check_sha256_unique(self, document: ImportedDocument) -> None:
+        """Cột `sha256` UNIQUE của bản SQLite: nội dung này đã thuộc tài liệu khác ⇒ `StorageError`."""
+        meta = document.meta
+        if any(d.sha256 == meta.sha256 and d.document_id != meta.doc_id for d in self._documents.values()):
+            raise StorageError(f"UNIQUE: sha256 {meta.sha256} đã thuộc tài liệu khác")
+
+    def save_imported_document(self, document: ImportedDocument) -> ImportedDocument:
+        """Tạo mới (version 1) hoặc bổ sung thông tin cho bản ghi đã có cùng `document_id` (version tăng 1)."""
+        with self._lock:
+            self._check_sha256_unique(document)
+            current = self._document_versions.get(document.meta.doc_id)
+            return self._put_imported(document, 1 if current is None else current + 1)
+
+    def create_imported_document(
+        self, document: ImportedDocument, pending_pages: Sequence[BaseModel]
+    ) -> ImportedDocument:
+        """Như bản SQLite: kiểm và dựng toàn bộ dữ liệu (JSON của từng trang) trước, rồi mới ghi dưới khoá, nên lỗi
+        ở bất kỳ trang nào ⇒ không ghi gì."""
+        document_id = document.meta.doc_id
+        if len(pending_pages) != document.meta.page_count:
+            raise ValueError("số trang pending phải bằng page_count")
+        with self._lock:
+            if document_id in self._imported:
+                raise DocumentExistsError(document_id)
+            self._check_sha256_unique(document)
+            rows = {
+                (document_id, number): _StoredPage(_dump(page), "pending", False, 1)
+                for number, page in enumerate(pending_pages, start=1)
+            }
+            current = self._document_versions.get(document_id)
+            stored = self._put_imported(document, 1 if current is None else current + 1)
+            self._pages.update(rows)
+            return stored
+
+    def get_imported_document(self, document_id: str) -> ImportedDocument | None:
+        with self._lock:
+            document = self._imported.get(document_id)
+            return None if document is None else document.model_copy(deep=True)
+
+    def update_imported_document(self, document: ImportedDocument, expected_version: int) -> ImportedDocument:
+        document_id = document.meta.doc_id
+        with self._lock:
+            current = self._document_versions.get(document_id)
+            if current is None:
+                raise RecordNotFoundError("tài liệu", document_id)
+            if current != expected_version:
+                raise VersionConflictError("tài liệu", document_id, expected_version, current)
+            self._put_imported(document, expected_version + 1)
+        return document.model_copy(update={"version": expected_version + 1})
+
+    def list_imported_documents(self, subject_code: str | None = None) -> list[ImportedDocument]:
+        with self._lock:
+            found = [
+                document.model_copy(deep=True)
+                for document in self._imported.values()
+                if subject_code is None or document.meta.subject_code == subject_code
+            ]
+        return sorted(found, key=lambda d: (d.meta.uploaded_at, d.meta.doc_id), reverse=True)
+
+    def delete_document(self, document_id: str) -> bool:
+        """Như bản SQLite: trang, lịch sử sửa trang, chunk, cặp khái niệm của chunk và người sửa đi cùng tài liệu;
+        còn item tham chiếu thì không xoá gì. `linked_chunk_ids` của các môn liên quan được tính lại."""
+        with self._lock:
+            if document_id not in self._documents:
+                return False
+            if any(item.source_doc_id == document_id for item in self._items.values()):
+                raise RecordInUseError(f"tài liệu {document_id} còn được ingestion item tham chiếu")
+            chunk_ids = {chunk_id for chunk_id, chunk in self._chunks.items() if chunk.doc_id == document_id}
+            subjects = {self._chunks[chunk_id].subject_code for chunk_id in chunk_ids}
+            pair_ids = {pair_id for pair_id, pair in self._pairs.items() if pair.chunk_id in chunk_ids}
+            for chunk_id in chunk_ids:
+                del self._chunks[chunk_id]
+                self._edits.pop(("chunk", chunk_id), None)
+            for pair_id in pair_ids:
+                del self._pairs[pair_id]
+                self._edits.pop(("concept_pair", pair_id), None)
+            for key in [key for key in self._pages if key[0] == document_id]:
+                del self._pages[key]
+                self._page_audits.pop(key, None)
+            del self._documents[document_id]
+            self._imported.pop(document_id, None)
+            self._document_versions.pop(document_id, None)
+            self._relink(subjects)
+        return True
+
+    def add_page(
+        self, document_id: str, page_number: int, page: BaseModel, *, status: PageStatus, confirmed: bool
+    ) -> None:
+        with self._lock:
+            if document_id not in self._documents:
+                raise MissingReferenceError(f"không tìm thấy tài liệu nguồn {document_id}")
+            if (document_id, page_number) in self._pages:
+                raise StorageError(f"UNIQUE: trang {document_id}#{page_number} đã tồn tại")
+            self._pages[(document_id, page_number)] = _StoredPage(_dump(page), status, confirmed, 1)
+
+    def update_page(
+        self,
+        document_id: str,
+        page_number: int,
+        page: BaseModel,
+        *,
+        status: PageStatus,
+        confirmed: bool,
+        expected_version: int,
+        audit: PageEditAudit | None = None,
+    ) -> int:
+        """So-và-ghi dưới khoá; `audit` được ghi cùng lúc với trang."""
+        if audit is not None:
+            check_page_audit(audit, document_id, page_number, expected_version)
+        key = (document_id, page_number)
+        with self._lock:
+            current = self._pages.get(key)
+            if current is None:
+                raise RecordNotFoundError("trang", f"{document_id}#{page_number}")
+            if current.version != expected_version:
+                raise VersionConflictError("trang", f"{document_id}#{page_number}", expected_version, current.version)
+            self._pages[key] = _StoredPage(_dump(page), status, confirmed, expected_version + 1)
+            if audit is not None:
+                self._page_audits.setdefault(key, []).append(audit.model_copy(deep=True))
+        return expected_version + 1
+
+    def list_page_audits(self, document_id: str, page_number: int) -> list[PageEditAudit]:
+        with self._lock:
+            return [audit.model_copy(deep=True) for audit in self._page_audits.get((document_id, page_number), [])]
+
+    def get_page[M: BaseModel](self, document_id: str, page_number: int, model: type[M]) -> M | None:
+        with self._lock:
+            stored = self._pages.get((document_id, page_number))
+        return None if stored is None else model.model_validate_json(stored.extraction_json)
+
+    def list_pages[M: BaseModel](self, document_id: str, model: type[M]) -> list[M]:
+        with self._lock:
+            rows = sorted(
+                ((number, page.extraction_json) for (doc, number), page in self._pages.items() if doc == document_id),
+            )
+        return [model.model_validate_json(extraction_json) for _, extraction_json in rows]
 
     # ------------------------------------------------------------------ #
     # VaultRepository

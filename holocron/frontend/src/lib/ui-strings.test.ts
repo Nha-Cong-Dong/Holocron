@@ -35,12 +35,13 @@ function stripNonText(source: string): string {
     .replace(/^\s*(import|export)\b[^;]*\bfrom\s+["'][^"']+["'];?/gm, " ");
 }
 
-/** Chuỗi ký tự (nháy kép, nháy đơn, backtick) và chữ trong JSX. */
-function visibleTexts(source: string): string[] {
+/** Chuỗi ký tự (nháy kép, nháy đơn, backtick) và, với file `.tsx`, chữ trong JSX. */
+function visibleTexts(source: string, jsx: boolean): string[] {
   const code = stripNonText(source);
   const texts: string[] = [];
   const literal = /"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`/g;
   for (const match of code.matchAll(literal)) texts.push(match[0]);
+  if (!jsx) return texts;
   const jsxText = /[>}]([^<>{}]+)[<{]/g;
   for (const match of code.matchAll(jsxText)) {
     const text = match[1]?.trim() ?? "";
@@ -59,7 +60,7 @@ describe("chuỗi giao diện không dùng thuật ngữ nội bộ", () => {
   it("không có sandbox, slot hay template trong chữ hiển thị", () => {
     const hits: string[] = [];
     for (const file of files) {
-      for (const text of visibleTexts(readFileSync(file, "utf-8"))) {
+      for (const text of visibleTexts(readFileSync(file, "utf-8"), file.endsWith(".tsx"))) {
         if (FORBIDDEN.test(text)) hits.push(`${relative(SRC, file)}: ${text}`);
       }
     }
@@ -74,7 +75,7 @@ describe("chuỗi giao diện không dùng thuật ngữ nội bộ", () => {
       'const label = "Đang chạy sandbox";',
       "return <p>Slot {index}</p>;",
     ].join("\n");
-    const found = visibleTexts(sample).filter((text) => FORBIDDEN.test(text));
+    const found = visibleTexts(sample, true).filter((text) => FORBIDDEN.test(text));
     expect(found).toEqual(['"Đang chạy sandbox"', "Slot"]);
   });
 });

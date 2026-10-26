@@ -119,8 +119,9 @@ describe("thân lỗi (§6.0)", () => {
 });
 
 describe("handler giả", () => {
-  it("chỉ thay endpoint chưa có ở backend; /v1/runtime không bị thay", () => {
-    expect(Object.keys(mockApi).sort()).toEqual(["listSubjects"]);
+  it("chỉ thay endpoint chưa có ở backend; /v1/runtime và sinh câu tính toán không bị thay", () => {
+    // M3 môn học, M7 tạo bộ đề, M9 chấm tự luận, chunk của Vault (§6.6) chưa có ở backend của nhánh này.
+    expect(Object.keys(mockApi).sort()).toEqual(["createBlueprint", "gradeEssay", "listSubjects", "listVaultChunks"]);
   });
 
   it("trả bản sao: sửa kết quả không làm hỏng fixture", async () => {

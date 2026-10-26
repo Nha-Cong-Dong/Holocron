@@ -25,3 +25,35 @@ export function currentRuntimeScenario(fallback: RuntimeScenario = DEFAULT_RUNTI
   if (typeof window === "undefined") return fallback;
   return scenarioFromSearch(window.location.search, fallback);
 }
+
+/**
+ * Kịch bản của màn luyện tập, chọn bằng query `?mock_practice=…`: `normal` (mặc định) trả batch mẫu đủ dạng câu;
+ * `empty` trả batch không có câu nào vì chương chưa có cặp khái niệm đã xác nhận; `unapproved` trả 409 như khi bộ đề
+ * dựa trên đề thi chưa được duyệt.
+ */
+export const PRACTICE_SCENARIOS = ["normal", "empty", "unapproved"] as const;
+
+export type PracticeScenario = (typeof PRACTICE_SCENARIOS)[number];
+
+export const MOCK_PRACTICE_QUERY = "mock_practice";
+
+export function practiceScenarioFromSearch(search: string): PracticeScenario {
+  const value = new URLSearchParams(search).get(MOCK_PRACTICE_QUERY);
+  return PRACTICE_SCENARIOS.find((scenario) => scenario === value) ?? "normal";
+}
+
+export function currentPracticeScenario(): PracticeScenario {
+  if (typeof window === "undefined") return "normal";
+  return practiceScenarioFromSearch(window.location.search);
+}
+
+/** Mã các blueprint do handler giả tạo trong phiên: chỉ những mã này được sinh câu bằng dữ liệu mẫu. */
+const mockBlueprintIds = new Set<string>();
+
+export function rememberMockBlueprint(blueprintId: string): void {
+  mockBlueprintIds.add(blueprintId);
+}
+
+export function isMockBlueprint(blueprintId: string): boolean {
+  return mockBlueprintIds.has(blueprintId);
+}

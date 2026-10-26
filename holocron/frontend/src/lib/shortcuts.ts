@@ -16,11 +16,19 @@ export interface KeyInput {
   target: TargetKind;
 }
 
-/** Ngữ cảnh của màn đang mở. Màn luyện tập (F4) truyền `mcq` hoặc `essay`; các màn khác dùng `global`. */
+/**
+ * Ngữ cảnh của màn đang mở. Màn luyện tập (F4) truyền `mcq` hoặc `essay`; các màn khác dùng `global`.
+ * `essay.phase` không ghi thì là `answering` (đang viết câu trả lời); `graded` là đã có kết quả chấm.
+ */
 export type ShortcutScope =
   | { kind: "global" }
   | { kind: "mcq"; phase: "unanswered" | "selected" | "submitted" }
-  | { kind: "essay" };
+  | { kind: "essay"; phase?: "answering" | "graded" };
+
+/** Câu đang mở đã nộp (trắc nghiệm) hoặc đã chấm (tự luận): `N` sang câu kế, `C` mở trích dẫn. */
+function isAnsweredScope(scope: ShortcutScope): boolean {
+  return (scope.kind === "mcq" && scope.phase === "submitted") || (scope.kind === "essay" && scope.phase === "graded");
+}
 
 export interface ShortcutContext {
   /** Đang mở hộp thoại hoặc hộp lệnh: chỉ còn `Esc` và `Ctrl+K` có tác dụng. */
@@ -87,27 +95,29 @@ export function resolveShortcut(input: KeyInput, context: ShortcutContext): Shor
   if (context.overlayOpen) return null;
 
   const scope = context.scope;
-  if (scope.kind === "essay" && command && key === "Enter") return { type: "submit_essay" };
+  if (scope.kind === "essay" && scope.phase !== "graded" && command && key === "Enter") {
+    return { type: "submit_essay" };
+  }
   if (command || input.altKey) return null;
 
   if (key === "Enter") {
     // Enter trên nút, liên kết hay ô nhập giữ hành vi gốc của trình duyệt.
-    if (input.target !== "other" || scope.kind !== "mcq") return null;
-    if (scope.phase === "selected") return { type: "submit" };
-    if (scope.phase === "submitted") return { type: "next" };
+    if (input.target !== "other") return null;
+    if (isAnsweredScope(scope)) return { type: "next" };
+    if (scope.kind === "mcq" && scope.phase === "selected") return { type: "submit" };
     return null;
   }
 
   if (input.target === "editable") return null;
   if (key === "?") return { type: "show_help" };
 
+  if (isAnsweredScope(scope)) {
+    const lower = key.toLowerCase();
+    if (lower === "n") return { type: "next" };
+    if (lower === "c") return { type: "open_citation" };
+    return null;
+  }
   if (scope.kind === "mcq") {
-    if (scope.phase === "submitted") {
-      const lower = key.toLowerCase();
-      if (lower === "n") return { type: "next" };
-      if (lower === "c") return { type: "open_citation" };
-      return null;
-    }
     const option = optionKeyFromKey(key);
     if (option !== null) return { type: "select_option", key: option };
   }
@@ -128,7 +138,7 @@ export const SHORTCUT_HELP: readonly ShortcutHelpEntry[] = [
   { keys: ["1–4", "A–D"], context: "Câu trắc nghiệm chưa nộp", action: "Chọn phương án tương ứng" },
   { keys: ["Enter"], context: "Câu trắc nghiệm đã chọn phương án", action: "Nộp; đã nộp thì sang câu kế tiếp" },
   { keys: ["Ctrl+Enter"], context: "Ô trả lời tự luận", action: "Nộp câu trả lời" },
-  { keys: ["N"], context: "Câu đã nộp", action: "Sang câu kế tiếp" },
-  { keys: ["C"], context: "Câu đã nộp", action: "Mở trích dẫn nguồn của câu" },
+  { keys: ["N"], context: "Câu đã nộp hoặc đã chấm", action: "Sang câu kế tiếp" },
+  { keys: ["C"], context: "Câu đã nộp hoặc đã chấm", action: "Mở hoặc đóng đoạn nguồn của trích dẫn" },
   { keys: ["Enter", "Esc"], context: "Ô đang sửa trong bảng kiểm duyệt", action: "Lưu hoặc huỷ" },
 ];

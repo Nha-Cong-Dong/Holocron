@@ -16,10 +16,21 @@ import {
   classifyNetworkError,
   invalidResponseError,
 } from "@/lib/errors";
+import {
+  type ChunkPageView,
+  type EssayGradeView,
+  type PracticeBatch,
+  type PracticeBlueprint,
+  parseBlueprint,
+  parseChunkPage,
+  parseEssayGradeResult,
+  parsePracticeBatch,
+} from "@/lib/practice-data";
 import { normalizeRuntimeInfo, type RuntimeView } from "@/lib/runtime";
 import { parseSubjectList } from "@/lib/subjects";
-import { fillRuntimeGaps, mockApi } from "@/mocks";
-import type { Subject } from "@/types/contract-pending";
+import { fillRuntimeGaps, mockApi, mockPracticeBatch } from "@/mocks";
+import { isMockBlueprint } from "@/mocks/store";
+import type { BlueprintCreate, EssayGradeRequest, Subject } from "@/types/contract-pending";
 import type {
   CellPatch,
   IngestionItem,
@@ -79,6 +90,20 @@ function segment(value: string): string {
   return encodeURIComponent(value);
 }
 
+/** Kết quả của bước kiểm dạng; `null` (thân sai dạng) thành lỗi phản hồi không hợp lệ, như thân không phải JSON. */
+function validated<T>(value: T | null): T {
+  if (value === null) throw new ApiError(200, invalidResponseError());
+  return value;
+}
+
+/** Tham số của `GET /v1/vault/chunks` (§6.6) mà màn luyện tập dùng để tìm văn bản nguồn của trích dẫn. */
+export interface ChunkQuery {
+  subjectCode: string;
+  chapterCode: string | null;
+  offset: number;
+  limit: number;
+}
+
 /** Mọi hàm gọi backend. Mock chỉ được thay phần tử của endpoint chưa có ở backend. */
 export interface HolocronApi {
   /** `GET /v1/runtime` (§5.12), đã kiểm dạng. */
@@ -104,6 +129,21 @@ export interface HolocronApi {
     payload: TwinBatchRequest,
     idempotencyKey: string | null,
   ) => Promise<TwinBatch>;
+  /** `POST /v1/blueprints` (§6.7; chưa có ở backend), đã kiểm dạng. */
+  createBlueprint: (payload: BlueprintCreate) => Promise<PracticeBlueprint>;
+  /**
+   * `POST /v1/blueprints/{id}/twins` (§6.3) cho màn luyện tập: cùng endpoint với `createTwinBatch` nhưng thân trả về
+   * được kiểm dạng thành từng câu (câu sai dạng bị bỏ và được đếm).
+   */
+  generatePracticeBatch: (
+    blueprintId: string,
+    payload: TwinBatchRequest,
+    idempotencyKey: string | null,
+  ) => Promise<PracticeBatch>;
+  /** `POST /v1/twins/{twin_id}/essay-grade` (§6.9; chưa có ở backend), đã kiểm dạng. */
+  gradeEssay: (twinId: string, answerText: string) => Promise<EssayGradeView>;
+  /** `GET /v1/vault/chunks` (§6.6; chưa có ở backend của nhánh này), đã kiểm dạng. */
+  listVaultChunks: (query: ChunkQuery) => Promise<ChunkPageView>;
 }
 
 /**
@@ -170,6 +210,44 @@ export const realApi: HolocronApi = {
       context: "twin_generation",
     });
   },
+
+  createBlueprint: async (payload) => {
+    const raw = await request<unknown>("/v1/blueprints", jsonSpec("POST", payload), { context: "blueprint_create" });
+    return validated(parseBlueprint(raw));
+  },
+
+  generatePracticeBatch: async (blueprintId, payload, idempotencyKey) => {
+    const headers: Record<string, string> = idempotencyKey === null ? {} : { "Idempotency-Key": idempotencyKey };
+    const raw = await request<unknown>(
+      `/v1/blueprints/${segment(blueprintId)}/twins`,
+      jsonSpec("POST", payload, headers),
+      { context: "twin_generation" },
+    );
+    return validated(parsePracticeBatch(raw));
+  },
+
+  gradeEssay: async (twinId, answerText) => {
+    const payload: EssayGradeRequest = { answer_text: answerText };
+    const raw = await request<unknown>(`/v1/twins/${segment(twinId)}/essay-grade`, jsonSpec("POST", payload), {
+      context: "essay_grade",
+    });
+    return validated(parseEssayGradeResult(raw));
+  },
+
+  listVaultChunks: async (query) => {
+    const params = new URLSearchParams({
+      subject_code: query.subjectCode,
+      offset: String(query.offset),
+      limit: String(query.limit),
+    });
+    if (query.chapterCode !== null) params.set("chapter_code", query.chapterCode);
+    const raw = await request<unknown>(
+      `/v1/vault/chunks?${params.toString()}`,
+      { method: "GET" },
+      { context: "vault_source" },
+    );
+    return validated(parseChunkPage(raw));
+  },
 };
 
 /**
@@ -178,7 +256,16 @@ export const realApi: HolocronApi = {
  */
 export function createApi(useMocks: boolean): HolocronApi {
   if (!useMocks) return realApi;
-  return { ...realApi, ...mockApi, getRuntime: () => loadRuntime(fillRuntimeGaps) };
+  return {
+    ...realApi,
+    ...mockApi,
+    getRuntime: () => loadRuntime(fillRuntimeGaps),
+    // Sinh câu đã có ở backend (câu tính toán): chỉ blueprint do dữ liệu mẫu tạo mới lấy batch mẫu (M8).
+    generatePracticeBatch: (blueprintId, payload, idempotencyKey) =>
+      isMockBlueprint(blueprintId)
+        ? mockPracticeBatch()
+        : realApi.generatePracticeBatch(blueprintId, payload, idempotencyKey),
+  };
 }
 
 export const api: HolocronApi = createApi(USE_MOCKS);

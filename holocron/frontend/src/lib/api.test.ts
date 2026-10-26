@@ -171,3 +171,54 @@ describe("getRuntime()", () => {
     expect(calls).toEqual([]);
   });
 });
+
+describe("màn luyện tập ở ranh giới", () => {
+  it("backend chưa có POST /v1/blueprints (404 JSON): câu riêng, không phải lỗi kết nối", async () => {
+    stubFetch(() => Promise.resolve(jsonResponse(404, { detail: "Not Found" })));
+    const error = await captureError(realApi.createBlueprint({ subject_code: "MAU101", theory_slots: [] }));
+    expect(error.info.kind).toBe("not_found");
+    expect(error.info.message).toContain("chưa hỗ trợ tạo bộ đề");
+  });
+
+  it("404 thân không phải JSON (proxy không tới backend) là không kết nối được", async () => {
+    stubFetch(() => Promise.resolve(textResponse(404, "<html>Not Found</html>")));
+    const error = await captureError(realApi.listSubjects());
+    expect(error.info.kind).toBe("server");
+  });
+
+  it("danh sách môn sai dạng ở cấp ngoài là phản hồi không hợp lệ; phần tử hỏng bị bỏ", async () => {
+    stubFetch(() => Promise.resolve(jsonResponse(200, { items: [] })));
+    expect((await captureError(realApi.listSubjects())).info.kind).toBe("server");
+    stubFetch(() => Promise.resolve(jsonResponse(200, [null, { subject_code: "x" }])));
+    expect(await realApi.listSubjects()).toEqual([]);
+  });
+
+  it("sinh câu: 409 khi đề chưa duyệt không có nút gửi lại; thân lạ không làm sập", async () => {
+    stubFetch(() => Promise.resolve(jsonResponse(409, { detail: "item chưa approved" })));
+    const conflict = await captureError(realApi.generatePracticeBatch("bp_1", { count: 1 }, "k"));
+    expect(conflict.info.kind).toBe("unapproved_source");
+    expect(conflict.info.action).toBe("none");
+    stubFetch(() => Promise.resolve(jsonResponse(201, { twins: "hỏng" })));
+    expect((await captureError(realApi.generatePracticeBatch("bp_1", { count: 1 }, "k"))).info.kind).toBe("server");
+  });
+
+  it("chấm tự luận gửi answer_text và kiểm dạng kết quả", async () => {
+    const calls = stubFetch(() => Promise.resolve(jsonResponse(200, { twin_id: "t", total_points: 0 })));
+    const error = await captureError(realApi.gradeEssay("twin 1", "câu trả lời"));
+    expect(error.info.kind).toBe("server");
+    expect(calls[0]?.url).toBe(`${DEFAULT_API_BASE}/v1/twins/twin%201/essay-grade`);
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ answer_text: "câu trả lời" }));
+  });
+
+  it("bật mock: blueprint thật vẫn gọi backend để sinh câu; blueprint mẫu dùng batch mẫu", async () => {
+    const calls = stubFetch(() => Promise.resolve(jsonResponse(404, { detail: "không có blueprint" })));
+    const mocked = createApi(true);
+    const error = await captureError(mocked.generatePracticeBatch("bp_that", { count: 1 }, null));
+    expect(error.info.kind).toBe("not_found");
+    expect(calls).toHaveLength(1);
+    const blueprint = await mocked.createBlueprint({ subject_code: "MAU101", theory_slots: [] });
+    const batch = await mocked.generatePracticeBatch(blueprint.blueprintId, { count: 1 }, null);
+    expect(batch.questions.length).toBeGreaterThan(0);
+    expect(calls).toHaveLength(1);
+  });
+});

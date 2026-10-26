@@ -1,0 +1,33 @@
+.page {
+  display: grid;
+  gap: var(--space-5);
+}
+
+.panel {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.panel ul {
+  margin: 0;
+  padding-left: var(--space-5);
+}
+
+.success {
+  padding: var(--space-3) var(--space-4);
+  border-left: 3px solid var(--success);
+  border-radius: var(--radius);
+  background: var(--success-soft);
+}
+
+.mockNotice {
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--info);
+  border-radius: var(--radius);
+  background: var(--info-soft);
+  font-size: var(--text-md);
+}

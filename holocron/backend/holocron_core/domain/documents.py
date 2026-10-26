@@ -14,7 +14,7 @@ from typing import Literal, get_args
 from pydantic import Field, field_validator, model_validator
 
 from .ingestion import ExtractedTable
-from .schemas import StrictModel
+from .schemas import DocumentMeta, StrictModel
 
 MAX_LINE_CHARS = 2000
 
@@ -139,4 +139,88 @@ class PageExtraction(StrictModel):
         flagged = {line.line_index for line in self.lines if "TOKEN_MISMATCH" in line.flags}
         if any(m.line_index not in flagged for m in self.cross_check.mismatches):
             raise ValueError("mỗi TokenMismatch phải trỏ tới một dòng có cờ TOKEN_MISMATCH")
+        return self
+
+
+# --------------------------------------------------------------------------- #
+# Tài liệu đã nhập (SPECIFICATION §5.7, §6.5) và lịch sử sửa trang
+# --------------------------------------------------------------------------- #
+
+DocumentStatus = Literal["processing", "review", "confirmed", "failed"]
+OutputLanguage = Literal["vi", "en"]
+DOCUMENT_ID_PATTERN = r"^doc_[0-9a-f]{16}$"
+
+
+class PageSummary(StrictModel):
+    """Tóm tắt một trang trong `DocumentImport.pages` (§5.7)."""
+
+    page_number: int = Field(ge=1)
+    status: PageStatus
+    tier_used: TierUsed | None
+    review_reasons: list[ReviewReason]
+    confirmed: bool
+
+    @classmethod
+    def from_page(cls, page: PageExtraction) -> PageSummary:
+        return cls(
+            page_number=page.page_number,
+            status=page.status,
+            tier_used=page.tier_used,
+            review_reasons=list(page.review_reasons),
+            confirmed=page.confirmed,
+        )
+
+
+class DocumentImport(StrictModel):
+    """Tài liệu nhập qua §6.5 kèm tóm tắt từng trang; dùng để client hỏi trạng thái (§5.7)."""
+
+    meta: DocumentMeta
+    filename: str = Field(min_length=1, max_length=255)
+    size_bytes: int = Field(ge=1)
+    output_language: OutputLanguage = "vi"
+    status: DocumentStatus
+    pages: list[PageSummary]
+
+    @model_validator(mode="after")
+    def _pages_cover_document(self) -> DocumentImport:
+        """Đủ `page_count` phần tử, theo `page_number` tăng dần từ 1."""
+        if [page.page_number for page in self.pages] != list(range(1, self.meta.page_count + 1)):
+            raise ValueError("pages phải có đủ page_count phần tử, theo page_number tăng dần từ 1")
+        return self
+
+
+class DocumentSummary(StrictModel):
+    """Một phần tử của `GET /v1/documents` (§6.5); các bộ đếm do code đếm từ trang."""
+
+    meta: DocumentMeta
+    status: DocumentStatus
+    pages_pending: int = Field(ge=0)
+    pages_needs_review: int = Field(ge=0)
+    pages_failed: int = Field(ge=0)
+    pages_confirmed: int = Field(ge=0)
+
+
+class PageLineChange(StrictModel):
+    """Một dòng đổi trong `PageEditAudit.changes`; `old` là null với dòng người dùng gõ thêm."""
+
+    line_index: int = Field(ge=0)
+    old: str | None
+    new: str
+
+
+class PageEditAudit(StrictModel):
+    """Một lần sửa dòng của trang (§6.5, đề xuất): version của trang tăng đúng 1."""
+
+    document_id: str = Field(pattern=DOCUMENT_ID_PATTERN)
+    page_number: int = Field(ge=1)
+    from_version: int = Field(ge=1)
+    to_version: int = Field(ge=2)
+    editor_id: str = Field(min_length=1)
+    changes: list[PageLineChange]
+    at: datetime
+
+    @model_validator(mode="after")
+    def _one_step(self) -> PageEditAudit:
+        if self.to_version != self.from_version + 1:
+            raise ValueError("to_version phải bằng from_version + 1")
         return self

@@ -7,6 +7,7 @@ import { ErrorNotice } from "@/components/common/ErrorNotice";
 import { Loading } from "@/components/common/LoadState";
 import { api, toUiError } from "@/lib/api";
 import type { UiError } from "@/lib/errors";
+import { selfSolveStatusLabel } from "@/lib/gate";
 import type { IngestionItem, OptionKey } from "@/types/holocron";
 
 import styles from "./IngestionView.module.css";
@@ -74,8 +75,8 @@ export function IngestionReview({ itemId }: { itemId: string }) {
         </ul>
         {item.self_solve !== null && item.self_solve.solved_answer_display !== null && (
           <p>
-            Sandbox tự giải trên bảng hiện tại: <strong>{item.self_solve.solved_answer_display}</strong> (
-            {item.self_solve.status})
+            Kết quả tự giải trên bảng hiện tại: <strong>{item.self_solve.solved_answer_display}</strong> (
+            {selfSolveStatusLabel(item.self_solve.status)})
           </p>
         )}
       </section>

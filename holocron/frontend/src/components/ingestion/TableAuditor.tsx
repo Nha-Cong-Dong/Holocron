@@ -111,7 +111,7 @@ export function TableAuditor({ item, onItemChange, onApproved }: TableAuditorPro
       onItemChange(updated);
     } catch (err) {
       if (err instanceof ApiError && err.info.kind === "version_conflict") {
-        setError("Bảng đã thay đổi ở nơi khác (version lệch). Đã tải lại bản mới nhất, hãy kiểm tra rồi sửa lại.");
+        setError("Bảng vừa được sửa ở nơi khác. Đã tải lại bản mới nhất, hãy kiểm tra rồi sửa lại.");
         setEditing(null);
         try {
           onItemChange(await api.getItem(item.item_id));

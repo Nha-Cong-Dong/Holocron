@@ -1,6 +1,6 @@
 # Kế hoạch spike đóng gói Tauri
 
-- Trạng thái: kế hoạch, chưa làm. Viết ngày 2026-10-25.
+- Trạng thái: kế hoạch, chưa làm. Viết ngày 2026-10-25. Cập nhật 2026-10-26 (chiều): chọn phương án B cho việc nối WebView với backend (mục 3a, duyệt 2026-10-26 chiều).
 - Liên quan: `SPECIFICATION.md` §1.4 (nền tảng), §5.13 (`HOLOCRON_DATA_DIR`), §6.0 (quy ước API), §11.2 (biến môi trường), §11.4 (chế độ khả năng), §13.1 (mô hình bảo mật), §16 (lịch); ADR-002 (sandbox), ADR-008 (bộ nhập PDF); `docs/releases/RELEASE_CHECKLIST.md` mục 3.
 
 Máy phát triển hiện **chưa có Rust**. Tài liệu này chỉ là kế hoạch. Đợt viết tài liệu không cài gì; việc cài toolchain ở bước 0 do người dùng tự làm khi bắt đầu spike.
@@ -31,15 +31,27 @@ Kết quả của spike là số đo và một danh sách quyết định cần 
 
 Ghi lại version của từng thứ đã cài vào kết quả spike.
 
+## 3a. Nối WebView với backend: phương án B (duyệt 2026-10-26 chiều)
+
+**Đã chọn phương án B:** backend FastAPI phục vụ luôn thư mục `out/` của Next static export (`output: "export"`). WebView của Tauri mở `http://127.0.0.1:<port>/` do sidecar báo, nên trang và API **cùng origin**:
+
+- Quy ước "cùng origin, không cần CORS" ở spec §6.0 giữ nguyên; không cần proxy qua Tauri.
+- Frontend đã sẵn sàng cho static export: ID đi qua query string (`/ingestion?item=…`, `/twins?blueprint=…`, spec §4), và `lib/config.ts` nhận base URL từ `window.__HOLOCRON_RUNTIME__ = { apiBase, token }` do vỏ desktop chèn, hoặc từ biến build `NEXT_PUBLIC_HOLOCRON_API_BASE`. Với phương án B, `apiBase` là đường dẫn tương đối tới API trên cùng backend hoặc origin của chính backend (`http://127.0.0.1:<port>`); cả hai đều cùng origin. Token do Tauri chèn qua initialization script (`docs/frontend/ui-plan.md` mục 4.2).
+- Kiểm `Host` nhận `127.0.0.1:<port>`; kiểm `Origin` của request ghi thấy `http://127.0.0.1:<port>`, đã nằm trong danh sách cho phép, không cần thêm origin riêng của Tauri (spec §13.1).
+- Header `X-Holocron-Token` không gây preflight vì request cùng origin.
+- Backend phục vụ file tĩnh bằng `StaticFiles` của Starlette (Starlette đã có sẵn theo FastAPI; khi triển khai kiểm lại rằng bản Starlette đang ghim không đòi thêm dependency nào cho `StaticFiles`). Route API `/v1/*` được gắn trước, file tĩnh gắn sau, để không route API nào bị file tĩnh che. Thư mục `out/` chỉ được phục vụ khi đã cấu hình (ví dụ một biến môi trường mới; tên và cách bật là việc của nhánh triển khai, cần ghi vào spec §11.2 trước khi làm). Webapp localhost hiện tại (Next dev + rewrite `/api/holocron/*`) không đổi.
+
+**Phương án A (dự phòng):** frontend tĩnh nạp từ giao thức riêng của Tauri, gọi backend bằng URL tuyệt đối và backend bật CORS chỉ cho origin của Tauri. Chỉ dùng khi phương án B không chạy được trong spike (ví dụ WebView không mở được URL loopback). Dùng A thì phải sửa quy ước CORS ở spec §6.0, thêm origin của Tauri vào danh sách kiểm `Origin` (spec §13.1) và xử lý preflight cho header token; các thay đổi này cần người dùng duyệt (và ADR nếu đổi contract).
+
 ## 4. Các bước
 
 | Bước | Việc | Kết quả cần ghi |
 |---|---|---|
 | 0 | Người dùng cài tiền đề ở mục 3 | Version của toolchain |
 | 1 | Dựng app Tauri v2 tối thiểu hiển thị một trang tĩnh, ngoài cây `holocron/` (thư mục tạm hoặc nhánh spike) | Kích thước bộ cài rỗng, thời gian mở cửa sổ |
-| 2 | Thử build frontend dạng tĩnh (`output: "export"` của Next.js) và nạp vào Tauri | Danh sách chỗ vỡ: rewrite `/api/holocron/*` (không có Next server), route động `/ingestion/[itemId]`, `/blueprints/[blueprintId]` |
+| 2 | Thử build frontend dạng tĩnh (`output: "export"` của Next.js) và cho backend phục vụ thư mục `out/` (phương án B, mục 3a) | Danh sách chỗ vỡ. Route động `/ingestion/[itemId]`, `/blueprints/[blueprintId]` đã được thay bằng query string (spec §4); rewrite `/api/holocron/*` không còn, frontend lấy base URL qua `window.__HOLOCRON_RUNTIME__` |
 | 3 | Chạy backend như sidecar: Tauri khởi động tiến trình Python, backend chọn cổng trống trên `127.0.0.1` và báo cổng cho Tauri, Tauri chờ `GET /v1/runtime` trả 200 rồi mới mở UI, và kill sidecar khi đóng app | Thời gian từ lúc mở app tới lúc UI dùng được; sidecar có bị bỏ lại sau khi thoát không |
-| 4 | Nối WebView với backend: thử cả CORS chỉ cho origin của Tauri và proxy qua Tauri; gửi token trong header (§13.1) | Phương án chạy được, số dòng phải đổi ở `lib/api.ts`, `Host` mà backend nhận được |
+| 4 | Nối WebView với backend theo phương án B (mục 3a): WebView mở `http://127.0.0.1:<port>/`, Tauri chèn `window.__HOLOCRON_RUNTIME__ = { apiBase, token }`; gửi token trong header (§13.1). Chỉ thử phương án A (CORS chỉ cho origin của Tauri) khi B không chạy được | B có chạy được không; `Host` và `Origin` mà backend nhận được; nếu phải dùng A: origin thật của WebView trên Windows và Linux |
 | 5 | Trong bản đóng gói, chạy walkthrough (`python -m scripts.run_walkthrough`) và một PDF mẫu tự tạo qua worker đọc PDF | Sandbox và worker có spawn được Python con không; Job Object (Windows) và RLIMIT (Linux) còn hiệu lực không |
 | 6 | Kiểm khả năng `ocr` (§11.4) khi Tesseract cài ngoài app: PATH của app GUI có thể khác PATH của shell | Có cần `HOLOCRON_TESSERACT_CMD` đặt qua màn hình cài đặt không |
 | 7 | Truyền `HOLOCRON_DATA_DIR` = thư mục dữ liệu app của Tauri, và key LLM từ kho khoá của hệ điều hành (§13.1) | Đường dẫn thực tế trên Windows và Linux |
@@ -66,14 +78,14 @@ Ghi lại version của từng thứ đã cài vào kết quả spike.
 
 ### 5.3 Token và `Host`
 
-- **Next.js rewrite không còn** khi frontend là bản tĩnh trong Tauri. Khi đó WebView gọi thẳng `http://127.0.0.1:<port>`, tức khác origin, nên cần một trong hai: bật CORS chỉ cho origin của Tauri, hoặc proxy request qua Tauri. Cả hai đều đổi quy ước "cùng origin, không cần CORS" ở §6.0, nên cần người dùng duyệt (và ADR nếu đổi contract).
-- **Header token gây preflight** khi khác origin. Phương án CORS phải cho phép đúng header token và chỉ origin của Tauri.
-- **`Host` mà backend nhận** phải là `127.0.0.1:<port>` hoặc `localhost:<port>`. Spike ghi lại giá trị thực tế với từng phương án ở bước 4.
+- **Next.js rewrite không còn** khi frontend là bản tĩnh trong Tauri. Đã chọn phương án B (mục 3a, duyệt 2026-10-26 chiều): backend phục vụ luôn trang tĩnh nên WebView gọi API cùng origin, quy ước "cùng origin, không cần CORS" ở §6.0 giữ nguyên. Chỉ khi phải dùng phương án A (dự phòng) thì mới cần CORS chỉ cho origin của Tauri và người dùng duyệt sửa §6.0.
+- **Header token gây preflight** chỉ khi khác origin, tức chỉ ở phương án A; phương án CORS khi đó phải cho phép đúng header token và chỉ origin của Tauri.
+- **`Host` mà backend nhận** phải thuộc danh sách ở §13.1 (`127.0.0.1`, `localhost`, `[::1]`, kèm cổng hoặc không). Spike ghi lại giá trị thực tế ở bước 4.
 - **Token** sinh ngẫu nhiên mỗi lần khởi động, truyền cho sidecar qua `HOLOCRON_REQUIRE_TOKEN` và cho WebView; không ghi log, không ghi ra file. Kiểm rằng trang web khác mở trong trình duyệt không gọi được API (403).
 
 ### 5.4 Frontend
 
-- `output: "export"` không hỗ trợ route động nếu không liệt kê trước tham số. Có thể phải chuyển `item_id`, `blueprint_id` sang query string hoặc định tuyến phía client. Việc này đổi frontend, cần nhánh riêng sau spike.
+- `output: "export"` không hỗ trợ route động nếu không liệt kê trước tham số. Frontend đã chuyển `item_id`, `blueprint_id` sang query string (`/ingestion?item=…`, `/twins?blueprint=…`, spec §4), nên điểm này đã xử lý.
 - `lib/api.ts` là nơi duy nhất gọi backend (CLAUDE.md §4.2), nên đổi địa chỉ gốc và thêm header token chỉ chạm một file.
 
 ## 6. Tiêu chí kết thúc spike
@@ -84,6 +96,7 @@ Ghi lại version của từng thứ đã cài vào kết quả spike.
 ## 7. Quyết định cần người dùng duyệt sau spike
 
 1. Cách mang Python theo app (Python độc lập hay bản đóng băng) và giấy phép của công cụ.
-2. CORS cho origin Tauri hay proxy qua Tauri; cập nhật §6.0 tương ứng.
+2. ~~CORS cho origin Tauri hay proxy qua Tauri~~: đã chọn phương án B (backend phục vụ `out/`, cùng origin; duyệt 2026-10-26 chiều, mục 3a). Chỉ cần quyết lại nếu spike cho thấy B không chạy được và phải dùng A.
 3. Crate và plugin Tauri cần thêm (ví dụ cho kho khoá hệ điều hành, khởi động sidecar), mỗi thứ ghim version và kiểm giấy phép.
-4. Đổi route động của frontend nếu `output: "export"` bắt buộc.
+4. ~~Đổi route động của frontend nếu `output: "export"` bắt buộc~~: frontend đã dùng query string (spec §4).
+5. Tên biến môi trường và cách bật việc backend phục vụ thư mục `out/` (mục 3a); ghi vào spec §11.2 trước khi triển khai.

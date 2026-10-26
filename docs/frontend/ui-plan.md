@@ -14,7 +14,7 @@
 |---|---|---|
 | Dependency | `next 15.5.28`, `react 19.1.10`, `react-dom 19.1.10`; dev: `@biomejs/biome 2.5.15`, `typescript 5.9.3`, `vitest 3.2.4`, `@types/*` | Không có thư viện component, icon, PDF.js, KaTeX hay testing-library. Kế hoạch chỉ dùng những thứ này (đề xuất thêm ở mục 8) |
 | Test | Vitest `environment: "node"`, chỉ nhận `src/**/*.test.ts` | Chỉ test được logic thuần ở `src/lib/` và `src/mocks/`. Không test component được nếu chưa thêm dependency |
-| Trang | `/` (upload đề, danh sách dạng bài gắn cứng RR), `/ingestion/[itemId]`, `/blueprints/[blueprintId]` | Hai route động không build được khi static export (mục 4) |
+| Trang | Cập nhật 2026-10-26 chiều theo code: `/` (màn chạy lần đầu), `/ingestion` và `/ingestion?item=…` (form tải đề; kiểm duyệt item), `/twins?blueprint=…`, `/practice`, `/vault?subject=&doc=&page=&tab=` (route đã quyết, trang chưa có trong `develop` @ `63cdf37`). ID đi qua query string; hai route động cũ `/ingestion/[itemId]`, `/blueprints/[blueprintId]` đã bỏ | Build được khi static export (mục 4) |
 | `lib/api.ts` | `API_BASE = "/api/holocron"` ghi cứng; một hàm `request<T>` là chỗ duy nhất ép `as T` | Nơi duy nhất cần đổi để chạy dưới Tauri (mục 4) |
 | `next.config.ts` | `rewrites` `/api/holocron/:path*` → `HOLOCRON_API_URL` | Không chạy khi `output: "export"` (mục 4) |
 | `globals.css` | Biến màu sáng/tối theo `prefers-color-scheme`, font `system-ui, …, Roboto` | Giữ cơ chế, thay bộ token (mục 5) |
@@ -139,7 +139,7 @@ Luồng đề thi hiện có (`POST /v1/ingestion/upload`, `GET/PATCH /v1/ingest
 ### 4.1 Vấn đề
 
 1. `rewrites` trong `next.config.ts` cần Next server. Bản `output: "export"` nạp vào WebView của Tauri không có server, nên `/api/holocron/*` trả 404.
-2. Route động `/ingestion/[itemId]`, `/blueprints/[blueprintId]` không build được khi export nếu không liệt kê trước tham số (`generateStaticParams`). ID do backend sinh lúc chạy nên không liệt kê trước được.
+2. Route động `/ingestion/[itemId]`, `/blueprints/[blueprintId]` không build được khi export nếu không liệt kê trước tham số (`generateStaticParams`). ID do backend sinh lúc chạy nên không liệt kê trước được. **Đã xử lý (cập nhật 2026-10-26 chiều):** mọi route dùng query string: `/`, `/ingestion?item=…`, `/twins?blueprint=…`, `/practice`, `/vault?subject=&doc=&page=&tab=` (spec §4).
 3. Sidecar nên tự chọn cổng trống (`docs/tauri-spike-plan.md` mục 5.1), nên địa chỉ backend chỉ biết lúc chạy, không biết lúc build.
 4. Origin của WebView (`http://tauri.localhost` trên Windows, `tauri://localhost` trên Linux) khác origin backend. Spec §6.0 hiện ghi "cùng origin, không cần CORS". Header `X-Holocron-Token` (§13.1) khiến mọi request khác origin phải qua preflight.
 
@@ -404,15 +404,16 @@ Mỗi gói ghim version chính xác lúc cài và kiểm lại giấy phép trê
 
 ## 9. Câu hỏi cần người dùng quyết
 
-1. **Nối WebView với backend dưới Tauri:** thử phương án B (backend phục vụ bản export, cùng origin) trước, A (CORS) làm dự phòng? Cả hai đều cần duyệt: B đổi kiến trúc backend, A đổi §6.0 và cần ADR.
+1. **Nối WebView với backend dưới Tauri:** thử phương án B (backend phục vụ bản export, cùng origin) trước, A (CORS) làm dự phòng? Cả hai đều cần duyệt: B đổi kiến trúc backend, A đổi §6.0 và cần ADR. **Đã quyết (duyệt 2026-10-26 chiều):** chọn phương án B; A là dự phòng (`docs/tauri-spike-plan.md` mục 3a, spec §6.0).
 2. **Kiểu của contract chưa có trong backend:** đặt ở `src/types/contract-pending.ts` rồi chuyển sang `holocron.ts` khi backend có, hay thêm thẳng vào `holocron.ts` kèm chú thích "chưa có ở backend" (trái nguyên tắc khớp 1:1)?
 3. **Tổng kết phiên luyện tập MCQ:** frontend có được đếm số câu đúng trong phiên để hiện "Đúng x/y câu" không? Đây là số về câu trả lời của người học, không phải nội dung câu hỏi, nhưng §5.14 thêm `matched_count` riêng "để frontend không tự đếm". Mặc định của kế hoạch: không hiện tổng.
-4. **Lịch sử lượt làm bài:** spec ghi là việc sau MVP. Ở F5 chỉ làm lịch sử bộ đề và lượt sinh (§6.7), hay cần một contract mới cho lượt làm bài (backend lưu) hoặc cho phép lưu ở `localStorage` của WebView?
-5. **File gốc cho ảnh trang và trích dẫn một chạm:** duyệt thêm endpoint (ví dụ `GET /v1/documents/{id}/file`) cùng `pdfjs-dist`, hay để sau MVP và chỉ xem lại theo văn bản?
-6. **`RuntimeInfo` thiếu hai thông tin UI cần:** chế độ lưu trữ (in-memory thì mất Vault khi tắt backend, người dùng đang ôn thật) và tên bên nhận dữ liệu LLM mà §13.1 yêu cầu UI nêu (nhưng `/v1/runtime` không được lộ endpoint). Thêm field (đổi contract §5.12), hay ghi cố định trên UI?
+4. **Lịch sử lượt làm bài:** spec ghi là việc sau MVP. Ở F5 chỉ làm lịch sử bộ đề và lượt sinh (§6.7), hay cần một contract mới cho lượt làm bài (backend lưu) hoặc cho phép lưu ở `localStorage` của WebView? **Đã quyết (duyệt 2026-10-26 chiều):** lịch sử lượt làm bài là việc sau MVP (spec §1.6, §4).
+5. **File gốc cho ảnh trang và trích dẫn một chạm:** duyệt thêm endpoint (ví dụ `GET /v1/documents/{id}/file`) cùng `pdfjs-dist`, hay để sau MVP và chỉ xem lại theo văn bản? **Đã quyết (duyệt 2026-10-26 chiều):** render PDF bằng pdfjs là việc sau MVP; MVP xem lại theo văn bản, trích dẫn hiện quote kèm số trang (spec §1.6, §4, §12.2).
+6. **`RuntimeInfo` thiếu hai thông tin UI cần:** chế độ lưu trữ (in-memory thì mất Vault khi tắt backend, người dùng đang ôn thật) và tên bên nhận dữ liệu LLM mà §13.1 yêu cầu UI nêu (nhưng `/v1/runtime` không được lộ endpoint). Thêm field (đổi contract §5.12), hay ghi cố định trên UI? **Đã quyết (duyệt 2026-10-26 chiều):** `RuntimeInfo` thêm chế độ lưu trữ và bên nhận dữ liệu LLM; tên field, kiểu và nguồn là đề xuất (chi tiết) ở spec §5.12, chờ duyệt.
 7. **Câu chữ băng thông báo:** dùng "Đang chạy offline, không có LLM" theo đề xuất D10(a) thay cho "chế độ demo"?
 8. **Cờ mock:** đồng ý tên `NEXT_PUBLIC_HOLOCRON_MOCKS` và nguyên tắc chỉ mock endpoint chưa có, endpoint đã có luôn gọi backend thật kể cả khi bật cờ?
 9. **Danh sách môn khi chưa có `/v1/subjects`:** tạm lấy `subject_code` từ `GET /v1/documents`, và tạo môn chỉ bằng cách nhập tài liệu đầu tiên?
 10. **Ý nghĩa phím `C` và `Ctrl+K`:** `C` mở trích dẫn của câu vừa nộp; `Ctrl+K` là hộp lệnh gồm điều hướng và tìm trong Vault. Có cần thêm phím cho màn xem lại trang (dòng trước, dòng sau, xác nhận trang) không?
-11. **Đổi URL của trang có sẵn:** đồng ý chuyển `/ingestion/[itemId]` thành `/ingestion?item=…` và `/blueprints/[blueprintId]` thành `/twins?blueprint=…` ngay ở F1 để giữ được static export?
+11. **Đổi URL của trang có sẵn:** đồng ý chuyển `/ingestion/[itemId]` thành `/ingestion?item=…` và `/blueprints/[blueprintId]` thành `/twins?blueprint=…` ngay ở F1 để giữ được static export? **Đã quyết, đã làm (2026-10-26):** route dùng query string (spec §4).
 12. **Thứ tự merge backend:** F2 và F3 cần b3 và b6 vào `develop` trước (b3 có bộ nhập và Vault, b6 có `propose` và kiểu `Capability`). Nếu chưa merge, F2 và F3 dùng mock cho các endpoint đó; chấp nhận được không?
+13. **Dependency test component (mục 8):** **Đã quyết (duyệt 2026-10-26 chiều):** `@testing-library/react` + `jsdom` được duyệt; ghim version chính xác lúc cài và kiểm lại giấy phép (CLAUDE.md §2.2).

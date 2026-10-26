@@ -13,7 +13,7 @@ from typing import Annotated
 from fastapi import Depends
 
 from ..domain.repositories import AppStore, VaultRepository
-from ..infrastructure.llm_config import RuntimeConfig, load_runtime_config
+from ..infrastructure.llm_config import RuntimeConfig, load_runtime_config_lenient
 from ..infrastructure.storage import open_store_from_env
 from ..infrastructure.template_library import InMemoryTemplateRegistry
 from ..services.extraction import DocumentExtractor, MockDualPassExtractor
@@ -42,7 +42,11 @@ def get_extractor() -> DocumentExtractor:
 
 
 def get_runtime_config() -> RuntimeConfig:
-    return load_runtime_config()
+    """Cấu hình chạy từ biến môi trường. Nhóm LLM hay VLM có biến sai (ví dụ khoá có khoảng trắng, base URL không phải
+    https) thì coi như nhóm đó chưa cấu hình, không ném lỗi: `GET /v1/runtime` vẫn trả 200 với `llm_configured` /
+    `vlm_configured = false`, endpoint cần LLM trả 409 `CapabilityError` (`reason = "llm_not_configured"`). Không giá
+    trị biến nào được lộ ra response hay log."""
+    return load_runtime_config_lenient()
 
 
 def get_template_author() -> TemplateAuthor:

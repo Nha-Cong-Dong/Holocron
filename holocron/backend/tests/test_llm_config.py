@@ -7,8 +7,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from holocron_core.infrastructure.llm_config import (
-    DEFAULT_LLM_BASE_URL,
-    DEFAULT_LLM_MODEL,
     DEFAULT_TIMEOUT_S,
     ConfigError,
     RuntimeConfig,
@@ -43,8 +41,8 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_defaults_when_nothing_is_configured() -> None:
     config = load_runtime_config({})
-    assert config.llm.base_url == DEFAULT_LLM_BASE_URL == "https://api.deepseek.com/v1"
-    assert config.llm.model_extract == config.llm.model_author == DEFAULT_LLM_MODEL == "deepseek-chat"
+    assert config.llm.base_url is None
+    assert config.llm.model_extract is None and config.llm.model_author is None
     assert config.llm.timeout_s == DEFAULT_TIMEOUT_S == 60
     assert config.llm.api_key is None and not config.llm_configured
     assert config.vlm is None and config.demo_mode is True
@@ -75,7 +73,7 @@ def test_blank_values_count_as_unset_and_are_stripped() -> None:
     config = load_runtime_config(
         {"HOLOCRON_LLM_BASE_URL": "   ", "HOLOCRON_LLM_API_KEY": "", "HOLOCRON_LLM_MODEL_AUTHOR": "  coder  "}
     )
-    assert config.llm.base_url == DEFAULT_LLM_BASE_URL
+    assert config.llm.base_url is None
     assert config.llm.api_key is None
     assert config.llm.model_author == "coder"
 
@@ -119,6 +117,8 @@ def test_loading_the_configuration_does_not_log_secrets(caplog: pytest.LogCaptur
 
 def test_runtime_endpoint_reports_demo_mode_without_leaking_anything(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOLOCRON_LLM_API_KEY", SECRET)
+    monkeypatch.setenv("HOLOCRON_LLM_BASE_URL", "https://llm.example.test/v1")
+    monkeypatch.setenv("HOLOCRON_LLM_MODEL_EXTRACT", "secret-model-name")
     monkeypatch.setenv("HOLOCRON_LLM_MODEL_AUTHOR", "secret-model-name")
     response = TestClient(app).get("/v1/runtime")
     assert response.status_code == 200

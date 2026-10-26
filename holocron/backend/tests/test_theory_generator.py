@@ -1,0 +1,1659 @@
+"""Bộ sinh câu lý thuyết MCQ4 tất định (ADR-007; CLAUDE.md §9 dòng I2 và I4; I3).
+
+- I2: mọi phương án nhiễu mang mã thuộc `THEORY_MISCONCEPTIONS`.
+- I4: cùng `(generator_version, pool_sha256, seed)` (cộng chương của slot) thì cùng câu, giống từng byte; dạng câu
+  không phải đầu vào mà do chính RNG đó rút trong các dạng khả thi; NFC và NFD cho cùng `pool_sha256`; thêm cặp ở môn
+  khác (hay cặp chưa xác nhận) không đổi `pool_sha256`.
+- I3: đáp án và mọi phương án là văn bản nguyên văn của cặp nguồn (ngoài chỗ che `____`), trích dẫn là chuỗi con của
+  chunk nguồn.
+- Thiếu căn cứ ⇒ `ReviewTicket`; property test 450 seed, mỗi dạng câu xuất hiện ≥ 100 lần khi pool cho phép.
+
+Văn bản mẫu tự viết cho test (không phải tài liệu môn học có bản quyền).
+"""
+
+import inspect
+import random
+import re
+import unicodedata
+from collections import Counter
+from datetime import UTC, datetime
+
+import pytest
+from pydantic import ValidationError
+
+from holocron_core.domain.schemas import (
+    ChunkCategory,
+    Citation,
+    KnowledgeChunk,
+    MisconceptionRef,
+    OptionKey,
+    normalize_quote,
+    quote_in_text,
+)
+from holocron_core.domain.twins import ReviewTicket
+from holocron_core.domain.vault import ConceptPair, ConceptPairStatus, QuoteMismatchError
+from holocron_core.infrastructure.memory_store import IngestionStore
+from holocron_core.services.theory_generator import (
+    BLANK,
+    FORM_ORDER,
+    GENERATOR_VERSION,
+    NOT_ENOUGH_EVIDENCE,
+    THEORY_MISCONCEPTIONS,
+    THEORY_SAME_CHAPTER_CONCEPT,
+    THEORY_SAME_SUBJECT_CONCEPT,
+    TheoryQuestion,
+    TheoryQuestionForm,
+    _fills_pool_text,
+    _match_key,
+    candidate_pool,
+    feasible_forms,
+    generate_theory_question,
+    generate_theory_question_from_vault,
+    mask_terms,
+    pool_sha256,
+    theory_rng,
+)
+from holocron_core.services.vault import create_concept_pair, ingest_confirmed_text, update_chunk_labels
+from tests.vault_support import add_document, confirmed, document_id
+
+NOW = datetime(2026, 10, 25, 8, 0, tzinfo=UTC)
+SUBJECT = "SSH1110"
+OTHER_SUBJECT = "ET4010"
+DOC = "doc_" + "a" * 16
+OTHER_DOC = "doc_" + "b" * 16
+FORMS = tuple(TheoryQuestionForm)
+PROPERTY_SEEDS = range(450)
+MIN_PER_FORM = 100
+CHAPTERS = [None, "ch1", "ch2"]
+TICKET_CONTEXT = {"blueprint_id": "bp_theory_0001", "slot_index": 3, "topic_key": "phil.matter.definition"}
+
+CH1_DEFINITIONS = [
+    ("Vật chất", "Vật chất là phạm trù triết học dùng để chỉ thực tại khách quan."),
+    ("Ý thức", "Ý thức là sự phản ánh năng động, sáng tạo thế giới khách quan vào bộ óc con người."),
+    ("Vận động", "Vận động là phương thức tồn tại của vật chất."),
+    ("Không gian", "Không gian là hình thức tồn tại của vật chất xét về quảng tính."),
+    ("Thời gian", "Thời gian là hình thức tồn tại của vật chất xét về độ dài diễn biến."),
+]
+CH2_DEFINITIONS = [
+    ("Thực tiễn", "Thực tiễn là toàn bộ hoạt động vật chất có mục đích của con người."),
+    ("Nhận thức", "Nhận thức là quá trình phản ánh hiện thực khách quan vào bộ óc con người."),
+    ("Chân lý", "Chân lý là tri thức phù hợp với hiện thực khách quan."),
+]
+OTHER_SUBJECT_DEFINITIONS = [
+    ("Cờ Z", "Cờ Z được đặt khi kết quả phép toán bằng không."),
+    ("Cờ C", "Cờ C được đặt khi phép cộng có nhớ ra khỏi bit cao nhất."),
+    ("Cờ N", "Cờ N được đặt khi bit cao nhất của kết quả bằng một."),
+    ("Cờ V", "Cờ V được đặt khi phép toán có dấu bị tràn."),
+]
+
+
+def _chunk(chunk_id: str, subject: str, chapter: str, definitions: list[tuple[str, str]], page: int) -> KnowledgeChunk:
+    raw_text = "Mở đầu phần lý thuyết.\n" + "\n".join(quote for _, quote in definitions)
+    return KnowledgeChunk(
+        chunk_id=chunk_id,
+        doc_id=DOC if subject == SUBJECT else OTHER_DOC,
+        subject_code=subject,
+        chapter_code=chapter,
+        page_number=page,
+        raw_text=raw_text,
+        verbatim_quote=definitions[0][1],
+        category=ChunkCategory.THEORY,
+        token_count=60,
+        label_status="confirmed",
+    )
+
+
+CHUNKS = {
+    chunk.chunk_id: chunk
+    for chunk in (
+        _chunk("chk_phil_ch1", SUBJECT, "ch1", CH1_DEFINITIONS, 3),
+        _chunk("chk_phil_ch2", SUBJECT, "ch2", CH2_DEFINITIONS, 9),
+        _chunk("chk_arm_ch3", OTHER_SUBJECT, "ch3", OTHER_SUBJECT_DEFINITIONS, 5),
+    )
+}
+
+
+def _pair(
+    chunk_id: str,
+    term: str,
+    quote: str,
+    *,
+    index: int,
+    status: ConceptPairStatus = ConceptPairStatus.CONFIRMED,
+) -> ConceptPair:
+    chunk = CHUNKS[chunk_id]
+    return ConceptPair(
+        pair_id=f"cp_{chunk_id}_{index:02d}",
+        chunk_id=chunk_id,
+        subject_code=chunk.subject_code,
+        chapter_code=chunk.chapter_code,
+        term=term,
+        definition_quote=quote,
+        status=status,
+        proposed_by="user",
+        created_at=NOW,
+        confirmed_at=NOW if status is ConceptPairStatus.CONFIRMED else None,
+    )
+
+
+def _pairs(chunk_id: str, definitions: list[tuple[str, str]]) -> list[ConceptPair]:
+    return [_pair(chunk_id, term, quote, index=i) for i, (term, quote) in enumerate(definitions)]
+
+
+SUBJECT_PAIRS = _pairs("chk_phil_ch1", CH1_DEFINITIONS) + _pairs("chk_phil_ch2", CH2_DEFINITIONS)
+OTHER_PAIRS = _pairs("chk_arm_ch3", OTHER_SUBJECT_DEFINITIONS)
+ALL_TERMS = {term for term, _ in CH1_DEFINITIONS + CH2_DEFINITIONS}
+
+
+def _generate(
+    pairs: list[ConceptPair],
+    seed: int,
+    *,
+    chapter_code: str | None = None,
+    subject_code: str = SUBJECT,
+) -> TheoryQuestion | ReviewTicket:
+    return generate_theory_question(
+        pairs, CHUNKS, subject_code=subject_code, seed=seed, chapter_code=chapter_code, **TICKET_CONTEXT
+    )
+
+
+def _question(pairs: list[ConceptPair], seed: int, *, chapter_code: str | None = None) -> TheoryQuestion:
+    result = _generate(pairs, seed, chapter_code=chapter_code)
+    assert isinstance(result, TheoryQuestion), result
+    return result
+
+
+def _questions(
+    pairs: list[ConceptPair], *, chapter_code: str | None = None, form: TheoryQuestionForm | None = None
+) -> list[TheoryQuestion]:
+    """Câu sinh trên `PROPERTY_SEEDS`; `form` lọc lấy các câu mà RNG đã chọn đúng dạng đó."""
+    questions = [_question(pairs, seed, chapter_code=chapter_code) for seed in PROPERTY_SEEDS]
+    return [question for question in questions if form is None or question.form is form]
+
+
+def _first_of(form: TheoryQuestionForm, *, chapter_code: str | None = None) -> TheoryQuestion:
+    """Câu đầu tiên (theo seed) có dạng `form` trên `SUBJECT_PAIRS`."""
+    return next(
+        question
+        for seed in PROPERTY_SEEDS
+        if (question := _question(SUBJECT_PAIRS, seed, chapter_code=chapter_code)).form is form
+    )
+
+
+def _pieces(text: str) -> list[str]:
+    """Các đoạn nguyên văn còn lại sau khi bỏ chỗ che `____`."""
+    return [piece.strip() for piece in text.split(BLANK) if piece.strip()]
+
+
+def _same_concept(first: str, second: str) -> bool:
+    return normalize_quote(first).casefold() == normalize_quote(second).casefold()
+
+
+# --------------------------------------------------------------------------- #
+# I2: mã misconception
+# --------------------------------------------------------------------------- #
+
+
+def test_theory_misconceptions_are_the_two_codes_of_adr_007() -> None:
+    assert THEORY_MISCONCEPTIONS == ("THEORY_SAME_CHAPTER_CONCEPT", "THEORY_SAME_SUBJECT_CONCEPT")
+
+
+@pytest.mark.parametrize("chapter_code", CHAPTERS)
+def test_every_distractor_carries_a_code_from_theory_misconceptions(chapter_code: str | None) -> None:
+    for question in _questions(SUBJECT_PAIRS, chapter_code=chapter_code):
+        for key, ref in question.distractor_to_misconception_map.items():
+            assert key is not question.correct_key
+            assert ref.misconception_code in THEORY_MISCONCEPTIONS
+
+
+def test_model_rejects_a_code_outside_theory_misconceptions() -> None:
+    question = _first_of(TheoryQuestionForm.CONCEPT_MATCH)
+    data = question.model_dump()
+    wrong = next(iter(question.distractor_to_misconception_map))
+    data["distractor_to_misconception_map"][wrong]["misconception_code"] = "SJF_IGNORES_ARRIVAL"
+    with pytest.raises(ValidationError, match="THEORY_MISCONCEPTIONS"):
+        TheoryQuestion.model_validate(data)
+
+
+def test_model_rejects_a_correct_key_with_a_misconception() -> None:
+    question = _first_of(TheoryQuestionForm.CONCEPT_MATCH)
+    data = question.model_dump()
+    ref = MisconceptionRef(
+        misconception_code=THEORY_SAME_CHAPTER_CONCEPT, label_vi="Nhầm", rationale_vi="định nghĩa khác"
+    )
+    data["distractor_to_misconception_map"][question.correct_key] = ref.model_dump()
+    with pytest.raises(ValidationError, match="3 phương án sai"):
+        TheoryQuestion.model_validate(data)
+
+
+def test_model_rejects_missing_duplicate_or_uncited_options() -> None:
+    question = _first_of(TheoryQuestionForm.CONCEPT_MATCH)
+    wrong = next(iter(question.distractor_to_misconception_map))
+
+    missing = question.model_dump()
+    del missing["options"][OptionKey.D]
+    with pytest.raises(ValidationError, match="đủ 4 options"):
+        TheoryQuestion.model_validate(missing)
+
+    duplicate = question.model_dump()
+    duplicate["options"][wrong] = "  " + question.options[question.correct_key].upper() + " "
+    with pytest.raises(ValidationError, match="khác nhau"):
+        TheoryQuestion.model_validate(duplicate)
+
+    uncited = question.model_dump()
+    del uncited["distractor_citations"][wrong]
+    with pytest.raises(ValidationError, match="distractor_citations"):
+        TheoryQuestion.model_validate(uncited)
+
+
+def test_definition_choice_only_uses_same_chapter_distractors() -> None:
+    questions = _questions(SUBJECT_PAIRS, form=TheoryQuestionForm.DEFINITION_CHOICE)
+    assert len(questions) >= MIN_PER_FORM
+    for question in questions:
+        codes = {ref.misconception_code for ref in question.distractor_to_misconception_map.values()}
+        assert codes == {THEORY_SAME_CHAPTER_CONCEPT}
+        assert {citation.chunk_id for citation in question.distractor_citations.values()} == {
+            question.citation.chunk_id
+        }
+
+
+def test_model_rejects_other_chapter_codes_in_definition_choice() -> None:
+    question = _first_of(TheoryQuestionForm.DEFINITION_CHOICE)
+    data = question.model_dump()
+    wrong = next(iter(question.distractor_to_misconception_map))
+    data["distractor_to_misconception_map"][wrong]["misconception_code"] = THEORY_SAME_SUBJECT_CONCEPT
+    with pytest.raises(ValidationError, match="cùng chương"):
+        TheoryQuestion.model_validate(data)
+
+
+def test_concept_match_prefers_the_same_chapter_then_the_same_subject() -> None:
+    """Chương ch2 chỉ có 3 khái niệm: 2 phương án nhiễu cùng chương, 1 cùng môn."""
+    questions = _questions(SUBJECT_PAIRS, chapter_code="ch2", form=TheoryQuestionForm.CONCEPT_MATCH)
+    assert len(questions) >= MIN_PER_FORM
+    for question in questions:
+        codes = sorted(ref.misconception_code for ref in question.distractor_to_misconception_map.values())
+        assert codes == [THEORY_SAME_CHAPTER_CONCEPT, THEORY_SAME_CHAPTER_CONCEPT, THEORY_SAME_SUBJECT_CONCEPT]
+        for key, ref in question.distractor_to_misconception_map.items():
+            expected = "chk_phil_ch2" if ref.misconception_code == THEORY_SAME_CHAPTER_CONCEPT else "chk_phil_ch1"
+            assert question.distractor_citations[key].chunk_id == expected
+
+
+# --------------------------------------------------------------------------- #
+# I4: tái lập và pool_sha256
+# --------------------------------------------------------------------------- #
+
+
+def test_form_is_not_an_input_of_the_generator() -> None:
+    """Dạng câu không phải tham số: bộ ba `(generator_version, pool_sha256, seed)` cộng chương của slot là đủ."""
+    for function in (generate_theory_question, generate_theory_question_from_vault):
+        parameters = inspect.signature(function).parameters
+        assert "form" not in parameters
+        assert "seed" in parameters
+        assert "chapter_code" in parameters
+
+
+@pytest.mark.parametrize("chapter_code", CHAPTERS)
+def test_same_version_pool_and_seed_give_byte_identical_questions(chapter_code: str | None) -> None:
+    shuffled = list(SUBJECT_PAIRS)
+    random.Random(2026).shuffle(shuffled)
+    for seed in (*range(150), 2**63 - 1):
+        first = _question(SUBJECT_PAIRS, seed, chapter_code=chapter_code)
+        again = _question(SUBJECT_PAIRS, seed, chapter_code=chapter_code)
+        reordered = _question(shuffled, seed, chapter_code=chapter_code)
+        assert first.pool_sha256 == reordered.pool_sha256 == pool_sha256(SUBJECT_PAIRS, SUBJECT)
+        assert first.generator_version == GENERATOR_VERSION
+        assert first.model_dump_json() == again.model_dump_json() == reordered.model_dump_json()
+
+
+def test_different_seeds_give_different_questions() -> None:
+    dumps = {_question(SUBJECT_PAIRS, seed).model_dump_json() for seed in range(30)}
+    assert len(dumps) > 1
+
+
+def test_rng_is_seeded_with_version_pool_and_seed() -> None:
+    digest = pool_sha256(SUBJECT_PAIRS, SUBJECT)
+    expected = random.Random(f"{GENERATOR_VERSION}:{digest}:17")
+    assert theory_rng(digest, 17).random() == expected.random()
+
+
+def test_form_order_is_fixed() -> None:
+    assert FORM_ORDER == (
+        TheoryQuestionForm.CONCEPT_MATCH,
+        TheoryQuestionForm.FILL_BLANK,
+        TheoryQuestionForm.DEFINITION_CHOICE,
+    )
+
+
+@pytest.mark.parametrize("chapter_code", CHAPTERS)
+def test_form_is_the_first_draw_of_the_single_rng_over_feasible_forms(chapter_code: str | None) -> None:
+    """Dạng câu là lần rút đầu tiên của `random.Random(f"{generator_version}:{pool_sha256}:{seed}")` trên các dạng
+    khả thi theo `FORM_ORDER`; không có nguồn ngẫu nhiên nào khác."""
+    digest = pool_sha256(SUBJECT_PAIRS, SUBJECT)
+    forms = feasible_forms(SUBJECT_PAIRS, SUBJECT, chapter_code=chapter_code)
+    assert forms == tuple(form for form in FORM_ORDER if form in forms)
+    for seed in PROPERTY_SEEDS:
+        expected = random.Random(f"{GENERATOR_VERSION}:{digest}:{seed}").choice(forms)
+        assert _question(SUBJECT_PAIRS, seed, chapter_code=chapter_code).form is expected
+
+
+@pytest.mark.parametrize("chapter_code", [None, "ch1"])
+def test_every_form_appears_when_the_pool_allows_it(chapter_code: str | None) -> None:
+    """Property test 450 seed: pool cho phép cả ba dạng thì mỗi dạng xuất hiện ít nhất 100 lần."""
+    assert feasible_forms(SUBJECT_PAIRS, SUBJECT, chapter_code=chapter_code) == FORM_ORDER
+    counts = Counter(question.form for question in _questions(SUBJECT_PAIRS, chapter_code=chapter_code))
+    assert set(counts) == set(FORM_ORDER)
+    assert min(counts.values()) >= MIN_PER_FORM, counts
+
+
+def test_feasible_forms_does_not_depend_on_input_order_or_other_subjects() -> None:
+    shuffled = list(SUBJECT_PAIRS)
+    random.Random(7).shuffle(shuffled)
+    mixed = OTHER_PAIRS[:2] + shuffled + OTHER_PAIRS[2:]
+    for chapter_code in CHAPTERS:
+        expected = feasible_forms(SUBJECT_PAIRS, SUBJECT, chapter_code=chapter_code)
+        assert feasible_forms(shuffled, SUBJECT, chapter_code=chapter_code) == expected
+        assert feasible_forms(mixed, SUBJECT, chapter_code=chapter_code) == expected
+
+
+def test_pool_sha256_follows_adr_007() -> None:
+    import hashlib
+    import json
+
+    records = sorted(
+        (
+            {
+                "subject_code": pair.subject_code,
+                "chapter_code": pair.chapter_code,
+                "term": pair.term,
+                "definition_quote": pair.definition_quote,
+                "chunk_id": pair.chunk_id,
+            }
+            for pair in SUBJECT_PAIRS
+        ),
+        key=lambda record: (record["chapter_code"], record["term"], record["chunk_id"]),
+    )
+    payload = json.dumps(records, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    assert pool_sha256(SUBJECT_PAIRS, SUBJECT) == hashlib.sha256(payload).hexdigest()
+
+
+def _nfd(text: str) -> str:
+    return unicodedata.normalize("NFD", text)
+
+
+def test_nfc_and_nfd_pairs_give_the_same_pool_sha256_and_question() -> None:
+    nfd_pairs = [
+        _pair(pair.chunk_id, _nfd(pair.term), _nfd(pair.definition_quote), index=i)
+        for i, pair in enumerate(SUBJECT_PAIRS)
+    ]
+    assert any(_nfd(pair.term) != pair.term for pair in SUBJECT_PAIRS)
+    assert pool_sha256(nfd_pairs, SUBJECT) == pool_sha256(SUBJECT_PAIRS, SUBJECT)
+    for seed in range(30):
+        assert _question(nfd_pairs, seed).model_dump_json() == _question(SUBJECT_PAIRS, seed).model_dump_json()
+
+
+def test_pool_sha256_normalizes_nfc_even_without_model_validation() -> None:
+    """`pool_sha256` tự chuẩn hoá NFC từng trường, không dựa vào validator của `ConceptPair`."""
+    raw_nfd = [
+        pair.model_copy(update={"term": _nfd(pair.term), "definition_quote": _nfd(pair.definition_quote)})
+        for pair in SUBJECT_PAIRS
+    ]
+    assert any(pair.term != original.term for pair, original in zip(raw_nfd, SUBJECT_PAIRS, strict=True))
+    assert pool_sha256(raw_nfd, SUBJECT) == pool_sha256(SUBJECT_PAIRS, SUBJECT)
+
+
+def test_pairs_of_another_subject_do_not_change_pool_sha256_or_question() -> None:
+    mixed = OTHER_PAIRS[:2] + SUBJECT_PAIRS + OTHER_PAIRS[2:]
+    assert pool_sha256(mixed, SUBJECT) == pool_sha256(SUBJECT_PAIRS, SUBJECT)
+    assert pool_sha256(mixed, OTHER_SUBJECT) == pool_sha256(OTHER_PAIRS, OTHER_SUBJECT)
+    for seed in range(30):
+        assert _question(mixed, seed).model_dump_json() == _question(SUBJECT_PAIRS, seed).model_dump_json()
+
+
+def test_unconfirmed_pairs_are_never_used_and_do_not_change_pool_sha256() -> None:
+    extra = [
+        _pair(
+            "chk_phil_ch1", "Phạm trù", "Vật chất là phạm trù triết học", index=90, status=ConceptPairStatus.PROPOSED
+        ),
+        _pair(
+            "chk_phil_ch1", "Phản ánh", "sự phản ánh năng động, sáng tạo", index=91, status=ConceptPairStatus.REJECTED
+        ),
+    ]
+    with_extra = SUBJECT_PAIRS + extra
+    assert candidate_pool(with_extra, SUBJECT) == candidate_pool(SUBJECT_PAIRS, SUBJECT)
+    assert pool_sha256(with_extra, SUBJECT) == pool_sha256(SUBJECT_PAIRS, SUBJECT)
+    for question in _questions(with_extra):
+        assert "Phạm trù" not in question.options.values()
+        assert "Phản ánh" not in question.options.values()
+
+
+def test_editing_a_confirmed_pair_changes_pool_sha256() -> None:
+    edited = [SUBJECT_PAIRS[0].model_copy(update={"term": "Thực tại khách quan"}), *SUBJECT_PAIRS[1:]]
+    assert pool_sha256(edited, SUBJECT) != pool_sha256(SUBJECT_PAIRS, SUBJECT)
+
+
+# --------------------------------------------------------------------------- #
+# Dạng không khả thi không bao giờ được chọn
+# --------------------------------------------------------------------------- #
+
+INFEASIBLE_CASES = [
+    # Chương ch2 chỉ có 3 khái niệm: không có dạng chọn định nghĩa đúng ở ch2.
+    pytest.param(SUBJECT_PAIRS, SUBJECT, "ch2", {TheoryQuestionForm.DEFINITION_CHOICE}, id="ch2-no-definition-choice"),
+    # Không trích dẫn nào chứa thuật ngữ của khái niệm khác: không có chỗ để che.
+    pytest.param(OTHER_PAIRS, OTHER_SUBJECT, None, {TheoryQuestionForm.FILL_BLANK}, id="no-shared-term"),
+    # Có chỗ che (vật chất trong định nghĩa vận động) nhưng chỉ còn 2 thuật ngữ khác làm phương án nhiễu.
+    pytest.param(
+        _pairs("chk_phil_ch1", CH1_DEFINITIONS[:4]),
+        SUBJECT,
+        None,
+        {TheoryQuestionForm.FILL_BLANK},
+        id="fill-blank-short-of-distractors",
+    ),
+]
+
+
+@pytest.mark.parametrize(("pairs", "subject_code", "chapter_code", "infeasible"), INFEASIBLE_CASES)
+def test_infeasible_forms_are_excluded_and_never_chosen(
+    pairs: list[ConceptPair],
+    subject_code: str,
+    chapter_code: str | None,
+    infeasible: set[TheoryQuestionForm],
+) -> None:
+    forms = feasible_forms(pairs, subject_code, chapter_code=chapter_code)
+    assert set(forms) == set(FORM_ORDER) - infeasible
+    counts: Counter[TheoryQuestionForm] = Counter()
+    for seed in PROPERTY_SEEDS:
+        result = _generate(pairs, seed, chapter_code=chapter_code, subject_code=subject_code)
+        assert isinstance(result, TheoryQuestion), (seed, result)
+        assert result.form in forms
+        counts[result.form] += 1
+    assert not infeasible & set(counts)
+    assert set(counts) == set(forms)
+    assert min(counts.values()) >= MIN_PER_FORM, counts
+
+
+def test_feasible_forms_is_empty_exactly_when_the_generator_gives_a_ticket() -> None:
+    cases = [
+        (SUBJECT_PAIRS, SUBJECT, None),
+        (SUBJECT_PAIRS, SUBJECT, "ch2"),
+        (SUBJECT_PAIRS, SUBJECT, "ch7"),
+        (_pairs("chk_phil_ch2", CH2_DEFINITIONS), SUBJECT, None),
+        (OTHER_PAIRS, OTHER_SUBJECT, None),
+        (OTHER_PAIRS, SUBJECT, None),
+    ]
+    for pairs, subject_code, chapter_code in cases:
+        forms = feasible_forms(pairs, subject_code, chapter_code=chapter_code)
+        for seed in range(20):
+            result = _generate(pairs, seed, chapter_code=chapter_code, subject_code=subject_code)
+            assert isinstance(result, ReviewTicket) is (not forms), (subject_code, chapter_code, seed)
+
+
+# --------------------------------------------------------------------------- #
+# I3: nguyên văn
+# --------------------------------------------------------------------------- #
+
+
+def _assert_citation_verbatim(citation: Citation) -> None:
+    assert citation.chunk_id is not None
+    chunk = CHUNKS[citation.chunk_id]
+    assert quote_in_text(citation.verbatim_quote, chunk.raw_text)
+    assert citation.doc_id == chunk.doc_id
+    assert citation.page_number == chunk.page_number
+
+
+def _assert_masked_verbatim(text: str, source: str) -> None:
+    pieces = _pieces(text)
+    assert pieces, text
+    for piece in pieces:
+        assert normalize_quote(piece) in normalize_quote(source), (piece, source)
+
+
+@pytest.mark.parametrize("chapter_code", CHAPTERS)
+def test_answer_and_options_are_verbatim_from_their_source_pairs(chapter_code: str | None) -> None:
+    for question in _questions(SUBJECT_PAIRS, chapter_code=chapter_code):
+        _assert_citation_verbatim(question.citation)
+        for citation in question.distractor_citations.values():
+            _assert_citation_verbatim(citation)
+        correct = question.options[question.correct_key]
+        source_quote = question.citation.verbatim_quote
+        if question.form is TheoryQuestionForm.DEFINITION_CHOICE:
+            _assert_masked_verbatim(correct, source_quote)
+            for key, citation in question.distractor_citations.items():
+                _assert_masked_verbatim(question.options[key], citation.verbatim_quote)
+        else:
+            assert all(text in ALL_TERMS for text in question.options.values())
+            for key, citation in question.distractor_citations.items():
+                owner = next(p for p in SUBJECT_PAIRS if p.definition_quote == citation.verbatim_quote)
+                assert question.options[key] == owner.term
+                assert citation.verbatim_quote in question.distractor_to_misconception_map[key].rationale_vi
+            stem_quote = question.stem.split("> ", 1)[1]
+            _assert_masked_verbatim(stem_quote, source_quote)
+
+
+def test_concept_match_answer_is_the_term_of_the_cited_pair_and_is_hidden_in_the_stem() -> None:
+    questions = _questions(SUBJECT_PAIRS, form=TheoryQuestionForm.CONCEPT_MATCH)
+    assert len(questions) >= MIN_PER_FORM
+    for question in questions:
+        owner = next(p for p in SUBJECT_PAIRS if p.definition_quote == question.citation.verbatim_quote)
+        assert question.options[question.correct_key] == owner.term
+        assert owner.term.casefold() not in question.stem.casefold()
+        assert BLANK in question.stem
+
+
+def test_fill_blank_answer_is_the_hidden_term_of_another_confirmed_pair() -> None:
+    questions = _questions(SUBJECT_PAIRS, form=TheoryQuestionForm.FILL_BLANK)
+    assert len(questions) >= MIN_PER_FORM
+    for question in questions:
+        answer = question.options[question.correct_key]
+        owner = next(p for p in SUBJECT_PAIRS if p.definition_quote == question.citation.verbatim_quote)
+        assert not _same_concept(answer, owner.term)
+        assert BLANK in question.stem
+        # Điền đáp án vào chỗ trống (không phân biệt hoa thường) cho lại đúng trích dẫn của cặp nguồn.
+        stem_quote = question.stem.split("> ", 1)[1]
+        assert stem_quote.replace(BLANK, answer).casefold() == owner.definition_quote.casefold()
+        assert all(not _same_concept(text, owner.term) for text in question.options.values())
+
+
+def test_definition_choice_hides_the_asked_term_in_every_option() -> None:
+    questions = _questions(SUBJECT_PAIRS, form=TheoryQuestionForm.DEFINITION_CHOICE)
+    assert len(questions) >= MIN_PER_FORM
+    for question in questions:
+        owner = next(p for p in SUBJECT_PAIRS if p.definition_quote == question.citation.verbatim_quote)
+        assert f"«{owner.term}»" in question.stem
+        for text in question.options.values():
+            assert owner.term.casefold() not in text.casefold()
+
+
+def test_mask_terms_merges_overlaps_and_keeps_the_rest_verbatim() -> None:
+    text = "Vật chất vận động; vận động là thuộc tính của vật chất."
+    assert mask_terms(text, ["vật chất", "vận động"]) == "____ ____; ____ là thuộc tính của ____."
+    assert mask_terms(text, ["Vật chất vận", "chất vận động"]) == "____; vận động là thuộc tính của vật chất."
+    assert mask_terms(text, ["không có"]) == text
+
+
+def test_quote_no_longer_in_its_chunk_is_an_error() -> None:
+    tampered = SUBJECT_PAIRS[0].model_copy(update={"definition_quote": "Vật chất là phạm trù kinh tế học."})
+    pairs = [tampered, *SUBJECT_PAIRS[1:]]
+    with pytest.raises(QuoteMismatchError):
+        for seed in PROPERTY_SEEDS:
+            _generate(pairs, seed, chapter_code="ch1")
+
+
+def test_missing_or_foreign_chunk_is_an_error() -> None:
+    orphan = SUBJECT_PAIRS[0].model_copy(update={"chunk_id": "chk_missing"})
+    with pytest.raises(ValueError, match="thiếu chunk"):
+        for seed in PROPERTY_SEEDS:
+            _generate([orphan, *SUBJECT_PAIRS[1:]], seed, chapter_code="ch1")
+    foreign = SUBJECT_PAIRS[0].model_copy(update={"chunk_id": "chk_arm_ch3"})
+    with pytest.raises(ValueError, match="khác môn"):
+        for seed in PROPERTY_SEEDS:
+            _generate([foreign, *SUBJECT_PAIRS[1:]], seed, chapter_code="ch1")
+
+
+# --------------------------------------------------------------------------- #
+# Thiếu căn cứ ⇒ ReviewTicket
+# --------------------------------------------------------------------------- #
+
+
+def _assert_ticket(result: TheoryQuestion | ReviewTicket) -> ReviewTicket:
+    assert isinstance(result, ReviewTicket), result
+    assert result.reason.startswith(NOT_ENOUGH_EVIDENCE)
+    assert result.blueprint_id == TICKET_CONTEXT["blueprint_id"]
+    assert result.slot_index == TICKET_CONTEXT["slot_index"]
+    assert result.topic_key == TICKET_CONTEXT["topic_key"]
+    assert result.attempts == []
+    return result
+
+
+def test_fewer_than_four_concepts_gives_a_review_ticket() -> None:
+    three = _pairs("chk_phil_ch2", CH2_DEFINITIONS)
+    assert feasible_forms(three, SUBJECT) == ()
+    for seed in range(20):
+        ticket = _assert_ticket(_generate(three, seed))
+        # Lý do nêu từng dạng câu theo `FORM_ORDER`.
+        assert "ghép khái niệm: không chọn được 3 khái niệm" in ticket.reason
+        assert "điền khuyết: không có trích dẫn định nghĩa nào chứa thuật ngữ" in ticket.reason
+        assert "chọn định nghĩa đúng: không đủ 3 khái niệm khác cùng chương" in ticket.reason
+        positions = [ticket.reason.index(label) for label in ("ghép khái niệm", "điền khuyết", "chọn định nghĩa")]
+        assert positions == sorted(positions)
+
+
+def test_duplicate_concepts_do_not_count_as_distinct_distractors() -> None:
+    """4 cặp nhưng chỉ 3 khái niệm (một term lặp lại khác hoa thường) ⇒ không đủ 3 phương án nhiễu."""
+    pairs = [*_pairs("chk_phil_ch2", CH2_DEFINITIONS), _pair("chk_phil_ch2", "chân lý", CH2_DEFINITIONS[2][1], index=9)]
+    assert feasible_forms(pairs, SUBJECT) == ()
+    for seed in range(20):
+        _assert_ticket(_generate(pairs, seed))
+
+
+def test_chapter_without_confirmed_pairs_gives_a_review_ticket() -> None:
+    ticket = _assert_ticket(_generate(SUBJECT_PAIRS, 1, chapter_code="ch7"))
+    assert "ch7" in ticket.reason
+    ticket = _assert_ticket(_generate(OTHER_PAIRS, 1))
+    assert SUBJECT in ticket.reason
+
+
+def test_seed_outside_the_seed_space_is_rejected() -> None:
+    for seed in (-1, 2**63):
+        with pytest.raises(ValueError, match="seed"):
+            _generate(SUBJECT_PAIRS, seed)
+
+
+# --------------------------------------------------------------------------- #
+# Property test: 450 seed, mỗi dạng câu ≥ 100 lần
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("chapter_code", CHAPTERS)
+def test_property_four_distinct_options_and_exactly_one_correct(chapter_code: str | None) -> None:
+    counts: Counter[TheoryQuestionForm] = Counter()
+    for question in _questions(SUBJECT_PAIRS, chapter_code=chapter_code):
+        counts[question.form] += 1
+        assert set(question.options) == set(OptionKey)
+        assert len({normalize_quote(text).casefold() for text in question.options.values()}) == 4
+        wrong = set(OptionKey) - {question.correct_key}
+        assert set(question.distractor_to_misconception_map) == wrong
+        assert set(question.distractor_citations) == wrong
+        if chapter_code is not None:
+            assert question.chapter_code == chapter_code
+        # Đúng một phương án ứng với cặp được trích dẫn; ba phương án còn lại ứng với khái niệm khác.
+        cited = next(p for p in SUBJECT_PAIRS if p.definition_quote == question.citation.verbatim_quote)
+        distractor_quotes = {citation.verbatim_quote for citation in question.distractor_citations.values()}
+        assert cited.definition_quote not in distractor_quotes
+        assert len(distractor_quotes) == 3
+    assert set(counts) == set(feasible_forms(SUBJECT_PAIRS, SUBJECT, chapter_code=chapter_code))
+    assert min(counts.values()) >= MIN_PER_FORM, counts
+
+
+# --------------------------------------------------------------------------- #
+# Đọc từ Vault
+# --------------------------------------------------------------------------- #
+
+
+def test_vault_backed_generation_matches_the_pure_function() -> None:
+    store = IngestionStore()
+    doc_id = document_id("e")
+    add_document(store, doc_id)
+    lines = ["Mở đầu phần lý thuyết."] + [quote for _, quote in CH1_DEFINITIONS]
+    chunks = ingest_confirmed_text(store, confirmed(doc_id, [lines], subject_code=SUBJECT, chapter_code="ch1"))
+    assert len(chunks) == 1
+    for term, quote in CH1_DEFINITIONS:
+        create_concept_pair(store, chunk_id=chunks[0].chunk_id, term=term, definition_quote=quote, now=NOW)
+    pairs = store.list_concept_pairs(SUBJECT)
+    seen: set[TheoryQuestionForm] = set()
+    for seed in range(30):
+        context = {"subject_code": SUBJECT, "seed": seed, **TICKET_CONTEXT}
+        from_vault = generate_theory_question_from_vault(store, **context)
+        direct = generate_theory_question(pairs, {chunks[0].chunk_id: chunks[0]}, **context)
+        assert isinstance(from_vault, TheoryQuestion)
+        assert from_vault.model_dump_json() == direct.model_dump_json()
+        assert from_vault.citation.doc_id == doc_id
+        seen.add(from_vault.form)
+    assert seen == set(feasible_forms(pairs, SUBJECT))
+
+
+# --------------------------------------------------------------------------- #
+# Đúng một đáp án: trích dẫn trùng hoặc lồng nhau, thuật ngữ điền được vào chỗ trống
+# --------------------------------------------------------------------------- #
+
+OVERLAP_SEEDS = range(300)
+MIN_OVERLAP_PER_FORM = 60
+
+OVERLAP_CH1_LINES = [
+    "Vật chất là phạm trù triết học dùng để chỉ thực tại khách quan.",
+    "Vận động là phương thức tồn tại của vật chất.",
+    "Không gian là hình thức tồn tại của vật chất.",
+    "Thời gian là hình thức tồn tại của vật chất.",
+    "Ý thức là sự phản ánh năng động, sáng tạo thế giới khách quan vào bộ óc con người.",
+    "Ý thức xã hội là mặt tinh thần của đời sống xã hội.",
+    "Tồn tại xã hội là mặt vật chất của đời sống xã hội.",
+]
+OVERLAP_CH2_LINES = [
+    "Thực tiễn là toàn bộ hoạt động vật chất có mục đích của con người.",
+    "Nhận thức là quá trình phản ánh hiện thực khách quan vào bộ óc con người.",
+    "Chân lý là tri thức phù hợp với hiện thực khách quan.",
+    "CHÂN LÝ LÀ TRI THỨC PHÙ HỢP VỚI HIỆN THỰC KHÁCH QUAN.",
+]
+OVERLAP_CH1_DEFINITIONS = [
+    ("Vật chất", OVERLAP_CH1_LINES[0]),
+    # Trùng trích dẫn với "Vật chất".
+    ("Thực tại khách quan", OVERLAP_CH1_LINES[0]),
+    ("Vận động", OVERLAP_CH1_LINES[1]),
+    # Trích dẫn nằm trong trích dẫn của "Vận động".
+    ("Phương thức tồn tại", "phương thức tồn tại của vật chất"),
+    ("Không gian", OVERLAP_CH1_LINES[2]),
+    # Trùng trích dẫn với "Không gian"; che "Không gian" rồi điền "Thời gian" cho ra một câu có trong Vault.
+    ("Hình thức tồn tại", OVERLAP_CH1_LINES[2]),
+    ("Thời gian", OVERLAP_CH1_LINES[3]),
+    ("Ý thức", OVERLAP_CH1_LINES[4]),
+    # Trích dẫn nằm trong trích dẫn của "Ý thức".
+    ("Phản ánh năng động", "sự phản ánh năng động, sáng tạo thế giới khách quan"),
+    # Thuật ngữ chứa thuật ngữ "Ý thức".
+    ("Ý thức xã hội", OVERLAP_CH1_LINES[5]),
+    ("Tồn tại xã hội", OVERLAP_CH1_LINES[6]),
+]
+OVERLAP_CH2_DEFINITIONS = [
+    ("Thực tiễn", OVERLAP_CH2_LINES[0]),
+    ("Nhận thức", OVERLAP_CH2_LINES[1]),
+    ("Chân lý", OVERLAP_CH2_LINES[2]),
+    # Trùng trích dẫn với "Chân lý", chỉ khác hoa thường và khoảng trắng.
+    ("Tri thức đúng", "CHÂN LÝ LÀ  TRI THỨC PHÙ HỢP VỚI HIỆN THỰC KHÁCH QUAN."),
+    # Trích dẫn nằm trong trích dẫn của "Nhận thức".
+    ("Hiện thực khách quan", "phản ánh hiện thực khách quan vào bộ óc"),
+]
+# Biến thể thứ hai của "Hình thức tồn tại", ở một chunk riêng: trích dẫn không lồng với trích dẫn của "Không gian" và
+# thuật ngữ không điền ra trích dẫn nào, nên chỉ luật loại theo khái niệm (cặp kia của "Hình thức tồn tại" trùng trích
+# dẫn với "Không gian") giữ cho câu hỏi "Không gian" chỉ có một đáp án đúng. `chunk_id` và trích dẫn trùng phản ví dụ
+# của reviewer, nên nhóm ứng viên (và `pool_sha256`) giống hệt nhóm ứng viên của phản ví dụ đó.
+OVERLAP_VARIANT_LINE = "Hình thức tồn tại là cách thức vật chất biểu hiện sự tồn tại của mình."
+OVERLAP_VARIANT_DEFINITIONS = [("Hình thức tồn tại", OVERLAP_VARIANT_LINE)]
+
+
+def _lines_chunk(chunk_id: str, chapter: str, lines: list[str], page: int, *, subject: str = SUBJECT) -> KnowledgeChunk:
+    raw_text = "Mở đầu phần lý thuyết.\n" + "\n".join(lines)
+    return KnowledgeChunk(
+        chunk_id=chunk_id,
+        doc_id=DOC,
+        subject_code=subject,
+        chapter_code=chapter,
+        page_number=page,
+        raw_text=raw_text,
+        verbatim_quote=lines[0],
+        category=ChunkCategory.THEORY,
+        token_count=80,
+        label_status="confirmed",
+    )
+
+
+def _pairs_in(chunk: KnowledgeChunk, definitions: list[tuple[str, str]]) -> list[ConceptPair]:
+    return [
+        ConceptPair(
+            pair_id=f"cp_{chunk.chunk_id}_{index:02d}",
+            chunk_id=chunk.chunk_id,
+            subject_code=chunk.subject_code,
+            chapter_code=chunk.chapter_code,
+            term=term,
+            definition_quote=quote,
+            status=ConceptPairStatus.CONFIRMED,
+            proposed_by="user",
+            created_at=NOW,
+            confirmed_at=NOW,
+        )
+        for index, (term, quote) in enumerate(definitions)
+    ]
+
+
+OVERLAP_CHUNKS = {
+    chunk.chunk_id: chunk
+    for chunk in (
+        _lines_chunk("chk_overlap_ch1", "ch1", OVERLAP_CH1_LINES, 4),
+        _lines_chunk("chk_overlap_ch2", "ch2", OVERLAP_CH2_LINES, 12),
+        _lines_chunk("chk_extra", "ch1", [OVERLAP_VARIANT_LINE], 5),
+    )
+}
+OVERLAP_PAIRS = (
+    _pairs_in(OVERLAP_CHUNKS["chk_overlap_ch1"], OVERLAP_CH1_DEFINITIONS)
+    + _pairs_in(OVERLAP_CHUNKS["chk_overlap_ch2"], OVERLAP_CH2_DEFINITIONS)
+    + _pairs_in(OVERLAP_CHUNKS["chk_extra"], OVERLAP_VARIANT_DEFINITIONS)
+)
+
+
+# Đúng 5 khái niệm: hỏi "Không gian" ở dạng ghép khái niệm thì chỉ còn đúng 3 phương án nhiễu hợp lệ, nên nếu "Thời
+# gian" không bị loại thì nó nằm trong 3 phương án nhiễu ở phần lớn các seed.
+SPACE_TIME_PAIRS = [
+    pair for pair in OVERLAP_PAIRS if pair.term in {"Vật chất", "Vận động", "Không gian", "Thời gian", "Ý thức"}
+]
+
+
+def _space_time_question(seed: int) -> TheoryQuestion | ReviewTicket:
+    return generate_theory_question(SPACE_TIME_PAIRS, OVERLAP_CHUNKS, subject_code=SUBJECT, seed=seed, **TICKET_CONTEXT)
+
+
+def _trim_edges(chars: list[tuple[str, bool]]) -> list[tuple[str, bool]]:
+    """Bỏ ở hai đầu mọi ký tự không phải chữ hay số (dấu câu, khoảng trắng, ký hiệu).
+
+    Định nghĩa riêng của test, cố ý rộng hơn code (code chỉ bỏ dấu câu Unicode `P*` và khoảng trắng): bộ kiểm không chép
+    luật của code, và nếu lệch thì lệch về phía chặt hơn.
+    """
+    start, end = 0, len(chars)
+    while start < end and not chars[start][0].isalnum():
+        start += 1
+    while end > start and not chars[end - 1][0].isalnum():
+        end -= 1
+    return chars[start:end]
+
+
+def _comparable(text: str) -> str:
+    """Dạng so của test: NFC, gộp khoảng trắng, không phân biệt hoa thường, bỏ ký tự không phải chữ/số ở hai đầu."""
+    return "".join(char for char, _ in _trim_edges([(char, False) for char in normalize_quote(text).casefold()]))
+
+
+def _overlap(first: str, second: str) -> bool:
+    first_key, second_key = _comparable(first), _comparable(second)
+    return first_key in second_key or second_key in first_key
+
+
+_FILL_START, _FILL_END = "\x01", "\x02"
+
+
+def _fills_a_quote(masked: str, text: str, quotes: list[str], *, changed: list[bool] | None = None) -> bool:
+    """Điền `text` vào mọi chỗ `____` của `masked` rồi so với `quotes` theo `_comparable`, hai chiều: đoạn đã điền nằm
+    trong một trích dẫn, hoặc một trích dẫn nằm trong đoạn đã điền ở vị trí phủ ít nhất một ký tự của một chỗ điền
+    **làm đổi văn bản**. `changed[i]` cho biết chỗ `____` thứ i có làm đổi văn bản không (mặc định: mọi chỗ). Không chỗ
+    điền nào làm đổi văn bản thì đoạn đã điền chính là văn bản nguồn, không phải căn cứ.
+
+    Vị trí chỗ điền được đánh dấu bằng hai ký tự điều khiển trước khi chuẩn hoá, rồi mọi vị trí xuất hiện của trích dẫn
+    được duyệt từng ký tự (cách làm khác hẳn code), để bộ kiểm không cùng lỗ hổng với code.
+    """
+    parts = masked.split(BLANK)
+    flags = changed if changed is not None else [True] * (len(parts) - 1)
+    assert len(flags) == len(parts) - 1
+    if not any(flags):
+        return False
+    pieces = [parts[0]]
+    for flag, part in zip(flags, parts[1:], strict=True):
+        pieces.append(_FILL_START + text + _FILL_END if flag else text)
+        pieces.append(part)
+    chars: list[tuple[str, bool]] = []
+    inside = False
+    for char in normalize_quote("".join(pieces)).casefold():
+        if char in (_FILL_START, _FILL_END):
+            inside = char == _FILL_START
+            continue
+        chars.append((char, inside))
+    trimmed = _trim_edges(chars)
+    filled = "".join(char for char, _ in trimmed)
+    inserted = [flag for _, flag in trimmed]
+    for raw_quote in quotes:
+        quote = _comparable(raw_quote)
+        if filled in quote:
+            return True
+        for start in range(len(filled) - len(quote) + 1):
+            if filled[start : start + len(quote)] == quote and any(inserted[start : start + len(quote)]):
+                return True
+    return False
+
+
+def _changed_blanks(option: str, source: str, asked_term: str) -> list[bool]:
+    """Với phương án dạng chọn định nghĩa: chỗ `____` thứ i có làm đổi văn bản khi điền `asked_term` không.
+
+    Khôi phục văn bản gốc của từng chỗ che bằng cách khớp phần giữ nguyên của phương án với trích dẫn nguồn; chỗ che vốn
+    là chính `asked_term` (không phân biệt hoa thường) thì điền lại không đổi gì.
+    """
+    pattern = "(.+?)".join(re.escape(part) for part in option.split(BLANK))
+    match = re.fullmatch(pattern, source, flags=re.DOTALL)
+    assert match is not None, (option, source)
+    return [original.casefold() != asked_term.casefold() for original in match.groups()]
+
+
+def _vault_correct_keys(
+    question: TheoryQuestion,
+    pairs: list[ConceptPair] = OVERLAP_PAIRS,
+    chunks: dict[str, KnowledgeChunk] = OVERLAP_CHUNKS,
+) -> set[OptionKey]:
+    """Các phương án đúng theo dữ liệu Vault (không dựa vào `correct_key` do bộ sinh ghi).
+
+    Định nghĩa độc lập với code, theo khái niệm, mọi phép so theo `_comparable` (bỏ dấu câu ở hai đầu):
+
+    - Ghép khái niệm: đúng nếu thay thuật ngữ vào chỗ `____` của thân câu khớp trích dẫn của một cặp theo hai chiều
+      của `_fills_a_quote`, hoặc có bất kỳ cặp nào mang thuật ngữ đó có trích dẫn trùng hay lồng với trích dẫn đáp án.
+    - Chọn định nghĩa: đúng nếu nguồn của phương án trùng hay lồng với trích dẫn đáp án, hoặc điền khái niệm được hỏi
+      vào chỗ `____` của phương án khớp trích dẫn của một cặp theo hai chiều của `_fills_a_quote`.
+    - Điền khuyết: như ghép khái niệm, thêm chiều đoạn đã điền nằm trong văn bản chunk (rộng hơn), hoặc thuật ngữ lồng
+      với đáp án.
+    """
+    cited = question.citation.verbatim_quote
+    quotes = [pair.definition_quote for pair in pairs]
+    correct: set[OptionKey] = set()
+    for key, text in question.options.items():
+        if question.form is TheoryQuestionForm.CONCEPT_MATCH:
+            masked = question.stem.split("> ", 1)[1]
+            fills = BLANK in masked and _fills_a_quote(masked, text, quotes)
+            nested = any(_same_concept(p.term, text) and _overlap(p.definition_quote, cited) for p in pairs)
+            hit = fills or nested
+        elif question.form is TheoryQuestionForm.DEFINITION_CHOICE:
+            asked = question.stem.split("«", 1)[1].split("»", 1)[0]
+            source = cited if key is question.correct_key else question.distractor_citations[key].verbatim_quote
+            changed = _changed_blanks(text, source, asked)
+            hit = _overlap(source, cited) or _fills_a_quote(text, asked, quotes, changed=changed)
+        else:
+            masked = question.stem.split("> ", 1)[1]
+            filled = _comparable(masked.replace(BLANK, text))
+            in_vault = any(filled in _comparable(chunk.raw_text) for chunk in chunks.values())
+            hit = (
+                in_vault
+                or _fills_a_quote(masked, text, quotes)
+                or _overlap(text, question.options[question.correct_key])
+            )
+        if hit:
+            correct.add(key)
+    return correct
+
+
+def _overlap_question(seed: int, *, chapter_code: str | None = None) -> TheoryQuestion | ReviewTicket:
+    return generate_theory_question(
+        OVERLAP_PAIRS, OVERLAP_CHUNKS, subject_code=SUBJECT, seed=seed, chapter_code=chapter_code, **TICKET_CONTEXT
+    )
+
+
+@pytest.mark.parametrize("chapter_code", CHAPTERS)
+def test_overlapping_quotes_never_give_two_correct_answers(chapter_code: str | None) -> None:
+    """Mọi câu sinh trên fixture chồng lấn có đúng một phương án đúng theo định nghĩa độc lập `_vault_correct_keys`;
+    mỗi dạng khả thi xuất hiện ít nhất `MIN_OVERLAP_PER_FORM` lần trên `OVERLAP_SEEDS`, để kiểm tra không rỗng."""
+    counts: Counter[TheoryQuestionForm] = Counter()
+    for seed in OVERLAP_SEEDS:
+        result = _overlap_question(seed, chapter_code=chapter_code)
+        if isinstance(result, ReviewTicket):
+            _assert_ticket(result)
+            continue
+        counts[result.form] += 1
+        assert _vault_correct_keys(result) == {result.correct_key}, (seed, result.stem, result.options)
+        for citation in result.distractor_citations.values():
+            assert not _overlap(citation.verbatim_quote, result.citation.verbatim_quote)
+    assert set(counts) == set(feasible_forms(OVERLAP_PAIRS, SUBJECT, chapter_code=chapter_code))
+    assert counts
+    assert min(counts.values()) >= MIN_OVERLAP_PER_FORM, counts
+
+
+REVIEWER_SEED = 56
+REVIEWER_POOL_SHA256 = "02bc8e5050f08358662743fe86387241fb6f8918a2bce61cc918f7de3060ed29"
+
+
+def test_concept_with_one_conflicting_pair_is_never_a_term_distractor() -> None:
+    """Phản ví dụ của reviewer: seed 56 trên nhóm ứng viên chồng lấn có biến thể thứ hai của "Hình thức tồn tại".
+
+    Cặp đầu của "Hình thức tồn tại" trùng trích dẫn với "Không gian" (bị loại); biến thể thứ hai tự nó không xung đột
+    (trích dẫn không lồng, thuật ngữ không điền ra trích dẫn nào). Luật xét từng cặp từng nhận biến thể đó, nên câu hỏi
+    "Không gian" có phương án "Hình thức tồn tại" cũng đúng (đáp án D, đúng cả C và D). Phương án là thuật ngữ nên luật
+    phải loại cả khái niệm.
+    """
+    assert pool_sha256(OVERLAP_PAIRS, SUBJECT) == REVIEWER_POOL_SHA256
+    space = next(pair for pair in OVERLAP_PAIRS if pair.term == "Không gian")
+    variants = [pair for pair in OVERLAP_PAIRS if pair.term == "Hình thức tồn tại"]
+    assert [_overlap(pair.definition_quote, space.definition_quote) for pair in variants] == [True, False]
+    stem_quote = mask_terms(space.definition_quote, [space.term])
+    assert not _fills_a_quote(stem_quote, "Hình thức tồn tại", [pair.definition_quote for pair in OVERLAP_PAIRS])
+
+    result = _overlap_question(REVIEWER_SEED)
+    assert isinstance(result, TheoryQuestion), result
+    assert result.form is TheoryQuestionForm.CONCEPT_MATCH
+    assert result.options[result.correct_key] == "Không gian"
+    assert "Hình thức tồn tại" not in result.options.values(), result.options
+    assert _vault_correct_keys(result) == {result.correct_key}
+
+    for chapter_code in CHAPTERS:
+        for seed in OVERLAP_SEEDS:
+            question = _overlap_question(seed, chapter_code=chapter_code)
+            # Chỉ hai dạng có phương án là thuật ngữ mới có đáp án "Không gian".
+            if isinstance(question, TheoryQuestion) and question.options[question.correct_key] == "Không gian":
+                assert "Hình thức tồn tại" not in question.options.values(), (chapter_code, seed)
+
+
+# Thân câu hỏi "Không gian" dài hơn trích dẫn của "Thời gian": điền "Thời gian" vào chỗ trống ra một đoạn CHỨA trích dẫn
+# đó (chiều thứ hai của luật điền thử). "Phương thức tồn tại" có trích dẫn nằm trong phần giữ nguyên của thân câu hỏi
+# "Vận động", không chạm chỗ điền, nên không làm mọi thuật ngữ bị loại.
+CONTAINS_LINES = [
+    "Vật chất là phạm trù triết học dùng để chỉ thực tại khách quan.",
+    "Vận động là phương thức tồn tại của vật chất.",
+    "Ý thức là sự phản ánh năng động, sáng tạo thế giới khách quan vào bộ óc con người.",
+    "Không gian là hình thức tồn tại của vật chất xét về quảng tính.",
+    "Theo nghĩa hẹp, Thời gian là hình thức tồn tại của vật chất",
+    "Chân lý là tri thức phù hợp với hiện thực khách quan.",
+]
+CONTAINS_CHUNK = _lines_chunk("chk_contains_ch1", "ch1", CONTAINS_LINES, 7)
+CONTAINS_PAIRS = _pairs_in(
+    CONTAINS_CHUNK,
+    [
+        ("Vật chất", CONTAINS_LINES[0]),
+        ("Vận động", CONTAINS_LINES[1]),
+        ("Phương thức tồn tại", "phương thức tồn tại của vật chất"),
+        ("Ý thức", CONTAINS_LINES[2]),
+        ("Không gian", CONTAINS_LINES[3]),
+        ("Thời gian", "Thời gian là hình thức tồn tại của vật chất"),
+        ("Chân lý", CONTAINS_LINES[5]),
+    ],
+)
+
+
+def test_fill_rule_also_rejects_a_term_whose_filled_stem_contains_a_pool_quote() -> None:
+    chunks = {CONTAINS_CHUNK.chunk_id: CONTAINS_CHUNK}
+    seen: Counter[str] = Counter()
+    for seed in OVERLAP_SEEDS:
+        result = generate_theory_question(CONTAINS_PAIRS, chunks, subject_code=SUBJECT, seed=seed, **TICKET_CONTEXT)
+        assert isinstance(result, TheoryQuestion), result
+        if result.form is not TheoryQuestionForm.CONCEPT_MATCH:
+            continue
+        answer = result.options[result.correct_key]
+        seen[answer] += 1
+        if answer == "Không gian":
+            assert "Thời gian" not in result.options.values(), (seed, result.options)
+        if answer == "Thời gian":
+            assert "Không gian" not in result.options.values(), (seed, result.options)
+    assert {"Không gian", "Thời gian", "Vận động"} <= set(seen), seen
+
+
+def test_concept_match_skips_a_term_that_also_fills_the_blank() -> None:
+    """Hỏi "Không gian" với "____ là hình thức tồn tại của vật chất.": "Thời gian" điền vào chỗ trống ra một trích
+    dẫn của nhóm ứng viên nên không được làm phương án nhiễu (và ngược lại)."""
+    swapped = {"Không gian": "Thời gian", "Thời gian": "Không gian"}
+    assert len(SPACE_TIME_PAIRS) == 5
+    seen: Counter[str] = Counter()
+    for seed in OVERLAP_SEEDS:
+        result = _space_time_question(seed)
+        assert isinstance(result, TheoryQuestion)
+        answer = result.options[result.correct_key]
+        if result.form is TheoryQuestionForm.CONCEPT_MATCH and answer in swapped:
+            seen[answer] += 1
+            assert swapped[answer] not in result.options.values(), (seed, result.options)
+    assert set(seen) == set(swapped), seen
+
+
+def test_only_duplicate_or_nested_quotes_give_a_review_ticket() -> None:
+    """4 khái niệm nhưng chỉ 2 định nghĩa độc lập: mỗi đáp án chỉ còn 2 phương án nhiễu hợp lệ ở mọi dạng câu."""
+    four = [
+        pair
+        for pair in OVERLAP_PAIRS
+        if pair.term in {"Vật chất", "Thực tại khách quan", "Vận động", "Phương thức tồn tại"}
+    ]
+    assert len(four) == 4
+    assert feasible_forms(four, SUBJECT) == ()
+    for seed in range(50):
+        ticket = _assert_ticket(
+            generate_theory_question(four, OVERLAP_CHUNKS, subject_code=SUBJECT, seed=seed, **TICKET_CONTEXT)
+        )
+        # Dạng điền khuyết có chỗ che nhưng không đủ phương án nhiễu.
+        assert "điền khuyết: không chọn được 3 thuật ngữ" in ticket.reason
+        assert "chọn định nghĩa đúng: không đủ 3 khái niệm khác cùng chương" in ticket.reason
+
+
+def test_fill_blank_skips_a_term_that_also_fills_the_blank() -> None:
+    """Che "Không gian" trong "Không gian là hình thức tồn tại của vật chất.": "Thời gian" cũng điền đúng theo Vault."""
+    seen = False
+    for seed in OVERLAP_SEEDS:
+        result = _overlap_question(seed)
+        assert isinstance(result, TheoryQuestion)
+        if result.form is TheoryQuestionForm.FILL_BLANK and result.options[result.correct_key] == "Không gian":
+            seen = True
+            assert "Thời gian" not in result.options.values()
+    assert seen
+
+
+# --------------------------------------------------------------------------- #
+# Đúng một đáp án: dấu câu ở hai đầu trích dẫn không làm trượt phép so (sửa sau review)
+# --------------------------------------------------------------------------- #
+
+PUNCT_BASE_LINES = [
+    "Vật chất là phạm trù triết học dùng để chỉ thực tại khách quan.",
+    "Vận động là phương thức tồn tại của vật chất.",
+    "Ý thức là sự phản ánh năng động, sáng tạo thế giới khách quan vào bộ óc con người.",
+    "Chân lý là tri thức phù hợp với hiện thực khách quan.",
+]
+PUNCT_BASE_TERMS = ["Vật chất", "Vận động", "Ý thức", "Chân lý"]
+
+
+def _punct_fixture(
+    chunk_id: str, space_line: str, time_line: str, time_quote: str
+) -> tuple[list[ConceptPair], dict[str, KnowledgeChunk]]:
+    """Bốn khái niệm nền cộng "Không gian" (trích dẫn là cả dòng `space_line`) và "Thời gian" (trích dẫn `time_quote`
+    nằm trong dòng `time_line`)."""
+    chunk = _lines_chunk(chunk_id, "ch1", [*PUNCT_BASE_LINES, space_line, time_line], 8)
+    definitions = [*zip(PUNCT_BASE_TERMS, PUNCT_BASE_LINES, strict=True), ("Không gian", space_line)]
+    definitions.append(("Thời gian", time_quote))
+    return _pairs_in(chunk, definitions), {chunk.chunk_id: chunk}
+
+
+PUNCT_FIXTURES: dict[str, tuple[list[ConceptPair], dict[str, KnowledgeChunk]]] = {
+    # Lỗi 1 (chiều thứ nhất): thân câu hỏi "Không gian" có dấu chấm cuối, nằm trong trích dẫn dài hơn của "Thời gian"
+    # sau khi điền "Thời gian"; so nguyên dạng thì dấu chấm làm trượt.
+    "inside_with_final_period": _punct_fixture(
+        "chk_punct_inside",
+        "Không gian là hình thức tồn tại của vật chất.",
+        "Thời gian là hình thức tồn tại của vật chất xét về độ dài diễn biến.",
+        "Thời gian là hình thức tồn tại của vật chất xét về độ dài diễn biến.",
+    ),
+    # Lỗi 2 (chiều thứ hai): trích dẫn của "Thời gian" có dấu chấm cuối, nằm ở đầu thân câu hỏi "Không gian" dài hơn.
+    "contains_with_final_period": _punct_fixture(
+        "chk_punct_contains",
+        "Không gian là hình thức tồn tại của vật chất xét về quảng tính.",
+        "Theo nghĩa hẹp, Thời gian là hình thức tồn tại của vật chất.",
+        "Thời gian là hình thức tồn tại của vật chất.",
+    ),
+    # Lỗi 3 (dạng chọn định nghĩa) trên cùng dữ liệu với fixture `CONTAINS`: trích dẫn "Thời gian" không có dấu chấm.
+    "contains_without_final_period": _punct_fixture(
+        "chk_punct_contains_bare",
+        "Không gian là hình thức tồn tại của vật chất xét về quảng tính.",
+        "Theo nghĩa hẹp, Thời gian là hình thức tồn tại của vật chất",
+        "Thời gian là hình thức tồn tại của vật chất",
+    ),
+    # Dấu câu ở đầu và cuối: trích dẫn của "Không gian" nằm trong ngoặc, trích dẫn của "Thời gian" có dấu phẩy ở giữa.
+    "parenthesized_quote": _punct_fixture(
+        "chk_punct_paren",
+        "(Không gian là hình thức tồn tại của vật chất)",
+        "Thời gian là hình thức tồn tại của vật chất, xét về độ dài diễn biến.",
+        "Thời gian là hình thức tồn tại của vật chất, xét về độ dài diễn biến.",
+    ),
+}
+SPACE_TIME_SWAP = {"Không gian": "Thời gian", "Thời gian": "Không gian"}
+
+
+def _punct_questions(name: str, chapter_code: str | None) -> list[TheoryQuestion]:
+    pairs, chunks = PUNCT_FIXTURES[name]
+    questions: list[TheoryQuestion] = []
+    for seed in OVERLAP_SEEDS:
+        result = generate_theory_question(
+            pairs, chunks, subject_code=SUBJECT, seed=seed, chapter_code=chapter_code, **TICKET_CONTEXT
+        )
+        if isinstance(result, ReviewTicket):
+            _assert_ticket(result)
+            continue
+        questions.append(result)
+    return questions
+
+
+def _asked_concept(question: TheoryQuestion) -> str:
+    """Khái niệm có trích dẫn làm đáp án: thuật ngữ đáp án (ghép khái niệm) hoặc khái niệm trong thân câu."""
+    if question.form is TheoryQuestionForm.DEFINITION_CHOICE:
+        return question.stem.split("«", 1)[1].split("»", 1)[0]
+    return question.options[question.correct_key]
+
+
+@pytest.mark.parametrize("chapter_code", [None, "ch1"])
+@pytest.mark.parametrize("name", list(PUNCT_FIXTURES))
+def test_edge_punctuation_never_gives_two_correct_answers(name: str, chapter_code: str | None) -> None:
+    """Mọi câu trên các fixture dấu câu có đúng một phương án đúng theo `_vault_correct_keys` (so sau khi bỏ dấu câu ở
+    hai đầu); câu hỏi "Không gian"/"Thời gian" ở dạng ghép khái niệm và chọn định nghĩa đều xuất hiện (không rỗng)."""
+    pairs, chunks = PUNCT_FIXTURES[name]
+    asked: Counter[tuple[TheoryQuestionForm, str]] = Counter()
+    for question in _punct_questions(name, chapter_code):
+        assert _vault_correct_keys(question, pairs, chunks) == {question.correct_key}, (
+            question.form,
+            question.stem,
+            question.options,
+        )
+        for citation in question.distractor_citations.values():
+            assert not _overlap(citation.verbatim_quote, question.citation.verbatim_quote)
+        if question.form is not TheoryQuestionForm.FILL_BLANK and _asked_concept(question) in SPACE_TIME_SWAP:
+            asked[question.form, _asked_concept(question)] += 1
+    expected = {
+        (form, concept)
+        for form in (TheoryQuestionForm.CONCEPT_MATCH, TheoryQuestionForm.DEFINITION_CHOICE)
+        for concept in SPACE_TIME_SWAP
+    }
+    assert set(asked) == expected, asked
+
+
+@pytest.mark.parametrize("name", list(PUNCT_FIXTURES))
+def test_space_and_time_never_answer_each_other_with_edge_punctuation(name: str) -> None:
+    """Hỏi "Không gian" thì "Thời gian" (thuật ngữ hay định nghĩa) không làm phương án nhiễu, và ngược lại."""
+    pairs, _ = PUNCT_FIXTURES[name]
+    quotes = {pair.term: pair.definition_quote for pair in pairs}
+    for question in _punct_questions(name, None):
+        concept = _asked_concept(question)
+        if question.form is TheoryQuestionForm.FILL_BLANK or concept not in SPACE_TIME_SWAP:
+            continue
+        other = SPACE_TIME_SWAP[concept]
+        assert other not in question.options.values(), (question.form, question.options)
+        cited = {citation.verbatim_quote for citation in question.distractor_citations.values()}
+        assert quotes[other] not in cited, (question.form, question.options)
+
+
+def test_definition_choice_keeps_a_distractor_whose_only_match_is_its_own_unchanged_text() -> None:
+    """Không loại quá tay: hỏi định nghĩa của "Vật chất", phương án "____ là phương thức tồn tại của ____." (định nghĩa
+    của "Vận động") điền "Vật chất" vào chỗ che thứ hai chỉ khôi phục văn bản gốc; đoạn "phương thức tồn tại của vật
+    chất" (trích dẫn của "Phương thức tồn tại") nằm ở đó không phải căn cứ, nên phương án vẫn được dùng."""
+    option = "____ là phương thức tồn tại của ____."
+    seen = 0
+    for seed in OVERLAP_SEEDS:
+        result = _overlap_question(seed)
+        if (
+            isinstance(result, TheoryQuestion)
+            and result.form is TheoryQuestionForm.DEFINITION_CHOICE
+            and _asked_concept(result) == "Vật chất"
+        ):
+            seen += option in result.options.values()
+            assert _vault_correct_keys(result) == {result.correct_key}
+    assert seen > 0
+
+
+def test_fill_rule_compares_without_edge_punctuation_and_ignores_unchanged_blanks() -> None:
+    """Luật điền thử, gọi trực tiếp: dấu câu ở hai đầu không làm trượt cả hai chiều; chỗ điền không đổi văn bản không
+    phải căn cứ; dấu câu ở giữa vẫn được so."""
+    space_short = "Không gian là hình thức tồn tại của vật chất."
+    time_long = "Thời gian là hình thức tồn tại của vật chất xét về độ dài diễn biến."
+    time_short = "Thời gian là hình thức tồn tại của vật chất."
+    space_long = "Không gian là hình thức tồn tại của vật chất xét về quảng tính."
+    # Chiều thứ nhất: đoạn đã điền (bỏ dấu chấm cuối) nằm trong trích dẫn dài hơn.
+    assert _fills_pool_text(space_short, ["Không gian"], "Thời gian", [_match_key(time_long)])
+    # Chiều thứ hai: trích dẫn có dấu chấm cuối nằm ở đầu đoạn đã điền dài hơn.
+    assert _fills_pool_text(space_long, ["Không gian"], "Thời gian", [_match_key(time_short)])
+    # Dấu câu ở giữa giữ nguyên: dấu phẩy làm hai đoạn khác nhau.
+    comma = "Thời gian là hình thức, tồn tại của vật chất xét về độ dài diễn biến."
+    assert not _fills_pool_text(space_short, ["Không gian"], "Thời gian", [_match_key(comma)])
+    # Điền lại đúng thuật ngữ vốn ở chỗ che: không đổi văn bản, không phải căn cứ (kể cả khi khớp chính trích dẫn đó).
+    motion = "Vận động là phương thức tồn tại của vật chất."
+    assert not _fills_pool_text(motion, ["Vật chất"], "vật chất", [_match_key(motion)])
+    # Trích dẫn chỉ nằm trong phần giữ nguyên, không chạm chỗ điền làm đổi văn bản.
+    assert not _fills_pool_text(
+        motion, ["Vận động", "Vật chất"], "Vật chất", [_match_key("phương thức tồn tại của vật chất")]
+    )
+
+
+def test_fill_rule_treats_a_composing_boundary_as_a_conflict() -> None:
+    """Chỗ nối ghép được ký tự ("A" điền trước dấu sắc kết hợp U+0301 vốn đứng sau "Q"): cờ vị trí không còn tách theo
+    mảnh nên luật coi là xung đột khi cần xét chiều thứ hai (loại thừa, không bao giờ ra câu hai đáp án đúng)."""
+    quote = "Q́ là hình thức tồn tại của vật chất"
+    assert unicodedata.is_normalized("NFC", quote)
+    kept_only = [_match_key("là hình thức tồn tại của vật chất")]
+    assert _fills_pool_text(quote, ["Q"], "A", kept_only)
+    assert not _fills_pool_text(quote, ["Q"], "A", [_match_key("không liên quan gì tới đoạn này")])
+
+
+def test_model_rejects_a_distractor_citation_overlapping_the_answer_citation() -> None:
+    question = _first_of(TheoryQuestionForm.CONCEPT_MATCH)
+    wrong = next(iter(question.distractor_citations))
+    for quote in (
+        question.citation.verbatim_quote,
+        "  " + question.citation.verbatim_quote.upper(),
+        question.citation.verbatim_quote[:-1],
+    ):
+        data = question.model_dump()
+        data["distractor_citations"][wrong]["verbatim_quote"] = quote
+        with pytest.raises(ValidationError, match="hai đáp án đúng"):
+            TheoryQuestion.model_validate(data)
+
+
+def test_model_rejects_a_fill_blank_distractor_overlapping_the_hidden_term() -> None:
+    question = _first_of(TheoryQuestionForm.FILL_BLANK)
+    wrong = next(iter(question.distractor_citations))
+    data = question.model_dump()
+    data["options"][wrong] = question.options[question.correct_key] + " xã hội"
+    with pytest.raises(ValidationError, match="hai đáp án đúng"):
+        TheoryQuestion.model_validate(data)
+
+
+# --------------------------------------------------------------------------- #
+# Luật lấy phương án nhiễu: theo thứ tự chuẩn, bỏ cặp trùng khái niệm hoặc trùng văn bản với cặp đứng trước
+# --------------------------------------------------------------------------- #
+
+GREEDY_LINES = [
+    "Vật chất là phạm trù triết học dùng để chỉ thực tại khách quan.",
+    "Vật chất là cái được cảm giác chép lại, chụp lại, phản ánh.",
+    "Vận động là phương thức tồn tại của vật chất.",
+    "Ý thức là sự phản ánh năng động, sáng tạo thế giới khách quan vào bộ óc con người.",
+    "Không gian là hình thức tồn tại của vật chất.",
+    "Thời gian là hình thức tồn tại của vật chất.",
+    "Chân lý là tri thức phù hợp với hiện thực khách quan.",
+]
+GREEDY_CHUNK = _lines_chunk("chk_greedy_ch1", "ch1", GREEDY_LINES, 6)
+# Hai cặp cùng khái niệm "Vật chất", khác trích dẫn; "Không gian" và "Thời gian" có cùng văn bản phương án sau khi che
+# tên khái niệm ở dạng chọn định nghĩa ("____ là hình thức tồn tại của vật chất.").
+GREEDY_PAIRS = _pairs_in(
+    GREEDY_CHUNK,
+    [
+        ("Vật chất", GREEDY_LINES[0]),
+        ("Vật chất", GREEDY_LINES[1]),
+        ("Vận động", GREEDY_LINES[2]),
+        ("Ý thức", GREEDY_LINES[3]),
+        ("Không gian", GREEDY_LINES[4]),
+        ("Thời gian", GREEDY_LINES[5]),
+        ("Chân lý", GREEDY_LINES[6]),
+    ],
+)
+
+
+def test_distractors_follow_the_canonical_order_and_skip_later_duplicates() -> None:
+    """Ghim luật tham lam: phương án nhiễu hợp lệ lấy theo thứ tự chuẩn của nhóm ứng viên; cặp trùng khái niệm hoặc trùng
+    văn bản phương án với một cặp đứng trước bị bỏ, nên tính khả thi không phụ thuộc RNG.
+
+    - Hai biến thể của "Vật chất": thứ tự chuẩn phân xử bằng `definition_quote`, nên biến thể "cái được cảm giác…"
+      đứng trước; mọi phương án nhiễu "Vật chất" (ở mọi dạng) luôn trích biến thể đó, không bao giờ biến thể sau.
+    - "Không gian" đứng trước "Thời gian" và cùng văn bản phương án ở dạng chọn định nghĩa: định nghĩa của "Thời gian"
+      không bao giờ là phương án nhiễu của dạng này.
+    """
+    pool = candidate_pool(GREEDY_PAIRS, SUBJECT)
+    variants = [pair for pair in pool if pair.term == "Vật chất"]
+    assert [pair.definition_quote for pair in variants] == [GREEDY_LINES[1], GREEDY_LINES[0]]
+    first, later = variants
+    assert [pair.term for pair in pool].index("Không gian") < [pair.term for pair in pool].index("Thời gian")
+
+    chunks = {GREEDY_CHUNK.chunk_id: GREEDY_CHUNK}
+    seen: Counter[str] = Counter()
+    for seed in OVERLAP_SEEDS:
+        result = generate_theory_question(GREEDY_PAIRS, chunks, subject_code=SUBJECT, seed=seed, **TICKET_CONTEXT)
+        assert isinstance(result, TheoryQuestion), result
+        quotes = {citation.verbatim_quote for citation in result.distractor_citations.values()}
+        assert later.definition_quote not in quotes, (seed, result.form, result.options)
+        if first.definition_quote in quotes:
+            seen[f"{result.form.value}:Vật chất"] += 1
+        if result.form is TheoryQuestionForm.DEFINITION_CHOICE:
+            assert GREEDY_LINES[5] not in quotes, (seed, result.options)
+            if GREEDY_LINES[4] in quotes:
+                seen["definition_choice:Không gian"] += 1
+    expected = {"definition_choice:Vật chất", "definition_choice:Không gian", "concept_match:Vật chất"}
+    assert expected <= set(seen), seen
+
+
+# --------------------------------------------------------------------------- #
+# Khoá phân xử khi hoà và giới hạn che tên khái niệm
+# --------------------------------------------------------------------------- #
+
+
+def test_pool_order_breaks_ties_on_definition_quote() -> None:
+    """Hai cặp cùng `(chapter_code, term, chunk_id)`, khác `definition_quote`: đảo đầu vào vẫn cùng `pool_sha256`."""
+    tied = [
+        _pair("chk_phil_ch1", "Vật chất", "phạm trù triết học dùng để chỉ thực tại khách quan", index=80),
+        _pair("chk_phil_ch1", "Vật chất", "phương thức tồn tại của vật chất", index=81),
+    ]
+    forward = SUBJECT_PAIRS + tied
+    backward = list(reversed(tied)) + SUBJECT_PAIRS
+    assert candidate_pool(forward, SUBJECT) == candidate_pool(backward, SUBJECT)
+    assert pool_sha256(forward, SUBJECT) == pool_sha256(backward, SUBJECT)
+    assert pool_sha256(tied, SUBJECT) == pool_sha256(list(reversed(tied)), SUBJECT)
+    for seed in range(30):
+        assert _question(forward, seed).model_dump_json() == _question(backward, seed).model_dump_json()
+
+
+INFLECTION_SUBJECT = "IT3070"
+INFLECTION_LINES = [
+    "Processes are programs in execution.",
+    "A thread is a basic unit of CPU utilization.",
+    "The scheduler selects a process from the ready queue.",
+    "A deadlock is a situation where processes wait for each other forever.",
+    "A semaphore is an integer variable accessed only through atomic operations.",
+]
+INFLECTION_CHUNK = _lines_chunk("chk_inflection_ch2", "ch2", INFLECTION_LINES, 2, subject=INFLECTION_SUBJECT)
+INFLECTION_PAIRS = _pairs_in(
+    INFLECTION_CHUNK,
+    [
+        ("Process", INFLECTION_LINES[0]),
+        ("Thread", INFLECTION_LINES[1]),
+        ("Scheduler", INFLECTION_LINES[2]),
+        ("Deadlock", INFLECTION_LINES[3]),
+        ("Semaphore", INFLECTION_LINES[4]),
+    ],
+)
+
+
+def test_inflected_term_is_not_masked_and_the_quote_stays_verbatim() -> None:
+    """Giới hạn đã biết: "Process" không che được "Processes"; câu vẫn sinh, trích dẫn vẫn nguyên văn."""
+    assert mask_terms(INFLECTION_LINES[0], ["Process"]) == INFLECTION_LINES[0]
+    seen = False
+    for seed in range(300):
+        result = generate_theory_question(
+            INFLECTION_PAIRS,
+            {INFLECTION_CHUNK.chunk_id: INFLECTION_CHUNK},
+            subject_code=INFLECTION_SUBJECT,
+            seed=seed,
+            **TICKET_CONTEXT,
+        )
+        assert isinstance(result, TheoryQuestion)
+        assert quote_in_text(result.citation.verbatim_quote, INFLECTION_CHUNK.raw_text)
+        if result.form is TheoryQuestionForm.CONCEPT_MATCH and result.options[result.correct_key] == "Process":
+            seen = True
+            assert result.citation.verbatim_quote == INFLECTION_LINES[0]
+            assert result.stem.endswith(f"> {INFLECTION_LINES[0]}")
+            assert BLANK not in result.stem
+    assert seen
+
+
+# --------------------------------------------------------------------------- #
+# I4: giá trị ghim cứng (phát hiện khi Python đổi thuật toán `random` hoặc khi code đổi)
+# --------------------------------------------------------------------------- #
+
+PINNED_SEED = 2026
+PINNED_FILL_BLANK_SEED = 2028
+PINNED_POOL_SHA256 = "c6dbfff6b149b136a3160c265da2757b5b9832ec2d0c8e2cd64b9045cc5bc538"
+PINNED_RNG_FIRST_BITS = 0x279AA3A75DAE9675
+PINNED_QUESTIONS: dict[tuple[int, str | None], dict[str, object]] = {
+    (PINNED_SEED, None): {
+        "form": "fill_blank",
+        "stem": (
+            "Điền thuật ngữ thích hợp vào chỗ trống trong đoạn trích sau:\n\n"
+            "> Thời gian là hình thức tồn tại của ____ xét về độ dài diễn biến."
+        ),
+        "options": ["Vật chất", "Không gian", "Vận động", "Ý thức"],
+        "correct_key": "A",
+        "misconceptions": {
+            "B": THEORY_SAME_CHAPTER_CONCEPT,
+            "C": THEORY_SAME_CHAPTER_CONCEPT,
+            "D": THEORY_SAME_CHAPTER_CONCEPT,
+        },
+        "citation": "Thời gian là hình thức tồn tại của vật chất xét về độ dài diễn biến.",
+    },
+    (PINNED_SEED, "ch2"): {
+        "form": "fill_blank",
+        "stem": (
+            "Điền thuật ngữ thích hợp vào chỗ trống trong đoạn trích sau:\n\n"
+            "> Thực tiễn là toàn bộ hoạt động ____ có mục đích của con người."
+        ),
+        "options": ["Vật chất", "Nhận thức", "Ý thức", "Chân lý"],
+        "correct_key": "A",
+        "misconceptions": {
+            "B": THEORY_SAME_CHAPTER_CONCEPT,
+            "C": THEORY_SAME_SUBJECT_CONCEPT,
+            "D": THEORY_SAME_CHAPTER_CONCEPT,
+        },
+        "citation": "Thực tiễn là toàn bộ hoạt động vật chất có mục đích của con người.",
+    },
+    (2027, None): {
+        "form": "definition_choice",
+        "stem": "Phát biểu nào là định nghĩa của «Ý thức»?",
+        "options": [
+            "____ là phạm trù triết học dùng để chỉ thực tại khách quan.",
+            "____ là sự phản ánh năng động, sáng tạo thế giới khách quan vào bộ óc con người.",
+            "____ là hình thức tồn tại của vật chất xét về độ dài diễn biến.",
+            "____ là hình thức tồn tại của vật chất xét về quảng tính.",
+        ],
+        "correct_key": "B",
+        "misconceptions": {
+            "A": THEORY_SAME_CHAPTER_CONCEPT,
+            "C": THEORY_SAME_CHAPTER_CONCEPT,
+            "D": THEORY_SAME_CHAPTER_CONCEPT,
+        },
+        "citation": "Ý thức là sự phản ánh năng động, sáng tạo thế giới khách quan vào bộ óc con người.",
+    },
+    (PINNED_FILL_BLANK_SEED, None): {
+        "form": "fill_blank",
+        "stem": "Điền thuật ngữ thích hợp vào chỗ trống trong đoạn trích sau:\n\n> Vận động là phương thức tồn tại của ____.",
+        "options": ["Vật chất", "Không gian", "Ý thức", "Thời gian"],
+        "correct_key": "A",
+        "misconceptions": {
+            "B": THEORY_SAME_CHAPTER_CONCEPT,
+            "C": THEORY_SAME_CHAPTER_CONCEPT,
+            "D": THEORY_SAME_CHAPTER_CONCEPT,
+        },
+        "citation": "Vận động là phương thức tồn tại của vật chất.",
+    },
+    (2033, None): {
+        "form": "concept_match",
+        "stem": "Khái niệm nào ứng với đoạn trích sau?\n\n> ____ là toàn bộ hoạt động vật chất có mục đích của con người.",
+        "options": ["Nhận thức", "Thực tiễn", "Ý thức", "Chân lý"],
+        "correct_key": "B",
+        "misconceptions": {
+            "A": THEORY_SAME_CHAPTER_CONCEPT,
+            "C": THEORY_SAME_SUBJECT_CONCEPT,
+            "D": THEORY_SAME_CHAPTER_CONCEPT,
+        },
+        "citation": "Thực tiễn là toàn bộ hoạt động vật chất có mục đích của con người.",
+    },
+}
+
+
+def test_pinned_pool_sha256_and_rng() -> None:
+    assert GENERATOR_VERSION == "theory_mcq4_v2"
+    assert pool_sha256(SUBJECT_PAIRS, SUBJECT) == PINNED_POOL_SHA256
+    assert theory_rng(PINNED_POOL_SHA256, PINNED_SEED).getrandbits(64) == PINNED_RNG_FIRST_BITS
+
+
+def test_pinned_questions_cover_every_form() -> None:
+    assert {str(expected["form"]) for expected in PINNED_QUESTIONS.values()} == {form.value for form in FORM_ORDER}
+
+
+@pytest.mark.parametrize(("seed", "chapter_code"), list(PINNED_QUESTIONS))
+def test_pinned_question_for_version_pool_and_seed(seed: int, chapter_code: str | None) -> None:
+    question = _question(SUBJECT_PAIRS, seed, chapter_code=chapter_code)
+    assert question.generator_version == GENERATOR_VERSION
+    assert question.pool_sha256 == PINNED_POOL_SHA256
+    assert question.seed == seed
+    actual = {
+        "form": question.form.value,
+        "stem": question.stem,
+        "options": [question.options[key] for key in OptionKey],
+        "correct_key": question.correct_key.value,
+        "misconceptions": {
+            key.value: ref.misconception_code
+            for key, ref in sorted(question.distractor_to_misconception_map.items(), key=lambda item: item[0].value)
+        },
+        "citation": question.citation.verbatim_quote,
+    }
+    assert actual == PINNED_QUESTIONS[(seed, chapter_code)]
+
+
+PINNED_SPACE_TIME_SEED = 2031
+PINNED_SPACE_TIME_POOL_SHA256 = "96a42b4de11c135363c4e52404cdfdb5de71135cf916778778e38d92d51be1f5"
+
+
+def test_pinned_concept_match_without_a_term_that_fills_the_blank() -> None:
+    """Ghim luật ghép khái niệm của `theory_mcq4_v2`: hỏi "Không gian" thì "Thời gian" không làm phương án nhiễu."""
+    question = _space_time_question(PINNED_SPACE_TIME_SEED)
+    assert isinstance(question, TheoryQuestion)
+    assert question.generator_version == "theory_mcq4_v2"
+    assert question.pool_sha256 == PINNED_SPACE_TIME_POOL_SHA256
+    assert question.form is TheoryQuestionForm.CONCEPT_MATCH
+    assert question.stem == "Khái niệm nào ứng với đoạn trích sau?\n\n> ____ là hình thức tồn tại của vật chất."
+    assert [question.options[key] for key in OptionKey] == ["Vật chất", "Vận động", "Không gian", "Ý thức"]
+    assert question.correct_key is OptionKey.C
+    assert question.citation.verbatim_quote == "Không gian là hình thức tồn tại của vật chất."
+    codes = {key.value: ref.misconception_code for key, ref in question.distractor_to_misconception_map.items()}
+    assert codes == dict.fromkeys("ABD", THEORY_SAME_CHAPTER_CONCEPT)
+
+
+# --------------------------------------------------------------------------- #
+# I4: chunk cùng môn không thuộc `pool_sha256` nên không được làm đổi câu (sửa sau review)
+# --------------------------------------------------------------------------- #
+
+# Mỗi dòng là trích dẫn mẫu của câu điền khuyết ghim cứng với một phương án nhiễu điền vào chỗ trống. Với luật cũ (so
+# với `raw_text` của mọi chunk cùng môn), chunk này biến cả ba phương án nhiễu thành "đáp án đúng thứ hai" và làm câu
+# đổi dù không cặp nào đổi.
+EXTRA_LINES = [
+    "Vận động là phương thức tồn tại của ý thức.",
+    "Vận động là phương thức tồn tại của không gian.",
+    "Vận động là phương thức tồn tại của thời gian.",
+    "Ý thức là hình thức tồn tại của vật chất xét về quảng tính.",
+    "Thực tiễn là tri thức phù hợp với hiện thực khách quan.",
+]
+
+
+def _extra_chunk(chunk_id: str, chapter: str, label_status: str) -> KnowledgeChunk:
+    return KnowledgeChunk(
+        chunk_id=chunk_id,
+        doc_id=DOC,
+        subject_code=SUBJECT,
+        chapter_code=chapter,
+        page_number=40,
+        raw_text="Ghi chú thêm.\n" + "\n".join(EXTRA_LINES),
+        verbatim_quote=EXTRA_LINES[0],
+        category=ChunkCategory.THEORY,
+        token_count=50,
+        label_status=label_status,
+    )
+
+
+EXTRA_CHUNKS = {
+    chunk.chunk_id: chunk
+    for chunk in (
+        _extra_chunk("chk_phil_extra_proposed", "ch1", "proposed"),
+        _extra_chunk("chk_phil_extra_confirmed", "ch2", "confirmed"),
+    )
+}
+
+
+def test_the_extra_chunk_would_have_conflicted_under_the_old_rule() -> None:
+    """Chứng minh test I4 bên dưới có ý nghĩa: mọi phương án nhiễu của câu điền khuyết ghim cứng điền vào chỗ trống
+    đều cho ra một câu có trong chunk thêm vào."""
+    question = _question(SUBJECT_PAIRS, PINNED_FILL_BLANK_SEED)
+    assert question.form is TheoryQuestionForm.FILL_BLANK
+    masked = question.stem.split("> ", 1)[1]
+    extra_text = normalize_quote("\n".join(chunk.raw_text for chunk in EXTRA_CHUNKS.values())).casefold()
+    for key in set(OptionKey) - {question.correct_key}:
+        filled = normalize_quote(masked.replace(BLANK, question.options[key])).casefold()
+        assert filled in extra_text, question.options[key]
+
+
+@pytest.mark.parametrize("chapter_code", CHAPTERS)
+@pytest.mark.parametrize("label_status", ["proposed", "confirmed", "both"])
+def test_adding_same_subject_chunks_without_pairs_keeps_questions_byte_identical(
+    chapter_code: str | None, label_status: str
+) -> None:
+    extra = {
+        chunk_id: chunk
+        for chunk_id, chunk in EXTRA_CHUNKS.items()
+        if label_status == "both" or chunk.label_status == label_status
+    }
+    assert extra
+    widened = {**CHUNKS, **extra}
+    assert pool_sha256(SUBJECT_PAIRS, SUBJECT) == PINNED_POOL_SHA256
+    seen: set[TheoryQuestionForm] = set()
+    for seed in [*range(60), *(pinned_seed for pinned_seed, _ in PINNED_QUESTIONS)]:
+        context = {"subject_code": SUBJECT, "seed": seed, "chapter_code": chapter_code, **TICKET_CONTEXT}
+        before = generate_theory_question(SUBJECT_PAIRS, CHUNKS, **context)
+        after = generate_theory_question(SUBJECT_PAIRS, widened, **context)
+        assert after.model_dump_json() == before.model_dump_json(), (seed, chapter_code)
+        assert isinstance(before, TheoryQuestion)
+        seen.add(before.form)
+    assert seen == set(feasible_forms(SUBJECT_PAIRS, SUBJECT, chapter_code=chapter_code))
+
+
+def test_pinned_questions_survive_extra_same_subject_chunks() -> None:
+    widened = {**CHUNKS, **EXTRA_CHUNKS}
+    for (seed, chapter_code), expected in PINNED_QUESTIONS.items():
+        result = generate_theory_question(
+            SUBJECT_PAIRS,
+            widened,
+            subject_code=SUBJECT,
+            seed=seed,
+            chapter_code=chapter_code,
+            **TICKET_CONTEXT,
+        )
+        assert isinstance(result, TheoryQuestion)
+        assert result.pool_sha256 == PINNED_POOL_SHA256
+        assert result.form.value == expected["form"]
+        assert [result.options[key] for key in OptionKey] == expected["options"]
+        assert result.correct_key.value == expected["correct_key"]
+
+
+def test_vault_backed_questions_ignore_new_same_subject_chunks_without_pairs() -> None:
+    """Qua `VaultRepository`: thêm chunk cùng môn (chưa xác nhận, rồi xác nhận nhãn), không thêm cặp ⇒ câu giống từng
+    byte với cùng seed, ở mọi dạng câu mà RNG chọn."""
+    store = IngestionStore()
+    doc_id, extra_doc = document_id("f"), document_id("d")
+    add_document(store, doc_id)
+    add_document(store, extra_doc)
+    lines = ["Mở đầu phần lý thuyết.", *(quote for _, quote in CH1_DEFINITIONS)]
+    [source] = ingest_confirmed_text(store, confirmed(doc_id, [lines], subject_code=SUBJECT, chapter_code="ch1"))
+    for term, quote in CH1_DEFINITIONS:
+        create_concept_pair(store, chunk_id=source.chunk_id, term=term, definition_quote=quote, now=NOW)
+    seeds = [*range(120), PINNED_SEED]
+
+    def snapshot() -> list[str]:
+        results = [
+            generate_theory_question_from_vault(store, subject_code=SUBJECT, seed=seed, **TICKET_CONTEXT)
+            for seed in seeds
+        ]
+        questions = [result for result in results if isinstance(result, TheoryQuestion)]
+        assert len(questions) == len(results)
+        assert {question.form for question in questions} == set(
+            feasible_forms(store.list_concept_pairs(SUBJECT), SUBJECT)
+        )
+        return [question.model_dump_json() for question in questions]
+
+    baseline = snapshot()
+    digest = pool_sha256(store.list_concept_pairs(SUBJECT), SUBJECT)
+    [extra] = ingest_confirmed_text(
+        store, confirmed(extra_doc, [["Ghi chú thêm.", *EXTRA_LINES]], subject_code=SUBJECT, chapter_code="ch1")
+    )
+    assert extra.label_status == "proposed"
+    assert snapshot() == baseline
+    confirmed_extra = update_chunk_labels(store, extra.chunk_id, expected_version=extra.version)
+    assert confirmed_extra.label_status == "confirmed"
+    assert snapshot() == baseline
+    assert pool_sha256(store.list_concept_pairs(SUBJECT), SUBJECT) == digest

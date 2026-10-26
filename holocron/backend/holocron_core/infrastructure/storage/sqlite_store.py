@@ -56,6 +56,10 @@ from .connection import connect, fts5_available, immediate_transaction, is_busy,
 from .migrator import load_fts5_script, migrate
 
 IMPORTED_MEDIA_TYPE = "application/pdf"  # bộ nhập §6.5 chỉ nhận PDF trong MVP
+JSON1_MISSING_DETAIL = (
+    "SQLite của bản Python đang chạy thiếu JSON1 (json_extract, json_each), cần cho tài liệu nhập và Knowledge Vault; "
+    "hãy dùng bản Python đi kèm SQLite ≥ 3.38 (JSON1 có sẵn) hoặc SQLite biên dịch kèm JSON1"
+)
 _FTS_TABLES: dict[SearchIndex, str] = {"primary": "chunks_fts", "no_diacritics": "chunks_fts_nodiac"}
 _LOGGER = logging.getLogger(__name__)
 _EDIT_TABLES: dict[VaultEntity, tuple[str, str]] = {
@@ -94,6 +98,19 @@ def _version_conflict(
     return VersionConflictError(entity, key, expected, int(row["version"]))
 
 
+class SQLiteFeatureError(RuntimeError):
+    """SQLite thiếu tính năng mà kho bắt buộc phải có (JSON1); kho từ chối mở, app từ chối khởi động."""
+
+
+def json1_available(conn: sqlite3.Connection) -> bool:
+    """SQLite có JSON1: chạy thử đúng hai hàm kho dùng (`json_extract`, `json_each`), không đọc bảng nào."""
+    try:
+        conn.execute("SELECT json_extract('[1]', '$[0]'), (SELECT count(*) FROM json_each('[1]'))").fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return True
+
+
 @contextmanager
 def _storage_errors() -> Iterator[None]:
     """Đổi lỗi `sqlite3` mà tầng trên cần phân biệt thành lỗi domain: ràng buộc ⇒ `StorageError`, khoá bận ⇒
@@ -112,10 +129,15 @@ class SQLiteStore:
     """Kho SQLite; tạo bằng `SQLiteStore.open(path)` (`":memory:"` cho test)."""
 
     def __init__(self, conn: sqlite3.Connection) -> None:
-        """Nhận kết nối đã mở bằng `connection.connect`, chạy migration và tạo chỉ mục FTS5 nếu SQLite có FTS5.
+        """Nhận kết nối đã mở bằng `connection.connect`, kiểm JSON1, chạy migration và tạo chỉ mục FTS5 nếu SQLite
+        có FTS5.
 
-        DB có version mới hơn code ⇒ `SchemaVersionError` (từ chối khởi động).
+        SQLite thiếu JSON1 ⇒ `SQLiteFeatureError` trước khi chạy migration nào (từ chối khởi động, thông điệp nêu
+        cách sửa), thay vì `sqlite3.OperationalError` trần ở request đầu tiên đọc tóm tắt trang hay nhập chunk. DB
+        có version mới hơn code ⇒ `SchemaVersionError` (từ chối khởi động). Thiếu FTS5 thì vẫn chạy (BM25 tự cài).
         """
+        if not json1_available(conn):
+            raise SQLiteFeatureError(JSON1_MISSING_DETAIL)
         self._conn = conn
         self._lock = threading.RLock()
         with self._lock:
@@ -845,6 +867,11 @@ class SQLiteStore:
         with self._read() as conn:
             found = self._load_chunks(conn, "WHERE chunk_id = ?", (chunk_id,))
         return found[0] if found else None
+
+    def has_document_chunks(self, document_id: str) -> bool:
+        with self._read() as conn:
+            row = conn.execute("SELECT 1 FROM chunks WHERE document_id = ? LIMIT 1", (document_id,)).fetchone()
+        return row is not None
 
     def list_chunks(self, subject_code: str, chapter_code: str | None = None) -> list[KnowledgeChunk]:
         where = "WHERE subject_code = ?" + ("" if chapter_code is None else " AND chapter_code = ?")

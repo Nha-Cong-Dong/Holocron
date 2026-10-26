@@ -395,6 +395,10 @@ class IngestionStore:
         chunk = self._chunks.get(chunk_id)
         return None if chunk is None else chunk.model_copy(deep=True)
 
+    def has_document_chunks(self, document_id: str) -> bool:
+        with self._lock:
+            return any(chunk.doc_id == document_id for chunk in self._chunks.values())
+
     def list_chunks(self, subject_code: str, chapter_code: str | None = None) -> list[KnowledgeChunk]:
         found = [
             chunk.model_copy(deep=True)

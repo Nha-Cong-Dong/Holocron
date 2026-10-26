@@ -304,6 +304,11 @@ class VaultRepository(Protocol):
 
     def get_chunk(self, chunk_id: str) -> KnowledgeChunk | None: ...
 
+    def has_document_chunks(self, document_id: str) -> bool:
+        """Vault đã có ít nhất một chunk cắt từ tài liệu `document_id` (bộ nhập §6.5 dùng để biết văn bản đã vào
+        Vault hay chưa, kể cả khi tài liệu chưa kịp thành `confirmed`)."""
+        ...
+
     def list_chunks(self, subject_code: str, chapter_code: str | None = None) -> list[KnowledgeChunk]:
         """Sắp theo `(doc_id, page_number, chunk_id)` (§6.6)."""
         ...

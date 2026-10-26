@@ -455,10 +455,11 @@ export function createApi(useMocks: boolean): HolocronApi {
     // `GET /v1/vault/chunks`: chỉ trích dẫn của câu luyện tập mẫu (môn của blueprint mẫu) tìm trong chunk mẫu.
     listVaultChunks: (query) =>
       isMockBlueprintSubject(query.subjectCode) ? mockVaultSourceChunks() : realApi.listVaultChunks(query),
-    // `GET /v1/documents`: danh sách thật, thêm tài liệu mẫu của môn để mở được màn xem lại mẫu.
+    // `GET /v1/documents`: danh sách thật (mới nhất trước), thêm tài liệu mẫu của môn ở cuối để mở được màn xem lại
+    // mẫu.
     listDocuments: async (subjectCode) => [
-      ...documents.listDocuments(subjectCode),
       ...(await realApi.listDocuments(subjectCode)),
+      ...documents.listDocuments(subjectCode),
     ],
     getDocument: (id) => (isMockDocument(id) ? documents.getDocument(id) : realApi.getDocument(id)),
     getDocumentPage: (id, page) =>

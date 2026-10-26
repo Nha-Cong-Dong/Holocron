@@ -212,3 +212,12 @@ textarea {
   white-space: nowrap;
   border: 0;
 }
+
+/* Màn lỗi ngoài cùng (`app/global-error.tsx`): không có khung app nên tự căn lề. */
+.global-error {
+  display: grid;
+  gap: var(--space-4);
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-5);
+}

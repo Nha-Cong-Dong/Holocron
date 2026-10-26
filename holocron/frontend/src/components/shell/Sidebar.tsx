@@ -1,19 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
 
-import { api, toUiError } from "@/lib/api";
-import type { UiError } from "@/lib/errors";
 import { NAV_ITEMS, navItemForPath } from "@/lib/navigation";
-import type { Subject } from "@/types/contract-pending";
+import type { SubjectsState } from "@/lib/subjects";
 
 import styles from "./Sidebar.module.css";
 
-type SubjectsState = { kind: "loading" } | { kind: "error"; error: UiError } | { kind: "ready"; subjects: Subject[] };
-
 interface SidebarProps {
   pathname: string;
+  subjects: SubjectsState;
+  onReloadSubjects: () => void;
   subjectCode: string | null;
   onSelectSubject: (subjectCode: string) => void;
 }
@@ -22,21 +19,8 @@ interface SidebarProps {
  * Thanh bên: danh sách môn (`GET /v1/subjects`, §6.8) và điều hướng chính. Dưới 1100 px chỉ còn chữ viết tắt; phần
  * chữ bị ẩn khi đó không chứa phần tử nhận focus.
  */
-export function Sidebar({ pathname, subjectCode, onSelectSubject }: SidebarProps) {
-  const [subjects, setSubjects] = useState<SubjectsState>({ kind: "loading" });
+export function Sidebar({ pathname, subjects, onReloadSubjects, subjectCode, onSelectSubject }: SidebarProps) {
   const activeHref = navItemForPath(pathname)?.href ?? null;
-
-  const load = useCallback(() => {
-    setSubjects({ kind: "loading" });
-    api
-      .listSubjects()
-      .then((list) => setSubjects({ kind: "ready", subjects: list }))
-      .catch((error: unknown) => setSubjects({ kind: "error", error: toUiError(error) }));
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
 
   return (
     <aside className={styles.sidebar} aria-label="Thanh bên">
@@ -66,7 +50,12 @@ export function Sidebar({ pathname, subjectCode, onSelectSubject }: SidebarProps
             </p>
             {/* Nút nằm ngoài phần chữ bị ẩn ở thanh bên hẹp, nên luôn nhìn thấy khi nhận focus. */}
             {subjects.error.action !== "none" && (
-              <button type="button" className={styles.linkButton} onClick={load} aria-label="Thử tải lại danh sách môn">
+              <button
+                type="button"
+                className={styles.linkButton}
+                onClick={onReloadSubjects}
+                aria-label="Thử tải lại danh sách môn"
+              >
                 Thử lại
               </button>
             )}

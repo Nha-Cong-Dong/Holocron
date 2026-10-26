@@ -1,16 +1,19 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { type ReactNode, useCallback, useEffect, useMemo, useReducer, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { api, toUiError } from "@/lib/api";
 import { USE_MOCKS } from "@/lib/config";
+import { createLatestCounter } from "@/lib/latest";
 import { NAV_ITEMS, titleForPath } from "@/lib/navigation";
 import { INITIAL_RUNTIME_STATE, runtimeReducer, selectOfflineMode, selectStatusItems } from "@/lib/runtime";
-import { GLOBAL_SCOPE, resolveShortcut, type TargetDescriptor, targetKindOf } from "@/lib/shortcuts";
+import { GLOBAL_SCOPE, resolveShortcut, targetKindOf } from "@/lib/shortcuts";
+import type { SubjectsState } from "@/lib/subjects";
 
 import styles from "./AppShell.module.css";
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
+import { describeTarget } from "./keyboard";
 import { OfflineBanner } from "./OfflineBanner";
 import { ShellContext, type ShellContextValue } from "./ShellContext";
 import { ShortcutHelp } from "./ShortcutHelp";
@@ -18,15 +21,6 @@ import { Sidebar } from "./Sidebar";
 import { StatusBar } from "./StatusBar";
 
 type Overlay = "none" | "palette" | "help";
-
-function describeTarget(target: EventTarget | null): TargetDescriptor | null {
-  if (!(target instanceof HTMLElement)) return null;
-  return {
-    tagName: target.tagName,
-    isContentEditable: target.isContentEditable,
-    inputType: target instanceof HTMLInputElement ? target.type : null,
-  };
-}
 
 /**
  * Khung app desktop: thanh bên (môn + điều hướng), vùng nội dung, thanh trạng thái khả năng, hộp lệnh `Ctrl+K` và
@@ -38,18 +32,47 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [runtime, dispatch] = useReducer(runtimeReducer, INITIAL_RUNTIME_STATE);
   const [overlay, setOverlay] = useState<Overlay>("none");
   const [subjectCode, setSubjectCode] = useState<string | null>(null);
+  const [subjects, setSubjects] = useState<SubjectsState>({ kind: "loading" });
+  // Bấm "Kiểm tra lại" liên tiếp: chỉ kết quả của lần gọi mới nhất được áp, lần cũ trả về muộn bị bỏ qua.
+  const runtimeCalls = useRef(createLatestCounter());
+  const subjectCalls = useRef(createLatestCounter());
 
   const refreshRuntime = useCallback(() => {
+    const ticket = runtimeCalls.current.begin();
     dispatch({ type: "load_started" });
     api
       .getRuntime()
-      .then((info) => dispatch({ type: "load_succeeded", runtime: info }))
-      .catch((error: unknown) => dispatch({ type: "load_failed", error: toUiError(error) }));
+      .then((info) => {
+        if (runtimeCalls.current.isLatest(ticket)) dispatch({ type: "load_succeeded", runtime: info });
+      })
+      .catch((error: unknown) => {
+        if (runtimeCalls.current.isLatest(ticket)) dispatch({ type: "load_failed", error: toUiError(error) });
+      });
+  }, []);
+
+  const reloadSubjects = useCallback(() => {
+    const ticket = subjectCalls.current.begin();
+    setSubjects({ kind: "loading" });
+    api
+      .listSubjects()
+      .then((list) => {
+        if (subjectCalls.current.isLatest(ticket)) setSubjects({ kind: "ready", subjects: list });
+      })
+      .catch((error: unknown) => {
+        if (subjectCalls.current.isLatest(ticket)) setSubjects({ kind: "error", error: toUiError(error) });
+      });
   }, []);
 
   useEffect(() => {
     refreshRuntime();
-  }, [refreshRuntime]);
+    reloadSubjects();
+    const runtimeCounter = runtimeCalls.current;
+    const subjectCounter = subjectCalls.current;
+    return () => {
+      runtimeCounter.invalidate();
+      subjectCounter.invalidate();
+    };
+  }, [refreshRuntime, reloadSubjects]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
@@ -64,7 +87,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         { overlayOpen: overlay !== "none", scope: GLOBAL_SCOPE },
       );
       if (action === null) return;
-      // `Esc` do `<dialog>` tự xử lý; các phím của màn luyện tập do màn đó xử lý (F4).
+      // `Esc` do `<dialog>` tự xử lý; các phím của màn luyện tập do màn đó xử lý (`usePracticeShortcuts`).
       if (action.type === "open_palette") {
         event.preventDefault();
         setOverlay("palette");
@@ -104,10 +127,13 @@ export function AppShell({ children }: { children: ReactNode }) {
       refreshRuntime,
       reportLlmCall: (outcome) =>
         dispatch({ type: outcome === "upstream_error" ? "llm_upstream_failed" : "llm_call_succeeded" }),
+      subjects,
+      reloadSubjects,
       subjectCode,
       selectSubject: setSubjectCode,
+      overlayOpen: overlay !== "none",
     }),
-    [runtime, refreshRuntime, subjectCode],
+    [runtime, refreshRuntime, subjects, reloadSubjects, subjectCode, overlay],
   );
 
   return (
@@ -117,7 +143,13 @@ export function AppShell({ children }: { children: ReactNode }) {
       </a>
       <div className={styles.root}>
         <div className={styles.frame}>
-          <Sidebar pathname={pathname} subjectCode={subjectCode} onSelectSubject={setSubjectCode} />
+          <Sidebar
+            pathname={pathname}
+            subjects={subjects}
+            onReloadSubjects={reloadSubjects}
+            subjectCode={subjectCode}
+            onSelectSubject={setSubjectCode}
+          />
           <div className={styles.workspace}>
             <header className={styles.header}>
               <h1 className={styles.title}>{titleForPath(pathname)}</h1>

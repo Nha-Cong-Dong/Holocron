@@ -21,7 +21,7 @@ type BatchState =
 /** Sinh và xem `TwinBatch` của một blueprint; mọi con số do backend trả. */
 export function TwinBatchPanel({ blueprintId }: { blueprintId: string }) {
   const [count, setCount] = useState(DEFAULT_TWIN_COUNT);
-  // Một khoá cho mỗi lần mở bộ đề: bấm lặp hoặc gửi lại cùng body trong 24 h nhận đúng batch cũ, không chạy lại sandbox.
+  // Một khoá cho mỗi lần mở bộ đề: bấm lặp hoặc gửi lại cùng body trong 24 h nhận đúng lượt sinh cũ, không tính lại.
   const [idempotencyKey] = useState(() => crypto.randomUUID());
   const [state, setState] = useState<BatchState>({ kind: "idle" });
 
@@ -45,7 +45,7 @@ export function TwinBatchPanel({ blueprintId }: { blueprintId: string }) {
           Bộ đề <code>{blueprintId}</code>
         </h2>
         <div className={styles.row}>
-          <label htmlFor="twin-count">Số câu song sinh cho mỗi slot</label>
+          <label htmlFor="twin-count">Số câu song sinh cho mỗi câu gốc</label>
           <input
             id="twin-count"
             className={styles.number}
@@ -64,8 +64,10 @@ export function TwinBatchPanel({ blueprintId }: { blueprintId: string }) {
       {state.kind === "idle" && (
         <p className={styles.muted}>Chưa sinh lượt nào cho bộ đề này. Chọn số câu rồi bấm "Sinh câu hỏi song sinh".</p>
       )}
-      {state.kind === "loading" && <Loading label="Đang sinh câu hỏi trong sandbox…" />}
-      {state.kind === "error" && <ErrorNotice error={state.error} onAction={generate} />}
+      {state.kind === "loading" && <Loading label="Đang sinh và kiểm chứng câu hỏi…" />}
+      {/* "Thử lại" gửi lại cùng yêu cầu với cùng khoá chống lặp, nên backend trả đúng lượt sinh cũ nếu đã sinh xong.
+          Lỗi 409 (đề chưa duyệt) không có nút: gửi lại không đổi được kết quả. */}
+      {state.kind === "error" && <ErrorNotice error={state.error} onRetry={generate} />}
       {state.kind === "ready" && <TwinViewer batch={state.batch} />}
 
       <p>

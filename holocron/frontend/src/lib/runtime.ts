@@ -156,7 +156,7 @@ export const CAPABILITY_LABEL_VI: Record<CapabilityName, string> = {
   concept_pair_llm_proposal: "LLM đề xuất cặp khái niệm",
   essay_grading_offline: "Chấm tự luận offline",
   essay_grading_llm: "Chấm tự luận bằng LLM",
-  template_authoring_llm: "LLM viết template cho dạng bài mới",
+  template_authoring_llm: "LLM học cách sinh câu cho dạng bài mới",
   vlm: "Đọc ảnh bằng mô hình thị giác (VLM)",
 };
 
@@ -218,10 +218,11 @@ export type CapabilityGroup = "offline" | "online" | "install" | "configure" | "
 
 export type UnavailableGroup = Exclude<CapabilityGroup, "offline" | "online">;
 
+// `secondary_ocr_disabled` là lựa chọn trong cấu hình backend (biến để trống), không phải thứ còn thiếu trên máy.
 const REASON_GROUP: Record<CapabilityReason, UnavailableGroup> = {
   ocr_engine_missing: "install",
   ocr_language_missing: "install",
-  secondary_ocr_disabled: "install",
+  secondary_ocr_disabled: "configure",
   llm_not_configured: "configure",
   vlm_not_configured: "configure",
   not_implemented: "not_implemented",
@@ -248,6 +249,46 @@ export function groupCapabilities(capabilities: CapabilityEntry[]): Record<Capab
     groups[capabilityGroup(capability)].push(capability);
   }
   return groups;
+}
+
+/**
+ * Câu giới thiệu nhóm "giao diện chưa nhận ra". Chỉ phần tử đang bật mới có thể gửi dữ liệu ra khỏi máy; phần tử đang
+ * tắt thì không, nên câu cảnh báo dữ liệu chỉ có khi nhóm có ít nhất một phần tử đang bật.
+ */
+export function unrecognizedGroupIntro(entries: readonly CapabilityEntry[]): string {
+  const base = "Backend báo các khả năng hoặc trạng thái dưới đây nhưng giao diện này chưa biết chúng.";
+  const anyOn = entries.some((entry) => entry.available);
+  const anyOff = entries.some((entry) => !entry.available);
+  const parts = [base];
+  if (anyOn) parts.push("Coi như phần đang bật có thể gửi dữ liệu ra khỏi máy.");
+  if (anyOff) parts.push("Phần đang tắt thì chưa dùng được và không gửi dữ liệu đi đâu.");
+  parts.push("Cập nhật giao diện để xem chi tiết.");
+  return parts.join(" ");
+}
+
+/**
+ * Màn Bắt đầu hiện gì ở phần khả năng: `legacy` khi backend chưa báo danh sách (bản cũ), `empty` khi backend trả danh
+ * sách rỗng (hoặc mọi phần tử đều sai dạng nên bị bỏ ở bước kiểm dạng), `list` khi có ít nhất một khả năng.
+ */
+export type CapabilityOverviewKind = "legacy" | "empty" | "list";
+
+export function capabilityOverviewKind(runtime: RuntimeView): CapabilityOverviewKind {
+  if (runtime.capabilities === null) return "legacy";
+  return runtime.capabilities.length === 0 ? "empty" : "list";
+}
+
+/**
+ * Nhãn "Dữ liệu mẫu" ở trang tải đề và trang item (§5.12). `confirmed`: backend báo `mock_extractor = true`.
+ * `assumed`: backend chưa có field `mock_extractor` nhưng `demo_mode = true`; với backend hiện tại `demo_mode` đang
+ * bám extractor mẫu (§5.12, "Code hiện: extractor đang chạy là Mock"), nên giả định an toàn là dữ liệu có thể là mẫu
+ * và nói rõ đó là giả định. `null`: không hiện nhãn (backend báo không phải dữ liệu mẫu, hoặc không có dấu hiệu nào).
+ */
+export type MockExtractorNotice = "confirmed" | "assumed" | null;
+
+export function mockExtractorNotice(runtime: RuntimeView | null): MockExtractorNotice {
+  if (runtime === null) return null;
+  if (runtime.mock_extractor !== null) return runtime.mock_extractor ? "confirmed" : null;
+  return runtime.demo_mode ? "assumed" : null;
 }
 
 /** Cần hiện hướng dẫn cài Tesseract và `vie.traineddata`. */

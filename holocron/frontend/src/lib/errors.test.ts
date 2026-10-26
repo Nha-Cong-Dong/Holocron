@@ -3,18 +3,24 @@ import { describe, expect, it } from "vitest";
 import { CAPABILITY_ERROR_BODY, LLM_UPSTREAM_ERROR_BODY } from "@/mocks/fixtures/errors";
 
 import {
+  ApiError,
   actionLabel,
   classifyHttpError,
   classifyNetworkError,
   describeUiError,
+  displayBase,
   type ErrorContext,
   type ErrorKind,
   extractDetail,
   invalidResponseError,
   isCapabilityError,
   keyedMessages,
+  localError,
   renderError,
+  toUiError,
 } from "./errors";
+import { DOCUMENT_UPLOAD_MAX_MIB, EXAM_UPLOAD_MAX_MIB } from "./limits";
+import { MAX_TWIN_COUNT, MIN_TWIN_COUNT } from "./twin";
 
 /** Thông điệp hiển thị không được lộ mã HTTP hay tên field/nhận dạng nội bộ của backend. */
 function expectUserFacing(message: string): void {
@@ -181,7 +187,16 @@ describe("CapabilityError nhận diện theo code trước", () => {
 });
 
 describe("câu riêng theo luồng cho 400/413/415/422", () => {
-  const contexts: ErrorContext[] = ["exam_upload", "document_upload", "table_edit", "item_review", "twin_generation"];
+  const contexts: ErrorContext[] = [
+    "exam_upload",
+    "document_upload",
+    "table_edit",
+    "item_review",
+    "blueprint_create",
+    "twin_generation",
+    "essay_grade",
+    "vault_source",
+  ];
 
   it("tải đề và tải tài liệu có câu riêng, khác câu chung", () => {
     const generic400 = classifyHttpError(400, { detail: "file rỗng" }).message;
@@ -198,8 +213,8 @@ describe("câu riêng theo luồng cho 400/413/415/422", () => {
     expect(doc422.message).toContain("Không mở được");
     expect(doc422.message).not.toBe(generic422);
 
-    expect(classifyHttpError(413, null, { context: "exam_upload" }).message).toContain("10 MB");
-    expect(classifyHttpError(413, null, { context: "document_upload" }).message).toContain("50 MB");
+    expect(classifyHttpError(413, null, { context: "exam_upload" }).message).toContain("10 MiB");
+    expect(classifyHttpError(413, null, { context: "document_upload" }).message).toContain("50 MiB");
     expect(classifyHttpError(415, null, { context: "document_upload" }).message).toContain("PDF");
   });
 
@@ -235,5 +250,91 @@ describe("keyedMessages", () => {
     const keyed = keyedMessages(["Ô (1, 2) lệch", "Ô (1, 2) lệch", "Khác", "Ô (1, 2) lệch"]);
     expect(keyed.map((k) => k.message)).toEqual(["Ô (1, 2) lệch", "Ô (1, 2) lệch", "Khác", "Ô (1, 2) lệch"]);
     expect(new Set(keyed.map((k) => k.key)).size).toBe(4);
+  });
+});
+
+describe("404 theo thân lỗi và luồng gọi", () => {
+  it("404 thân không phải JSON là không tới được backend, không phải thiếu dữ liệu", () => {
+    for (const body of [null, "<html>Not Found</html>", { other: 1 }]) {
+      const error = classifyHttpError(404, body);
+      expect(error.kind).toBe("server");
+      expect(error.action).toBe("retry");
+      expect(error.message).not.toContain("Không tìm thấy dữ liệu");
+    }
+  });
+
+  it("404 JSON của /v1/runtime là sai địa chỉ backend; luồng khác có câu riêng", () => {
+    const runtime = classifyHttpError(404, { detail: "Not Found" }, { context: "runtime" });
+    expect(runtime.kind).toBe("server");
+    expectUserFacing(runtime.message);
+    const blueprint = classifyHttpError(404, { detail: "Not Found" }, { context: "blueprint_create" });
+    expect(blueprint.kind).toBe("not_found");
+    expect(blueprint.message).toContain("chưa hỗ trợ tạo bộ đề");
+    expect(classifyHttpError(404, { detail: "x" }).message).toBe(
+      "Không tìm thấy dữ liệu yêu cầu. Có thể nó đã bị xoá.",
+    );
+  });
+});
+
+describe("409 khi tạo bộ đề hoặc sinh câu", () => {
+  it("đề chưa duyệt: lý do dễ hiểu, không có nút tải lại hay gửi lại", () => {
+    for (const context of ["twin_generation", "blueprint_create"] as const) {
+      const error = classifyHttpError(409, { detail: "item chưa approved" }, { context });
+      expect(error.kind).toBe("unapproved_source");
+      expect(error.action).toBe("none");
+      expect(actionLabel(error.action)).toBeNull();
+      expect(error.message).toContain("chưa được duyệt");
+      expect(error.message).not.toContain("approved");
+      expectUserFacing(error.message);
+    }
+  });
+
+  it("409 BLOCKING khi sinh câu giữ danh sách lỗi chặn với câu dẫn riêng", () => {
+    const error = classifyHttpError(
+      409,
+      { detail: { message: "x", issues: ["Ô (1, 2) lệch"] } },
+      { context: "twin_generation" },
+    );
+    expect(error.kind).toBe("blocking");
+    expect(error.issues).toEqual(["Ô (1, 2) lệch"]);
+    expect(error.message).toContain("chưa sinh câu hỏi");
+    expect(error.action).toBe("none");
+  });
+
+  it("CapabilityError vẫn được nhận diện trước, kể cả khi tạo bộ đề", () => {
+    const error = classifyHttpError(409, CAPABILITY_ERROR_BODY, { context: "blueprint_create" });
+    expect(error.kind).toBe("capability");
+  });
+});
+
+describe("đơn vị dung lượng và giới hạn dùng hằng chung", () => {
+  it("dung lượng ghi theo MiB như spec §6.0, số lấy từ lib/limits", () => {
+    expect(classifyHttpError(413, null, { context: "exam_upload" }).message).toContain(`${EXAM_UPLOAD_MAX_MIB} MiB`);
+    expect(classifyHttpError(413, null, { context: "document_upload" }).message).toContain(
+      `${DOCUMENT_UPLOAD_MAX_MIB} MiB`,
+    );
+    for (const context of ["exam_upload", "document_upload"] as const) {
+      expect(classifyHttpError(413, null, { context }).message).not.toMatch(/\bMB\b/);
+    }
+    expect(classifyHttpError(422, null, { context: "twin_generation" }).message).toContain(
+      `từ ${MIN_TWIN_COUNT} đến ${MAX_TWIN_COUNT}`,
+    );
+  });
+});
+
+describe("displayBase", () => {
+  it("không in thông tin xác thực trong địa chỉ backend", () => {
+    expect(displayBase("http://user:pass@127.0.0.1:8000/api")).toBe("http://127.0.0.1:8000/api");
+    expect(classifyNetworkError("https://tok@localhost:8000").message).not.toContain("tok@");
+    expect(displayBase("/api/holocron")).toBe("/api/holocron");
+  });
+});
+
+describe("ApiError và toUiError", () => {
+  it("toUiError đọc lỗi đã phân loại; lỗi khác thành lỗi không rõ", () => {
+    const info = classifyHttpError(409, { detail: "x" }, { context: "twin_generation" });
+    expect(toUiError(new ApiError(409, info))).toEqual(info);
+    expect(toUiError(new Error("x")).kind).toBe("unknown");
+    expect(localError("Câu trả lời đang trống.").action).toBe("none");
   });
 });

@@ -10,15 +10,14 @@
 
 import { apiBase, authHeaders, USE_MOCKS } from "@/lib/config";
 import {
+  ApiError,
   type ClassifyOptions,
   classifyHttpError,
   classifyNetworkError,
-  describeUiError,
   invalidResponseError,
-  type UiError,
-  unknownError,
 } from "@/lib/errors";
 import { normalizeRuntimeInfo, type RuntimeView } from "@/lib/runtime";
+import { parseSubjectList } from "@/lib/subjects";
 import { fillRuntimeGaps, mockApi } from "@/mocks";
 import type { Subject } from "@/types/contract-pending";
 import type {
@@ -34,23 +33,8 @@ import type {
 /** Ứng dụng local-first một người dùng: mọi chỉnh sửa ghi audit dưới định danh này. */
 export const LOCAL_EDITOR_ID = "local_user";
 
-export class ApiError extends Error {
-  /** Mã HTTP; `null` khi không tới được backend. Chỉ dùng cho logic, không hiển thị. */
-  readonly status: number | null;
-  readonly info: UiError;
-
-  constructor(status: number | null, info: UiError) {
-    super(describeUiError(info));
-    this.name = "ApiError";
-    this.status = status;
-    this.info = info;
-  }
-}
-
-/** Lỗi bất kỳ bắt được từ lời gọi API → lỗi đã phân loại để hiển thị. */
-export function toUiError(error: unknown): UiError {
-  return error instanceof ApiError ? error.info : unknownError();
-}
+// `ApiError` và `toUiError` nằm ở `lib/errors.ts` để dữ liệu mẫu dựng được lỗi đã phân loại mà không import vòng.
+export { ApiError, toUiError } from "@/lib/errors";
 
 interface RequestSpec {
   method: "GET" | "POST" | "PATCH" | "DELETE";
@@ -99,7 +83,7 @@ function segment(value: string): string {
 export interface HolocronApi {
   /** `GET /v1/runtime` (§5.12), đã kiểm dạng. */
   getRuntime: () => Promise<RuntimeView>;
-  /** `GET /v1/subjects` (§6.8, đường dẫn còn đề xuất; chưa có ở backend). */
+  /** `GET /v1/subjects` (§6.8, đường dẫn còn đề xuất; chưa có ở backend), đã kiểm dạng từng phần tử. */
   listSubjects: () => Promise<Subject[]>;
   /** `POST /v1/ingestion/upload` (§6.1). */
   uploadDocument: (file: File, topicKey: string, quantum: number | null) => Promise<UploadResponse>;
@@ -127,7 +111,7 @@ export interface HolocronApi {
  * Thiếu cờ bắt buộc ⇒ lỗi phản hồi không hợp lệ, như thân không phải JSON.
  */
 async function loadRuntime(transform: (raw: unknown) => unknown): Promise<RuntimeView> {
-  const raw = await request<unknown>("/v1/runtime", { method: "GET" });
+  const raw = await request<unknown>("/v1/runtime", { method: "GET" }, { context: "runtime" });
   const runtime = normalizeRuntimeInfo(transform(raw));
   if (runtime === null) {
     throw new ApiError(200, invalidResponseError());
@@ -138,7 +122,13 @@ async function loadRuntime(transform: (raw: unknown) => unknown): Promise<Runtim
 export const realApi: HolocronApi = {
   getRuntime: () => loadRuntime((raw) => raw),
 
-  listSubjects: () => request<Subject[]>("/v1/subjects", { method: "GET" }),
+  listSubjects: async () => {
+    const subjects = parseSubjectList(await request<unknown>("/v1/subjects", { method: "GET" }));
+    if (subjects === null) {
+      throw new ApiError(200, invalidResponseError());
+    }
+    return subjects;
+  },
 
   uploadDocument: (file, topicKey, quantum) => {
     const form = new FormData();

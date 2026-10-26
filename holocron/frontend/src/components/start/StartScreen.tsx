@@ -7,10 +7,12 @@ import { ErrorNotice } from "@/components/common/ErrorNotice";
 import { Loading } from "@/components/common/LoadState";
 import { useShell } from "@/components/shell/ShellContext";
 import { IS_DEVELOPMENT } from "@/lib/config";
+import type { ErrorKind } from "@/lib/errors";
 import {
   type CapabilityEntry,
   capabilitiesOf,
   capabilityLabel,
+  capabilityOverviewKind,
   type DataEgress,
   freshRuntime,
   groupCapabilities,
@@ -18,11 +20,12 @@ import {
   type RuntimeView,
   selectDataEgress,
   type UnavailableGroup as UnavailableGroupName,
+  unrecognizedGroupIntro,
 } from "@/lib/runtime";
 
 import styles from "./StartScreen.module.css";
 
-const GROUP_TEXT: Record<UnavailableGroupName, { title: string; intro: string }> = {
+const GROUP_TEXT: Record<Exclude<UnavailableGroupName, "unrecognized">, { title: string; intro: string }> = {
   install: {
     title: "Cần cài thêm trên máy này",
     intro: "Các phần dưới đây chạy offline nhưng cần chương trình hoặc dữ liệu chưa có trên máy.",
@@ -35,12 +38,16 @@ const GROUP_TEXT: Record<UnavailableGroupName, { title: string; intro: string }>
     title: "Chưa có trong bản đang chạy",
     intro: "Các tính năng này sẽ có ở bản sau.",
   },
-  unrecognized: {
-    title: "Giao diện chưa nhận ra",
-    intro:
-      "Backend báo các khả năng hoặc trạng thái dưới đây nhưng giao diện này chưa biết chúng. Coi như chúng có thể gửi dữ liệu ra khỏi máy; cập nhật giao diện để xem chi tiết.",
-  },
 };
+
+const UNRECOGNIZED_TITLE = "Giao diện chưa nhận ra";
+
+/** Tiêu đề khối lỗi kết nối theo loại lỗi, không theo mã HTTP. */
+function backendErrorTitle(kind: ErrorKind): string {
+  if (kind === "network" || kind === "server") return "Chưa kết nối được backend";
+  if (kind === "forbidden") return "Backend từ chối yêu cầu";
+  return "Backend trả lời không như mong đợi";
+}
 
 const EGRESS_TEXT: Record<DataEgress, string> = {
   unknown:
@@ -78,10 +85,8 @@ export function StartScreen() {
 
       {runtime.error !== null && (
         <section className={styles.section} aria-labelledby="start-backend">
-          <h2 id="start-backend">
-            {runtime.backend === "unreachable" ? "Chưa kết nối được backend" : "Backend từ chối yêu cầu"}
-          </h2>
-          <ErrorNotice error={runtime.error} onAction={refreshRuntime} />
+          <h2 id="start-backend">{backendErrorTitle(runtime.error.kind)}</h2>
+          <ErrorNotice error={runtime.error} onRetry={refreshRuntime} onReload={refreshRuntime} />
           {runtime.runtime !== null && (
             <p className={styles.muted}>
               Danh sách khả năng của lần kiểm tra trước đã được ẩn vì chưa cập nhật được; nó sẽ hiện lại khi backend trả
@@ -99,6 +104,10 @@ export function StartScreen() {
       <section className={styles.section} aria-labelledby="start-next">
         <h2 id="start-next">Bước tiếp theo</h2>
         <ul className={styles.nextSteps}>
+          <li>
+            <Link href="/practice">Luyện tập</Link>: chọn môn ở thanh bên, tạo đề từ các cặp khái niệm đã xác nhận rồi
+            làm từng câu.
+          </li>
           <li>
             <Link href="/ingestion">Nhập một đề thi</Link>: tải ảnh hoặc PDF đề, kiểm duyệt bảng số liệu trước khi sinh
             câu song sinh.
@@ -132,8 +141,25 @@ function BackendHelp() {
 }
 
 function CapabilityOverview({ runtime }: { runtime: RuntimeView }) {
-  const capabilities = capabilitiesOf(runtime);
-  if (capabilities === null) {
+  const capabilities = capabilitiesOf(runtime) ?? [];
+  const kind = capabilityOverviewKind(runtime);
+  if (kind === "empty") {
+    return (
+      <section className={styles.section} aria-labelledby="start-capabilities">
+        <h2 id="start-capabilities">Khả năng của máy này</h2>
+        <p className={styles.muted}>
+          Backend trả về danh sách khả năng rỗng (hoặc giao diện không đọc được phần tử nào), nên chưa biết tính năng
+          nào chạy được trên máy này. Các tính năng vẫn mở; nếu một thao tác báo thiếu thành phần, làm theo hướng dẫn
+          hiện ngay tại đó. Bấm “Kiểm tra lại” ở thanh trạng thái sau khi cập nhật backend.
+        </p>
+        <ul className={styles.facts}>
+          <li>LLM: {runtime.llm_configured ? "đã cấu hình" : "chưa cấu hình, app chạy offline"}.</li>
+          <li>Mô hình đọc ảnh (VLM): {runtime.vlm_configured ? "đã cấu hình" : "chưa cấu hình"}.</li>
+        </ul>
+      </section>
+    );
+  }
+  if (kind === "legacy") {
     return (
       <section className={styles.section} aria-labelledby="start-capabilities">
         <h2 id="start-capabilities">Khả năng của máy này</h2>
@@ -165,11 +191,15 @@ function CapabilityOverview({ runtime }: { runtime: RuntimeView }) {
         tone="info"
         note="Khi dùng các tính năng này, văn bản đã tách từ tài liệu (với LLM) hoặc ảnh trang (với VLM) được gửi tới dịch vụ đã cấu hình."
       />
-      <UnavailableGroup group="install" capabilities={groups.install} />
+      <UnavailableGroup {...GROUP_TEXT.install} capabilities={groups.install} />
       {needsTesseractHelp(runtime) && <TesseractHelp />}
-      <UnavailableGroup group="configure" capabilities={groups.configure} />
-      <UnavailableGroup group="not_implemented" capabilities={groups.not_implemented} />
-      <UnavailableGroup group="unrecognized" capabilities={groups.unrecognized} />
+      <UnavailableGroup {...GROUP_TEXT.configure} capabilities={groups.configure} />
+      <UnavailableGroup {...GROUP_TEXT.not_implemented} capabilities={groups.not_implemented} />
+      <UnavailableGroup
+        title={UNRECOGNIZED_TITLE}
+        intro={unrecognizedGroupIntro(groups.unrecognized)}
+        capabilities={groups.unrecognized}
+      />
     </section>
   );
 }
@@ -208,17 +238,17 @@ function ReadyGroup({ title, capabilities, badge, tone, note }: ReadyGroupProps)
 }
 
 interface UnavailableGroupProps {
-  group: UnavailableGroupName;
+  title: string;
+  intro: string;
   capabilities: CapabilityEntry[];
 }
 
-function UnavailableGroup({ group, capabilities }: UnavailableGroupProps) {
+function UnavailableGroup({ title, intro, capabilities }: UnavailableGroupProps) {
   if (capabilities.length === 0) return null;
-  const text = GROUP_TEXT[group];
   return (
     <div className={styles.group}>
-      <h3>{text.title}</h3>
-      <p className={styles.muted}>{text.intro}</p>
+      <h3>{title}</h3>
+      <p className={styles.muted}>{intro}</p>
       <div className={styles.notices}>
         {capabilities.map((capability, index) => (
           <CapabilityNoticeBox

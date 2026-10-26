@@ -16,7 +16,7 @@ export default function ErrorPage({ reset }: ErrorPageProps) {
   return (
     <section aria-labelledby="render-error-title">
       <h2 id="render-error-title">Không hiển thị được màn hình này</h2>
-      <ErrorNotice error={renderError()} onAction={reset} />
+      <ErrorNotice error={renderError()} onRetry={reset} />
     </section>
   );
 }

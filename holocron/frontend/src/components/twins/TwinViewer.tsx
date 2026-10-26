@@ -23,13 +23,13 @@ export function TwinViewer({ batch }: TwinViewerProps) {
   return (
     <div className={styles.viewer}>
       <p role="status" className={styles.summary}>
-        Đã sinh <strong>{batch.twins.length}</strong> Twin Question cho <strong>{groups.length}</strong> slot (seed gốc{" "}
-        <code>{batch.base_seed}</code>
-        {batch.review_tickets.length > 0 && <>; {batch.review_tickets.length} slot cần xem lại thủ công</>}).
+        Đã sinh <strong>{batch.twins.length}</strong> câu song sinh cho <strong>{groups.length}</strong> câu gốc (seed
+        gốc <code>{batch.base_seed}</code>
+        {batch.review_tickets.length > 0 && <>; {batch.review_tickets.length} câu gốc cần xem lại thủ công</>}).
       </p>
       {groups.map((group) => (
-        <section key={group.slotIndex} aria-labelledby={`slot-${group.slotIndex}`} className={styles.slot}>
-          <h2 id={`slot-${group.slotIndex}`}>Slot {group.slotIndex}</h2>
+        <section key={group.slotIndex} aria-labelledby={`source-${group.slotIndex}`} className={styles.slot}>
+          <h2 id={`source-${group.slotIndex}`}>Câu gốc {group.slotIndex}</h2>
           {group.twins.map((twin, position) => (
             <TwinCard key={twin.twin_id} twin={twin} position={position + 1} />
           ))}
@@ -45,7 +45,7 @@ function TwinCard({ twin, position }: { twin: TwinQuestion; position: number }) 
   return (
     <article className={styles.card} aria-labelledby={`twin-${twin.twin_id}`}>
       <header className={styles.cardHeader}>
-        <h3 id={`twin-${twin.twin_id}`}>Twin {position}</h3>
+        <h3 id={`twin-${twin.twin_id}`}>Câu song sinh {position}</h3>
         <span className={twin.review_status === "AUTO_PASS" ? styles.badgeOk : styles.badgeWarn}>
           {REVIEW_STATUS_LABELS[twin.review_status]}
         </span>
@@ -94,7 +94,7 @@ function TwinCard({ twin, position }: { twin: TwinQuestion; position: number }) 
 
       <p className={styles.trace}>
         Seed {twin.seed} · {PROVENANCE_LABELS[twin.trace.provenance]} (
-        <code>{shortHash(twin.trace.template_sha256)}</code>) · sandbox {twin.trace.sandbox_duration_ms} ms ·{" "}
+        <code>{shortHash(twin.trace.template_sha256)}</code>) · tính trong {twin.trace.sandbox_duration_ms} ms ·{" "}
         {twin.trace.llm_attempts} lượt LLM · {twin.trace.seed_rerolls} lần đổi seed
       </p>
     </article>
@@ -105,7 +105,7 @@ function TicketNotice({ ticket }: { ticket: ReviewTicket }) {
   const attempts = ticketAttemptSummary(ticket);
   return (
     <div role="alert" className={styles.ticket}>
-      <strong>Slot {ticket.slot_index} cần xem lại thủ công.</strong> {ticket.reason}
+      <strong>Câu gốc {ticket.slot_index} cần xem lại thủ công.</strong> {ticket.reason}
       <span className={styles.ticketTopic}>
         {" "}
         (<code>{ticket.topic_key}</code>)

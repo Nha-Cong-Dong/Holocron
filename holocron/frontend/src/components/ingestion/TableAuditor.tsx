@@ -2,7 +2,9 @@
 
 import { type KeyboardEvent, useCallback, useMemo, useState } from "react";
 
-import { ApiError, api } from "@/lib/api";
+import { ErrorNotice } from "@/components/common/ErrorNotice";
+import { ApiError, api, toUiError } from "@/lib/api";
+import { localError, type UiError } from "@/lib/errors";
 import { canApprove, cellKey, cellText, groupIssues, keyedIssues, rowIndices, tableColumns } from "@/lib/gate";
 import type { GateIssue, IngestionItem, Severity } from "@/types/holocron";
 
@@ -52,16 +54,16 @@ function cellClassName(severity: Severity | null, verified: boolean): string {
   return joinClasses(styles.cell);
 }
 
-function errorMessage(error: unknown): string {
-  if (error instanceof ApiError) return error.message;
-  if (error instanceof Error) return error.message;
-  return "Lỗi không xác định.";
+/** Lỗi đang hiện cùng thao tác mà nút "Thử lại" sẽ gửi lại; nút "Tải lại bản mới nhất" luôn chỉ đọc lại item. */
+interface AuditorError {
+  info: UiError;
+  retry: (() => void) | null;
 }
 
 export function TableAuditor({ item, onItemChange, onApproved }: TableAuditorProps) {
   const [editing, setEditing] = useState<EditingCell | null>(null);
-  const [busy, setBusy] = useState<"patch" | "approve" | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"patch" | "approve" | "reload" | null>(null);
+  const [error, setError] = useState<AuditorError | null>(null);
 
   const table = item.table_primary;
   const rows = rowIndices(table);
@@ -81,6 +83,23 @@ export function TableAuditor({ item, onItemChange, onApproved }: TableAuditorPro
     input?.focus();
   }, []);
 
+  function showLocal(message: string): void {
+    setError({ info: localError(message), retry: null });
+  }
+
+  /** Đọc lại item từ backend (nút "Tải lại bản mới nhất"); không gửi lại thao tác ghi nào. */
+  async function reloadItem(): Promise<void> {
+    setBusy("reload");
+    setError(null);
+    try {
+      onItemChange(await api.getItem(item.item_id));
+    } catch (err) {
+      setError({ info: toUiError(err), retry: () => void reloadItem() });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   function startEditing(row: number, col: number): void {
     if (!editable) return;
     setError(null);
@@ -90,11 +109,11 @@ export function TableAuditor({ item, onItemChange, onApproved }: TableAuditorPro
   async function save(row: number, col: number, rawText: string): Promise<void> {
     const text = rawText.trim();
     if (text.length === 0) {
-      setError("Ô không được để trống.");
+      showLocal("Ô không được để trống.");
       return;
     }
     if (text.length > MAX_CELL_TEXT) {
-      setError(`Ô dài tối đa ${MAX_CELL_TEXT} ký tự.`);
+      showLocal(`Ô dài tối đa ${MAX_CELL_TEXT} ký tự.`);
       return;
     }
     const unchanged = text === cellText(table, row, col);
@@ -111,15 +130,15 @@ export function TableAuditor({ item, onItemChange, onApproved }: TableAuditorPro
       onItemChange(updated);
     } catch (err) {
       if (err instanceof ApiError && err.info.kind === "version_conflict") {
-        setError("Bảng vừa được sửa ở nơi khác. Đã tải lại bản mới nhất, hãy kiểm tra rồi sửa lại.");
         setEditing(null);
         try {
           onItemChange(await api.getItem(item.item_id));
+          showLocal("Bảng vừa được sửa ở nơi khác. Đã tải lại bản mới nhất, hãy kiểm tra rồi sửa lại.");
         } catch (reloadErr) {
-          setError(errorMessage(reloadErr));
+          setError({ info: toUiError(reloadErr), retry: () => void reloadItem() });
         }
       } else {
-        setError(errorMessage(err));
+        setError({ info: toUiError(err), retry: () => void save(row, col, rawText) });
       }
     } finally {
       setBusy(null);
@@ -147,7 +166,7 @@ export function TableAuditor({ item, onItemChange, onApproved }: TableAuditorPro
       onItemChange(approved);
       onApproved(approved);
     } catch (err) {
-      setError(errorMessage(err));
+      setError({ info: toUiError(err), retry: () => void handleApprove() });
     } finally {
       setBusy(null);
     }
@@ -305,9 +324,11 @@ export function TableAuditor({ item, onItemChange, onApproved }: TableAuditorPro
       )}
 
       {error !== null && (
-        <p className={styles.error} role="alert">
-          {error}
-        </p>
+        <ErrorNotice
+          error={error.info}
+          onRetry={error.retry ?? undefined}
+          onReload={busy === null ? () => void reloadItem() : undefined}
+        />
       )}
 
       <footer className={styles.footer}>

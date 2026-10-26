@@ -121,3 +121,25 @@ describe("parseMockFlag", () => {
     expect(parseMockFlag("yes")).toBe(false);
   });
 });
+
+describe("normalizeApiBase: dấu gạch ngược và thông tin xác thực", () => {
+  it("từ chối dấu gạch ngược ở bất kỳ đâu và phần user:pass@ trước tên máy", () => {
+    for (const bad of [
+      "http://127.0.0.1:8000\\api",
+      "http:\\\\127.0.0.1:8000",
+      "/api\\holocron",
+      "http://127.0.0.1:8000\\@may-khac",
+      "http://user:pass@127.0.0.1:8000",
+      "http://127.0.0.1@may-khac.example",
+      "https://token@localhost:8000/api",
+      "/api/@holocron",
+    ]) {
+      expect(normalizeApiBase(bad)).toBeNull();
+    }
+  });
+
+  it("biến build hay object chèn có thông tin xác thực thì không dùng, rơi về mặc định", () => {
+    expect(resolveApiBase(null, "http://user:pass@127.0.0.1:8000")).toBe(DEFAULT_API_BASE);
+    expect(parseInjectedRuntime({ apiBase: "http://a:b@127.0.0.1:9000", token: null })).toBeNull();
+  });
+});

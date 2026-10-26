@@ -4,14 +4,17 @@ import { RUNTIME_FIXTURES, type RuntimeScenario } from "@/mocks/fixtures/runtime
 
 import { classifyHttpError, classifyNetworkError } from "./errors";
 import {
+  CAPABILITY_LABEL_VI,
   capabilitiesOf,
   capabilityLabel,
   capabilityOf,
+  capabilityOverviewKind,
   freshRuntime,
   groupCapabilities,
   INITIAL_RUNTIME_STATE,
   isCapabilityBlocked,
   mayUseNetwork,
+  mockExtractorNotice,
   needsTesseractHelp,
   normalizeCapability,
   normalizeRuntimeInfo,
@@ -24,6 +27,7 @@ import {
   selectOfflineMode,
   selectStatusItems,
   UNRECOGNIZED_CAPABILITY_LABEL_VI,
+  unrecognizedGroupIntro,
 } from "./runtime";
 
 /** Thân JSON đi qua đúng bước kiểm dạng ở ranh giới như `lib/api.ts`. */
@@ -145,8 +149,9 @@ describe("groupCapabilities", () => {
     const groups = groupCapabilities(FIXTURES.no_tesseract.capabilities ?? []);
     expect(groups.offline.map((c) => c.name)).toEqual(["vault_search", "theory_generation", "essay_grading_offline"]);
     expect(groups.online.map((c) => c.name)).toEqual(["concept_pair_llm_proposal", "template_authoring_llm"]);
-    expect(groups.install.map((c) => c.name)).toEqual(["ocr", "ocr_cross_check"]);
-    expect(groups.configure.map((c) => c.name)).toEqual(["vlm"]);
+    // Lượt đọc thứ hai tắt là do cấu hình backend (`secondary_ocr_disabled`), không phải thiếu chương trình trên máy.
+    expect(groups.install.map((c) => c.name)).toEqual(["ocr"]);
+    expect(groups.configure.map((c) => c.name)).toEqual(["ocr_cross_check", "vlm"]);
     expect(groups.not_implemented.map((c) => c.name)).toEqual(["essay_grading_llm"]);
   });
 
@@ -350,5 +355,48 @@ describe("băng chạy offline", () => {
     expect(selectOfflineMode(loaded(view({ demo_mode: false, llm_configured: false, vlm_configured: false })))).toBe(
       true,
     );
+  });
+});
+
+describe("nhóm 'giao diện chưa nhận ra'", () => {
+  const unknownOn = normalizeCapability({ name: "cloud_sync", available: true, reason: null, detail_vi: null });
+  const unknownOff = normalizeCapability({ name: "cloud_sync", available: false, reason: "x", detail_vi: null });
+
+  it("câu cảnh báo gửi dữ liệu chỉ áp cho phần tử đang bật", () => {
+    if (unknownOn === null || unknownOff === null) throw new Error("phần tử mẫu không qua kiểm dạng");
+    expect(unrecognizedGroupIntro([unknownOff])).not.toContain("gửi dữ liệu ra khỏi máy");
+    expect(unrecognizedGroupIntro([unknownOff])).toContain("đang tắt");
+    expect(unrecognizedGroupIntro([unknownOn])).toContain("đang bật có thể gửi dữ liệu ra khỏi máy");
+    expect(unrecognizedGroupIntro([unknownOn])).not.toContain("đang tắt");
+    const both = unrecognizedGroupIntro([unknownOn, unknownOff]);
+    expect(both).toContain("đang bật");
+    expect(both).toContain("đang tắt");
+  });
+});
+
+describe("capabilityOverviewKind", () => {
+  it("bản cũ, danh sách rỗng và danh sách có phần tử được phân biệt", () => {
+    expect(capabilityOverviewKind(LEGACY)).toBe("legacy");
+    expect(capabilityOverviewKind(view({ ...LEGACY_BODY, capabilities: [] }))).toBe("empty");
+    expect(capabilityOverviewKind(view({ ...LEGACY_BODY, capabilities: [null, 3, { name: 1 }] }))).toBe("empty");
+    expect(capabilityOverviewKind(FIXTURES.offline)).toBe("list");
+  });
+});
+
+describe("mockExtractorNotice", () => {
+  it("backend báo rõ thì theo backend; chưa báo mà demo_mode bật thì giả định là dữ liệu mẫu", () => {
+    expect(mockExtractorNotice(null)).toBeNull();
+    expect(mockExtractorNotice(view({ ...LEGACY_BODY, mock_extractor: true }))).toBe("confirmed");
+    expect(mockExtractorNotice(view({ ...LEGACY_BODY, mock_extractor: false }))).toBeNull();
+    expect(mockExtractorNotice(LEGACY)).toBe("assumed");
+    expect(mockExtractorNotice(view({ ...LEGACY_BODY, demo_mode: false }))).toBeNull();
+  });
+});
+
+describe("nhãn khả năng không dùng thuật ngữ nội bộ", () => {
+  it("không có sandbox, slot hay template", () => {
+    for (const label of Object.values(CAPABILITY_LABEL_VI)) {
+      expect(label).not.toMatch(/sandbox|slot|template/i);
+    }
   });
 });

@@ -46,7 +46,7 @@ export function IngestionReview({ itemId }: { itemId: string }) {
   if (state.kind === "error") {
     return (
       <div className={styles.page}>
-        <ErrorNotice error={state.error} onAction={load} />
+        <ErrorNotice error={state.error} onRetry={load} onReload={load} />
         <p>
           <Link href="/ingestion">Quay lại trang tải đề</Link>
         </p>

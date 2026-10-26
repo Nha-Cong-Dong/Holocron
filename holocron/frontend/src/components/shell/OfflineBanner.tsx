@@ -8,8 +8,8 @@ import styles from "./OfflineBanner.module.css";
 export function OfflineBanner() {
   return (
     <aside className={styles.banner} aria-label="Chế độ chạy">
-      <strong>Đang chạy offline, không có LLM.</strong> Nhãn và cặp khái niệm cần nhập tay; câu tính toán chỉ dùng
-      template đã kiểm chứng.
+      <strong>Đang chạy offline, không có LLM.</strong> Nhãn và cặp khái niệm cần nhập tay; câu tính toán chỉ dùng mẫu
+      sinh câu đã kiểm chứng.
     </aside>
   );
 }

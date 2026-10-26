@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from ..domain.ingestion import IngestionItem, IngestionItemCreate
@@ -19,7 +19,7 @@ from ..domain.twins import IdempotencyRecord
 from ..infrastructure.memory_store import IDEMPOTENCY_TTL, IngestionStore
 from ..infrastructure.storage import SQLiteStore
 from . import blueprints, ingestion, runtime, vault
-from .access import get_allowed_hosts, get_required_token, require_local_request
+from .access import LocalAccessMiddleware, get_allowed_hosts, get_required_token
 from .blueprints import create_twins
 from .deps import (
     REGISTRY,
@@ -69,6 +69,7 @@ __all__ = [
     "IngestionItem",
     "IngestionItemCreate",
     "IngestionStore",
+    "LocalAccessMiddleware",
     "NonCloneableRequest",
     "RuntimeConfigDep",
     "RuntimeInfo",
@@ -94,7 +95,6 @@ __all__ = [
     "get_template_author",
     "patch_stem",
     "patch_table",
-    "require_local_request",
     "upload_document",
 ]
 
@@ -123,13 +123,10 @@ async def _store_busy(_: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=503, content={"detail": STORE_BUSY_DETAIL})
 
 
-# Kiểm `Host` và token (nếu bật) cho mọi route gắn vào app (SPECIFICATION §6.0, §13.1); xem `routers/access.py`.
-app = FastAPI(
-    title="Holocron Ingestion Gate",
-    version="0.1.0a0",
-    lifespan=_lifespan,
-    dependencies=[Depends(require_local_request)],
-)
+app = FastAPI(title="Holocron Ingestion Gate", version="0.1.0a0", lifespan=_lifespan)
+# Kiểm `Host` và token (nếu bật) cho MỌI request, trước routing và trước khi đọc body (SPECIFICATION §6.0, §13.1):
+# gồm cả `/openapi.json`, `/docs`, `/redoc`, 404 và 405. Provider tra qua `app.dependency_overrides` để test override.
+app.add_middleware(LocalAccessMiddleware, overrides=lambda: app.dependency_overrides)
 app.add_exception_handler(StorageBusyError, _store_busy)
 app.include_router(runtime.router)
 app.include_router(ingestion.router)

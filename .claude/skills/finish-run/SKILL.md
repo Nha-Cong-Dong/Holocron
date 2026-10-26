@@ -43,7 +43,8 @@ Ghi cho từng lệnh: lệnh, đạt/không đạt, output lỗi nguyên văn (
 Gọi subagent `reviewer` (Agent tool, `subagent_type: reviewer`) chỉ với: tên nhánh, đường dẫn worktree, phạm vi `origin/develop...<nhánh>`, đường dẫn brief. KHÔNG kèm nhận định, tóm tắt hay kết luận của agent chính.
 
 ## 4. Mutation
-- Lập danh sách module nguồn trong diff khớp vùng bất biến ở CLAUDE.md §9: Ingestion Gate, validator trong `domain/`, `sandbox/` và ASTGuard, `services/pipeline*`, `services/twin_batch.py`, `services/theory_generator.py` (I2/I4), template trong `infrastructure/templates/` (I4), kiểm trích dẫn nguyên văn (I3), bộ nhập PDF (`services/cross_check_gate.py`, `infrastructure/document_readers/`; I5), `holocron/frontend/src/lib/gate.ts`. Bảng §9 có thêm file test mới thì module nguồn tương ứng cũng thuộc danh sách.
+- Lập danh sách module nguồn trong diff khớp vùng bất biến ở CLAUDE.md §9: Ingestion Gate, validator trong `domain/`, `sandbox/` và ASTGuard, `services/pipeline*`, `services/twin_batch.py`, `services/theory_generator.py` (I2/I4), template trong `infrastructure/templates/` (I4), kiểm trích dẫn nguyên văn (I3), bộ nhập PDF (`services/cross_check_gate.py`, `infrastructure/document_readers/`; I5), chỗ cưỡng chế I5 ở router (`routers/ingestion.py` nhánh approve/khoá sửa, `routers/blueprints.py` điều kiện nhận item, `routers/documents.py`), `holocron/frontend/src/lib/gate.ts`.
+- Ngoài danh sách trên, mọi module nguồn trong diff được import (trực tiếp hoặc gián tiếp qua `holocron_core`) bởi một file test có tên trong bảng CLAUDE.md §9 cũng thuộc danh sách. Cách kiểm: với từng module trong diff, grep tên module trong các file test của bảng §9 và trong các module mà các test đó import; có khớp thì đưa vào. Không chắc thì đưa vào.
 - Có module khớp: gọi subagent `mutation-tester` (`subagent_type: mutation-tester`) chỉ với tên nhánh và danh sách module đó. Không khớp: bỏ qua và ghi lý do.
 - Không bao giờ chạy mutation trên toàn repo.
 

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef } from "react";
 
 import { ErrorNotice } from "@/components/common/ErrorNotice";
 import { Loading } from "@/components/common/LoadState";
+import { USE_MOCKS } from "@/lib/config";
 import { essayResultView } from "@/lib/essay";
 import type { AnswerEntry } from "@/lib/practice";
 import type { EssayQuestion } from "@/lib/practice-data";
@@ -95,6 +96,12 @@ export function EssayQuestionView({
   const view = essayResultView(entry.result);
   return (
     <div ref={resultRef} className={styles.result} tabIndex={-1} aria-live="polite">
+      {USE_MOCKS && (
+        <p className={styles.note}>
+          <strong>Dữ liệu mẫu:</strong> kết quả dưới đây là kết quả cố định dựng sẵn cho câu này, không phải kết quả
+          chấm câu trả lời bạn vừa viết.
+        </p>
+      )}
       <p className={styles.verdict}>{view.headline}</p>
       <p className={styles.limitation}>{view.limitation}</p>
 

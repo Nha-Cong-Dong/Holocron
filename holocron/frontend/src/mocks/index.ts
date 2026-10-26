@@ -57,7 +57,10 @@ export function mockPracticeBatch(): Promise<PracticeBatch> {
   return Promise.resolve(checked(parsePracticeBatch(structuredClone(fixture))));
 }
 
-/** M9: `POST /v1/twins/{twin_id}/essay-grade` (§6.9) chưa có. Chọn kết quả theo `twin_id`, không theo câu trả lời. */
+/**
+ * M9: `POST /v1/twins/{twin_id}/essay-grade` (§6.9) chưa có. Chọn kết quả theo `twin_id`, không theo câu trả lời, nên
+ * khi bật mock khối kết quả tự luận và form tạo đề ghi rõ đây là kết quả cố định dựng sẵn, không phải chấm thật.
+ */
 function gradeEssay(twinId: string): Promise<EssayGradeView> {
   const fixture = ESSAY_GRADE_FIXTURES[twinId];
   if (fixture === undefined) {

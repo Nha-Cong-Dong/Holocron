@@ -9,6 +9,7 @@ import { useShell } from "@/components/shell/ShellContext";
 import { api, toUiError } from "@/lib/api";
 import type { UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
+import { appendSentence, VAULT_HINT_VI } from "@/lib/practice";
 import type { PracticeBatch, PracticeBlueprint, PracticeTicket } from "@/lib/practice-data";
 import { freshRuntime } from "@/lib/runtime";
 import { selectedSubject } from "@/lib/subjects";
@@ -172,7 +173,7 @@ function ReadyBatch({ batch, blueprint, subject, onNewExam }: ReadyBatchProps) {
           }
         >
           {onlyTheory
-            ? "Vào Vault để xác nhận thêm cặp khái niệm cho chương này (cần ít nhất bốn khái niệm), rồi tạo lại đề."
+            ? `Lý do của từng câu ở bên dưới. ${VAULT_HINT_VI}`
             : "Thử tạo đề với chương khác, hoặc xem lý do của từng câu bên dưới."}
         </EmptyState>
         <TicketNotice tickets={batch.tickets} showVaultHint={!onlyTheory} />
@@ -210,10 +211,8 @@ function TicketNotice({ tickets, showVaultHint }: { tickets: PracticeTicket[]; s
       <ul>
         {tickets.map((ticket) => (
           <li key={ticket.slotIndex}>
-            Câu thứ {ticket.slotIndex} trong đề: {ticket.reason}
-            {showVaultHint &&
-              ticket.theory &&
-              ". Xác nhận thêm cặp khái niệm cho chương này trong Vault rồi tạo lại đề."}
+            Câu thứ {ticket.slotIndex} trong đề:{" "}
+            {showVaultHint && ticket.theory ? appendSentence(ticket.reason, VAULT_HINT_VI) : ticket.reason}
           </li>
         ))}
       </ul>

@@ -227,6 +227,21 @@ export function essaySubmission(draft: string): EssaySubmission {
   return { ok: true, answer: draft };
 }
 
+// ------------------------------------------------------------------------------- slot không sinh được
+
+/** Gợi ý chung cho slot lý thuyết không sinh được; không nêu ngưỡng cụ thể (lý do cụ thể do backend ghi). */
+export const VAULT_HINT_VI = "Xác nhận thêm cặp khái niệm cho chương này trong Vault rồi tạo lại đề.";
+
+/**
+ * Nối lý do backend ghi với một câu gợi ý: thêm dấu chấm khi lý do chưa kết thúc bằng dấu câu, để không ra "..".
+ * Lý do giữ nguyên văn (chỉ bỏ khoảng trắng thừa ở cuối).
+ */
+export function appendSentence(reason: string, sentence: string): string {
+  const base = reason.trimEnd();
+  if (base === "") return sentence;
+  return /[.!?…:;]$/u.test(base) ? `${base} ${sentence}` : `${base}. ${sentence}`;
+}
+
 // ------------------------------------------------------------------------------------ kết quả từng câu
 
 export type McqOutcome = "correct" | "incorrect";

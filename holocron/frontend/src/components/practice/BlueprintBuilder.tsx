@@ -76,7 +76,8 @@ export function BlueprintBuilder({ subject, runtime, busy, onCreate }: Blueprint
       )}
       {USE_MOCKS && (
         <p className={styles.note}>
-          Dữ liệu mẫu: đề tạo ra luôn là cùng một bộ câu mẫu, không theo chương, số câu hay hình thức chọn ở đây.
+          Dữ liệu mẫu: đề tạo ra luôn là cùng một bộ câu mẫu, không theo chương, số câu hay hình thức chọn ở đây. Kết
+          quả chấm tự luận cũng là kết quả cố định dựng sẵn cho từng câu, không dựa trên câu trả lời bạn viết.
         </p>
       )}
       <form className={styles.form} onSubmit={handleSubmit} noValidate>

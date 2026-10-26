@@ -268,8 +268,14 @@
   gap: var(--space-3);
 }
 
-.result:focus {
-  outline: none;
+/*
+ * Khối kết quả nhận focus bằng code ngay sau khi nộp (kể cả nộp bằng chuột): luôn hiện viền focus 2 px màu nhấn (kế
+ * hoạch UI mục 5.4). `[tabindex]` nâng độ ưu tiên trên quy tắc `:focus:not(:focus-visible)` ở `globals.css`.
+ */
+.result[tabindex]:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius);
 }
 
 .verdict {

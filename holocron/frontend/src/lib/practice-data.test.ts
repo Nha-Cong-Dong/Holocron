@@ -168,6 +168,38 @@ describe("parseEssayGradeResult", () => {
     expect(parseEssayGradeResult({ ...fixture, citation: null })).toBeNull();
     expect(parseEssayGradeResult("x")).toBeNull();
   });
+
+  it("chỉ số các ý phải phủ đúng 0..total_points-1", () => {
+    const [matchedPoint] = fixture.matched_points;
+    const [missingPoint] = fixture.missing_points;
+    if (matchedPoint === undefined || missingPoint === undefined) throw new Error("fixture thiếu ý");
+    // Ngoài phạm vi (không trùng, đếm vẫn khớp).
+    expect(parseEssayGradeResult({ ...fixture, missing_points: [{ ...missingPoint, point_index: 2 }] })).toBeNull();
+    expect(parseEssayGradeResult({ ...fixture, matched_points: [{ ...matchedPoint, point_index: 7 }] })).toBeNull();
+    // Trùng chỉ số.
+    expect(parseEssayGradeResult({ ...fixture, missing_points: [{ ...missingPoint, point_index: 0 }] })).toBeNull();
+    // Đảo chỉ số giữa hai danh sách vẫn phủ đúng 0..1 nên được nhận.
+    const swapped = {
+      ...fixture,
+      matched_points: [{ ...matchedPoint, point_index: 1 }],
+      missing_points: [{ ...missingPoint, point_index: 0 }],
+    };
+    expect(parseEssayGradeResult(swapped)?.totalPoints).toBe(2);
+  });
+
+  it("văn bản mỗi ý phải là chuỗi con của trích dẫn sau NFC và gộp khoảng trắng", () => {
+    const [matchedPoint] = fixture.matched_points;
+    const [missingPoint] = fixture.missing_points;
+    if (matchedPoint === undefined || missingPoint === undefined) throw new Error("fixture thiếu ý");
+    const invented = { ...fixture, missing_points: [{ ...missingPoint, text: "Một ý không có trong tài liệu" }] };
+    expect(parseEssayGradeResult(invented)).toBeNull();
+    const blank = { ...fixture, missing_points: [{ ...missingPoint, text: " \n " }] };
+    expect(parseEssayGradeResult(blank)).toBeNull();
+    // Ý ở dạng NFD, khoảng trắng khác (kể cả U+0085 của Python) vẫn khớp trích dẫn NFC.
+    const respaced = matchedPoint.text.normalize("NFD").replaceAll(" ", "\u0085\n ");
+    const variant = { ...fixture, matched_points: [{ ...matchedPoint, text: respaced }] };
+    expect(parseEssayGradeResult(variant)?.matched[0]?.text).toBe(respaced);
+  });
 });
 
 describe("parseBlueprint và parseChunkPage", () => {

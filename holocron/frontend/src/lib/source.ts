@@ -13,6 +13,30 @@ export interface QuoteSegments {
   after: string;
 }
 
+/**
+ * Một ký tự khoảng trắng theo đúng định nghĩa `\s` của Python (`str.isspace`), mà backend dùng khi gộp khoảng trắng
+ * (`_collapse_ws` trong `domain/schemas.py`). Khác `\s` của JavaScript ở hai chỗ: có thêm U+001C–U+001F và U+0085;
+ * KHÔNG coi U+FEFF là khoảng trắng. Lệch định nghĩa thì giao diện có thể báo khớp một trích dẫn mà backend từ chối,
+ * hoặc ngược lại.
+ */
+const WHITESPACE_CLASS = "\t\n\v\f\r\u001c-\u001f \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000";
+const WHITESPACE_CHAR = new RegExp(`^[${WHITESPACE_CLASS}]$`);
+const WHITESPACE_RUN = new RegExp(`[${WHITESPACE_CLASS}]+`, "g");
+const EDGE_WHITESPACE = new RegExp(`^[${WHITESPACE_CLASS}]+|[${WHITESPACE_CLASS}]+$`, "g");
+
+/** `char` (một code point) là khoảng trắng theo định nghĩa của backend. */
+export function isBackendWhitespace(char: string): boolean {
+  return WHITESPACE_CHAR.test(char);
+}
+
+/**
+ * Dạng so khớp trích dẫn của I3, giống `normalize_quote` của backend: Unicode NFC, gộp mọi chuỗi khoảng trắng thành
+ * một dấu cách, bỏ khoảng trắng hai đầu.
+ */
+export function normalizeForMatch(text: string): string {
+  return text.normalize("NFC").replace(WHITESPACE_RUN, " ").replace(EDGE_WHITESPACE, "");
+}
+
 interface Collapsed {
   text: string;
   /** `starts[i]`: vị trí trong chuỗi gốc của ký tự thứ `i` của chuỗi đã gộp. */
@@ -29,7 +53,7 @@ function collapseWhitespace(source: string): Collapsed {
   let index = 0;
   for (const char of source) {
     const width = char.length;
-    const isSpace = /\s/.test(char);
+    const isSpace = isBackendWhitespace(char);
     if (isSpace && text.endsWith(" ")) {
       ends[ends.length - 1] = index + width;
     } else {
@@ -44,14 +68,10 @@ function collapseWhitespace(source: string): Collapsed {
   return { text, starts, ends };
 }
 
-function normalizeQuote(quote: string): string {
-  return quote.normalize("NFC").replace(/\s+/g, " ").trim();
-}
-
 /** Tách văn bản chunk (sau NFC) thành ba phần quanh lần xuất hiện đầu tiên của trích dẫn; `null` khi không thấy. */
 export function locateQuote(rawText: string, quote: string): QuoteSegments | null {
   const source = rawText.normalize("NFC");
-  const needle = normalizeQuote(quote);
+  const needle = normalizeForMatch(quote);
   if (needle === "") return null;
   const collapsed = collapseWhitespace(source);
   const at = collapsed.text.indexOf(needle);
@@ -76,4 +96,12 @@ export function nextChunkOffset(offset: number, received: number, total: number,
   const next = offset + received;
   if (received === 0 || next >= total || pagesRead >= MAX_CHUNK_PAGES) return null;
   return next;
+}
+
+/**
+ * Lần tìm dừng vì đã đọc đủ số lần cho phép trong khi backend vẫn còn chunk chưa đọc. Khi đó chưa tìm thấy chunk không
+ * có nghĩa là chunk không còn trong kho; giao diện phải nói là chưa tìm thấy trong phần đã đọc.
+ */
+export function chunkScanTruncated(offset: number, received: number, total: number, pagesRead: number): boolean {
+  return received > 0 && offset + received < total && pagesRead >= MAX_CHUNK_PAGES;
 }

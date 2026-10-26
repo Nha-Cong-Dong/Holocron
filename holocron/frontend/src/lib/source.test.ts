@@ -2,7 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import { CHUNK_FIXTURES, DEFINITIONS } from "@/mocks/fixtures/chunks";
 
-import { locateQuote, MAX_CHUNK_PAGES, nextChunkOffset } from "./source";
+import {
+  chunkScanTruncated,
+  isBackendWhitespace,
+  locateQuote,
+  MAX_CHUNK_PAGES,
+  nextChunkOffset,
+  normalizeForMatch,
+} from "./source";
 
 describe("locateQuote", () => {
   it("tách đúng ba phần, phần khớp là nguyên văn chunk", () => {
@@ -41,5 +48,46 @@ describe("nextChunkOffset", () => {
     expect(nextChunkOffset(400, 50, 450, 3)).toBeNull();
     expect(nextChunkOffset(0, 0, 450, 1)).toBeNull();
     expect(nextChunkOffset(0, 200, 5000, MAX_CHUNK_PAGES)).toBeNull();
+  });
+});
+
+describe("khoảng trắng theo định nghĩa của backend (Python \\s)", () => {
+  // Đúng tập ký tự `re.fullmatch(r"\s", ch)` của Python, mà `_collapse_ws` ở `domain/schemas.py` dùng.
+  const PYTHON_WHITESPACE = [
+    0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x85, 0xa0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003,
+    0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000,
+  ];
+
+  it("khớp đúng tập ký tự của Python trong toàn bộ mặt phẳng cơ bản", () => {
+    const found: number[] = [];
+    for (let code = 0; code <= 0xffff; code += 1) {
+      if (isBackendWhitespace(String.fromCharCode(code))) found.push(code);
+    }
+    expect(found).toEqual(PYTHON_WHITESPACE);
+  });
+
+  it("U+0085 và U+001C–U+001F được gộp; U+FEFF không phải khoảng trắng", () => {
+    for (const char of ["\u0085", "\u001c", "\u001d", "\u001e", "\u001f"]) {
+      expect(normalizeForMatch(`a${char}${char} b${char}`)).toBe("a b");
+      expect(locateQuote(`Mở.${char}Định${char}nghĩa đủ dài.`, "Định nghĩa đủ dài.")?.match).toBe(
+        `Định${char}nghĩa đủ dài.`,
+      );
+    }
+    expect(isBackendWhitespace("﻿")).toBe(false);
+    expect(normalizeForMatch("﻿a b﻿")).toBe("﻿a b﻿");
+    expect(locateQuote("Định﻿nghĩa đủ dài.", "Định nghĩa đủ dài.")).toBeNull();
+  });
+
+  it("normalizeForMatch: NFC, gộp khoảng trắng, bỏ hai đầu", () => {
+    expect(normalizeForMatch("  Học\n\t xen kẽ  ".normalize("NFD"))).toBe("Học xen kẽ".normalize("NFC"));
+  });
+});
+
+describe("chunkScanTruncated", () => {
+  it("chỉ đúng khi dừng vì đạt giới hạn số lần đọc mà backend còn chunk", () => {
+    expect(chunkScanTruncated(800, 200, 5000, MAX_CHUNK_PAGES)).toBe(true);
+    expect(chunkScanTruncated(800, 200, 1000, MAX_CHUNK_PAGES)).toBe(false);
+    expect(chunkScanTruncated(0, 200, 5000, 1)).toBe(false);
+    expect(chunkScanTruncated(800, 0, 5000, MAX_CHUNK_PAGES)).toBe(false);
   });
 });

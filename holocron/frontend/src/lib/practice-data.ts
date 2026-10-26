@@ -12,6 +12,7 @@
  * - Không tính con số nào của đề, đáp án hay lời giải (I1).
  */
 
+import { normalizeForMatch } from "@/lib/source";
 import type { OptionKey } from "@/types/holocron";
 
 // ------------------------------------------------------------------------------------- kiểu sau kiểm dạng
@@ -354,10 +355,31 @@ function parsePointResults(value: unknown): EssayPointView[] | null {
   return points;
 }
 
+/** Chỉ số các ý phủ đúng `0..total-1`: không trùng, không thiếu, không nằm ngoài phạm vi. */
+function coversAllPoints(points: EssayPointView[], total: number): boolean {
+  if (points.length !== total) return false;
+  const indices = new Set(points.map((point) => point.index));
+  if (indices.size !== total) return false;
+  return points.every((point) => point.index < total);
+}
+
+/**
+ * Mọi ý là chuỗi con của trích dẫn sau NFC và gộp khoảng trắng (quy tắc so khớp I3, §0; validator ESSAY ở §5.14).
+ * Backend đã kiểm; đây là lớp phòng thủ thêm để giao diện không hiện một "ý của đáp án mẫu" không có trong tài liệu.
+ */
+function pointsInQuote(points: EssayPointView[], quote: string): boolean {
+  const haystack = normalizeForMatch(quote);
+  return points.every((point) => {
+    const needle = normalizeForMatch(point.text);
+    return needle !== "" && haystack.includes(needle);
+  });
+}
+
 /**
  * `EssayGradeResult` (§5.14). Nhận khi hai con số khớp với hai danh sách như validator của contract
- * (`matched_count = len(matched_points)`, `matched_count + len(missing_points) = total_points`, chỉ số ý không trùng);
- * lệch thì không nhận, vì hiển thị một con số mâu thuẫn còn tệ hơn báo lỗi. `ngram_coverage` không được giữ lại.
+ * (`matched_count = len(matched_points)`, `matched_count + len(missing_points) = total_points`), chỉ số các ý phủ đúng
+ * `0..total_points-1`, và văn bản mỗi ý là chuỗi con của `citation.verbatim_quote` (NFC + gộp khoảng trắng). Lệch thì
+ * không nhận, vì hiển thị một con số mâu thuẫn còn tệ hơn báo lỗi. `ngram_coverage` không được giữ lại.
  */
 export function parseEssayGradeResult(value: unknown): EssayGradeView | null {
   if (!isRecord(value) || !isText(value.twin_id)) return null;
@@ -368,8 +390,8 @@ export function parseEssayGradeResult(value: unknown): EssayGradeView | null {
   if (!isIndex(total_points, 1) || !isIndex(matched_count, 0) || matched === null || missing === null) return null;
   if (citation === null) return null;
   if (matched.length !== matched_count || matched_count + missing.length !== total_points) return null;
-  const indices = new Set([...matched, ...missing].map((point) => point.index));
-  if (indices.size !== total_points) return null;
+  const all = [...matched, ...missing];
+  if (!coversAllPoints(all, total_points) || !pointsInQuote(all, citation.verbatim_quote)) return null;
   return { twinId: value.twin_id, matchedCount: matched_count, totalPoints: total_points, matched, missing, citation };
 }
 

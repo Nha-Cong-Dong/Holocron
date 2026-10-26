@@ -8,7 +8,7 @@ import { VerbatimQuote } from "@/components/common/VerbatimQuote";
 import { api, toUiError } from "@/lib/api";
 import type { UiError } from "@/lib/errors";
 import type { PracticeCitation, VaultChunkView } from "@/lib/practice-data";
-import { CHUNK_PAGE_LIMIT, locateQuote, nextChunkOffset } from "@/lib/source";
+import { CHUNK_PAGE_LIMIT, chunkScanTruncated, locateQuote, nextChunkOffset } from "@/lib/source";
 
 import styles from "./Practice.module.css";
 
@@ -43,7 +43,8 @@ export function CitationPanel({ citation, subjectCode, chapterCode, open, onTogg
 type SourceState =
   | { kind: "loading" }
   | { kind: "error"; error: UiError }
-  | { kind: "missing" }
+  /** Không thấy chunk; `truncated`: dừng vì đạt giới hạn số lần đọc, backend vẫn còn chunk chưa đọc. */
+  | { kind: "missing"; truncated: boolean }
   | { kind: "ready"; chunk: VaultChunkView };
 
 interface SourceExcerptProps {
@@ -65,14 +66,16 @@ function SourceExcerpt({ citation, subjectCode, chapterCode }: SourceExcerptProp
     async function find(id: string): Promise<SourceState> {
       let offset: number | null = 0;
       let pagesRead = 0;
+      let truncated = false;
       while (offset !== null) {
         const page = await api.listVaultChunks({ subjectCode, chapterCode, offset, limit: CHUNK_PAGE_LIMIT });
         pagesRead += 1;
         const found = page.chunks.find((chunk) => chunk.chunkId === id);
         if (found !== undefined) return { kind: "ready", chunk: found };
+        truncated = chunkScanTruncated(offset, page.chunks.length, page.total, pagesRead);
         offset = nextChunkOffset(offset, page.chunks.length, page.total, pagesRead);
       }
-      return { kind: "missing" };
+      return { kind: "missing", truncated };
     }
     find(chunkId)
       .then((next) => {
@@ -105,8 +108,9 @@ function SourceExcerpt({ citation, subjectCode, chapterCode }: SourceExcerptProp
   if (state.kind === "missing") {
     return (
       <p className={styles.muted}>
-        Không tìm thấy đoạn nguồn trong kho tri thức của môn này (có thể tài liệu gốc đã bị xoá). Trích dẫn ở trên vẫn
-        là nguyên văn.
+        {state.truncated
+          ? "Chưa tìm thấy đoạn nguồn trong phần kho tri thức đã đọc (kho của môn này lớn, giao diện chỉ đọc một phần). Trích dẫn ở trên vẫn là nguyên văn."
+          : "Không tìm thấy đoạn nguồn trong kho tri thức của môn này (có thể tài liệu gốc đã bị xoá). Trích dẫn ở trên vẫn là nguyên văn."}
       </p>
     );
   }

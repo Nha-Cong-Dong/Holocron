@@ -1,22 +1,25 @@
 """Settle tài liệu nhập (SPECIFICATION §5.7, §6.0, §6.5; sửa review phần 2): đọc nền xong thì tài liệu đủ điều kiện
 được nhập Vault và thành `confirmed`; nhập Vault và đặt `confirmed` không nguyên tử nên văn bản đóng khi Vault đã có
 chunk; lỗi settle sau khi đã ghi trang không bị báo thành "version lệch"; bước kết thúc lần đọc đọc lại khi version
-lệch.
+lệch. Review vòng 2: trang vượt giới hạn trang của Vault bị chặn trước khi ghi xác nhận, lỗi dữ liệu của settle sau
+khi đọc giữ tài liệu `review`, settle ghi `has_text_layer`, đánh dấu `failed` chờ khoá của tài liệu.
 
 Chạy trên cả ba loại kho, bọc trong `FlakyStore` để cài lỗi và thứ tự xen kẽ một cách tất định. Hàng đợi runtime giữ
 việc (`HoldingQueue`) để test tự chạy từng lần đọc bằng hàng đợi đồng bộ. Văn bản là mẫu tự viết.
 """
 
+import contextlib
 import dataclasses
 import hashlib
 import logging
+import threading
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from holocron_core.domain.documents import CrossCheck, PageExtraction
+from holocron_core.domain.documents import CrossCheck, ExtractedLine, PageExtraction
 from holocron_core.domain.repositories import (
     AppStore,
     ImportedDocument,
@@ -24,12 +27,17 @@ from holocron_core.domain.repositories import (
     VersionConflictError,
 )
 from holocron_core.domain.schemas import KnowledgeChunk
+from holocron_core.domain.vault import MAX_PAGE_LINES
+from holocron_core.infrastructure.document_readers.pdf_reader import PdfInputError
+from holocron_core.infrastructure.document_readers.protocol import MAX_PAGE_LINES as READER_MAX_PAGE_LINES
 from holocron_core.routers.api import app
 from holocron_core.services import document_import
 from holocron_core.services.document_import import (
     CHAPTER_MISSING_DETAIL,
+    PAGE_TOO_LARGE_DETAIL,
     SETTLE_ATTEMPTS,
     SETTLE_PENDING_DETAIL,
+    KeyedLocks,
     ReadJob,
     SynchronousImportQueue,
     confirmed_text,
@@ -380,3 +388,186 @@ def test_reading_end_gives_up_with_an_accurate_log(setup: Setup, caplog: pytest.
     assert [p.status for p in setup.store.list_pages(doc_id, PageExtraction)] == ["ok", "ok", "ok"]
     document = setup.store.get_imported_document(doc_id)
     assert document is not None and document.status == "processing"
+
+
+# --------------------------------------------------------------------------- #
+# Review vòng 2, lỗi 1: giới hạn số dòng của bộ đọc lớn hơn giới hạn trang của Vault
+
+OVERSIZE_LINES = 6000
+
+
+def big_page(
+    document_id: str, page_number: int, text_lines: int = OVERSIZE_LINES, blank_lines: int = 0
+) -> PageExtraction:
+    """Trang `ok` có `text_lines` dòng có chữ rồi `blank_lines` dòng rỗng (bộ đọc trả được tới
+    `READER_MAX_PAGE_LINES` dòng mỗi trang, nhiều hơn giới hạn trang của Vault)."""
+    texts = [f"Dòng {index} của trang {page_number}." for index in range(text_lines)] + [""] * blank_lines
+    return PageExtraction(
+        document_id=document_id,
+        page_number=page_number,
+        status="ok",
+        tier_used="text_layer",
+        text_score=0.95,
+        lines=[
+            ExtractedLine(line_index=index, text=text, bbox=None, conf=0.95, engine="text_layer")
+            for index, text in enumerate(texts)
+        ],
+        cross_check=CrossCheck(status="not_applicable", secondary_engine=None),
+    )
+
+
+@dataclasses.dataclass
+class OversizeFirstPageThenCrash(FakePdfReader):
+    """Trả trang đầu được yêu cầu với `OVERSIZE_LINES` dòng rồi ném `RuntimeError`: trang còn lại giữ `pending`."""
+
+    def read_pages(
+        self, path: Path, document_id: str, page_numbers: Sequence[int] | None = None
+    ) -> Iterator[PageExtraction]:
+        numbers = list(range(1, self.page_count + 1)) if page_numbers is None else list(page_numbers)
+        yield big_page(document_id, numbers[0])
+        raise RuntimeError("worker chết giữa chừng")
+
+
+def test_oversize_page_premise() -> None:
+    """Tiền đề của kịch bản: bộ đọc cho phép trang dài hơn giới hạn trang của Vault."""
+    assert MAX_PAGE_LINES < OVERSIZE_LINES <= READER_MAX_PAGE_LINES
+
+
+def test_page_confirm_rejects_an_oversize_page_before_writing(setup: Setup) -> None:
+    doc_id = _fully_read(setup, "trang-qua-dai", {1: lambda d: big_page(d, 1)})
+    before = _page(setup, doc_id, 1)
+    response = _confirm_page(setup, doc_id, 1)
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == PAGE_TOO_LARGE_DETAIL
+    assert str(MAX_PAGE_LINES) in PAGE_TOO_LARGE_DETAIL
+    assert _page(setup, doc_id, 1) == before, "không ghi xác nhận trang nào"
+    assert _document(setup, doc_id)["status"] == "review"
+    assert not setup.store.has_document_chunks(doc_id)
+
+
+def test_batch_confirm_skips_an_oversize_page_with_a_warning(setup: Setup, caplog: pytest.LogCaptureFixture) -> None:
+    doc_id = _fully_read(setup, "lo-trang-qua-dai", {1: lambda d: big_page(d, 1)})
+    with caplog.at_level(logging.WARNING, logger=document_import.__name__):
+        response = _confirm_document(setup, doc_id)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [page["confirmed"] for page in body["pages"]] == [False, True, True]
+    assert body["status"] == "review", "trang có văn bản chưa xác nhận thì tài liệu chưa confirmed (§5.7)"
+    assert any("bỏ qua trang 1" in record.getMessage() and doc_id in record.getMessage() for record in caplog.records)
+    assert not setup.store.has_document_chunks(doc_id)
+
+
+def test_page_at_the_vault_limit_confirms_and_blank_lines_do_not_count(setup: Setup) -> None:
+    """Dòng rỗng không vào văn bản xác nhận (§6.5) nên không tính vào giới hạn trang của Vault."""
+    pages: dict[int, Callable[[str], PageExtraction]] = {
+        1: lambda d: big_page(d, 1, text_lines=MAX_PAGE_LINES, blank_lines=10),
+        2: lambda d: blank_page(d, 2),
+        3: lambda d: blank_page(d, 3),
+    }
+    doc_id = _fully_read(setup, "trang-dung-gioi-han", pages)
+    response = _confirm_page(setup, doc_id, 1)
+    assert response.status_code == 200, response.text
+    assert _document(setup, doc_id)["status"] == "confirmed"
+    assert _chunk_ids(setup, doc_id) == _expected_chunk_ids(setup, doc_id)
+
+
+def test_background_read_keeps_review_with_an_unconfirmable_oversize_page(setup: Setup) -> None:
+    doc_id, job = _post_held(setup, "doc-nen-trang-qua-dai")
+    _read(job, OversizeFirstPageThenCrash(page_count=3))
+    assert _confirm_page(setup, doc_id, 1).status_code == 422
+    assert not _page(setup, doc_id, 1).confirmed
+    _read(job, FakePdfReader(page_count=3, failed_pages=frozenset({2, 3})))
+    document = _document(setup, doc_id)
+    assert document["status"] == "review"
+    assert [page["status"] for page in document["pages"]] == ["ok", "failed", "failed"]
+
+
+def test_unexpected_settle_error_after_reading_keeps_review(setup: Setup, caplog: pytest.LogCaptureFixture) -> None:
+    """Phòng thủ: trang quá dài đã `confirmed` trong kho (ghi thẳng, bỏ qua service) làm settle ném `ValidationError`
+    ở bước kết thúc lần đọc. Tài liệu đã đọc xong PHẢI giữ `review`, không thành `failed` (§5.7); log không chứa
+    văn bản của trang."""
+    doc_id, job = _post_held(setup, "settle-loi-bat-ngo")
+    _read(job, OversizeFirstPageThenCrash(page_count=3))
+    page = _page(setup, doc_id, 1)
+    forced = page.model_copy(update={"confirmed": True, "version": page.version + 1})
+    setup.store.inner.update_page(doc_id, 1, forced, status=page.status, confirmed=True, expected_version=page.version)
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=document_import.__name__):
+        _read(job, FakePdfReader(page_count=3, failed_pages=frozenset({2, 3})))
+    document = setup.store.get_imported_document(doc_id)
+    assert document is not None and document.status == "review"
+    assert document.meta.has_text_layer is True
+    assert not setup.store.has_document_chunks(doc_id)
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("lỗi bất ngờ (ValidationError)" in message for message in messages)
+    assert not any("lỗi khi đọc tài liệu" in message for message in messages), "lỗi không thoát ra run_job"
+    assert not any("Dòng 0 của trang 1" in message for message in messages)
+    assert all(record.exc_info is None for record in caplog.records)
+
+
+# --------------------------------------------------------------------------- #
+# Review vòng 2, m1: settle ghi `has_text_layer` khi tài liệu đi thẳng `processing → confirmed`
+
+
+def test_settle_records_has_text_layer_when_the_final_read_status_was_not_written(setup: Setup) -> None:
+    doc_id, job = _post_held(setup, "has-text-layer")
+    setup.store.update_errors = [StorageBusyError("kho bận")]
+    _read(job, FakePdfReader(page_count=3))
+    document = setup.store.get_imported_document(doc_id)
+    assert document is not None
+    assert document.status == "processing" and document.meta.has_text_layer is False, "bước kết thúc gặp kho bận"
+    assert [p.status for p in setup.store.list_pages(doc_id, PageExtraction)] == ["ok", "ok", "ok"]
+
+    response = _confirm_document(setup, doc_id)
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "confirmed"
+    assert response.json()["meta"]["has_text_layer"] is True
+    stored = setup.store.get_imported_document(doc_id)
+    assert stored is not None and stored.meta.has_text_layer is True
+
+
+# --------------------------------------------------------------------------- #
+# Review vòng 2, m2: ghi trạng thái `failed` dưới khoá của tài liệu
+
+
+class SignallingLocks(KeyedLocks):
+    """`KeyedLocks` báo `waiting` khi một luồng khác luồng tạo nó bắt đầu lấy khoá."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.owner = threading.get_ident()
+        self.waiting = threading.Event()
+
+    @contextlib.contextmanager
+    def hold(self, key: str) -> Iterator[None]:
+        if threading.get_ident() != self.owner:
+            self.waiting.set()
+        with super().hold(key):
+            yield
+
+
+@pytest.mark.parametrize(
+    "error",
+    [PdfInputError("OPEN_FAILED"), KeyError("lỗi lập trình của bộ đọc")],
+    ids=["khong-mo-lai-duoc", "loi-bat-ngo-qua-run-job"],
+)
+def test_marking_a_document_failed_waits_for_the_document_lock(setup: Setup, error: Exception) -> None:
+    """Thứ tự xen kẽ: một request đang giữ khoá của tài liệu (ví dụ đang settle) khi luồng đọc nền gặp lỗi làm tài
+    liệu `failed`. Luồng đọc PHẢI chờ khoá rồi mới ghi trang và trạng thái `failed`."""
+    doc_id, job = _post_held(setup, f"khoa-failed-{type(error).__name__}")
+    locks = SignallingLocks()
+    reader = FakePdfReader(page_count=3, read_error=error)
+    worker = threading.Thread(target=_read, args=(dataclasses.replace(job, locks=locks), reader))
+    with locks.hold(doc_id):
+        worker.start()
+        assert locks.waiting.wait(timeout=10), "luồng đọc phải lấy khoá của tài liệu"
+        worker.join(timeout=0.2)
+        assert worker.is_alive(), "luồng đọc chờ khoá, chưa ghi gì"
+        document = setup.store.get_imported_document(doc_id)
+        assert document is not None and document.status == "processing"
+        assert [p.status for p in setup.store.list_pages(doc_id, PageExtraction)] == ["pending"] * 3
+    worker.join(timeout=10)
+    assert not worker.is_alive()
+    document = setup.store.get_imported_document(doc_id)
+    assert document is not None and document.status == "failed"
+    assert [p.status for p in setup.store.list_pages(doc_id, PageExtraction)] == ["failed"] * 3

@@ -1,6 +1,6 @@
 # ADR 007: Câu lý thuyết sinh tất định từ Vault; chấm tự luận offline (MVP nếu còn thời gian); AnswerJudge sau MVP
 
-- Trạng thái: Chấp nhận (2026-10-23), gồm câu chữ I2 và I4 ở mục 4. Sửa ngày 2026-10-25 theo quyết định của người dùng: tiêu đề, nhà cung cấp LLM ở mục 1 và 3, khoá sắp xếp `pool_sha256` ở mục 2, mục 5 tách thành 5a (chấm offline) và 5b (`AnswerJudge` sau MVP), phần Hệ quả. Sửa ngày 2026-10-26 theo quyết định của người dùng: mục 2 thêm cách chọn dạng câu; phần Hệ quả cập nhật trạng thái field nullable của `BlueprintSlot`. Trạng thái không đổi.
+- Trạng thái: Chấp nhận (2026-10-23), gồm câu chữ I2 và I4 ở mục 4. Sửa ngày 2026-10-25 theo quyết định của người dùng: tiêu đề, nhà cung cấp LLM ở mục 1 và 3, khoá sắp xếp `pool_sha256` ở mục 2, mục 5 tách thành 5a (chấm offline) và 5b (`AnswerJudge` sau MVP), phần Hệ quả. Sửa ngày 2026-10-26 theo quyết định của người dùng: mục 2 thêm cách chọn dạng câu; phần Hệ quả cập nhật trạng thái field nullable của `BlueprintSlot`. Sửa chiều 2026-10-26 theo quyết định của người dùng: mục 1 thêm luật "đúng một đáp án" (so trên dãy token chữ/số, theo khái niệm ở cả ba dạng), mục 2 ghi `generator_version = "theory_mcq4_v3"`. Trạng thái không đổi.
 - Ngày: 2026-10-23; cập nhật 2026-10-25, 2026-10-26
 
 ## Bối cảnh
@@ -34,11 +34,16 @@ Ba dạng câu MCQ4, đều do code sinh; LLM không soạn thân câu, phương
 - Bốn phương án phải khác nhau sau khi chuẩn hoá (giống luật MCQ4 hiện có).
 - `citation` của câu là trích dẫn của cặp đúng. Giải thích cho từng phương án nhiễu là định nghĩa nguyên văn của khái niệm ứng với phương án đó, kèm trích dẫn riêng.
 - Không có đủ 4 khái niệm đã xác nhận (với dạng thứ ba: 4 khái niệm cùng chương), hoặc không chọn được 3 phương án nhiễu khác nhau, thì slot vào `ReviewTicket` với lý do "không đủ căn cứ trong Vault".
+- **Đúng một đáp án (duyệt 2026-10-26 chiều, áp dụng từ `generator_version = "theory_mcq4_v3"`; contract ở spec §5.11).** Một cặp không được làm phương án nhiễu khi phương án của nó cũng là một đáp án đúng: trích dẫn của nó lồng với trích dẫn đáp án, hoặc điền thử vào chỗ `____` cho ra một đoạn khớp một trích dẫn của nhóm ứng viên. Luật chỉ đọc dữ liệu đã nằm trong `pool_sha256` (mục 2).
+  - Mọi phép so xung đột làm trên **dãy token chữ/số** của hai đoạn: bỏ mọi ký tự không phải chữ hoặc số, gồm dấu câu, ký hiệu và ký tự định dạng như soft hyphen; hai đoạn "lồng nhau" khi dãy token của đoạn này là dãy con liên tiếp của dãy token đoạn kia. Cách tách token cụ thể là đề xuất (chi tiết) ở spec §5.11, chờ duyệt.
+  - Xét **theo khái niệm ở cả ba dạng**: khái niệm có ít nhất một cặp trong nhóm ứng viên xung đột với đáp án thì mọi cặp của khái niệm đó bị loại khỏi phương án nhiễu, ở cả ghép khái niệm, điền khuyết và chọn định nghĩa đúng.
+  - `theory_mcq4_v2` so chuỗi ký tự sau khi chỉ bỏ khoảng trắng và dấu câu ở hai đầu đoạn, và dạng chọn định nghĩa xét từng cặp; v3 thay cả hai điểm.
 
 ### 2. Tái lập và misconception
 
 - **Tái lập:** chọn cặp và phương án bằng `random.Random(f"{generator_version}:{pool_sha256}:{seed}")`, trong đó `generator_version` là phiên bản của bộ sinh, tăng khi đổi luật chọn. Cùng ba giá trị đó thì cùng câu hỏi, cùng đáp án và cùng thứ tự phương án. Đây là cách mở rộng I4 sang câu không có template.
 - **Chọn dạng câu (duyệt 2026-10-26):** dạng câu (một trong ba dạng ở mục 1) cũng do chính RNG trên chọn, trong các dạng khả thi của pool, nên bộ ba `(generator_version, pool_sha256, seed)` đủ để tái lập câu kể cả dạng câu; câu chữ I4 ở spec §0 không đổi. Thứ tự rút (dạng trước, cặp sau) và thứ tự khai báo các dạng là đề xuất ở spec §5.11, chờ duyệt.
+- **Phiên bản hiện hành (duyệt 2026-10-26 chiều):** `generator_version = "theory_mcq4_v3"`, tăng từ `theory_mcq4_v2` vì luật "đúng một đáp án" ở mục 1 đổi (so trên dãy token chữ/số, theo khái niệm ở cả ba dạng). Cùng `pool_sha256` và `seed` có thể cho câu khác giữa v2 và v3; I4 vẫn giữ vì `generator_version` nằm trong bộ ba tái lập.
 - **Phạm vi của `pool_sha256`:** chỉ gồm các cặp **đã xác nhận** có **cùng `subject_code` với slot**, không phải toàn Vault. Thêm, sửa hay xoá dữ liệu của môn khác không làm đổi câu hỏi của môn này.
 - **Cách tính `pool_sha256`:**
   1. Mỗi cặp lấy đúng năm trường `subject_code`, `chapter_code`, `term`, `definition_quote`, `chunk_id`; mỗi trường chuỗi được chuẩn hoá Unicode NFC.

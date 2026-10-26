@@ -185,3 +185,61 @@ Thay đổi chạm một bất biến PHẢI giữ các test cưỡng chế dư�
 
 - Mọi template mới (viết tay hoặc do LLM sinh rồi được duyệt) PHẢI có test tái lập I4 và property test ≥ 100 seed tương đương `tests/test_rr_template.py` trước khi vào `infrastructure/templates/`.
 - Khi gỡ xong các chỗ gắn cứng CPU Scheduling (ADR-005), thêm vào `tests/test_architecture.py` kiểm tra không có chuỗi topic/môn cố định trong `holocron_core` ngoài `infrastructure/templates/` và fixture test.
+
+## 10. Vận hành agent
+
+Ưu tiên: nhanh và hiệu quả cho dự án; không đặt trần chi phí hay số lượt. Mục này không nới tiêu chí kiểm nào ở §5 Cấp 3.
+
+### 10.1 Model và effort
+Frontmatter `model`/`effort` của agent là mặc định. Orchestrator nâng hoặc hạ cho từng lần gọi bằng tham số `model` và `effort` của Agent tool (thắng frontmatter; mục này là chỉ dẫn tường minh cho phép đặt `effort`). Mỗi lần nâng ghi một dòng trong câu trả lời: `escalate: <agent> → opus/high vì <lý do>`.
+
+| Agent | Mặc định | Nâng lên opus/high khi |
+|---|---|---|
+| `backend-impl` | sonnet/medium | chạm §9 (I1–I5), sandbox/ASTGuard, bảo mật, parser, concurrency, state machine; refactor xuyên tầng; thuật toán khó; đã FAILED một lần |
+| `frontend-impl` | sonnet/medium | contract đa hình phức tạp, state khó, lỗi build/typecheck dai dẳng; đã FAILED một lần |
+| `spec-writer` | sonnet/medium | ADR mới, đổi contract nhiều mục, gỡ mâu thuẫn spec/ADR/CLAUDE.md, thiết kế schema |
+| `reviewer` | sonnet/high | diff chạm §9, sandbox, bảo mật hoặc rất lớn |
+| `mutation-tester` | opus/high | luôn ở opus/high |
+| `pdf-researcher` | sonnet/medium | so sánh nhiều lựa chọn có rủi ro giấy phép |
+| `ci-checker` | haiku/low | không nâng |
+
+- Việc máy móc (tìm file/ký hiệu, đếm, đọc log, tóm tắt output, kiểm định kỳ) hạ xuống `haiku`.
+- Không đổi model của phiên chính. `env.CLAUDE_CODE_SUBAGENT_MODEL = "sonnet"` (`.claude/settings.json`) để subagent không khai báo model (general-purpose, Plan) không kế thừa Opus.
+
+### 10.2 Giao việc: hợp đồng Black Box
+- Brief gồm `GOAL` (≤ 300 từ: kết quả cần đạt + tiêu chí DONE), `FILES` (edit/create/read kèm khoảng dòng; file khác là forbidden), `CONTRACT` (interface liên quan + nguồn: `SPECIFICATION.md` §, ADR, path:dòng), `CHECKS` (lệnh kiểm). Brief dài đặt ở `.claude/state/briefs/`, chỉ đưa đường dẫn.
+- KHÔNG dán lịch sử hội thoại, nội dung file hay nhận định của orchestrator vào brief. Không dùng subagent kiểu fork cho worker.
+- Mọi agent trả theo mục "Hợp đồng đầu ra" trong file agent (`STATUS`, `MODIFIED`, `SUMMARY`, `TESTS`, `ERROR_LOG`, `NOTES`, `FINDINGS` khi có).
+- `FAILED` → giao lại một lần kèm `ERROR_LOG` và hướng sửa (cân nhắc nâng opus/high). Vẫn `FAILED` → `BLOCKED`, ghi vào `handoff.md`, dừng task.
+- Báo "đã giao việc" thì cùng lượt phải có lời gọi Agent tool.
+- Song song tối đa 3 worker khi tập file không giao nhau; gặp lỗi 429 thì giảm xuống 1.
+
+### 10.3 I/O và output terminal
+- Định vị trước bằng `rg -n`/Grep/`ast-grep`. File > 300 dòng chỉ đọc theo offset/limit. `SPECIFICATION.md` luôn đọc theo mục (`rg -n "^#{1,3} " SPECIFICATION.md` trước).
+- Lệnh nặng luôn có lọc và mở đầu bằng `set -o pipefail;` để giữ mã thoát của lệnh kiểm:
+  - `python -m pytest -q --tb=short 2>&1 | tail -n 40` (cổng Cấp 2 thêm `--cov`)
+  - `python -m mypy --strict holocron_core 2>&1 | tail -n 30`; `python -m ruff … 2>&1 | tail -n 30`
+  - `npm run build 2>&1 | tail -n 30`
+- Cần thêm chi tiết thì chạy lại ĐÚNG test hỏng với `-x --tb=long`, không chạy lại toàn bộ.
+- `git diff --stat` trước, rồi `git diff <range> -- <file>` từng file; `git log --oneline -n <N>`.
+- Không đọc lại file vừa Edit; kiểm bằng test. `env.BASH_MAX_OUTPUT_LENGTH = "20000"` là lưới an toàn.
+
+### 10.4 Loop và vệ sinh phiên
+- Không chạy `/loop` hay cron trong phiên đang code. Kiểm định kỳ chạy bằng `.claude/loops/ci-check.ps1` (Task Scheduler, worktree riêng ngoài repo, chỉ chạy khi HEAD đổi). Phiên chính chỉ đọc `%LOCALAPPDATA%\holocron-ci\ci-status.json` hoặc giao `ci-checker`; không mở log.
+- Một phiên = một task/milestone. Sau commit hoàn tất milestone: (1) ghi đè `.claude/state/handoff.md` theo mẫu dưới (≤ 40 dòng); (2) nối một dòng vào `.claude/state/progress.md`; (3) không bắt đầu task mới trong phiên đó; (4) kết thúc bằng dòng `READY FOR /clear — chạy /clear rồi gõ: tiếp tục theo handoff.md`.
+- Phiên mới chỉ đọc `handoff.md`; `progress.md` chỉ đọc 40 dòng cuối khi cần; `evening-questions.md`, `attempt-history.md` chỉ tra bằng `rg`.
+- Chạy không người: mỗi task là một tiến trình `claude -p` MỚI (đọc handoff → làm đúng một task → commit local → cập nhật handoff → thoát), không đặt trần ngân sách. Lệnh mẫu (gốc repo):
+  `claude -p "Đọc .claude/state/handoff.md. Làm đúng task ở NEXT theo brief, chạy CHECKS, commit local trên nhánh của task, ghi đè handoff.md theo mẫu ở CLAUDE.md §10.4, nối một dòng vào progress.md, rồi thoát." --permission-mode auto`
+  Lặp lại lệnh khi `STATE` còn `IN_PROGRESS`; dừng khi `QUEUE_EMPTY` hoặc `BLOCKED`.
+
+Mẫu `handoff.md`:
+```
+# Handoff — <YYYY-MM-DD HH:mm>
+STATE: IN_PROGRESS | QUEUE_EMPTY | BLOCKED: <lý do>
+BRANCH: <nhánh> @ <sha7>   WORKTREE: <đường dẫn | none>
+DONE: <1–3 dòng>
+NEXT: <đúng một task> — brief: <đường dẫn>
+QUEUE: <tối đa 5 dòng>
+OPEN: <câu hỏi chờ người dùng, tối đa 5 dòng>
+DO NOT: <tối đa 3 dòng>
+```

@@ -13,6 +13,12 @@ export interface NavItem {
 
 export const NAV_ITEMS: readonly NavItem[] = [
   { href: "/", label: "Bắt đầu", short: "BĐ", description: "Khả năng của máy này và bước tiếp theo" },
+  {
+    href: "/practice",
+    label: "Luyện tập",
+    short: "LT",
+    description: "Tạo đề từ cặp khái niệm đã xác nhận và làm từng câu",
+  },
   { href: "/ingestion", label: "Nhập đề thi", short: "ĐT", description: "Tải ảnh đề, kiểm duyệt bảng số liệu" },
   { href: "/twins", label: "Câu hỏi song sinh", short: "SS", description: "Sinh câu hỏi song sinh cho một bộ đề" },
 ];

@@ -9,6 +9,7 @@ import {
   buildBlueprintCreate,
   defaultFormatChoice,
   entrySummary,
+  essaySubmission,
   formatChoices,
   initialPracticeState,
   isAnswered,
@@ -303,5 +304,20 @@ describe("phím tắt của màn luyện tập", () => {
     expect(press({ kind: "mcq", phase: "unanswered" }, key("k", { ctrlKey: true }))).toBeNull();
     expect(press({ kind: "mcq", phase: "unanswered" }, key("?"))).toBeNull();
     expect(press({ kind: "mcq", phase: "unanswered" }, key("Escape"))).toBeNull();
+  });
+});
+
+describe("gửi câu trả lời tự luận", () => {
+  it("câu trả lời trống không được gửi; bản nháp giữ nguyên và có thông báo", () => {
+    expect(essaySubmission("   ").ok).toBe(false);
+    expect(essaySubmission("Ôn cách nhau xa dần")).toEqual({ ok: true, answer: "Ôn cách nhau xa dần" });
+    const error = localError("Câu trả lời đang trống.");
+    const state = run(
+      initialPracticeState(questions()),
+      { type: "go_to", index: 2 },
+      { type: "edit_essay", text: "  " },
+      { type: "essay_rejected", error },
+    );
+    expect(state.entries[2]).toEqual({ kind: "essay", draft: "  ", status: "editing", result: null, error });
   });
 });

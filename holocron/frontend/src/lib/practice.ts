@@ -115,6 +115,7 @@ export type PracticeAction =
   | { type: "essay_started"; twinId: string }
   | { type: "essay_graded"; twinId: string; result: EssayGradeView }
   | { type: "essay_failed"; twinId: string; error: UiError }
+  | { type: "essay_rejected"; error: UiError }
   | { type: "next" }
   | { type: "previous" }
   | { type: "go_to"; index: number }
@@ -158,6 +159,10 @@ export function practiceReducer(state: PracticeState, action: PracticeAction): P
     case "edit_essay":
       if (state.finished || entry?.kind !== "essay" || entry.status !== "editing") return state;
       return replaceEntry(state, state.index, { ...entry, draft: action.text, error: null });
+    case "essay_rejected":
+      // Câu trả lời không gửi được (kiểm ở giao diện, ví dụ đang trống): giữ bản nháp, chỉ báo lỗi.
+      if (state.finished || entry?.kind !== "essay" || entry.status !== "editing") return state;
+      return replaceEntry(state, state.index, { ...entry, error: action.error });
     case "essay_started":
     case "essay_graded":
     case "essay_failed": {
@@ -191,6 +196,14 @@ export function practiceReducer(state: PracticeState, action: PracticeAction): P
     case "restart":
       return initialPracticeState(state.questions);
   }
+}
+
+/** Câu trả lời tự luận gửi đi được hay không; chỉ kiểm rỗng, độ dài tối đa do backend kiểm (cấu hình, §6.9). */
+export type EssaySubmission = { ok: true; answer: string } | { ok: false; message: string };
+
+export function essaySubmission(draft: string): EssaySubmission {
+  if (draft.trim() === "") return { ok: false, message: "Câu trả lời đang trống. Viết câu trả lời rồi nộp lại." };
+  return { ok: true, answer: draft };
 }
 
 // ------------------------------------------------------------------------------------ kết quả từng câu

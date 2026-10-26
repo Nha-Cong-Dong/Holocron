@@ -1,0 +1,36 @@
+.quote {
+  margin: var(--space-3) 0;
+  padding: var(--space-2) var(--space-4);
+  border-left: 3px solid var(--quote-rule);
+  background: var(--quote-bg);
+}
+
+.text {
+  margin: 0 0 var(--space-1);
+  font-family: var(--font-serif);
+  font-size: var(--text-body);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.text::before {
+  content: "\201C";
+}
+
+.text::after {
+  content: "\201D";
+}
+
+.caption {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.page {
+  color: var(--quote-label);
+  font-weight: 600;
+}
+
+.doc {
+  font-size: var(--text-xs);
+}

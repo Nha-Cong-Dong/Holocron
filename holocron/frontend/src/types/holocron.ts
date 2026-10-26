@@ -494,8 +494,3 @@ export interface ValidationErrorItem {
   msg: string;
   type: string;
 }
-
-/** Thân lỗi do backend trả về: chuỗi, danh sách lỗi validate, hoặc chi tiết BLOCKING khi approve (409). */
-export interface ApiErrorBody {
-  detail: string | ValidationErrorItem[] | { message: string; issues: string[] };
-}

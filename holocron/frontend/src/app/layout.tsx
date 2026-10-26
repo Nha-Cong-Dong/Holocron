@@ -1,17 +1,22 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
+import { AppShell } from "@/components/shell/AppShell";
+
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Holocron",
-  description: "Sinh đề song sinh tất định cho môn Hệ điều hành — mọi con số do sandbox tính.",
+  description:
+    "Ôn thi từ tài liệu môn học của bạn: kho tri thức có trích dẫn nguyên văn và câu hỏi luyện tập có kiểm chứng.",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="vi">
-      <body>{children}</body>
+      <body>
+        <AppShell>{children}</AppShell>
+      </body>
     </html>
   );
 }

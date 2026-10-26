@@ -1,8 +1,8 @@
 """Ứng dụng FastAPI của Holocron: tạo `app` và gắn các router theo đúng thứ tự route.
 
-Route nằm ở `runtime.py`, `ingestion.py`, `blueprints.py`; dependency injection ở `deps.py`. Module này re-export
-các tên cũ (`MAX_UPLOAD_BYTES`, `get_*`, `IngestionStore`, `IngestionItem`, `_recompute`…) để mã và test đang import
-từ `holocron_core.routers.api` không phải đổi; hàm DI re-export là đúng đối tượng các route dùng.
+Route nằm ở `runtime.py`, `ingestion.py`, `blueprints.py`, `vault.py`; dependency injection ở `deps.py`. Module này
+re-export các tên cũ (`MAX_UPLOAD_BYTES`, `get_*`, `IngestionStore`, `IngestionItem`, `_recompute`…) để mã và test
+đang import từ `holocron_core.routers.api` không phải đổi; hàm DI re-export là đúng đối tượng các route dùng.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from ..domain.repositories import StorageBusyError
 from ..domain.twins import IdempotencyRecord
 from ..infrastructure.memory_store import IDEMPOTENCY_TTL, IngestionStore
 from ..infrastructure.storage import SQLiteStore
-from . import blueprints, ingestion, runtime
+from . import blueprints, ingestion, runtime, vault
 from .blueprints import create_twins
 from .deps import (
     REGISTRY,
@@ -124,3 +124,4 @@ app.add_exception_handler(StorageBusyError, _store_busy)
 app.include_router(runtime.router)
 app.include_router(ingestion.router)
 app.include_router(blueprints.router)
+app.include_router(vault.router)

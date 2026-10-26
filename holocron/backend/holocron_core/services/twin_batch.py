@@ -30,15 +30,16 @@ __all__ = [
 
 
 class CitationProvider(Protocol):
-    """Nguồn trích dẫn (Knowledge Vault, §12): trả `Citation` cho slot, hoặc `None` nếu không có chunk phù hợp."""
+    """Nguồn trích dẫn (Knowledge Vault, §12): trả `Citation` cho slot của blueprint môn `subject_code`, hoặc `None`
+    nếu không có chunk phù hợp. Chunk của môn khác không bao giờ được trả (ADR-006 mục 6, SPECIFICATION §5.8)."""
 
-    def citation_for(self, slot: BlueprintSlot) -> Citation | None: ...
+    def citation_for(self, subject_code: str, slot: BlueprintSlot) -> Citation | None: ...
 
 
 class NoCitationProvider:
     """Mặc định khi chưa có Knowledge Vault: không có trích dẫn ⇒ mọi slot vào `review_tickets`."""
 
-    def citation_for(self, slot: BlueprintSlot) -> Citation | None:
+    def citation_for(self, subject_code: str, slot: BlueprintSlot) -> Citation | None:
         return None
 
 
@@ -72,7 +73,7 @@ def generate_twin_batch(
     twins: list[TwinQuestion] = []
     tickets: list[ReviewTicket] = []
     for slot in blueprint.slots:
-        citation = citations.citation_for(slot)
+        citation = citations.citation_for(blueprint.subject_code, slot)
         if citation is None:
             tickets.append(
                 ReviewTicket(

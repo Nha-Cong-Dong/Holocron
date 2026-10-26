@@ -101,9 +101,9 @@ Bài toán xuất phát từ hoàn cảnh của chính người làm dự án v�
 - **Luồng:** tạo môn → nhập PDF (lớp chữ + OCR) → xem lại trang → xác nhận vào Vault → xác nhận cặp khái niệm → sinh câu MCQ4 lý thuyết tất định → làm bài → xem đáp án kèm trích dẫn nguyên văn và số trang → lịch sử làm bài và ôn lại câu sai.
 - **Lịch sử làm bài:** contract là đề xuất riêng, chờ duyệt. Đúng/sai và mọi con số do backend tính (I1).
 - **Đóng gói:** Python embeddable (giấy phép PSF); backend phục vụ frontend tĩnh và tự mở trình duyệt. Người dùng tự cài Tesseract theo hướng dẫn. Không dùng PyInstaller. Tauri chuyển sang 3–6/11.
-- **Blueprint:** chỉ có slot lý thuyết.
-- **Sau MVP-1:** câu tính toán, tầng 3 (bảng), tự luận (essay), `capabilities`, kiểm `Origin`, `RuntimeInfo` mở rộng.
-- **Mục tiêu G1–G6 dưới đây** giữ làm mục tiêu sau MVP-1. MVP-1 gồm: G2 phần lý thuyết, G4 phần câu lý thuyết, G5, G6.
+- **Blueprint:** `POST /v1/blueprints` chỉ nhận slot lý thuyết, cùng các endpoint GET blueprint (§6.7).
+- **Sau MVP-1:** câu tính toán, tầng 3 (bảng) (suy ra từ phạm vi MVP-1 chỉ gồm lớp chữ + OCR), tự luận (essay), `capabilities`, kiểm `Origin`, `RuntimeInfo` mở rộng.
+- Mục tiêu G1–G6 là mục tiêu sau MVP-1; tiêu chí xong của MVP-1 là luồng nêu ở mục MVP-1.
 
 **Đa môn.** App nhận PDF của môn bất kỳ. Code KHÔNG ĐƯỢC rẽ nhánh theo môn hay topic (CLAUDE.md §1); tri thức riêng của dạng bài nằm trong template và dữ liệu. CPU Scheduling (RR/SJF) chỉ còn là fixture kiểm thử và walkthrough `examples/`, không phải môn demo hay phạm vi.
 
@@ -149,7 +149,7 @@ Phân loại (môn, chương, dạng câu, mức nhận thức) do LLM đề xu�
 
 Quyết định ngày 2026-10-24: Kỹ thuật vi xử lý thay Hệ điều hành làm môn demo. Template Vi xử lý chưa có, nên đây là rủi ro mới cho G1 (R10, §17). CPU Scheduling (RR, SJF) chỉ còn là fixture kiểm thử và walkthrough `examples/`; hai template đã kiểm chứng của nó vẫn giữ nguyên (§8.4). Hệ điều hành là môn mở rộng sau MVP (§1.6).
 
-**Mục tiêu MVP** (từ 2026-10-26 là mục tiêu sau MVP-1; MVP-1 gồm G2 phần lý thuyết, G4 phần câu lý thuyết, G5, G6, xem mục MVP-1 ở trên):
+**Mục tiêu MVP** (mục tiêu sau MVP-1, xem mục MVP-1 ở trên):
 - **G1.** Với mỗi môn demo, luồng chạy end-to-end trên máy người dùng: nhập PDF → xem lại và sửa → Vault và đề đã duyệt → blueprint → twin có trích dẫn.
 - **G2.** Tính đúng: mọi con số hiển thị đến từ sandbox (I1); mọi câu lý thuyết có trích dẫn nguyên văn (I3); không đủ căn cứ thì vào `review_tickets`.
 - **G3.** Hiệu năng: sinh một twin tính toán p95 ≤ 3 s, không tính thời gian LLM viết template; Gate phản hồi sau mỗi lần sửa ô p95 ≤ 500 ms. Ngưỡng thời gian cho bộ nhập PDF chốt sau khi đo (ADR-008).
@@ -1985,7 +1985,7 @@ Backend PHẢI chỉ lắng nghe `127.0.0.1` trong bản local-first.
     - **Cấp danh sách:** qua `Depends`, như danh sách host (D13); test override bằng cùng fixture `autouse` trong `tests/conftest.py`, không sửa test sẵn có.
     - **Thứ tự kiểm và phản hồi:** `Host` → `Origin` → token. Mỗi bước trả 403 với `detail` là chuỗi cố định riêng; với `Origin`: "Yêu cầu ghi từ nguồn không được phép". `detail` không lặp lại giá trị `Origin`, `Host` hay token đã gửi.
     - **Test:** thêm vào `tests/test_local_security.py` (§15): `POST` có `Origin: https://evil.example` ⇒ 403; `Origin: null` ⇒ 403; `Origin: http://localhost:3000` ⇒ qua; không có `Origin` ⇒ qua; không có `Origin` mà có `Sec-Fetch-Site: cross-site` ⇒ 403; `GET` có `Origin` lạ ⇒ không bị chặn bởi bước này.
-  - Trạng thái: chưa triển khai trong `develop` @ `63cdf37` (không có kiểm `Host`, `Origin` hay token trong `routers/`); danh sách `Host` ở trên ghi theo code của nhánh triển khai. Kiểm `Host` và `Origin` có thể làm ngay; token làm cùng bước đóng gói Tauri (`docs/tauri-spike-plan.md`).
+  - Trạng thái: chưa triển khai trong `develop` @ `63cdf37` (không có kiểm `Host`, `Origin` hay token trong `routers/`); danh sách `Host` ở trên ghi theo code của nhánh triển khai. Lịch chốt 2026-10-26: kiểm `Host` và token (phần đã làm ở nhánh B4) vào MVP-1; kiểm `Origin` làm sau MVP-1 (§1.5).
 - **API key (BYOK).** Giai đoạn webapp: biến môi trường (danh sách ở §11.2, mẫu ở `.env.example` chỉ chứa placeholder). Backend không tự đọc file `.env` (không có dependency nạp `.env`); nếu người dùng giữ key trong file `.env` cục bộ thì file đó đã nằm trong `.gitignore` và phải được nạp vào shell trước khi chạy backend. Bản desktop: lưu trong kho khoá của hệ điều hành (Windows Credential Manager; Secret Service trên Linux); Tauri đọc ra và truyền cho sidecar qua biến môi trường lúc khởi động. Key KHÔNG ĐƯỢC ghi ra file cấu hình dạng rõ, KHÔNG ĐƯỢC ghi log, KHÔNG ĐƯỢC trả về client (`GET /v1/runtime` chỉ trả boolean và mã lý do của từng khả năng, §5.12).
 - **Dữ liệu rời máy.** PDF, Vault và cơ sở dữ liệu nằm trong thư mục dữ liệu ứng dụng của người dùng. Không cấu hình LLM và VLM thì không dữ liệu nào rời máy (G6). Dữ liệu chỉ rời máy ở hai chỗ:
   - Văn bản đã tách (văn bản chunk, văn bản trang đề) gửi tới endpoint LLM đã cấu hình để đề xuất nhãn, đề xuất cặp khái niệm và viết template. **Với key hiện tại, dữ liệu này đi qua gateway của ban tổ chức hackathon** (đã duyệt 2026-10-25, §11.5), tức bên vận hành gateway và nhà cung cấp model phía sau có thể thấy nội dung. Câu trả lời tự luận của người học không rời máy khi chưa có `AnswerJudge`.
@@ -2051,12 +2051,12 @@ Backend PHẢI chỉ lắng nghe `127.0.0.1` trong bản local-first.
 
 | Mốc | Hạng mục | Trạng thái |
 |---|---|---|
-| **26–29/10: MVP-1** (mục tiêu duy nhất tới hết 29/10) | Phạm vi ở §1.5: bản Windows zip portable, offline, không cần key; tạo môn → nhập PDF (lớp chữ + OCR) → xem lại trang → xác nhận vào Vault → xác nhận cặp khái niệm → câu MCQ4 lý thuyết tất định → làm bài → đáp án kèm trích dẫn nguyên văn và số trang → lịch sử làm bài và ôn lại câu sai (contract lịch sử: đề xuất riêng, chờ duyệt). Blueprint chỉ có slot lý thuyết. Đóng gói bằng Python embeddable, backend phục vụ frontend tĩnh và tự mở trình duyệt; người dùng tự cài Tesseract; không PyInstaller | Kế hoạch |
+| **26–29/10: MVP-1** (mục tiêu duy nhất tới hết 29/10) | Phạm vi ở §1.5: bản Windows zip portable, offline, không cần key; tạo môn → nhập PDF (lớp chữ + OCR) → xem lại trang → xác nhận vào Vault → xác nhận cặp khái niệm → câu MCQ4 lý thuyết tất định → làm bài → đáp án kèm trích dẫn nguyên văn và số trang → lịch sử làm bài và ôn lại câu sai (contract lịch sử: đề xuất riêng, chờ duyệt). Blueprint: `POST /v1/blueprints` chỉ nhận slot lý thuyết, cùng các endpoint GET blueprint (§6.7). Đóng gói bằng Python embeddable, backend phục vụ frontend tĩnh và tự mở trình duyệt; người dùng tự cài Tesseract; không PyInstaller | Kế hoạch |
 | **30/10–2/11** | Tự luận chấm offline (§5.14, §6.9); giải thích đáp án bằng LLM, TUỲ CHỌN: chỉ khi người dùng tự thêm key, neo trích dẫn nguyên văn (I3), lưu lại và không gọi lại cho cùng câu, thiết kế chờ duyệt (§1.6); câu tính toán, phần khả thi nhất | Kế hoạch |
 | **3–6/11** | Đóng gói Tauri; thử chữ viết tay ở mức thử nghiệm; sửa lỗi | Kế hoạch |
 | **7–8/11: đóng băng code** | Chỉ sửa lỗi và tài liệu nộp | Mốc |
 
-- Sau MVP-1 còn: câu tính toán, tầng 3 (bảng), `capabilities`, kiểm `Origin`, `RuntimeInfo` mở rộng (§1.5). Lịch trên chỉ xếp tự luận, giải thích bằng LLM, phần khả thi nhất của câu tính toán và Tauri; các phần còn lại chưa có mốc.
+- Sau MVP-1 còn: câu tính toán, tầng 3 (bảng) (suy ra từ phạm vi MVP-1 chỉ gồm lớp chữ + OCR), `capabilities`, kiểm `Origin`, `RuntimeInfo` mở rộng (§1.5). Lịch trên chỉ xếp tự luận, giải thích bằng LLM, phần khả thi nhất của câu tính toán và Tauri; các phần còn lại chưa có mốc.
 
 **Lịch từ 2026-10-25 (đã duyệt 2026-10-25; thay thứ tự code ghi ngày 2026-10-24; bổ sung tối 2026-10-25). Đã bị lịch 2026-10-26 ở trên thay; giữ làm lịch sử:**
 
@@ -2070,7 +2070,7 @@ Backend PHẢI chỉ lắng nghe `127.0.0.1` trong bản local-first.
 | **Tới 7/11: dư địa** (duyệt 2026-10-25) | Sửa lỗi phát hiện khi ôn thật; `RELEASE_CHECKLIST.md`; đo p95 (G3) và thời gian bộ nhập PDF | Kế hoạch |
 
 - Thứ tự cắt khi trễ (ghi theo lịch 2026-10-25): tầng 4 (đã park) → tầng 3 → F17 → F16. Không cắt lát cắt dọc. Mốc tự luận 29/10 của lịch này đã được thay bằng lịch 2026-10-26 (30/10–2/11).
-- Đề xuất (chờ duyệt): đưa SQLite (§5.13) lên ngay sau mốc 28/10, vì người dùng đầu tiên ôn thật trên app (§1.2) và store in-memory làm mất Vault cùng cặp khái niệm đã xác nhận mỗi lần tắt backend.
+- Đề xuất (chờ duyệt): đưa SQLite (§5.13) lên ngay sau mốc 28/10, vì người dùng đầu tiên ôn thật trên app (§1.2) và store in-memory làm mất Vault cùng cặp khái niệm đã xác nhận mỗi lần tắt backend. (đã bị thay: người dùng yêu cầu 2026-10-26 lưu lượt làm bài trong SQLite trong MVP-1; bản zip dùng SQLite, xem đề xuất contract lịch sử)
 - **Số đo thật để hiệu chỉnh lịch (2026-10-25):** agent viết spec mất 9–25 phút mỗi đợt; chu kỳ người dùng duyệt một PR mất 1–6 giờ. Thời gian viết code chưa có số đo; điều phối viên bổ sung sau. Ước tính của người viết spec, chưa phải số đo: với chu kỳ duyệt này, mỗi ngày chỉ nên trông vào khoảng 2–4 lần merge, nên các nhánh của lát cắt dọc cần nhỏ và gộp sớm.
 - ADR-005 bước 4 và đóng ARCH-001 không có mốc trong lịch trên; làm sau khi luồng A xong bước 1–3.
 
@@ -2092,7 +2092,7 @@ Backend PHẢI chỉ lắng nghe `127.0.0.1` trong bản local-first.
 | R12 | Gateway của ban tổ chức chặn User-Agent mặc định (403 "error code: 1010"), có thể không tôn trọng `response_format`, và có thể đổi hành vi hay ngừng phục vụ sau hackathon | Adapter gửi User-Agent riêng, tự parse và kiểm JSON, đếm lần thử và tỉ lệ JSON lỗi (§11.5); LLM là tuỳ chọn nên gateway hỏng không làm hỏng lát cắt dọc (G6); nhà cung cấp đổi được bằng cấu hình |
 | R13 | Chấm tự luận bằng n-gram chấm sót ý khi người học diễn đạt khác tài liệu; ngưỡng là giá trị ban đầu (duyệt 2026-10-26), chưa hiệu chỉnh | Chỉ báo "khớp x/y ý", không có điểm tuyệt đối; UI ghi rõ giới hạn và hiện trích dẫn để tự đối chiếu (§5.14); hiệu chỉnh ngưỡng bằng script opt-in; `AnswerJudge` sau MVP |
 | R14 | Nội dung tài liệu học đi qua gateway của bên thứ ba (ban tổ chức) khi dùng LLM | LLM là tuỳ chọn; UI nói rõ bên nhận dữ liệu (§13.1); không gửi câu trả lời của người học khi chưa có `AnswerJudge` |
-| R15 | Lát cắt dọc chưa xong trước 28/10 do chu kỳ duyệt PR 1–6 giờ | Nhánh nhỏ, gộp sớm; luồng A (bài tính toán) không chặn lát cắt; tự luận chỉ làm khi lát cắt xong trước hết 29/10 (§16) |
+| R15 | MVP-1 chưa xong trước hết 29/10 (§1.5) do chu kỳ duyệt PR 1–6 giờ | Nhánh nhỏ, gộp sớm; luồng A (bài tính toán) không chặn lát cắt; tự luận làm trong 30/10–2/11, sau MVP-1 (chốt 2026-10-26, §16) |
 | D1 | Người dùng có được sửa template không? | **Không** trong MVP; chỉ sửa dữ liệu đề qua Gate |
 | D2 | Mã HTTP cho xung đột trạng thái | 409 cho xung đột version/duyệt; 400 cho vi phạm luật non-cloneable (đã chốt ở Tuần 2) |
 | D3 | So khớp trích dẫn nguyên văn (I3) với chữ có dấu ở dạng tổ hợp (NFD) | **Đã duyệt 2026-10-24:** so sau khi đưa cả hai chuỗi về NFC rồi gộp khoảng trắng; chỉ hai chuỗi tương đương chính tắc mới khớp, nên I3 không bị nới. Áp dụng cho `KnowledgeChunk`, `ConceptPair` và bằng chứng verdict của `AnswerJudge` (§0, §5.8, ADR-006) |

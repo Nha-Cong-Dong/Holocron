@@ -92,6 +92,12 @@
   font-size: var(--text-sm);
 }
 
+.errorBlock {
+  display: grid;
+  gap: var(--space-1);
+  justify-items: start;
+}
+
 .linkButton {
   padding: 0;
   border: none;
@@ -100,6 +106,10 @@
   font-size: var(--text-sm);
   text-decoration: underline;
   cursor: pointer;
+}
+
+.errorBlock .linkButton {
+  margin: 0 var(--space-2);
 }
 
 @media (max-width: 1099px) {
@@ -137,5 +147,16 @@
   .code {
     font-size: var(--text-xs);
     word-break: break-all;
+  }
+
+  /* Nút "Thử lại" vẫn hiện (thu nhỏ, căn giữa) để không có phần tử nhận focus mà không nhìn thấy. */
+  .errorBlock {
+    justify-items: center;
+  }
+
+  .errorBlock .linkButton {
+    margin: 0;
+    font-size: var(--text-xs);
+    text-align: center;
   }
 }

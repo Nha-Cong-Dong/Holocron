@@ -18,7 +18,10 @@ interface SidebarProps {
   onSelectSubject: (subjectCode: string) => void;
 }
 
-/** Thanh bên: danh sách môn (`GET /v1/subjects`, §6.8) và điều hướng chính. Dưới 1100 px chỉ còn chữ viết tắt. */
+/**
+ * Thanh bên: danh sách môn (`GET /v1/subjects`, §6.8) và điều hướng chính. Dưới 1100 px chỉ còn chữ viết tắt; phần
+ * chữ bị ẩn khi đó không chứa phần tử nhận focus.
+ */
 export function Sidebar({ pathname, subjectCode, onSelectSubject }: SidebarProps) {
   const [subjects, setSubjects] = useState<SubjectsState>({ kind: "loading" });
   const activeHref = navItemForPath(pathname)?.href ?? null;
@@ -49,15 +52,21 @@ export function Sidebar({ pathname, subjectCode, onSelectSubject }: SidebarProps
           Môn học
         </h2>
         {subjects.kind === "loading" && <p className={styles.note}>Đang tải…</p>}
-        {subjects.kind === "error" && (
-          <div className={styles.note} role="alert">
-            <p>
-              {subjects.error.kind === "not_found"
-                ? "Backend này chưa có danh sách môn."
-                : "Chưa tải được danh sách môn."}
+        {subjects.kind === "error" && subjects.error.kind === "not_found" && (
+          // Backend chưa có `GET /v1/subjects` (§6.8): trạng thái trống bình thường, không phải lỗi cần báo động.
+          <p className={styles.note}>
+            Chưa có danh sách môn. Bạn vẫn nhập đề thi được ở mục "Nhập đề thi"; môn học sẽ hiện ở đây khi backend hỗ
+            trợ.
+          </p>
+        )}
+        {subjects.kind === "error" && subjects.error.kind !== "not_found" && (
+          <div className={styles.errorBlock}>
+            <p className={styles.note} role="alert">
+              Chưa tải được danh sách môn.
             </p>
+            {/* Nút nằm ngoài phần chữ bị ẩn ở thanh bên hẹp, nên luôn nhìn thấy khi nhận focus. */}
             {subjects.error.action !== "none" && (
-              <button type="button" className={styles.linkButton} onClick={load}>
+              <button type="button" className={styles.linkButton} onClick={load} aria-label="Thử tải lại danh sách môn">
                 Thử lại
               </button>
             )}

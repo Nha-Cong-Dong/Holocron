@@ -260,6 +260,16 @@ export function describeUiError(error: UiError): string {
   return error.issues.length > 0 ? `${error.message} ${error.issues.join("; ")}` : error.message;
 }
 
+/** Gắn key React cho danh sách câu; câu trùng hệt nhau được thêm hậu tố `#n` (thứ tự xuất hiện) để key không trùng. */
+export function keyedMessages(messages: string[]): { key: string; message: string }[] {
+  const seen = new Map<string, number>();
+  return messages.map((message) => {
+    const count = seen.get(message) ?? 0;
+    seen.set(message, count + 1);
+    return { key: count === 0 ? message : `${message}#${count}`, message };
+  });
+}
+
 /** Nhãn nút theo hành động. */
 export function actionLabel(action: ErrorAction): string | null {
   if (action === "reload") return "Tải lại bản mới nhất";

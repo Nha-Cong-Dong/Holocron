@@ -20,6 +20,8 @@
   --accent-soft: #e1ecef;
   --quote-rule: #8a6d3b;
   --quote-bg: #faf6ec;
+  /* Chữ nhãn trang trên nền trích dẫn: 6.5:1 trên --quote-bg, 6.9:1 trên --surface. */
+  --quote-label: #6e5528;
   --danger: #a4262c;
   --danger-soft: #f8e6e6;
   --warning: #8a5a00;
@@ -86,6 +88,8 @@
     --accent-soft: #1d2c31;
     --quote-rule: #c8a76a;
     --quote-bg: #221f1a;
+    /* 8.4:1 trên --quote-bg, 8.7:1 trên --surface. */
+    --quote-label: #d4b67c;
     --danger: #f08080;
     --danger-soft: #3a1d20;
     --warning: #e0b25c;

@@ -1,4 +1,6 @@
-import { actionLabel, type UiError } from "@/lib/errors";
+"use client";
+
+import { actionLabel, keyedMessages, type UiError } from "@/lib/errors";
 
 import styles from "./ErrorNotice.module.css";
 
@@ -17,8 +19,8 @@ export function ErrorNotice({ error, onAction }: ErrorNoticeProps) {
       <p>{error.message}</p>
       {error.issues.length > 0 && (
         <ul className={styles.issues}>
-          {error.issues.map((issue) => (
-            <li key={issue}>{issue}</li>
+          {keyedMessages(error.issues).map(({ key, message }) => (
+            <li key={key}>{message}</li>
           ))}
         </ul>
       )}

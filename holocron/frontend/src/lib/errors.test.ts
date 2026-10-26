@@ -12,6 +12,7 @@ import {
   extractDetail,
   invalidResponseError,
   isCapabilityError,
+  keyedMessages,
   renderError,
 } from "./errors";
 
@@ -226,5 +227,13 @@ describe("renderError", () => {
     expect(error.action).toBe("retry");
     expect(actionLabel(error.action)).toBe("Thử lại");
     expectUserFacing(error.message);
+  });
+});
+
+describe("keyedMessages", () => {
+  it("key không trùng kể cả khi hai câu giống hệt, giữ thứ tự", () => {
+    const keyed = keyedMessages(["Ô (1, 2) lệch", "Ô (1, 2) lệch", "Khác", "Ô (1, 2) lệch"]);
+    expect(keyed.map((k) => k.message)).toEqual(["Ô (1, 2) lệch", "Ô (1, 2) lệch", "Khác", "Ô (1, 2) lệch"]);
+    expect(new Set(keyed.map((k) => k.key)).size).toBe(4);
   });
 });

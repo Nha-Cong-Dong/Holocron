@@ -27,7 +27,7 @@
 }
 
 .page {
-  color: var(--quote-rule);
+  color: var(--quote-label);
   font-weight: 600;
 }
 

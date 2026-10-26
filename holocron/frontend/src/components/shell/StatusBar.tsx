@@ -1,3 +1,5 @@
+"use client";
+
 import type { StatusItem } from "@/lib/runtime";
 
 import styles from "./StatusBar.module.css";

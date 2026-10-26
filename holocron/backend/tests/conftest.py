@@ -1,5 +1,7 @@
 """Fixture dùng chung cho test; độc lập với thư mục scripts/."""
 
+from collections.abc import Iterator
+
 import pytest
 
 from holocron_core.domain.schemas import (
@@ -11,6 +13,8 @@ from holocron_core.domain.schemas import (
     QuestionFormat,
     SelfSolveResult,
 )
+from holocron_core.routers.access import DEFAULT_ALLOWED_HOSTS, get_allowed_hosts
+from holocron_core.routers.api import app
 
 THEORY_CHUNK = KnowledgeChunk(
     chunk_id="chk_os05_rr_definition",
@@ -83,3 +87,15 @@ def theory_chunk() -> KnowledgeChunk:
 @pytest.fixture
 def rr_slot() -> BlueprintSlot:
     return SLOT
+
+
+@pytest.fixture(autouse=True)
+def allow_testserver_host() -> Iterator[None]:
+    """`TestClient` gửi `Host: testserver`; thêm tên này vào danh sách host cho phép của `app` trong lúc test.
+
+    SPECIFICATION §13.1, §17 D13: danh sách mặc định của code KHÔNG chứa `testserver`. Test cần danh sách thật thì bỏ
+    override này (`monkeypatch.delitem(app.dependency_overrides, get_allowed_hosts)`).
+    """
+    app.dependency_overrides[get_allowed_hosts] = lambda: DEFAULT_ALLOWED_HOSTS | {"testserver"}
+    yield
+    app.dependency_overrides.pop(get_allowed_hosts, None)

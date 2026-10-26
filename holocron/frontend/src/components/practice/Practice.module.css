@@ -388,7 +388,7 @@
 }
 
 .highlight {
-  background: var(--quote-bg);
+  background: var(--accent-soft);
   color: inherit;
   box-shadow: inset 0 -2px 0 var(--quote-rule);
 }

@@ -175,7 +175,7 @@ function ReadyBatch({ batch, blueprint, subject, onNewExam }: ReadyBatchProps) {
             ? "Vào Vault để xác nhận thêm cặp khái niệm cho chương này (cần ít nhất bốn khái niệm), rồi tạo lại đề."
             : "Thử tạo đề với chương khác, hoặc xem lý do của từng câu bên dưới."}
         </EmptyState>
-        <TicketNotice tickets={batch.tickets} />
+        <TicketNotice tickets={batch.tickets} showVaultHint={!onlyTheory} />
         {hasSkipped && <SkippedNotice />}
         <div className={styles.actions}>
           <button type="button" className={styles.primary} onClick={onNewExam}>
@@ -187,7 +187,7 @@ function ReadyBatch({ batch, blueprint, subject, onNewExam }: ReadyBatchProps) {
   }
   return (
     <div className={styles.page}>
-      <TicketNotice tickets={batch.tickets} />
+      <TicketNotice tickets={batch.tickets} showVaultHint />
       {hasSkipped && <SkippedNotice />}
       <PracticeSession
         questions={batch.questions}
@@ -200,7 +200,7 @@ function ReadyBatch({ batch, blueprint, subject, onNewExam }: ReadyBatchProps) {
 }
 
 /** Slot không sinh được (`review_tickets`): hiện lý do backend ghi, không hiện câu hỏng. */
-function TicketNotice({ tickets }: { tickets: PracticeTicket[] }) {
+function TicketNotice({ tickets, showVaultHint }: { tickets: PracticeTicket[]; showVaultHint: boolean }) {
   if (tickets.length === 0) return null;
   return (
     <section className={styles.tickets} aria-labelledby="practice-tickets-title">
@@ -211,7 +211,9 @@ function TicketNotice({ tickets }: { tickets: PracticeTicket[] }) {
         {tickets.map((ticket) => (
           <li key={ticket.slotIndex}>
             Câu thứ {ticket.slotIndex} trong đề: {ticket.reason}
-            {ticket.theory && ". Xác nhận thêm cặp khái niệm cho chương này trong Vault rồi tạo lại đề."}
+            {showVaultHint &&
+              ticket.theory &&
+              ". Xác nhận thêm cặp khái niệm cho chương này trong Vault rồi tạo lại đề."}
           </li>
         ))}
       </ul>

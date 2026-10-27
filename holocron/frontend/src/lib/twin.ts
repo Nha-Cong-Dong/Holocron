@@ -26,15 +26,15 @@ export const DEFAULT_TWIN_COUNT = 3;
 
 export const REVIEW_STATUS_LABELS: Record<ReviewStatus, string> = {
   AUTO_PASS: "Tự động đạt",
-  AUTO_FALLBACK: "Dùng template dự phòng",
+  AUTO_FALLBACK: "Dùng mẫu sinh câu dự phòng",
   NEEDS_REVIEW: "Cần xem lại",
   APPROVED: "Đã duyệt",
   REJECTED: "Bị từ chối",
 };
 
 export const PROVENANCE_LABELS: Record<TemplateProvenance, string> = {
-  llm_generated: "Template do LLM viết",
-  precomputed_verified: "Template đã kiểm chứng sẵn",
+  llm_generated: "Mẫu sinh câu do LLM viết",
+  precomputed_verified: "Mẫu sinh câu đã kiểm chứng sẵn",
 };
 
 export interface GanttBar {

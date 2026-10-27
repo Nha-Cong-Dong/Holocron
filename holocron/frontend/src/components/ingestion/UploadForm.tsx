@@ -3,12 +3,12 @@
 import { useRouter } from "next/navigation";
 import { type FormEvent, useState } from "react";
 
-import { ApiError, uploadDocument } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
+import { EXAM_UPLOAD_MAX_BYTES, EXAM_UPLOAD_MAX_MIB, QUANTUM_MAX, QUANTUM_MIN } from "@/lib/limits";
 
 import styles from "./UploadForm.module.css";
 
 const ACCEPTED_TYPES = "image/png,image/jpeg,image/webp,application/pdf";
-const MAX_BYTES = 10 * 1024 * 1024;
 
 const TOPICS: { key: string; label: string }[] = [
   { key: "os.cpu_sched.rr.avg_waiting_time", label: "Round Robin — thời gian chờ trung bình" },
@@ -28,21 +28,24 @@ export function UploadForm() {
       setError("Hãy chọn ảnh hoặc PDF đề thi.");
       return;
     }
-    if (file.size > MAX_BYTES) {
-      setError("File vượt quá 10 MB.");
+    if (file.size > EXAM_UPLOAD_MAX_BYTES) {
+      setError(`File vượt quá ${EXAM_UPLOAD_MAX_MIB} MiB.`);
       return;
     }
     const trimmed = quantum.trim();
     const parsedQuantum = trimmed === "" ? null : Number(trimmed);
-    if (parsedQuantum !== null && (!Number.isInteger(parsedQuantum) || parsedQuantum < 1 || parsedQuantum > 20)) {
-      setError("Quantum phải là số nguyên từ 1 đến 20, hoặc để trống để lấy từ đề.");
+    if (
+      parsedQuantum !== null &&
+      (!Number.isInteger(parsedQuantum) || parsedQuantum < QUANTUM_MIN || parsedQuantum > QUANTUM_MAX)
+    ) {
+      setError(`Quantum phải là số nguyên từ ${QUANTUM_MIN} đến ${QUANTUM_MAX}, hoặc để trống để lấy từ đề.`);
       return;
     }
     setSubmitting(true);
     setError(null);
     try {
-      const { item } = await uploadDocument(file, topicKey, parsedQuantum);
-      router.push(`/ingestion/${encodeURIComponent(item.item_id)}`);
+      const { item } = await api.uploadDocument(file, topicKey, parsedQuantum);
+      router.push(`/ingestion?item=${encodeURIComponent(item.item_id)}`);
     } catch (err) {
       setError(err instanceof ApiError || err instanceof Error ? err.message : "Tải lên thất bại.");
       setSubmitting(false);
@@ -76,8 +79,8 @@ export function UploadForm() {
         <input
           type="number"
           inputMode="numeric"
-          min={1}
-          max={20}
+          min={QUANTUM_MIN}
+          max={QUANTUM_MAX}
           value={quantum}
           onChange={(event) => setQuantum(event.target.value)}
           disabled={submitting}

@@ -1,9 +1,10 @@
 """Worker đọc PDF, chạy trong tiến trình con riêng (ADR-008 mục 3, 8).
 
 Khởi chạy bởi `pdf_reader.WorkerSession` bằng `python -P -s -m <module này>`, cwd là thư mục tạm, môi trường
-tối thiểu, stdin/stdout UTF-8. Thứ tự: đọc `WorkerRequest` (dòng đầu stdin), nạp PDFium, nếu có cấu hình OCR thì
-kiểm Tesseract (`--version`, `--list-langs`) và nạp RapidOCR, TỰ áp giới hạn OS (RAM, CPU, `RLIMIT_FSIZE` = 0 trên
-Unix; Job Object trên Windows), báo `ready`, mở file, báo `opened`, rồi đọc từng trang khi nhận `PageRequest`.
+tối thiểu, stdin/stdout UTF-8. Thứ tự: đọc `WorkerRequest` (dòng đầu stdin), nạp PDFium, làm nóng PDFium bằng PDF
+viết sẵn trong bộ nhớ (`pdfium_adapter.WARMUP_PDF`, bỏ qua khi `page_budget == 0`), nếu có cấu hình OCR thì kiểm
+Tesseract (`--version`, `--list-langs`) và nạp RapidOCR, TỰ áp giới hạn OS (RAM, CPU, `RLIMIT_FSIZE` = 0 trên Unix;
+Job Object trên Windows), báo `ready`, mở file, báo `opened`, rồi đọc từng trang khi nhận `PageRequest`.
 
 Trang có lớp chữ kém (`text_score < TEXT_LAYER_MIN`) được OCR khi có engine: worker báo `ocr_started` (tiến trình
 cha chuyển sang hạn của tầng 2), render trang ra ảnh xám, chạy Tesseract (tiến trình con của worker, chịu cùng
@@ -13,6 +14,7 @@ giới hạn OS) rồi RapidOCR, và gửi kết quả trong `RawPdfPage.ocr`. M
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import io
 import sys
@@ -24,7 +26,7 @@ from pydantic import BaseModel
 
 from ...sandbox.os_limits import apply_limits
 from .config import OcrSettings, PdfReaderConfig
-from .pdfium_adapter import PdfiumBackend, PdfiumDocument
+from .pdfium_adapter import PdfiumBackend, PdfiumDocument, warm_up
 from .protocol import (
     OcrStartedMessage,
     OpenedMessage,
@@ -203,19 +205,39 @@ def run(
             emit(_fit_message(page, request.config.max_message_bytes))
 
 
+def start(
+    request: WorkerRequest,
+    *,
+    load: Callable[[], PdfiumBackend],
+    warm: Callable[[PdfiumBackend], object],
+    limit: Callable[[int, int], None],
+    emit: Emit,
+) -> tuple[PdfiumBackend, OcrRunner | None]:
+    """Khởi động worker: nạp PDFium, làm nóng, nạp OCR, áp giới hạn OS rồi báo `ready`.
+
+    Mọi phụ thuộc là tham số bắt buộc (không có mặc định) để test gọi được mà không áp giới hạn OS thật lên tiến
+    trình pytest. Nạp và làm nóng chạy trước khi áp giới hạn, như sandbox nạp sẵn module whitelist.
+    """
+    config = request.config
+    backend = load()
+    if request.page_budget >= 1:  # worker của `probe` (page_budget = 0) không đọc trang nào ⇒ không làm nóng
+        # Làm nóng chỉ để giảm chi phí ở trang đầu: lỗi thì bỏ qua, im lặng (stdout là kênh giao thức) và đi tiếp.
+        with contextlib.suppress(*PAGE_ERRORS):
+            warm(backend)
+    ocr = build_ocr(request.ocr, config) if request.ocr is not None else None
+    cpu_per_page = config.ocr_cpu_seconds_per_page if ocr is not None else config.worker_cpu_seconds_per_page
+    limit(config.worker_mem_bytes, cpu_per_page * (request.page_budget + 1))
+    emit(ReadyMessage())
+    return backend, ocr
+
+
 def main() -> None:
     if isinstance(sys.stdout, io.TextIOWrapper):
         sys.stdout.reconfigure(encoding="utf-8")
     if isinstance(sys.stdin, io.TextIOWrapper):
         sys.stdin.reconfigure(encoding="utf-8")
     request = WorkerRequest.model_validate_json(sys.stdin.readline())
-    config = request.config
-    # Nạp PDFium, kiểm Tesseract và nạp RapidOCR trước khi áp giới hạn, như sandbox nạp sẵn module whitelist.
-    backend = PdfiumBackend.load()
-    ocr = build_ocr(request.ocr, config) if request.ocr is not None else None
-    cpu_per_page = config.ocr_cpu_seconds_per_page if ocr is not None else config.worker_cpu_seconds_per_page
-    apply_limits(config.worker_mem_bytes, cpu_per_page * (request.page_budget + 1))
-    _emit_stdout(ReadyMessage())
+    backend, ocr = start(request, load=PdfiumBackend.load, warm=warm_up, limit=apply_limits, emit=_emit_stdout)
     run(request, backend, _stdin_page_requests(), _emit_stdout, ocr)
 
 

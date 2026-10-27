@@ -453,6 +453,67 @@ export interface ConceptPairReject {
   expected_version: number;
 }
 
+/** Body của `POST /v1/vault/concept-pairs/propose`: 1–20 chunk, cùng `subject_code`. */
+export interface ConceptPairProposeRequest {
+  subject_code: string;
+  chunk_ids: string[];
+}
+
+/**
+ * `POST /v1/vault/concept-pairs/propose` (200): cặp mới ở trạng thái `proposed`, `proposed_by = "llm"`; đề xuất
+ * không qua cổng kiểm (trích dẫn không nguyên văn, trùng, vượt số cặp mỗi chunk) chỉ được đếm trong `rejected_count`.
+ * Lỗi: 409 với `detail: CapabilityError`, 502 với `detail: LlmUpstreamErrorDetail`.
+ */
+export interface ConceptPairProposeResponse {
+  pairs: ConceptPair[];
+  rejected_count: number;
+}
+
+// ----------------------------------------------------------- domain/capabilities.py
+
+export type CapabilityName =
+  | "ocr"
+  | "ocr_cross_check"
+  | "vault_search"
+  | "theory_generation"
+  | "concept_pair_llm_proposal"
+  | "essay_grading_offline"
+  | "essay_grading_llm"
+  | "template_authoring_llm"
+  | "vlm";
+
+export type CapabilityReason =
+  | "llm_not_configured"
+  | "vlm_not_configured"
+  | "ocr_engine_missing"
+  | "ocr_language_missing"
+  | "secondary_ocr_disabled"
+  | "not_implemented";
+
+/** Một khả năng của app (spec §5.12, §11.4); `reason` là `null` khi và chỉ khi `available = true`. */
+export interface Capability {
+  name: CapabilityName;
+  available: boolean;
+  reason: CapabilityReason | null;
+  detail_vi: string | null;
+}
+
+/** `detail` của 409 khi endpoint cần một khả năng đang không khả dụng (spec §6.0); `message` chỉ nêu tên biến. */
+export interface CapabilityError {
+  code: "CAPABILITY_UNAVAILABLE";
+  capability: CapabilityName;
+  reason: CapabilityReason;
+  message: string;
+}
+
+// -------------------------------------------------------------------- domain/llm.py
+
+/** `detail` của 502 khi gọi LLM lỗi (spec §6.0): không chứa endpoint, tên model hay nội dung phản hồi. */
+export interface LlmUpstreamErrorDetail {
+  code: "LLM_UPSTREAM_ERROR";
+  message: string;
+}
+
 // ------------------------------------------------------------------- routers/api.py
 
 export interface IngestionItem {
@@ -522,9 +583,4 @@ export interface ValidationErrorItem {
   loc: (string | number)[];
   msg: string;
   type: string;
-}
-
-/** Thân lỗi do backend trả về: chuỗi, danh sách lỗi validate, hoặc chi tiết BLOCKING khi approve (409). */
-export interface ApiErrorBody {
-  detail: string | ValidationErrorItem[] | { message: string; issues: string[] };
 }

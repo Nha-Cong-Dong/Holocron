@@ -1,0 +1,12 @@
+.banner {
+  padding: var(--space-2) var(--space-5);
+  border-bottom: 1px solid var(--border);
+  background: var(--info-soft);
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+
+.banner strong {
+  color: var(--info);
+  font-weight: 600;
+}

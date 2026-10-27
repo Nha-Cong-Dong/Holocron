@@ -16,6 +16,7 @@
 - `holocron/backend/holocron_core/` (FastAPI + Pydantic v2, Python >= 3.12): `domain/` (model), `sandbox/` (ASTGuard + tiến trình con), `infrastructure/` (bộ đọc tài liệu, kho template, template chạy TRONG sandbox, cấu hình), `services/` (nhập tài liệu, extraction, ingestion gate, pipeline, sinh batch), `routers/` (FastAPI endpoints). Test ở `holocron/backend/tests/` (gồm `test_architecture.py` cưỡng chế phân tầng); walkthrough ở `holocron/backend/scripts/`; ví dụ tất định ở `holocron/backend/examples/`.
 - `holocron/frontend/` (Next.js 15 App Router, TypeScript strict): `src/app/` (trang), `src/components/`, `src/lib/` (client API và logic thuần), `src/types/holocron.ts` (khớp 1:1 với Pydantic).
 - `docs/adr/` (quyết định kiến trúc), `docs/releases/` (phát hành), `scripts/` (công cụ gốc repo), `.github/` (CI).
+- `.claude/agents/` (subagent), `.claude/skills/` (skill gọi khi cần), `.claude/state/` (brief, tiến độ, report kiểm tra).
 
 ## 2. Ranh giới kiến trúc
 
@@ -23,17 +24,18 @@
 
 | | LLM Gate (KHÔNG tin cậy) | Deterministic Core (tin cậy) |
 |---|---|---|
-| Thành phần | `DocumentExtractor` (VLM), bộ phân tách/phân loại tài liệu môn học, `TemplateAuthor` (LLM viết template và bộ giải tham chiếu), bộ soạn câu hỏi lý thuyết, `AnswerJudge` (chấm câu trả lời của người học) | `ingestion_gate`, `pipeline`, `sandbox`, bậc *đã kiểm chứng* của `template_library`, bộ sinh câu hỏi tất định (điền khuyết, ghép khái niệm), bộ tính điểm, `domain` |
+| Thành phần | `DocumentExtractor` (VLM), bộ phân tách/phân loại tài liệu môn học, `TemplateAuthor` (LLM viết template và bộ giải tham chiếu), bộ soạn câu hỏi lý thuyết, `AnswerJudge` (chấm câu trả lời của người học) | `ingestion_gate`, `pipeline`, `sandbox`, bậc *đã kiểm chứng* của `template_library`, bộ sinh câu hỏi tất định (điền khuyết, ghép khái niệm), bộ tính điểm, bộ chấm tự luận offline (n-gram), `domain` |
 | Được làm | Đọc ảnh/tài liệu thành văn bản, bảng, công thức, cấu trúc; phân tách và phân loại nội dung; gắn nhãn môn/chương/khái niệm/topic; viết mã template; soạn câu hỏi lý thuyết và rubric; chấm từng ý của rubric (đạt / thiếu / sai) kèm bằng chứng | Mọi phép tính, artifact lời giải (bảng, timeline, biểu đồ), đáp án, phương án nhiễu, trộn phương án, điểm số |
 | Đầu ra đi đâu | Luôn vào một cổng kiểm: nội dung trích từ tài liệu → kiểm nguyên văn (I3); bảng/công thức/giá trị đề → Ingestion Gate; mã → ASTGuard + sandbox + kiểm chứng; câu hỏi lý thuyết và rubric → mỗi ý neo vào trích dẫn nguyên văn; verdict chấm → kiểm bằng chứng rồi code tính điểm | Trực tiếp tới người dùng |
 
 Quy tắc cứng:
-- KHÔNG ĐƯỢC để bất kỳ con số hiển thị nào (đáp án, phương án, kết quả trung gian, bảng hay biểu đồ lời giải) được tính ngoài sandbox hoặc do LLM viết (I1). Kể cả "tính hộ cho nhanh" trong router, service hay frontend.
+- KHÔNG ĐƯỢC để bất kỳ con số hiển thị nào (đáp án, phương án, kết quả trung gian, bảng hay biểu đồ lời giải) được tính ngoài sandbox hoặc do LLM viết (I1). Kể cả "tính hộ cho nhanh" trong router, service hay frontend. Ngoại lệ duy nhất (duyệt 2026-10-25): kết quả chấm câu trả lời của người học (ví dụ `matched_count`/`total_points` của chấm tự luận offline) do bộ tính điểm thuộc Deterministic Core tính bằng code ngoài sandbox; ngoại lệ này KHÔNG áp dụng cho con số nào trong nội dung câu hỏi, đáp án hay lời giải.
 - KHÔNG ĐƯỢC sinh câu hỏi, đáp án hay lời giải hiển thị như kết quả từ dữ liệu VLM khi Gate còn issue BLOCKING (I5). Sandbox ĐƯỢC chạy trên dữ liệu chưa duyệt chỉ để kiểm tra (self-solve, neo đáp án của đề gốc, xem trước có nhãn "chưa duyệt"); kết quả đó KHÔNG ĐƯỢC lưu thành câu hỏi hay xuất ra ngoài.
 - Frontend chỉ hiển thị số do backend trả; KHÔNG ĐƯỢC tự tính lại.
 - Template do LLM sinh có hai bậc: *ứng viên* (lưu ngoài `infrastructure/templates/`, chỉ dùng để kiểm chứng và xem trước) và *đã kiểm chứng* (qua đủ các lớp kiểm chứng ở `SPECIFICATION.md` và được người duyệt). Chỉ template đã kiểm chứng được dùng để sinh câu hỏi phát hành và làm fallback.
 - Mọi khẳng định kiến thức hiển thị cho người dùng (định nghĩa, tóm tắt, câu hỏi khái niệm và đáp án của nó) PHẢI kèm trích dẫn nguyên văn từ tài liệu nguồn (I3); không trích dẫn được thì không hiển thị như kiến thức đã kiểm chứng.
 - Chấm câu trả lời của người học: LLM chỉ trả verdict cho từng ý của rubric kèm bằng chứng; điểm số và kết luận đúng/sai do code tính từ các verdict đó, LLM KHÔNG trả điểm. Verdict có bằng chứng không phải chuỗi con (đã chuẩn hoá NFC và khoảng trắng) của câu trả lời người học hoặc của tài liệu nguồn bị loại. Đáp án mẫu là trích dẫn nguyên văn từ tài liệu, không phải văn bản LLM diễn đạt lại.
+- Không có LLM: chấm tự luận offline chỉ báo khớp x/y ý kèm các ý còn thiếu, KHÔNG có điểm tuyệt đối.
 
 ### 2.2 Phân tầng package (backend)
 
@@ -41,11 +43,12 @@ Quy tắc cứng:
 |---|---|---|
 | `domain/` | thư viện chuẩn, `pydantic` | mọi tầng khác |
 | `sandbox/` | thư viện chuẩn, `pydantic` | `services/`, `routers/`, mạng |
-| `infrastructure/` | `domain/` | `services/`, `routers/` |
+| `infrastructure/` | `domain/`, `sandbox.os_limits` (module giới hạn OS dùng chung, ADR-008 mục 3; duyệt 2026-10-25) | `services/`, `routers/` |
 | `services/` | `domain/`, `sandbox/`, `infrastructure/` | `routers/`, `fastapi` |
 | `routers/` | tất cả tầng dưới | — |
 
 - Phụ thuộc bên ngoài (VLM, LLM, storage) PHẢI đi qua `Protocol` và được cấp bằng `Depends` hoặc tham số; test thay bằng `app.dependency_overrides` hoặc stub, KHÔNG ĐƯỢC gọi mạng trong test.
+- LLM/VLM là tuỳ chọn: thiếu cấu hình thì khả năng tương ứng báo không khả dụng, phần còn lại chạy offline.
 - Đánh giá với LLM/VLM thật (bộ đề và bộ tài liệu kiểm tra nhiều môn) chạy NGOÀI `pytest`, bằng script opt-in trong `holocron/backend/scripts/`, đọc API key từ biến môi trường; không chạy trong CI hay pre-commit. Kết quả ghi ra file; không commit key.
 - Bộ đọc tài liệu (PDF, PPTX, DOCX, ảnh) xử lý file KHÔNG tin cậy: đặt ở `infrastructure/` sau một `Protocol`, có giới hạn kích thước, số trang và thời gian; không thực thi macro, script hay nội dung nhúng; test bằng file mẫu cục bộ nhỏ.
 - Dependency mới: ghim version, license tương thích MIT (KHÔNG GPL/AGPL), ghi lý do trong PR.
@@ -110,7 +113,7 @@ npm run lint && npm run typecheck && npm test && npm run build   # frontend; npm
 Cài hook một lần ở gốc repo: `python -m pip install pre-commit` rồi `python -m pre_commit install` (cài cả `commit-msg` và `pre-push` theo `default_install_hook_types`). Hook commit chạy định dạng/EOL, `ruff`, `mypy --strict`, `biome`, `tsc`, kiểm version và Conventional Commits; hook push chạy `pytest` và `next build`. CI chạy lại toàn bộ trên Linux và Windows.
 
 **Cấp 1 — trong lúc sửa từng file (nhanh):**
-- Python: `ruff check <file>` + `pytest` cho file test liên quan trực tiếp (sửa `sandbox.py` ⇒ `tests/test_sandbox_security.py`; sửa `routers/api.py` ⇒ `tests/test_upload.py`, `tests/test_api_item_state.py`, `tests/test_schemas_and_gate.py`).
+- Python: `ruff check <file>` + `pytest` cho file test liên quan trực tiếp (sửa `sandbox.py` ⇒ `tests/test_sandbox_security.py`; sửa `routers/` ⇒ `tests/test_upload.py`, `tests/test_api_item_state.py`, `tests/test_schemas_and_gate.py`, `tests/test_router_split.py`).
 - TypeScript: `npm run typecheck`.
 - Đọc nội dung hiện tại trước khi ghi đè file có sẵn; không xoá nội dung người dùng khi chưa được yêu cầu.
 
@@ -121,6 +124,15 @@ Cài hook một lần ở gốc repo: `python -m pip install pre-commit` rồi `
 4. Nếu chạm `frontend/`: `npm run lint`, `npm run typecheck`, `npm test` và `npm run build`
 5. Nếu đổi đầu ra pipeline/schema/template: `python -m scripts.run_walkthrough` rồi xem `git diff examples/` — chỉ được đổi khi thay đổi là chủ đích (walkthrough đã đóng băng id, thời gian, `sandbox_duration_ms`).
 6. Nếu đổi prompt, bộ đọc tài liệu hay luồng tổng hợp template: chạy script đánh giá opt-in (§2.2) khi có API key và báo số liệu trước/sau; không có key thì ghi rõ là chưa đo.
+
+**Cấp 3 — kiểm tra độc lập bằng subagent (sau khi Cấp 2 xanh):**
+- Xong một nhánh triển khai, trước khi đề xuất mở PR: chạy `/finish-run <nhánh>`. Skill này chạy lại Cấp 2, gọi `reviewer`, gọi `mutation-tester` khi diff chạm vùng bất biến ở §9, rồi ghi report vào `.claude/state/reports/`. Báo người dùng kết luận một dòng kèm đường dẫn report.
+- Trước khi giao brief mới cho `backend-impl`/`frontend-impl`: gọi `reviewer` ở chế độ review brief.
+- Thiết kế hoặc review giao diện: nạp skill `holocron-ui`.
+- Giao việc cho `reviewer` và `mutation-tester` chỉ bằng tên nhánh, brief và đường dẫn; KHÔNG ĐƯỢC kèm nhận định, tóm tắt hay kết luận của agent chính.
+- KHÔNG ĐƯỢC chạy `mutation-tester` trên toàn repo; chỉ trên các module được giao.
+- Report kết luận "CẦN SỬA" thì sửa rồi chạy lại `/finish-run`; kết luận "CẦN NGƯỜI DÙNG QUYẾT" thì dừng và hỏi (§3). Không chỉnh report để đổi kết luận.
+- Sửa định nghĩa agent/skill trong `.claude/` chỉ được thêm tiêu chí kiểm; bớt hoặc nới tiêu chí cần người dùng đồng ý.
 
 KHÔNG ĐƯỢC `--no-verify`, `SKIP=`, `continue-on-error: true`, hạ `fail_under` trong `pyproject.toml` hay hạ ngưỡng trong `scripts/release_bench.py` để làm xanh kết quả.
 
@@ -146,7 +158,7 @@ Làm xanh kết quả bằng cách che lỗi là không được chấp nhận. 
 - Dùng `# type: ignore`, `# noqa`, `cast(Any, …)` trong Python; `any`, `@ts-ignore`, `@ts-expect-error`, `as unknown as`, `eslint-disable`, `biome-ignore` trong TypeScript.
 - Hạ mức kiểm tra trong `pyproject.toml` hay `tsconfig.json`: thêm `ignore`/`per-file-ignores`/`exclude` cho ruff, `ignore_errors`/`disable_error_code`/`overrides` nới lỏng cho mypy, tắt `strict` của TypeScript.
 - Sửa, xoá, `skip`/`xfail` test sẵn có chỉ để kết quả xanh. Test fail nghĩa là code sai, hoặc spec đổi — khi đó nêu rõ và được người dùng đồng ý trước. Chỉ được thêm test mới, hoặc đổi định dạng thuần tuý (do `ruff format`) mà không đổi AST.
-- Viết code tắt: placeholder, hàm rỗng, `pass`/`...` thay cho logic, `# TODO` mới (TODO hiện có duy nhất là optimistic locking Tuần 4 trong `routers/api.py`, đã được duyệt).
+- Viết code tắt: placeholder, hàm rỗng, `pass`/`...` thay cho logic, `# TODO` mới (TODO hiện có duy nhất là optimistic locking Tuần 4 trong `routers/ingestion.py`, đã được duyệt; xoá khi nhánh SQLite làm xong optimistic locking).
 
 **Ngoại lệ đã được người dùng duyệt (chỉ những mục này):**
 - Đúng một `# noqa: S102` tại dòng `exec` trong `sandbox/_sandbox_child.py` (chủ đích kiến trúc của sandbox).
@@ -164,12 +176,74 @@ Thay đổi chạm một bất biến PHẢI giữ các test cưỡng chế dư�
 
 | Bất biến | Test cưỡng chế |
 |---|---|
-| I1 | `tests/test_pipeline_twin_assembly.py`, `tests/test_pipeline_fallback.py`, `tests/test_sandbox_security.py`, `tests/test_sandbox_limits.py` |
+| I1 | `tests/test_pipeline_twin_assembly.py`, `tests/test_pipeline_fallback.py`, `tests/test_sandbox_security.py`, `tests/test_sandbox_limits.py`; chấm tự luận offline: `tests/test_essay_grader.py` (kết quả chấm chỉ gồm `matched_count`/`total_points` và danh sách ý, không có số nào ghi vào nội dung câu hỏi; khi làm essay) |
 | I2 | `tests/test_pipeline_twin_assembly.py` (misconception lạ), `tests/test_domain_validators.py`; câu lý thuyết: `tests/test_theory_generator.py` (mọi phương án nhiễu mang mã thuộc `THEORY_MISCONCEPTIONS`; thêm cùng bộ sinh câu lý thuyết, ADR-007) |
-| I3 | `test_chunk_rejects_quote_not_in_text` và `test_chunk_accepts_quote_in_nfd_against_nfc_text` trong `tests/test_schemas_and_gate.py` |
-| I4 | `tests/test_rr_template.py` + `python -m scripts.run_walkthrough` rồi `git diff --exit-code -- holocron/backend/examples`; câu lý thuyết: `tests/test_theory_generator.py` (cùng `(generator_version, pool_sha256, seed)` cho cùng câu; NFC và NFD cho cùng `pool_sha256`; thêm cặp ở môn khác không đổi `pool_sha256`; thêm cùng bộ sinh câu lý thuyết, ADR-007) |
+| I3 | `test_chunk_rejects_quote_not_in_text` và `test_chunk_accepts_quote_in_nfd_against_nfc_text` trong `tests/test_schemas_and_gate.py`; câu ESSAY: `tests/test_essay_grader.py` (mọi ý là chuỗi con sau NFC của `definition_quote`; khi làm essay) |
+| I4 | `tests/test_rr_template.py` + `python -m scripts.run_walkthrough` rồi `git diff --exit-code -- holocron/backend/examples`; câu lý thuyết: `tests/test_theory_generator.py` (cùng `(generator_version, pool_sha256, seed)` cho cùng câu; NFC và NFD cho cùng `pool_sha256`; thêm cặp ở môn khác không đổi `pool_sha256`; thêm cùng bộ sinh câu lý thuyết, ADR-007); chấm tự luận offline: `tests/test_essay_grader.py` (khi làm essay) |
 | I5 | `tests/test_schemas_and_gate.py`, `tests/test_api_item_state.py`, `tests/test_i5_enforcement.py` (topic lạ, self-solve `SKIPPED`), `tests/test_input_limits.py`; phía frontend `src/lib/gate.test.ts` (`canApprove`); bộ nhập PDF (ADR-008 mục 14): `tests/test_pdf_ocr.py` (`test_ocr_charset_covers_vietnamese`, `test_low_line_coverage_marks_page_needs_review`, `test_numeric_token_mismatch_raises_dual_pass_mismatch`, `test_cross_check_unavailable_blocks_auto_pass`), `tests/test_pdf_tiers.py` (`test_page_flags_select_tier`), `tests/test_pdf_input_limits.py` (`test_bad_pdf_limits`) |
 | Phân tầng package (§2.2) | `tests/test_architecture.py` |
 
 - Mọi template mới (viết tay hoặc do LLM sinh rồi được duyệt) PHẢI có test tái lập I4 và property test ≥ 100 seed tương đương `tests/test_rr_template.py` trước khi vào `infrastructure/templates/`.
 - Khi gỡ xong các chỗ gắn cứng CPU Scheduling (ADR-005), thêm vào `tests/test_architecture.py` kiểm tra không có chuỗi topic/môn cố định trong `holocron_core` ngoài `infrastructure/templates/` và fixture test.
+
+## 10. Vận hành agent
+
+Ưu tiên: nhanh và hiệu quả cho dự án; không đặt trần chi phí hay số lượt. Mục này không nới tiêu chí kiểm nào ở §5 Cấp 3.
+
+### 10.1 Model và effort
+Frontmatter `model`/`effort` của agent là mặc định. Orchestrator nâng hoặc hạ cho từng lần gọi bằng tham số `model` và `effort` của Agent tool (thắng frontmatter; mục này là chỉ dẫn tường minh cho phép đặt `effort`). Mỗi lần nâng ghi một dòng trong câu trả lời: `escalate: <agent> → opus/high vì <lý do>`.
+
+| Agent | Mặc định | Nâng lên opus/high khi |
+|---|---|---|
+| `backend-impl` | sonnet/medium | chạm §9 (I1–I5), sandbox/ASTGuard, bảo mật, parser, concurrency, state machine; refactor xuyên tầng; thuật toán khó; đã FAILED một lần |
+| `frontend-impl` | sonnet/medium | contract đa hình phức tạp, state khó, lỗi build/typecheck dai dẳng; đã FAILED một lần |
+| `spec-writer` | sonnet/medium | ADR mới, đổi contract nhiều mục, gỡ mâu thuẫn spec/ADR/CLAUDE.md, thiết kế schema |
+| `reviewer` | sonnet/high | diff chạm §9, sandbox, bảo mật hoặc rất lớn |
+| `mutation-tester` | opus/high | luôn ở opus/high |
+| `pdf-researcher` | sonnet/medium | so sánh nhiều lựa chọn có rủi ro giấy phép |
+| `ci-checker` | haiku/low | không nâng |
+
+- Việc máy móc (tìm file/ký hiệu, đếm, đọc log, tóm tắt output, kiểm định kỳ) hạ xuống `haiku`.
+- Không đổi model của phiên chính. `env.CLAUDE_CODE_SUBAGENT_MODEL = "sonnet"` (`.claude/settings.json`) để subagent không khai báo model (general-purpose, Plan) không kế thừa Opus.
+
+### 10.2 Giao việc: hợp đồng Black Box
+- Brief gồm `GOAL` (≤ 300 từ: kết quả cần đạt + tiêu chí DONE), `FILES` (edit/create/read kèm khoảng dòng; file khác là forbidden), `CONTRACT` (interface liên quan + nguồn: `SPECIFICATION.md` §, ADR, path:dòng), `CHECKS` (lệnh kiểm). Brief dài đặt ở `.claude/state/briefs/`, chỉ đưa đường dẫn.
+- KHÔNG dán lịch sử hội thoại, nội dung file hay nhận định của orchestrator vào brief. Không dùng subagent kiểu fork cho worker.
+- Mọi agent trả theo mục "Hợp đồng đầu ra" trong file agent (`STATUS`, `MODIFIED`, `SUMMARY`, `TESTS`, `ERROR_LOG`, `NOTES`, `FINDINGS` khi có).
+- `FAILED` → giao lại một lần kèm `ERROR_LOG` và hướng sửa (cân nhắc nâng opus/high). Vẫn `FAILED` → `BLOCKED`, ghi vào `handoff.md`, dừng task.
+- Báo "đã giao việc" thì cùng lượt phải có lời gọi Agent tool.
+- Song song tối đa 3 worker khi tập file không giao nhau; gặp lỗi 429 thì giảm xuống 1.
+- Khi một nhánh đang ở /finish-run (cổng, reviewer, mutation chạy nền), orchestrator giao ngay task kế tiếp trong hàng đợi cho worker mới ở worktree riêng dưới `D:/prj/holocron-wt/` nếu tập FILES không giao với diff của nhánh đang kiểm. Không chờ review xong mới giao.
+- Lệnh nặng (push có hook pre-push, build, cổng Cấp 2) luôn chạy nền (`run_in_background`); phiên chính không chạy chúng ở foreground.
+
+### 10.3 I/O và output terminal
+- Định vị trước bằng `rg -n`/Grep/`ast-grep`. File > 300 dòng chỉ đọc theo offset/limit. `SPECIFICATION.md` luôn đọc theo mục (`rg -n "^#{1,3} " SPECIFICATION.md` trước).
+- Lệnh nặng luôn có lọc và mở đầu bằng `set -o pipefail;` để giữ mã thoát của lệnh kiểm:
+  - `python -m pytest -q --tb=short 2>&1 | tail -n 40` (cổng Cấp 2 thêm `--cov`)
+  - `python -m mypy --strict holocron_core 2>&1 | tail -n 30`; `python -m ruff … 2>&1 | tail -n 30`
+  - `npm run build 2>&1 | tail -n 30`
+- Cần thêm chi tiết thì chạy lại ĐÚNG test hỏng với `-x --tb=long`, không chạy lại toàn bộ.
+- `git diff --stat` trước, rồi `git diff <range> -- <file>` từng file; `git log --oneline -n <N>`.
+- Không đọc lại file vừa Edit; kiểm bằng test. `env.BASH_MAX_OUTPUT_LENGTH = "20000"` là lưới an toàn.
+
+### 10.4 Loop và vệ sinh phiên
+- Không chạy `/loop` hay cron trong phiên đang code. Kiểm định kỳ chạy bằng `.claude/loops/ci-check.ps1` (Task Scheduler, worktree riêng ngoài repo, chỉ chạy khi HEAD đổi). Phiên chính chỉ đọc `%LOCALAPPDATA%\holocron-ci\ci-status.json` hoặc giao `ci-checker`; không mở log.
+- Một phiên = một task/milestone. Sau commit hoàn tất milestone: (1) ghi đè `.claude/state/handoff.md` theo mẫu dưới (≤ 40 dòng); (2) nối một dòng vào `.claude/state/progress.md`; (3) không bắt đầu task mới trong phiên đó; (4) kết thúc bằng dòng `READY FOR /clear — chạy /clear rồi gõ: tiếp tục theo handoff.md`.
+- Khi PR của một nhánh đã merge (kiểm `gh pr list --state merged --head <nhánh>`, tính cả squash-merge hay merge vào nhánh xếp chồng rồi chép sang develop): phiên kế tiếp (1) chuyển brief và report của nhánh sang `D:/prj/holocron-archive/claude-<YYYY-MM-DD-HHmm>/` kèm sha256; (2) gỡ worktree bằng `git -c core.longpaths=true worktree remove <đường dẫn>` (không `--force`; còn thay đổi chưa commit thì dừng và báo); (3) `git branch -d <nhánh>`, squash-merge thì chỉ liệt kê để người dùng tự xoá; (4) bỏ nhánh khỏi `QUEUE` của `handoff.md`.
+- `progress.md` tối đa 60 dòng: vượt thì chuyển phần đầu sang `progress.cut.md` trong archive, giữ 40 dòng cuối và thêm một dòng trỏ tới file cắt.
+- Phiên mới chỉ đọc `handoff.md`; `progress.md` chỉ đọc 40 dòng cuối khi cần; `evening-questions.md`, `attempt-history.md` chỉ tra bằng `rg`.
+- Chạy không người: mỗi task là một tiến trình `claude -p` MỚI (đọc handoff → làm đúng một task → commit local → cập nhật handoff → thoát), không đặt trần ngân sách. Lệnh mẫu (gốc repo):
+  `claude -p "Đọc .claude/state/handoff.md. Làm đúng task ở NEXT theo brief, chạy CHECKS, commit local trên nhánh của task, ghi đè handoff.md theo mẫu ở CLAUDE.md §10.4, nối một dòng vào progress.md, rồi thoát." --permission-mode auto`
+  Lặp lại lệnh khi `STATE` còn `IN_PROGRESS`; dừng khi `QUEUE_EMPTY` hoặc `BLOCKED`.
+
+Mẫu `handoff.md`:
+```
+# Handoff — <YYYY-MM-DD HH:mm>
+STATE: IN_PROGRESS | QUEUE_EMPTY | BLOCKED: <lý do>
+BRANCH: <nhánh> @ <sha7>   WORKTREE: <đường dẫn | none>
+DONE: <1–3 dòng>
+NEXT: <đúng một task> — brief: <đường dẫn>
+QUEUE: <tối đa 5 dòng>
+OPEN: <câu hỏi chờ người dùng, tối đa 5 dòng>
+DO NOT: <tối đa 3 dòng>
+```

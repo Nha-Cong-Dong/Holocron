@@ -1,0 +1,471 @@
+.page {
+  display: grid;
+  gap: var(--space-5);
+}
+
+.panel {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.panel h2,
+.panel h3 {
+  margin: 0;
+}
+
+.muted {
+  color: var(--text-muted);
+  font-size: var(--text-md);
+}
+
+.note {
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--info);
+  border-radius: var(--radius);
+  background: var(--info-soft);
+  font-size: var(--text-md);
+}
+
+/* ------------------------------------------------------------------ form tạo đề */
+
+.form {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+
+.field {
+  display: grid;
+  gap: var(--space-1);
+  font-size: var(--text-md);
+}
+
+.input {
+  min-height: 36px;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-sunken);
+}
+
+.chapterInput {
+  width: 140px;
+  font-family: var(--font-mono);
+}
+
+.countInput {
+  width: 96px;
+}
+
+.hint {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.choices {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.choices legend {
+  padding: 0 var(--space-1);
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.choice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.primary,
+.secondary {
+  min-height: 36px;
+  padding: var(--space-1) var(--space-4);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.primary {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.secondary {
+  background: var(--surface);
+  color: var(--accent);
+}
+
+.primary:disabled,
+.secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.linkButton {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.formError {
+  color: var(--danger);
+  font-size: var(--text-md);
+}
+
+/* --------------------------------------------------------------- phiên làm bài */
+
+.progress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stepButton {
+  min-width: 36px;
+  min-height: 32px;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.stepButton[aria-current="step"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+
+.stepButton[data-done="true"] {
+  text-decoration: underline;
+}
+
+.questionHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.questionTitle {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+.kindLabel {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.stem {
+  margin: 0;
+  font-size: var(--text-body);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.options {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.option {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.option:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.option:has(input:disabled) {
+  cursor: default;
+}
+
+.optionKey {
+  font-weight: 600;
+}
+
+.reviewList {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reviewOption {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  line-height: 1.5;
+}
+
+.reviewOption[data-state="correct"] {
+  border-color: var(--success);
+  background: var(--success-soft);
+}
+
+.reviewOption[data-state="chosen-wrong"] {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.tag {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.result {
+  display: grid;
+  gap: var(--space-3);
+}
+
+/*
+ * Khối kết quả nhận focus bằng code ngay sau khi nộp (kể cả nộp bằng chuột): luôn hiện viền focus 2 px màu nhấn (kế
+ * hoạch UI mục 5.4). `[tabindex]` nâng độ ưu tiên trên quy tắc `:focus:not(:focus-visible)` ở `globals.css`.
+ */
+.result[tabindex]:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+
+.verdict {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+
+.verdict[data-outcome="correct"] {
+  color: var(--success);
+}
+
+.verdict[data-outcome="incorrect"] {
+  color: var(--danger);
+}
+
+.misconception {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 1px solid var(--warning);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: var(--warning-soft);
+}
+
+.misconceptionLabel {
+  font-weight: 600;
+}
+
+.details summary {
+  cursor: pointer;
+  font-size: var(--text-md);
+}
+
+.details[open] summary {
+  margin-bottom: var(--space-2);
+}
+
+.sectionTitle {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.navigation {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+/* ------------------------------------------------------------------- tự luận */
+
+.answer {
+  width: 100%;
+  min-height: 160px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-sunken);
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.answerReadOnly {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.points {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding-left: var(--space-5);
+}
+
+.points li {
+  font-family: var(--font-serif);
+  line-height: 1.6;
+}
+
+.limitation {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--info);
+  border-radius: var(--radius);
+  background: var(--info-soft);
+  font-size: var(--text-md);
+}
+
+/* ------------------------------------------------------------- đoạn nguồn */
+
+.source {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.sourceText {
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-family: var(--font-serif);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.sourceText:focus-visible {
+  outline: 2px solid var(--accent);
+}
+
+.highlight {
+  background: var(--accent-soft);
+  color: inherit;
+  box-shadow: inset 0 -2px 0 var(--quote-rule);
+}
+
+/* --------------------------------------------------------------- artifact */
+
+.tableWrap {
+  overflow-x: auto;
+}
+
+.table {
+  border-collapse: collapse;
+  font-size: var(--text-md);
+}
+
+.table th,
+.table td {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border);
+  text-align: left;
+}
+
+.table caption {
+  margin-bottom: var(--space-1);
+  color: var(--text-muted);
+  text-align: left;
+}
+
+/* -------------------------------------------------------------- tổng kết */
+
+.summaryList {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.summaryItem {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.summaryStem {
+  overflow-wrap: anywhere;
+}
+
+.tickets {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--warning);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: var(--warning-soft);
+}
+
+.tickets ul {
+  margin: 0;
+  padding-left: var(--space-5);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .option,
+  .stepButton {
+    transition: none;
+  }
+}

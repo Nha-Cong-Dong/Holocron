@@ -234,3 +234,38 @@ class PdfiumBackend:
         if box[2] - box[0] <= 0.0 and box[3] - box[1] <= 0.0:
             return None
         return box
+
+
+# PDF một trang viết sẵn để làm nóng PDFium: một dòng chữ bằng font Type1 chuẩn KHÔNG nhúng (Helvetica, WinAnsi),
+# giống font của PDF mẫu trong test. Bảng xref khớp từng byte (kiểm trong tests/test_pdf_worker_warmup.py).
+WARMUP_PDF = (
+    b"%PDF-1.4\n"
+    b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+    b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
+    b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 50] /Contents 4 0 R"
+    b" /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
+    b"4 0 obj\n<< /Length 50 >>\nstream\nBT /F1 12 Tf 10 20 Td (Holocron 0123456789) Tj ET\nendstream\nendobj\n"
+    b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n"
+    b"xref\n0 6\n"
+    b"0000000000 65535 f \n"
+    b"0000000009 00000 n \n"
+    b"0000000058 00000 n \n"
+    b"0000000115 00000 n \n"
+    b"0000000240 00000 n \n"
+    b"0000000339 00000 n \n"
+    b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n436\n%%EOF\n"
+)
+
+
+def warm_up(backend: PdfiumBackend) -> RawPdfPage:
+    """Đọc trang của `WARMUP_PDF` theo đúng đường trích lớp chữ của trang thật.
+
+    Mục đích: trả trước chi phí khởi tạo một lần của PDFium (nạp font, ánh xạ font hệ thống cho font không nhúng)
+    thay vì tính vào hạn của trang đầu tiên. Không đọc file nào: tài liệu là hằng trong bộ nhớ.
+    Mở thất bại ⇒ `PdfiumDataError`.
+    """
+    opened = backend.open(WARMUP_PDF)
+    if isinstance(opened, str):
+        raise PdfiumDataError(f"không mở được PDF làm nóng: {opened}")
+    with opened:
+        return opened.read_page(0)

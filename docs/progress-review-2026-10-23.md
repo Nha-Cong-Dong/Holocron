@@ -23,7 +23,7 @@ Tuần này khung kỹ thuật tiến nhanh và chắc: năm bất biến I1–I
 | 1.1 Bài toán | ✅ | `SPECIFICATION.md` §1.1 | Viết cho CPU Scheduling; cần mở rộng cho đa môn (F4) |
 | 1.2 Giải pháp | ✅ | Spec §0 (I1–I5), §3; ADR-001/002/003 *Chấp nhận* | |
 | 1.3 Người dùng mục tiêu | 🟡 | Quyết định A2: chỉ sinh viên, tự học và ôn luyện | Đã chốt, chưa ghi vào spec (F3) |
-| 1.4 Tech stack và lý do | 🟡 | Quyết định A5: DeepSeek do ban tổ chức cấp, phần còn lại chọn theo tiêu chí tốt nhất | Đã chốt, chưa ghi vào spec; chưa ghi vấn đề DeepSeek không có model thị giác (R4, §11.2) (F3) |
+| 1.4 Tech stack và lý do | 🟡 | Quyết định A5: nhà cung cấp LLM do ban tổ chức cấp, phần còn lại chọn theo tiêu chí tốt nhất | Đã chốt, chưa ghi vào spec; chưa ghi vấn đề nhà cung cấp LLM do ban tổ chức cấp không có model thị giác (R4, §11.2) (F3) |
 | 1.5 Phạm vi | 🟡 | Spec §1.2–1.4 | Xem mục 3 (F4, F5, F6) |
 | 2.1 User flow | 🟡 | Spec §4 | Bước 5 chưa có endpoint, bước 7 cần Vault; sửa sau theo A8 |
 | 2.2 Database schema | 🟡 | Spec §5 (model Pydantic); store in-memory | Chưa có bảng, khoá, quan hệ, index (F14); §5 thiếu nhiều model (F13) |

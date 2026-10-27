@@ -1,4 +1,19 @@
-import type { ExtractedTable, GateIssue, GateReport, IngestionItem } from "@/types/holocron";
+import type { ExtractedTable, GateIssue, GateReport, IngestionItem, SelfSolveStatus } from "@/types/holocron";
+
+const SELF_SOLVE_STATUS_VI: Record<SelfSolveStatus, string> = {
+  MATCHED: "khớp đúng một phương án",
+  NO_MATCH: "không khớp phương án nào",
+  AMBIGUOUS: "khớp nhiều hơn một phương án",
+  SKIPPED: "chưa tự giải được với bảng hiện tại",
+};
+
+/**
+ * Nhãn tiếng Việt cho kết quả tự giải; không hiện mã enum của backend. Nhận `string` vì backend mới hơn có thể trả mã
+ * frontend chưa biết; mã lạ thì dùng câu chung.
+ */
+export function selfSolveStatusLabel(status: string): string {
+  return Object.entries(SELF_SOLVE_STATUS_VI).find(([key]) => key === status)?.[1] ?? "chưa rõ kết quả";
+}
 
 export type CellKey = `${number}:${number}`;
 

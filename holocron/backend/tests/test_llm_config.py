@@ -153,9 +153,11 @@ def test_runtime_endpoint_reflects_the_extractor_in_use_not_only_the_environment
 # --------------------------------------------------------------------------- #
 
 GUARDED_LAYERS = ("services", "routers", "domain", "sandbox")
-# Tên model hoặc họ model thường gặp, kể cả dạng `<x>-chat` không kèm URL. Có ranh giới từ để chữ thường
-# như "corpus" không bị coi là tên model.
-MODEL_NAME_PATTERN = re.compile(
+# Tên model hoặc họ model thường gặp, kể cả dạng `<x>-chat` không kèm URL. Hằng chuỗi được quét theo chuỗi con
+# (bắt cả "codellama", "chatgpt-4o"); comment và docstring có thêm ranh giới từ để chữ thường như "corpus"
+# không bị coi là tên model.
+MODEL_NAME_PATTERN = re.compile(r"(?i)(-chat|gpt-|claude-|gemini-|llama|mistral|qwen|haiku|sonnet|opus)")
+MODEL_WORD_PATTERN = re.compile(
     r"(?i)(-chat\b|\bgpt-|\bclaude-|\bgemini-|\bllama|\bmistral|\bqwen|\bhaiku\b|\bsonnet\b|\bopus\b)"
 )
 # Tên nhà cung cấp mặc định cũ (bản v0.5), viết dạng regex để bắt cả biến thể có dấu cách hay gạch nối.
@@ -197,7 +199,7 @@ def provider_mentions(source: str) -> list[int]:
     return [
         number
         for number, line in enumerate(source.splitlines(), start=1)
-        if MODEL_NAME_PATTERN.search(line) or OLD_PROVIDER_PATTERN.search(line)
+        if MODEL_WORD_PATTERN.search(line) or OLD_PROVIDER_PATTERN.search(line)
     ]
 
 
@@ -224,8 +226,9 @@ def test_guarded_layers_are_not_empty() -> None:
         'MODEL = f"{prefix}gpt-4o"',
         'NAMES = ("Claude-3", "llama3")',
         'CALL(model="qwen2")',
+        'NAMES = ("codellama", "chatgpt-4o-latest")',
     ],
-    ids=["url", "url-in-function", "x-chat", "f-string", "tuple", "keyword"],
+    ids=["url", "url-in-function", "x-chat", "f-string", "tuple", "keyword", "embedded"],
 )
 def test_the_constant_scan_flags_urls_and_model_names(source: str) -> None:
     assert hard_coded_constants(source)

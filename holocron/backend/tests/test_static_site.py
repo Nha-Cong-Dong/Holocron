@@ -560,3 +560,33 @@ def test_non_utf8_html_is_served_unchanged(web_dir: Path) -> None:
         head = client.head(url)
         assert head.status_code == status
         assert head.headers["content-length"] == str(len(body))
+
+
+# --- Cache quyết theo đường dẫn file đã chuẩn hoá, không theo URL thô ---
+
+
+@pytest.mark.parametrize(
+    ("url", "cache"),
+    [
+        ("/_next/static/%2e%2e/%2e%2e/index.txt", "no-store"),
+        ("/_next/static/chunks/%2e%2e/%2e%2e/%2e%2e/favicon.ico", "no-cache"),
+        ("/_next/static/./chunks/app-abc123.js", CACHE_IMMUTABLE),
+        ("/vault/%2e%2e/_next/static/chunks/app-abc123.js", CACHE_IMMUTABLE),
+        ("/_next/static%2fchunks%2fapp-abc123.js", CACHE_IMMUTABLE),
+    ],
+)
+def test_cache_uses_normalized_file_path(site: TestClient, url: str, cache: str) -> None:
+    response = site.get(url)
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == cache
+
+
+def test_file_directly_in_next_static_dir_name_is_not_special(web_dir: Path) -> None:
+    (web_dir / "_next" / "static.txt").write_text("x", encoding="utf-8")
+    (web_dir / "_next" / "staticx").mkdir()
+    (web_dir / "_next" / "staticx" / "a.js").write_text("x", encoding="utf-8")
+    app = _sample_app()
+    attach_static_site(app, web_dir)
+    client = TestClient(app)
+    assert client.get("/_next/static.txt").headers["cache-control"] == "no-store"
+    assert client.get("/_next/staticx/a.js").headers["cache-control"] == "no-cache"

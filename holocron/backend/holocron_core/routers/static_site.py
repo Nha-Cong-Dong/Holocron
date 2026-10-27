@@ -21,7 +21,7 @@ import os
 import re
 import stat
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PurePath
 
 import anyio.to_thread
 from fastapi import FastAPI
@@ -42,7 +42,8 @@ API_PREFIXES = ("/v1", "/docs", "/redoc", "/openapi.json")
 
 ALLOWED_METHODS = ("GET", "HEAD")
 
-IMMUTABLE_PREFIX = "/_next/static/"
+# Thư mục (tương đối thư mục web) chứa tài nguyên có hash trong tên: được cache lâu.
+IMMUTABLE_DIR = ("_next", "static")
 CACHE_IMMUTABLE = "public, max-age=31536000, immutable"
 CACHE_NO_STORE = "no-store"
 CACHE_NO_CACHE = "no-cache"
@@ -133,11 +134,16 @@ def _is_unsafe_segment(segment: str) -> bool:
     return stem in _WINDOWS_DEVICE_NAMES
 
 
-def _cache_control(route_path: str, file_path: str, status_code: int) -> str:
-    """`/_next/static/*` (tên có hash) cache lâu khi 200; payload RSC `*.txt` không lưu; file khác phải hỏi lại."""
-    if status_code == 200 and route_path.startswith(IMMUTABLE_PREFIX):
+def _cache_control(relative_path: PurePath, status_code: int) -> str:
+    """`_next/static/*` (tên có hash) cache lâu khi 200; payload RSC `*.txt` không lưu; file khác phải hỏi lại.
+
+    `relative_path` là đường dẫn file đã chuẩn hoá, tương đối thư mục web (không phải URL thô), để
+    `/_next/static/%2e%2e/%2e%2e/index.txt` được xét như `index.txt`.
+    """
+    parts = relative_path.parts
+    if status_code == 200 and len(parts) > len(IMMUTABLE_DIR) and parts[: len(IMMUTABLE_DIR)] == IMMUTABLE_DIR:
         return CACHE_IMMUTABLE
-    if file_path.lower().endswith(".txt"):
+    if relative_path.name.lower().endswith(".txt"):
         return CACHE_NO_STORE
     return CACHE_NO_CACHE
 
@@ -154,6 +160,11 @@ def _read_injected(path: str) -> bytes:
 
 class _StaticSite(StaticFiles):
     """`StaticFiles(html=True)` có chèn runtime vào HTML và đặt `Cache-Control` theo loại file."""
+
+    def __init__(self, directory: Path) -> None:
+        super().__init__(directory=directory, html=True, check_dir=False)
+        # Gốc đã resolve, cùng cách `StaticFiles.lookup_path` resolve file (`os.path.realpath`).
+        self.root = os.path.realpath(directory)
 
     def lookup_path(self, path: str) -> tuple[str, os.stat_result | None]:
         """Như `StaticFiles.lookup_path`, nhưng đoạn đường dẫn lạ hoặc lỗi hệ điều hành khi tra file ⇒ không thấy file.
@@ -180,7 +191,8 @@ class _StaticSite(StaticFiles):
         if _is_html(os.fspath(full_path)):
             # HTML được thay bằng bản đã chèn runtime ở `get_response`: không 304, không ETag, không Range.
             return response
-        response.headers["Cache-Control"] = _cache_control(_route_path(scope), os.fspath(full_path), status_code)
+        relative_path = PurePath(os.path.relpath(full_path, self.root))
+        response.headers["Cache-Control"] = _cache_control(relative_path, status_code)
         if self.is_not_modified(response.headers, Headers(scope=scope)):
             return NotModifiedResponse(response.headers)
         return response
@@ -230,7 +242,7 @@ def attach_static_site(app: FastAPI, web_dir: Path) -> None:
     route nào được chuyển cho bộ xử lý mặc định cũ của router, nên phản hồi y hệt khi không gắn trang tĩnh.
     """
     directory = _validated_web_dir(web_dir)
-    site = _StaticSite(directory=directory, html=True, check_dir=False)
+    site = _StaticSite(directory)
     not_found: ASGIApp = app.router.default
 
     async def serve(scope: Scope, receive: Receive, send: Send) -> None:

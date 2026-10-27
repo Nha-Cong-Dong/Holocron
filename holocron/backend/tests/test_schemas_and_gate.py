@@ -1,3 +1,5 @@
+import unicodedata
+
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
@@ -37,6 +39,24 @@ def test_chunk_rejects_quote_not_in_text():
             category="THEORY",
             token_count=10,
         )
+
+
+def test_chunk_accepts_quote_in_nfd_against_nfc_text():
+    """I3 (ADR-006 mục 9): trích dẫn ở dạng tổ hợp NFD vẫn khớp văn bản NFC tương đương chính tắc."""
+    raw_text = unicodedata.normalize("NFC", "Round Robin dùng lượng tử thời gian q.")
+    quote = unicodedata.normalize("NFD", "dùng lượng tử   thời gian")
+    assert quote not in raw_text  # so chuỗi con trực tiếp sẽ loại nhầm
+    chunk = KnowledgeChunk(
+        doc_id="doc_x",
+        subject_code="IT3070",
+        chapter_code="ch5",
+        page_number=1,
+        raw_text=raw_text,
+        verbatim_quote=quote,
+        category="THEORY",
+        token_count=10,
+    )
+    assert chunk.verbatim_quote == quote
 
 
 def test_gate_blocks_misread_then_user_fix_unblocks():

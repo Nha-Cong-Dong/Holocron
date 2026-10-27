@@ -1,4 +1,19 @@
-import type { ExtractedTable, GateIssue, GateReport, IngestionItem } from "@/types/holocron";
+import type { ExtractedTable, GateIssue, GateReport, IngestionItem, SelfSolveStatus } from "@/types/holocron";
+
+const SELF_SOLVE_STATUS_VI: Record<SelfSolveStatus, string> = {
+  MATCHED: "khớp đúng một phương án",
+  NO_MATCH: "không khớp phương án nào",
+  AMBIGUOUS: "khớp nhiều hơn một phương án",
+  SKIPPED: "chưa tự giải được với bảng hiện tại",
+};
+
+/**
+ * Nhãn tiếng Việt cho kết quả tự giải; không hiện mã enum của backend. Nhận `string` vì backend mới hơn có thể trả mã
+ * frontend chưa biết; mã lạ thì dùng câu chung.
+ */
+export function selfSolveStatusLabel(status: string): string {
+  return Object.entries(SELF_SOLVE_STATUS_VI).find(([key]) => key === status)?.[1] ?? "chưa rõ kết quả";
+}
 
 export type CellKey = `${number}:${number}`;
 
@@ -31,6 +46,27 @@ export function groupIssues(report: GateReport | null): {
 
 export function rowCount(table: ExtractedTable): number {
   return table.cells.reduce((max, cell) => Math.max(max, cell.row + 1), 0);
+}
+
+/** Chỉ số dòng 0..n-1 của bảng; số dòng là định danh trong domain (`cell.row`), dùng làm key ổn định. */
+export function rowIndices(table: ExtractedTable): number[] {
+  return Array.from({ length: rowCount(table) }, (_, row) => row);
+}
+
+/** Cột kèm chỉ số; chỉ số cột là định danh trong domain (`cell.col`), không đổi khi header trùng tên. */
+export function tableColumns(table: ExtractedTable): { col: number; header: string }[] {
+  return table.headers.map((header, col) => ({ col, header }));
+}
+
+/** Gắn key React dựng từ nội dung issue; issue trùng hệt nhau được thêm hậu tố `#n` để key không trùng. */
+export function keyedIssues(issues: GateIssue[]): { key: string; issue: GateIssue }[] {
+  const seen = new Map<string, number>();
+  return issues.map((issue) => {
+    const base = `${issue.code}:${issue.row ?? "-"}:${issue.col ?? "-"}:${issue.message_vi}`;
+    const count = seen.get(base) ?? 0;
+    seen.set(base, count + 1);
+    return { key: count === 0 ? base : `${base}#${count}`, issue };
+  });
 }
 
 export function cellText(table: ExtractedTable, row: number, col: number): string | null {

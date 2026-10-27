@@ -60,6 +60,12 @@ desktop.ini
 # ==========================================
 .claude/*
 !.claude/CLAUDE.md
+!.claude/agents/
+!.claude/skills/
+!.claude/settings.json
+!.claude/loops/
+.claude/loops/*
+!.claude/loops/ci-check.ps1
 *.session
 # App desktop Claude ghi output vào repo
 Claude outputs/
@@ -70,3 +76,7 @@ Claude outputs/
 .pytest_cache/
 .coverage
 coverage.xml
+
+# Tài liệu môn học và bộ đề dùng cho script đánh giá với LLM/VLM thật (CLAUDE.md §2.2).
+# Có thể có bản quyền nên luôn giữ ngoài repo; chỉ commit file mẫu tự tạo.
+eval_data/

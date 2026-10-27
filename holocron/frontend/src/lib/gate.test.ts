@@ -2,7 +2,17 @@ import { describe, expect, it } from "vitest";
 
 import type { GateIssue, GateReport, GateStatus, IngestionItem } from "@/types/holocron";
 
-import { canApprove, cellKey, cellText, groupIssues, hasBlocking, rowCount } from "./gate";
+import {
+  canApprove,
+  cellKey,
+  cellText,
+  groupIssues,
+  hasBlocking,
+  keyedIssues,
+  rowCount,
+  rowIndices,
+  tableColumns,
+} from "./gate";
 
 function issue(overrides: Partial<GateIssue> = {}): GateIssue {
   return {
@@ -121,5 +131,45 @@ describe("rowCount và cellText", () => {
     const table = item().table_primary;
     expect(cellText(table, 1, 2)).toBe("9");
     expect(cellText(table, 5, 5)).toBeNull();
+  });
+});
+
+describe("rowIndices và tableColumns", () => {
+  it("liệt kê đủ dòng tới ô có row lớn nhất", () => {
+    expect(rowIndices(item().table_primary)).toEqual([0, 1]);
+  });
+
+  it("trả về mảng rỗng khi bảng không có ô", () => {
+    const table = { ...item().table_primary, cells: [] };
+    expect(rowIndices(table)).toEqual([]);
+  });
+
+  it("giữ chỉ số cột kể cả khi header trùng tên", () => {
+    const table = { ...item().table_primary, headers: ["P", "P"] };
+    expect(tableColumns(table)).toEqual([
+      { col: 0, header: "P" },
+      { col: 1, header: "P" },
+    ]);
+  });
+});
+
+describe("keyedIssues", () => {
+  it("key dựng từ nội dung, không phụ thuộc thứ tự", () => {
+    const a = issue({ row: 0, col: 0 });
+    const b = issue({ row: 1, col: 2, code: "LOW_CONFIDENCE" });
+    const forward = keyedIssues([a, b]).map((k) => k.key);
+    const backward = keyedIssues([b, a]).map((k) => k.key);
+    expect(new Set(forward)).toEqual(new Set(backward));
+  });
+
+  it("issue trùng hệt nhau vẫn có key khác nhau", () => {
+    const keys = keyedIssues([issue(), issue(), issue()]).map((k) => k.key);
+    expect(new Set(keys).size).toBe(3);
+  });
+
+  it("issue cấp bảng (không toạ độ) có key hợp lệ", () => {
+    const [entry] = keyedIssues([issue({ row: null, col: null })]);
+    expect(entry?.key).toContain(":-:-:");
+    expect(entry?.issue.row).toBeNull();
   });
 });

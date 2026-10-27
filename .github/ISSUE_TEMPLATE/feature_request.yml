@@ -2,11 +2,23 @@ name: Đề xuất tính năng
 description: Đề xuất thay đổi hoặc tính năng mới
 labels: [enhancement]
 body:
+  - type: dropdown
+    id: flow
+    attributes:
+      label: Luồng liên quan
+      description: Đề xuất này phục vụ luồng nào của Holocron?
+      options:
+        - Nhập tài liệu môn học (Knowledge Vault)
+        - Nhập đề (Ingestion Gate)
+        - Sinh câu hỏi (Deterministic Core)
+        - Chấm câu trả lời
+        - Hạ tầng (CI, công cụ, cấu hình, phát hành)
+    validations:
+      required: true
   - type: textarea
     id: problem
     attributes:
       label: Vấn đề cần giải quyết
-      description: Phục vụ bước nào của Golden Path (upload → Gate → approve → sandbox → Twin)?
     validations:
       required: true
   - type: textarea

@@ -16,11 +16,12 @@ import random
 from collections import Counter
 from typing import Any, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from ..domain.schemas import (
     BlueprintSlot,
     Citation,
+    GanttSegment,
     GenerationTrace,
     MisconceptionRef,
     NumericalAnswer,
@@ -31,7 +32,22 @@ from ..domain.schemas import (
     TemplateProvenance,
     TwinQuestion,
 )
+from ..domain.twins import AttemptLog, ReviewTicket
 from ..sandbox.sandbox import SandboxLimits, SandboxResult, SandboxStatus, run_template
+
+# `AttemptLog` và `ReviewTicket` đã chuyển về `domain/twins.py`; tên cũ vẫn import được từ module này.
+__all__ = [
+    "LLM_ATTEMPT_BUDGET",
+    "SEED_REROLL_BUDGET",
+    "SEED_STRIDE",
+    "AttemptLog",
+    "ProductionOutcome",
+    "ReviewTicket",
+    "TemplateAuthor",
+    "TemplateRegistry",
+    "build_twin",
+    "produce_twin",
+]
 
 LLM_ATTEMPT_BUDGET = 3
 SEED_REROLL_BUDGET = 40
@@ -46,24 +62,6 @@ class TemplateAuthor(Protocol):
 
 class TemplateRegistry(Protocol):
     def get_verified(self, topic_key: str) -> QuestionTemplate | None: ...
-
-
-class AttemptLog(BaseModel):
-    attempt: int
-    provenance: TemplateProvenance
-    template_sha256: str | None
-    outcome: str
-    seeds_tried: int
-    assertion_histogram: dict[str, int] = Field(default_factory=dict)
-    feedback_sent: list[str] = Field(default_factory=list)
-
-
-class ReviewTicket(BaseModel):
-    blueprint_id: str
-    slot_index: int
-    topic_key: str
-    reason: str
-    attempts: list[AttemptLog]
 
 
 class ProductionOutcome(BaseModel):
@@ -145,6 +143,8 @@ def build_twin(
         "citation": citation,
         "trace": trace,
         "review_status": review_status,
+        # gantt lấy nguyên từ khoá "gantt" của solve() trong sandbox, KHÔNG tính lại ở đây (I1).
+        "gantt": [GanttSegment.model_validate(segment) for segment in result.solution.get("gantt", [])],
     }
     if fmt is QuestionFormat.NUMERICAL:
         return TwinQuestion(

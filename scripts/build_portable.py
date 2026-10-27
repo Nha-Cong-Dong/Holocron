@@ -98,6 +98,7 @@ PYPI_INDEX = "https://pypi.org/simple"
 PIP_ISOLATED = ("--isolated", "--disable-pip-version-check")
 PIP_INDEX_ARGS = ("--index-url", PYPI_INDEX)
 # Biến môi trường được chuyển cho pip: đủ để Windows/Linux chạy mạng và thư mục tạm; KHÔNG có PIP_*, PYTHON*.
+# SSL_CERT_FILE/REQUESTS_CA_BUNDLE giữ lại cho mạng có proxy TLS riêng (chỉ thêm CA tin cậy; wheel vẫn khoá SHA-256).
 PIP_ENV_KEEP = frozenset(
     {
         "APPDATA",
@@ -115,6 +116,8 @@ PIP_ENV_KEEP = frozenset(
         "HTTP_PROXY",
         "HTTPS_PROXY",
         "NO_PROXY",
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
     }
 )
 

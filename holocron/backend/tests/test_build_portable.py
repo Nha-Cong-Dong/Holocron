@@ -365,6 +365,9 @@ def test_pip_env_drops_pip_and_python_variables() -> None:
         "SystemRoot": "C:\\Windows",
         "TEMP": "t",
         "HTTPS_PROXY": "http://proxy",
+        "SSL_CERT_FILE": "ca.pem",
+        "REQUESTS_CA_BUNDLE": "bundle.pem",
+        "PIP_CERT": "evil.pem",
         "PIP_INDEX_URL": "https://evil.example/simple",
         "PIP_EXTRA_INDEX_URL": "https://evil.example/simple",
         "PIP_CONFIG_FILE": "evil.ini",
@@ -378,6 +381,8 @@ def test_pip_env_drops_pip_and_python_variables() -> None:
         "SystemRoot": "C:\\Windows",
         "TEMP": "t",
         "HTTPS_PROXY": "http://proxy",
+        "SSL_CERT_FILE": "ca.pem",
+        "REQUESTS_CA_BUNDLE": "bundle.pem",
         "PYTHONIOENCODING": "utf-8",
         "PYTHONUTF8": "1",
     }

@@ -10,4 +10,6 @@ Holocron - bản portable cho Windows 10/11 64-bit (chạy offline, không cần
 Dữ liệu (tài liệu đã nhập, lịch sử làm bài) nằm ở %LOCALAPPDATA%\Holocron\data, nên giải nén
 bản mới không mất dữ liệu. Muốn mang dữ liệu theo USB: Holocron.cmd --data-dir <thư mục>.
 Đọc PDF scan (ảnh chụp) cần Tesseract: xem HUONG-DAN-TESSERACT.txt. PDF có sẵn chữ thì không cần.
+Log: %LOCALAPPDATA%\Holocron\logs\holocron.log (mở nhanh: Mo-thu-muc-log.cmd), kể cả khi dùng --data-dir: hai
+cửa sổ chạy hai --data-dir khác nhau ghi chung file này. Log có thể chứa đoạn văn bản tài liệu: xem trước khi gửi.
 Giấy phép: LICENSE (Holocron, MIT) và THIRD_PARTY_NOTICES.txt (thành phần bên thứ ba).

@@ -114,6 +114,9 @@ in ra ⇒ **HỎNG — báo orchestrator**.
 
 1. Đóng cửa sổ đen (hoặc Ctrl+C). Trong 10 s, Task Manager không còn `python.exe` hay `tesseract.exe` chạy từ thư mục zip.
 2. Mở lại `Holocron.cmd`: tài liệu đã nhập ở bước 4 vẫn còn.
+3. Nhấp đúp `Mo-thu-muc-log.cmd`: Explorer mở `%LOCALAPPDATA%\Holocron\logs` và có `holocron.log`. Hai dòng đầu
+   của phiên mới nhất là `Holocron <version> (<commit 7 ký tự>)` và `Log: <đường dẫn>`, khớp hai dòng cửa sổ đen in sau
+   dòng "Đóng cửa sổ này…". Trước khi gửi log, mở xem: log có thể chứa đoạn văn bản tài liệu trong traceback.
 
 ## 7. Máy đã cài sẵn Python khác (môi trường E)
 
@@ -161,6 +164,7 @@ Mục tiêu: xác nhận app và sandbox KHÔNG lấy nhầm đường dẫn c�
 | 4.2 PDF scan, cross-check | | | | | | |
 | 5. Sandbox chỉ thấy `python\` | | | | | | |
 | 6. Tắt sạch, dữ liệu còn | | | | | | |
+| 6.3 Log và `Mo-thu-muc-log.cmd` | | | | | | |
 | 7. Python khác + `PYTHONPATH`/`PYTHONHOME` | – | – | – | – | | chỉ chạy ở E |
 
 Người kiểm: ________ Ngày: ________ Phiên bản zip/SHA-256: ________

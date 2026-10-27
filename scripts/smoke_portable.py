@@ -16,6 +16,10 @@ Mọi lời gọi `python/python.exe` của zip đều có `-I` (như `Holocron.
    `--expect-host-check`). Tải lên một PDF có lớp chữ (trang 1 có văn bản) và một PDF scan không có lớp chữ (bản
    `full`: `cross_check` là ok/mismatch với `secondary_engine = rapidocr`). Server và tiến trình con luôn được dừng
    (`finally`) trước khi xoá thư mục tạm.
+   Tiến trình launcher chạy với `LOCALAPPDATA` (và `XDG_STATE_HOME` ngoài Windows) trỏ thư mục tạm riêng, kèm
+   `HOLOCRON_TESSERACT_CMD` dò bằng `find_tesseract` của launcher trên env thật (nếu dò được). Sau khi tắt: kiểm
+   `app/holocron_build.json` (đúng 4 khoá, commit 40 hex) và `holocron.log` trong thư mục log tạm có dòng
+   `Holocron <version> (<commit7>)` khớp file đó; `--expect-commit <sha>` thì commit phải đúng sha đó.
 4. Chạy `tests/test_sandbox_security.py` và `tests/test_pdf_input_limits.py` bằng `python -I` của zip (pytest ở
    overlay tạm ngoài zip), khẳng định `holocron_core` được nạp từ `app/` của zip.
 5. Gửi Ctrl+Break, tiến trình thoát trong 10 s, không còn tiến trình con, DB SQLite mở lại được.
@@ -53,6 +57,11 @@ TEST_SUPPORT = ("__init__.py", "conftest.py", "pdf_samples.py")
 ACCENTED_DIR = "Thư mục thử ố"
 ACCENTED_DATA = "dữ liệu thử"
 URL_LINE = re.compile(r"Holocron: http://127\.0\.0\.1:(\d+)/")
+BUILD_INFO_NAME = "holocron_build.json"
+BUILD_INFO_KEYS = frozenset({"version", "commit", "dirty", "built_at"})
+COMMIT_HEX = re.compile(r"[0-9a-f]{40}")
+LOG_FILENAME = "holocron.log"
+LOCAL_STATE_DIR = "localappdata"
 PDF_LINES = (
     "Holocron smoke test page one.",
     "The scheduler gives each ready process the processor for one time quantum.",
@@ -291,11 +300,66 @@ def multipart(fields: dict[str, str], filename: str, content: bytes) -> tuple[by
 # ---------------------------------------------------------------- tiến trình (Windows)
 
 
-def start_server(root: Path, data_dir: Path) -> subprocess.Popen[bytes]:
+def detect_tesseract(environ: Mapping[str, str]) -> str | None:
+    """Tesseract dò bằng hàm của launcher trên env THẬT (trước khi đổi `LOCALAPPDATA` sang thư mục tạm)."""
+    from holocron_core.launcher import find_tesseract
+
+    return find_tesseract(environ, platform=sys.platform, home=Path.home(), which=shutil.which, exists=Path.exists)
+
+
+def smoke_env(environ: Mapping[str, str], state_dir: Path, tesseract: str | None, *, platform: str) -> dict[str, str]:
+    """Env cho launcher: `LOCALAPPDATA` (và `XDG_STATE_HOME` ngoài Windows) trỏ `state_dir` để log không lẫn với máy
+    thật; `HOLOCRON_TESSERACT_CMD` = Tesseract đã dò trên env thật (khi dò được và chưa đặt) để bước PDF scan không FAIL
+    chỉ vì đổi `LOCALAPPDATA`."""
+    env = dict(environ)
+    env["LOCALAPPDATA"] = str(state_dir)
+    if platform != "win32":
+        env["XDG_STATE_HOME"] = str(state_dir)
+    if tesseract is not None and not env.get("HOLOCRON_TESSERACT_CMD", "").strip():
+        env["HOLOCRON_TESSERACT_CMD"] = tesseract
+    return env
+
+
+def smoke_log_dir(state_dir: Path, *, platform: str) -> Path:
+    """Thư mục log của launcher khi chạy với `smoke_env` (khớp `launcher_logging.default_log_dir`)."""
+    return state_dir / "Holocron" / "logs" if platform == "win32" else state_dir / "holocron" / "logs"
+
+
+def check_build_info(report: Report, root: Path, log_dir: Path, expect_commit: str | None = None) -> None:
+    """`app/holocron_build.json` hợp lệ (đúng 4 khoá, commit 40 hex) và `holocron.log` có dòng version/commit khớp."""
+    info_path = root / "app" / BUILD_INFO_NAME
+    raw = info_path.read_text(encoding="utf-8") if info_path.is_file() else ""
+    value = parse_json(raw)
+    info = value if isinstance(value, dict) else {}
+    version, commit = info.get("version"), info.get("commit")
+    valid = (
+        set(info) == BUILD_INFO_KEYS
+        and isinstance(version, str)
+        and bool(version)
+        and isinstance(commit, str)
+        and COMMIT_HEX.fullmatch(commit) is not None
+        and isinstance(info.get("dirty"), bool)
+        and isinstance(info.get("built_at"), str)
+    )
+    if not report.check(f"app/{BUILD_INFO_NAME} hợp lệ (4 khoá, commit 40 hex)", valid, raw.strip()[:200]):
+        return
+    assert isinstance(version, str) and isinstance(commit, str)
+    if expect_commit is not None:
+        report.check("commit trong build info khớp --expect-commit", commit == expect_commit.strip().lower(), commit)
+    log_path = log_dir / LOG_FILENAME
+    if not report.check(f"{LOG_FILENAME} có trong thư mục log tạm", log_path.is_file(), str(log_path)):
+        return
+    expected = f"Holocron {version} ({commit[:7]})"
+    text = log_path.read_text(encoding="utf-8", errors="replace")
+    report.check(f"{LOG_FILENAME} có dòng `{expected}`", expected in text, text.strip().splitlines()[0] if text else "")
+
+
+def start_server(root: Path, data_dir: Path, env: Mapping[str, str]) -> subprocess.Popen[bytes]:
     if sys.platform == "win32":
         return subprocess.Popen(
             [str(root / "Holocron.cmd"), "--no-browser", "--data-dir", str(data_dir)],
             cwd=root.parent,
+            env=dict(env),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -724,7 +788,14 @@ def stop_server(process: subprocess.Popen[bytes], root: Path) -> None:
         print(f"CẢNH BÁO  dọn tiến trình của smoke chưa xong: {exc}", file=sys.stderr, flush=True)
 
 
-def smoke(zip_path: Path, work: Path, only: str = "all", *, expect_host_check: bool = False) -> Report:
+def smoke(
+    zip_path: Path,
+    work: Path,
+    only: str = "all",
+    *,
+    expect_host_check: bool = False,
+    expect_commit: str | None = None,
+) -> Report:
     report = Report()
     root = extract_root(zip_path, work)
     check_sandbox_probe(report, root, work)
@@ -738,7 +809,9 @@ def smoke(zip_path: Path, work: Path, only: str = "all", *, expect_host_check: b
         print("BỎ QUA  RapidOCR — bản lite (không có site-packages/rapidocr)", flush=True)
 
     data_dir = work / ACCENTED_DATA
-    process = start_server(root, data_dir)
+    state_dir = work / LOCAL_STATE_DIR
+    env = smoke_env(os.environ, state_dir, detect_tesseract(os.environ), platform=sys.platform)
+    process = start_server(root, data_dir, env)
     try:
         reader = OutputReader(process)
         reader.ready.wait(timeout=60)
@@ -754,6 +827,7 @@ def smoke(zip_path: Path, work: Path, only: str = "all", *, expect_host_check: b
     finally:
         stop_server(process, root)
 
+    check_build_info(report, root, smoke_log_dir(state_dir, platform=sys.platform), expect_commit)
     check_pytest(report, root, work)
     return report
 
@@ -771,13 +845,25 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="kiểm Host: evil.example ⇒ 403 (bật khi B4 đã merge; mặc định SKIP có nhãn 'chờ B4')",
     )
+    parser.add_argument(
+        "--expect-commit",
+        default=None,
+        metavar="SHA",
+        help="commit 40 hex mà app/holocron_build.json phải ghi (ví dụ kết quả `git rev-parse HEAD`)",
+    )
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     if sys.platform != "win32":
         print("Smoke test chỉ chạy trên Windows.", file=sys.stderr)
         return 2
     work = Path(tempfile.mkdtemp(prefix="holocron-smoke-"))
     try:
-        report = smoke(Path(args.zip).resolve(), work, args.only, expect_host_check=args.expect_host_check)
+        report = smoke(
+            Path(args.zip).resolve(),
+            work,
+            args.only,
+            expect_host_check=args.expect_host_check,
+            expect_commit=args.expect_commit,
+        )
     except (BuildError, SmokeError, OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
         print(f"LỖI smoke: {exc}", file=sys.stderr)
         return 1

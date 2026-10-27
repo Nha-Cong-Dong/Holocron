@@ -39,6 +39,7 @@ import urllib.request
 import zipfile
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from email.message import Message
 from pathlib import Path, PurePosixPath
 
@@ -283,6 +284,20 @@ HOLOCRON_CMD = (
     "exit /b %ERRORLEVEL%",
 )
 HOLOCRON_PTH_LINES = ("..\\..\\..\\app", "..\\..\\..\\site-packages")
+# `Mo-thu-muc-log.cmd`: cùng thư mục log với launcher (`holocron_core.launcher_logging.default_log_dir`, Windows).
+OPEN_LOG_CMD_NAME = "Mo-thu-muc-log.cmd"
+OPEN_LOG_CMD = (
+    "@echo off",
+    "setlocal",
+    'if not defined LOCALAPPDATA set "LOCALAPPDATA=%USERPROFILE%\\AppData\\Local"',
+    'set "HOLOCRON_LOG_DIR=%LOCALAPPDATA%\\Holocron\\logs"',
+    'if not exist "%HOLOCRON_LOG_DIR%\\" mkdir "%HOLOCRON_LOG_DIR%"',
+    'explorer "%HOLOCRON_LOG_DIR%"',
+    "exit /b 0",
+)
+# Cùng tên với `holocron_core.launcher_logging.BUILD_INFO_FILENAME` (launcher đọc file này để in version/commit).
+BUILD_INFO_NAME = "holocron_build.json"
+GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 
 LOCK_HEADER = (
     "# Sinh bởi `python scripts/build_portable.py --lock`; KHÔNG sửa tay.",
@@ -451,6 +466,11 @@ def holocron_pth_text() -> str:
 def holocron_cmd_bytes() -> bytes:
     """`Holocron.cmd`: ASCII thuần, CRLF, chỉ dùng `%~dp0` (giải zip ở đâu cũng chạy)."""
     return "".join(f"{line}\r\n" for line in HOLOCRON_CMD).encode("ascii")
+
+
+def open_log_cmd_bytes() -> bytes:
+    """`Mo-thu-muc-log.cmd`: ASCII thuần, CRLF như `Holocron.cmd`; tạo thư mục log nếu chưa có rồi mở bằng Explorer."""
+    return "".join(f"{line}\r\n" for line in OPEN_LOG_CMD).encode("ascii")
 
 
 def install_python(stage: Path, embed_zip: Path) -> Path:
@@ -1226,6 +1246,37 @@ def copy_app(app_src: Path, app_dir: Path, run: Runner) -> int:
     return len(files)
 
 
+def write_build_info(
+    app_dir: Path, version: str, run: Runner, now: Callable[[], datetime], *, repo: Path
+) -> dict[str, object]:
+    """Ghi `<app_dir>/holocron_build.json` = version, commit (`git rev-parse HEAD`, 40 hex), dirty (`git status
+    --porcelain` của cả repo không rỗng), built_at (UTC ISO 8601, hậu tố Z).
+
+    `git` chạy với cwd `repo` (thư mục `--app-src`); git lỗi hoặc commit không phải 40 hex ⇒ BuildError.
+    """
+    try:
+        commit = run(["git", "rev-parse", "HEAD"], repo).strip()
+        status = run(["git", "status", "--porcelain"], repo)
+    except OSError as exc:
+        raise BuildError(f"không chạy được git trong {repo}: {exc}") from exc
+    if GIT_COMMIT.fullmatch(commit) is None:
+        raise BuildError(f"`git rev-parse HEAD` không trả commit 40 hex: {commit[:80]!r}")
+    built_at = now().astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    info: dict[str, object] = {
+        "version": version,
+        "commit": commit,
+        "dirty": bool(status.strip()),
+        "built_at": built_at,
+    }
+    app_dir.mkdir(parents=True, exist_ok=True)
+    (app_dir / BUILD_INFO_NAME).write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8", newline="\n")
+    return info
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
 def check_web_out(web_out: Path) -> None:
     if not (web_out / "index.html").is_file():
         raise BuildError(f"thiếu {web_out / 'index.html'}: bản export tĩnh của frontend chưa được dựng")
@@ -1272,6 +1323,14 @@ def write_zip(stage: Path, zip_path: Path) -> int:
         for path in files:
             bundle.write(path, (Path(stage.name) / path.relative_to(stage)).as_posix())
     return len(files)
+
+
+def zip_extra_required(geos: GeosSource | None) -> list[str]:
+    """Mục bắt buộc thêm của bản build này (ngoài danh sách mặc định của `check_zip_members`)."""
+    extra = [OPEN_LOG_CMD_NAME, f"app/{BUILD_INFO_NAME}"]
+    if geos is not None:
+        extra += [f"licenses/{geos.archive_name}", f"licenses/{LGPL_NAME}"]
+    return extra
 
 
 def check_zip_members(names: Sequence[str], root: str, extra_required: Sequence[str] = ()) -> None:
@@ -1361,6 +1420,8 @@ def run_build(args: argparse.Namespace, run: Runner) -> int:
     app_src = Path(args.app_src).resolve()
     count = copy_app(app_src, stage / "app", run)
     print(f"[app] {count} file từ {app_src}")
+    build_info = write_build_info(stage / "app", version, run, utc_now, repo=app_src)
+    print(f"[build] {BUILD_INFO_NAME}: commit {build_info['commit']}, dirty={build_info['dirty']}")
 
     if args.web_out is not None:
         web_out = Path(args.web_out).resolve()
@@ -1422,6 +1483,7 @@ def run_build(args: argparse.Namespace, run: Runner) -> int:
         print("[pyc] bỏ qua: chỉ biên dịch được trên Windows")
 
     (stage / "Holocron.cmd").write_bytes(holocron_cmd_bytes())
+    (stage / OPEN_LOG_CMD_NAME).write_bytes(open_log_cmd_bytes())
     shutil.copyfile(ROOT / "LICENSE", stage / "LICENSE")
     for name in ("README.txt", "HUONG-DAN-TESSERACT.txt"):
         (stage / name).write_bytes(text_crlf_bom((PACKAGING_DIR / name).read_text(encoding="utf-8")))
@@ -1429,8 +1491,7 @@ def run_build(args: argparse.Namespace, run: Runner) -> int:
     zip_path = DIST_DIR / f"{root_name}.zip"
     files = write_zip(stage, zip_path)
     with zipfile.ZipFile(zip_path) as bundle:
-        extra = [f"licenses/{geos.archive_name}", f"licenses/{LGPL_NAME}"] if geos is not None else []
-        check_zip_members(bundle.namelist(), root_name, extra)
+        check_zip_members(bundle.namelist(), root_name, zip_extra_required(geos))
     digest = sha256_file(zip_path)
     zip_path.with_name(zip_path.name + ".sha256").write_text(f"{digest} *{zip_path.name}\n", encoding="ascii")
     elapsed = time.monotonic() - started

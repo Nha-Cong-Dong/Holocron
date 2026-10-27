@@ -580,6 +580,12 @@ def open_browser_default(url: str) -> None:
 
     Trình duyệt chưa chạy sẽ là tiến trình con của tiến trình mở nó; nếu nằm trong Job `KILL_ON_JOB_CLOSE` của
     launcher thì tắt Holocron sẽ giết luôn trình duyệt. Không tách được (Job ngoài không cho breakaway) ⇒ mở trực tiếp.
+
+    Tiến trình phụ CỐ Ý kế thừa env của người dùng (không truyền `env=`), khác sandbox và worker vốn dùng env tối
+    thiểu: trình duyệt nó mở ra là ứng dụng của người dùng, cần `PATH`, `SYSTEMROOT`, `USERPROFILE`, `APPDATA`,
+    `BROWSER`… để tìm và chạy trình duyệt mặc định đúng hồ sơ người dùng. Env này không có bí mật do launcher thêm
+    (launcher không đặt token; các biến `HOLOCRON_*` chỉ là đường dẫn), và cũng chính là env trình duyệt nhận khi
+    người dùng tự mở. Tiến trình phụ chỉ chạy thư viện chuẩn với `-I` (bỏ `PYTHON*` và site của người dùng).
     """
     if sys.platform == "win32":
         try:

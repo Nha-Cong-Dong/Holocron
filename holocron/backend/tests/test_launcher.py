@@ -1059,7 +1059,7 @@ print("survived", flush=True)
 
 NESTED_LIMITS_PARENT = """
 import subprocess
-result = subprocess.run([sys.executable, "-c", sys.argv[1], sys.argv[2]], capture_output=True, text=True, timeout=120)
+result = subprocess.run([sys.executable, "-c", sys.argv[1], sys.argv[2]], capture_output=True, text=True, encoding="utf-8", timeout=120)
 print(result.returncode & 0xFFFFFFFF)
 print(result.stdout.strip())
 """

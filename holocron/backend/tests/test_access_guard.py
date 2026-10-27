@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
@@ -29,6 +30,7 @@ from holocron_core.routers.access import (
     TOKEN_HEADER,
     WEBSOCKET_POLICY_VIOLATION,
     InvalidTokenConfigError,
+    LocalAccessMiddleware,
     get_allowed_hosts,
     get_required_token,
     host_name,
@@ -118,6 +120,26 @@ def _forwarded(value: str) -> tuple[bytes, bytes]:
 def test_default_allowlist_is_loopback_only_and_excludes_testserver() -> None:
     assert get_allowed_hosts() == DEFAULT_ALLOWED_HOSTS == frozenset({"127.0.0.1", "localhost", "[::1]"})
     assert "testserver" not in get_allowed_hosts()
+
+
+def test_fixture_leaves_app_middleware_and_lets_new_app_keep_real_list() -> None:
+    """Fixture ở `conftest.py` không đổi middleware của `app`; app dựng mới nhận `testserver` mặc định, nhưng override
+    riêng của app đó (ở đây là danh sách thật) vẫn thắng."""
+    assert [entry.cls for entry in app.user_middleware] == [LocalAccessMiddleware]
+
+    fresh = FastAPI()
+    fresh.add_middleware(access.LocalAccessMiddleware, overrides=lambda: fresh.dependency_overrides)
+
+    @fresh.get("/ping")
+    def ping() -> dict[str, str]:
+        return {"status": "ok"}
+
+    assert TestClient(fresh).get("/ping").status_code == 200
+    fresh.dependency_overrides[get_allowed_hosts] = get_allowed_hosts
+    denied = TestClient(fresh).get("/ping")
+    assert denied.status_code == 403
+    assert denied.json() == {"detail": HOST_FORBIDDEN_DETAIL}
+    assert TestClient(fresh, base_url="http://127.0.0.1:8000").get("/ping").status_code == 200
 
 
 @pytest.mark.parametrize(

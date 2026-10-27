@@ -1,8 +1,9 @@
 """Fixture dùng chung cho test; độc lập với thư mục scripts/."""
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 import pytest
+from starlette.types import ASGIApp
 
 from holocron_core.domain.schemas import (
     BlueprintSlot,
@@ -13,7 +14,8 @@ from holocron_core.domain.schemas import (
     QuestionFormat,
     SelfSolveResult,
 )
-from holocron_core.routers.access import DEFAULT_ALLOWED_HOSTS, get_allowed_hosts
+from holocron_core.routers import access
+from holocron_core.routers.access import DEFAULT_ALLOWED_HOSTS, ProviderOverrides, get_allowed_hosts
 from holocron_core.routers.api import app
 
 THEORY_CHUNK = KnowledgeChunk(
@@ -89,13 +91,33 @@ def rr_slot() -> BlueprintSlot:
     return SLOT
 
 
+def _allow_testserver_hosts() -> frozenset[str]:
+    return DEFAULT_ALLOWED_HOSTS | {"testserver"}
+
+
+class _TestserverAccessMiddleware(access.LocalAccessMiddleware):
+    """`LocalAccessMiddleware` cho app dựng MỚI trong lúc test (ví dụ nạp lại `routers/api.py` thành module khác).
+
+    App mới có `dependency_overrides` riêng, nên override gắn vào `app` không áp cho nó. Lớp này thêm `testserver` làm
+    giá trị mặc định của provider host; override riêng của app mới (nếu có) vẫn thắng.
+    """
+
+    def __init__(self, inner_app: ASGIApp, *, overrides: Callable[[], ProviderOverrides]) -> None:
+        super().__init__(inner_app, overrides=lambda: {get_allowed_hosts: _allow_testserver_hosts, **overrides()})
+
+
 @pytest.fixture(autouse=True)
 def allow_testserver_host() -> Iterator[None]:
-    """`TestClient` gửi `Host: testserver`; thêm tên này vào danh sách host cho phép của `app` trong lúc test.
+    """`TestClient` gửi `Host: testserver`; thêm tên này vào danh sách host cho phép trong lúc test.
 
-    SPECIFICATION §13.1, §17 D13: danh sách mặc định của code KHÔNG chứa `testserver`. Test cần danh sách thật thì bỏ
-    override này (`monkeypatch.delitem(app.dependency_overrides, get_allowed_hosts)`).
+    SPECIFICATION §13.1, §17 D13: danh sách mặc định của code KHÔNG chứa `testserver`. Áp cho `app` qua
+    `app.dependency_overrides`; test cần danh sách thật thì bỏ override này
+    (`monkeypatch.delitem(app.dependency_overrides, get_allowed_hosts)`). App dựng mới trong lúc test (gọi
+    `add_middleware(LocalAccessMiddleware, ...)` sau khi fixture chạy) nhận `_TestserverAccessMiddleware`; `app` đã
+    gắn middleware lúc import nên không bị ảnh hưởng. Dùng `MonkeyPatch` riêng, không dùng fixture `monkeypatch`, để
+    test gọi `monkeypatch.undo()` giữa chừng không gỡ mất hai thay đổi này.
     """
-    app.dependency_overrides[get_allowed_hosts] = lambda: DEFAULT_ALLOWED_HOSTS | {"testserver"}
-    yield
-    app.dependency_overrides.pop(get_allowed_hosts, None)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setitem(app.dependency_overrides, get_allowed_hosts, _allow_testserver_hosts)
+        patch.setattr(access, "LocalAccessMiddleware", _TestserverAccessMiddleware)
+        yield

@@ -9,10 +9,12 @@ import argparse
 import io
 import json
 import socket
+import subprocess
 import sys
 import threading
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -666,11 +668,61 @@ def test_default_deps_use_real_environment() -> None:
     assert deps.exists(Path(__file__)) is True
 
 
-def test_default_browser_uses_webbrowser(monkeypatch: pytest.MonkeyPatch) -> None:
+class FakePopen:
+    """Thay `subprocess.Popen` để không khởi chạy gì thật; `fail=True` giả lập Job ngoài không cho breakaway."""
+
+    calls: ClassVar[list[tuple[list[str], int]]] = []
+    fail: ClassVar[bool] = False
+
+    def __init__(self, args: list[str], **kwargs: object) -> None:
+        if FakePopen.fail:
+            raise PermissionError("breakaway bị từ chối")
+        flags = kwargs.get("creationflags", 0)
+        FakePopen.calls.append((args, flags if isinstance(flags, int) else -1))
+
+
+@pytest.fixture
+def fake_popen(monkeypatch: pytest.MonkeyPatch) -> type[FakePopen]:
+    FakePopen.calls = []
+    FakePopen.fail = False
+    monkeypatch.setattr(launcher.subprocess, "Popen", FakePopen)
+    return FakePopen
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows mở trình duyệt qua tiến trình phụ tách khỏi Job")
+def test_default_browser_uses_webbrowser(monkeypatch: pytest.MonkeyPatch, fake_popen: type[FakePopen]) -> None:
     opened: list[str] = []
     monkeypatch.setattr(launcher.webbrowser, "open", opened.append)
     launcher.open_browser_default("http://127.0.0.1:1/")
     assert opened == ["http://127.0.0.1:1/"]
+    assert fake_popen.calls == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Job Object chỉ có trên Windows")
+def test_default_browser_breaks_away_from_job(monkeypatch: pytest.MonkeyPatch, fake_popen: type[FakePopen]) -> None:
+    opened: list[str] = []
+    monkeypatch.setattr(launcher.webbrowser, "open", opened.append)
+    launcher.open_browser_default("http://127.0.0.1:1/")
+    assert opened == []
+    [(args, flags)] = fake_popen.calls
+    assert args == [sys.executable, "-I", "-c", launcher.BROWSER_HELPER, "http://127.0.0.1:1/"]
+    assert flags & 0x01000000, "CREATE_BREAKAWAY_FROM_JOB"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Job Object chỉ có trên Windows")
+def test_default_browser_falls_back_when_breakaway_denied(
+    monkeypatch: pytest.MonkeyPatch, fake_popen: type[FakePopen]
+) -> None:
+    opened: list[str] = []
+    monkeypatch.setattr(launcher.webbrowser, "open", opened.append)
+    fake_popen.fail = True
+    launcher.open_browser_default("http://127.0.0.1:1/")
+    assert opened == ["http://127.0.0.1:1/"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows gán Job thật; kiểm ở các test Windows cuối file")
+def test_unix_has_no_job_object() -> None:
+    assert launcher.assign_to_kill_on_close_job() is None
 
 
 # --- main ---------------------------------------------------------------------------------------------------------
@@ -707,6 +759,7 @@ def _deps(tmp_path: Path, recorder: Recorder, serve: Callable[[socket.socket], N
         sleep=clock.sleep,
         open_browser=recorder.open_browser,
         serve=serve,
+        assign_job=lambda: 1,
         pid=1234,
     )
 
@@ -822,3 +875,224 @@ def test_main_busy_port_exits_2_and_releases_lock(tmp_path: Path) -> None:
     lock = launcher.try_acquire_instance_lock(data_dir)
     assert lock is not None
     lock.release()
+
+
+def test_main_warns_when_job_assignment_fails(tmp_path: Path) -> None:
+    recorder = Recorder()
+    deps = _deps(tmp_path, recorder, lambda _: None)
+    deps.assign_job = lambda: None
+    assert launcher.main(["--no-browser", "--data-dir", str(tmp_path / "data")], deps) == EXIT_OK
+    assert recorder.lines[0] == launcher.JOB_WARNING
+    assert recorder.lines[1].startswith("Holocron: http://127.0.0.1:")
+
+
+def test_main_no_job_warning_outside_windows(tmp_path: Path) -> None:
+    recorder = Recorder()
+    deps = _deps(tmp_path, recorder, lambda _: None)
+    deps.assign_job = lambda: None
+    deps.platform = "linux"
+    assert launcher.main(["--no-browser", "--data-dir", str(tmp_path / "data")], deps) == EXIT_OK
+    assert launcher.JOB_WARNING not in recorder.lines
+
+
+# --- Job Object thật (Windows) ------------------------------------------------------------------------------------
+# Chạy trong tiến trình con đã gán Job như launcher; KHÔNG đưa chính tiến trình pytest vào Job KILL_ON_JOB_CLOSE.
+
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+windows_only = pytest.mark.skipif(sys.platform != "win32", reason="Job Object chỉ có trên Windows")
+
+IN_JOB_PRELUDE = (
+    "import sys\n"
+    "from holocron_core.launcher import assign_to_kill_on_close_job\n"
+    "JOB = assign_to_kill_on_close_job()\n"
+    "if JOB is None:\n"
+    "    sys.exit('khong gan duoc Job')\n"
+)
+
+
+def _child_env() -> dict[str, str]:
+    import os
+
+    return dict(os.environ, PYTHONPATH=str(BACKEND_DIR), PYTHONIOENCODING="utf-8")
+
+
+def _run_in_launcher_job(body: str, *args: str, timeout: float = 300) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-c", IN_JOB_PRELUDE + body, *args],
+        cwd=BACKEND_DIR,
+        env=_child_env(),
+        capture_output=True,
+        encoding="utf-8",
+        timeout=timeout,
+        check=False,
+    )
+
+
+@windows_only
+def test_sandbox_test_suites_pass_inside_launcher_job() -> None:
+    """test_sandbox_limits.py và test_sandbox_security.py (bom RAM, vòng lặp vô hạn…) vẫn xanh dưới Job của launcher."""
+    body = (
+        "import pytest\n"
+        "sys.exit(pytest.main(['-q', '-p', 'no:cacheprovider', "
+        "'tests/test_sandbox_limits.py', 'tests/test_sandbox_security.py']))\n"
+    )
+    result = _run_in_launcher_job(body)
+    assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-2000:]
+    assert " passed" in result.stdout
+
+
+SANDBOX_MEMORY_PROBE = """
+from holocron_core.sandbox.sandbox import SandboxLimits, run_template
+TAIL = (
+    "\\ndef validate(p):\\n    assert True\\n"
+    "def solve(p):\\n    return {'value': 1, 'display': '1', 'explanation_vi': 'x'}\\n"
+    "def make_distractors(p, s):\\n    return [{'misconception_code': 'A_B_C', 'value': i, 'display': str(i + 2),"
+    " 'rationale_vi': 'r'} for i in range(3)]\\n"
+    "def render_stem(p):\\n    return 'stem'\\n"
+)
+# ~200 MB: vượt 128 MB nhưng thừa chỗ dưới 512 MB, nên chỉ giới hạn RAM của Job lồng mới làm nó hỏng
+src = "def generate_params(seed):\\n    x = [0] * (25 * 1000 * 1000)\\n    return {}\\n" + TAIL
+small = run_template(src, seed=1, limits=SandboxLimits(mem_bytes=128 * 1024 * 1024))
+large = run_template(src, seed=1, limits=SandboxLimits(mem_bytes=512 * 1024 * 1024))
+print(small.status.value, large.status.value)
+"""
+
+
+@windows_only
+def test_sandbox_memory_limit_still_discriminates_inside_launcher_job() -> None:
+    result = _run_in_launcher_job(SANDBOX_MEMORY_PROBE)
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert result.stdout.split() == ["memory_exceeded", "ok"]
+
+
+NESTED_LIMITS_CHILD = r"""
+import ctypes, importlib.util, sys, time
+from ctypes import wintypes
+spec = importlib.util.spec_from_file_location("os_limits", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.apply_limits(200 * 1024 * 1024, 1)
+
+class Basic(ctypes.Structure):
+    _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD), ("SchedulingClass", wintypes.DWORD)]
+class Io(ctypes.Structure):
+    _fields_ = [(name, ctypes.c_uint64) for name in ("a", "b", "c", "d", "e", "f")]
+class Extended(ctypes.Structure):
+    _fields_ = [("Basic", Basic), ("Io", Io), ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t), ("PeakProcess", ctypes.c_size_t), ("PeakJob", ctypes.c_size_t)]
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel32.QueryInformationJobObject.argtypes = [
+    wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p]
+info = Extended()
+# handle NULL = Job gần nhất của chính tiến trình (Job lồng của os_limits, không phải Job của launcher)
+kernel32.QueryInformationJobObject(None, 9, ctypes.byref(info), ctypes.sizeof(info), None)
+print(info.Basic.LimitFlags, info.ProcessMemoryLimit, info.Basic.PerProcessUserTimeLimit, flush=True)
+start = time.monotonic()
+while time.monotonic() - start < 30:
+    pass
+print("survived", flush=True)
+"""
+
+NESTED_LIMITS_PARENT = """
+import subprocess
+result = subprocess.run([sys.executable, "-c", sys.argv[1], sys.argv[2]], capture_output=True, text=True, timeout=120)
+print(result.returncode & 0xFFFFFFFF)
+print(result.stdout.strip())
+"""
+
+
+@windows_only
+def test_os_limits_nested_job_keeps_memory_and_cpu_limits() -> None:
+    """Tiến trình con của launcher tự gán Job lồng qua `os_limits.apply_limits`: giới hạn đúng và CPU vẫn bị cắt."""
+    os_limits = BACKEND_DIR / "holocron_core" / "sandbox" / "os_limits.py"
+    result = _run_in_launcher_job(NESTED_LIMITS_PARENT, NESTED_LIMITS_CHILD, str(os_limits))
+    assert result.returncode == 0, result.stderr[-2000:]
+    exit_code, limits, *rest = result.stdout.strip().split("\n")
+    flags, memory, cpu = (int(value) for value in limits.split())
+    assert flags & 0x100 and flags & 0x2 and flags & 0x2000, "PROCESS_MEMORY | PROCESS_TIME | KILL_ON_JOB_CLOSE"
+    assert memory == 200 * 1024 * 1024
+    assert cpu == 10_000_000
+    assert int(exit_code) == 0xC0000044, "bị giết vì vượt CPU (STATUS_QUOTA_EXCEEDED)"
+    assert "survived" not in rest
+
+
+KILL_ON_CLOSE_BODY = """
+import subprocess, time
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+print(child.pid, flush=True)
+time.sleep(120)
+"""
+
+
+@windows_only
+def test_closing_launcher_kills_child_processes() -> None:
+    """Launcher chết (như đóng cửa sổ console) ⇒ Job đóng ⇒ tiến trình con bị giết."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    synchronize_and_terminate = 0x00100000 | 0x0001
+
+    launcher_like = subprocess.Popen(
+        [sys.executable, "-c", IN_JOB_PRELUDE + KILL_ON_CLOSE_BODY],
+        cwd=BACKEND_DIR,
+        env=_child_env(),
+        stdout=subprocess.PIPE,
+        encoding="utf-8",
+    )
+    handle = None
+    try:
+        assert launcher_like.stdout is not None
+        child_pid = int(launcher_like.stdout.readline())
+        handle = kernel32.OpenProcess(synchronize_and_terminate, False, child_pid)
+        assert handle, "không mở được tiến trình con"
+        assert kernel32.WaitForSingleObject(handle, 0) != 0, "tiến trình con phải còn sống trước khi tắt launcher"
+        launcher_like.kill()
+        launcher_like.wait(timeout=10)
+        assert kernel32.WaitForSingleObject(handle, 10_000) == 0, "Job KILL_ON_JOB_CLOSE phải giết tiến trình con"
+    finally:
+        if launcher_like.poll() is None:
+            launcher_like.kill()
+            launcher_like.wait(timeout=10)
+        if handle:
+            kernel32.TerminateProcess(handle, 1)
+            kernel32.CloseHandle(handle)
+        if launcher_like.stdout is not None:
+            launcher_like.stdout.close()
+
+
+BREAKAWAY_BODY = """
+import ctypes, subprocess
+from ctypes import wintypes
+from holocron_core import launcher
+captured = []
+class Capture(subprocess.Popen):
+    def __init__(self, args, **kwargs):
+        super().__init__([sys.executable, "-c", "import time; time.sleep(5)"], **kwargs)
+        captured.append(self)
+subprocess.Popen = Capture
+launcher.open_browser_default("http://127.0.0.1:1/")
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel32.IsProcessInJob.argtypes = [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
+inside = wintypes.BOOL()
+kernel32.IsProcessInJob(wintypes.HANDLE(int(captured[0]._handle)), wintypes.HANDLE(JOB), ctypes.byref(inside))
+captured[0].kill()
+captured[0].wait()
+print(int(inside.value))
+"""
+
+
+@windows_only
+def test_browser_helper_runs_outside_launcher_job() -> None:
+    """Trình duyệt mở qua tiến trình phụ tách khỏi Job, nên tắt Holocron không giết trình duyệt."""
+    result = _run_in_launcher_job(BREAKAWAY_BODY)
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert result.stdout.strip() == "0"

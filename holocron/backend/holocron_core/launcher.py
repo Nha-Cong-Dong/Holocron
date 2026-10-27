@@ -25,6 +25,7 @@ import os
 import shutil
 import signal
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -55,6 +56,69 @@ if sys.platform == "win32":
         os.lseek(fd, 0, os.SEEK_SET)
         msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
 
+    def assign_to_kill_on_close_job() -> int | None:
+        """Gán CHÍNH tiến trình launcher vào một Job Object `KILL_ON_JOB_CLOSE`; trả handle Job, lỗi ⇒ None.
+
+        Mọi tiến trình con (worker PDF, sandbox, Tesseract) kế thừa Job này, nên khi launcher chết (kể cả đóng cửa sổ
+        console) handle cuối cùng đóng theo và Windows giết hết chúng. Job lồng (Windows 8+): sandbox và worker vẫn tự
+        gán Job giới hạn RAM/CPU riêng bên trong (`sandbox/os_limits.py`); `tests/test_launcher.py` kiểm điều này.
+        `BREAKAWAY_OK` chỉ để trình duyệt được mở NGOÀI Job (`open_browser_default`); tiến trình nào không xin
+        `CREATE_BREAKAWAY_FROM_JOB` vẫn ở trong Job, và Job của sandbox/worker không cho breakaway.
+        Handle không được đóng: nó sống tới khi tiến trình thoát.
+        """
+        import ctypes
+        from ctypes import wintypes
+
+        class BasicLimits(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+            LimitFlags: int
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [
+                (n, ctypes.c_uint64)
+                for n in ("ReadOps", "WriteOps", "OtherOps", "ReadBytes", "WriteBytes", "OtherBytes")
+            ]
+
+        class ExtendedLimits(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", BasicLimits),
+                ("IoInfo", IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+            BasicLimitInformation: BasicLimits
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        info = ExtendedLimits()
+        # 0x2000 KILL_ON_JOB_CLOSE, 0x800 BREAKAWAY_OK; 9 = JobObjectExtendedLimitInformation
+        info.BasicLimitInformation.LimitFlags = 0x2000 | 0x800
+        configured = kernel32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info))
+        if not configured or not kernel32.AssignProcessToJobObject(job, kernel32.GetCurrentProcess()):
+            kernel32.CloseHandle(job)
+            return None
+        return int(job)
+
 else:
     import fcntl
 
@@ -68,6 +132,10 @@ else:
 
     def _unlock(fd: int) -> None:
         fcntl.flock(fd, fcntl.LOCK_UN)
+
+    def assign_to_kill_on_close_job() -> int | None:
+        """Chỉ Windows có Job Object; Unix không gán gì (Ctrl+C/SIGTERM đi qua lifespan)."""
+        return None
 
 
 WEB_DIR_ENV = "HOLOCRON_WEB_DIR"
@@ -480,7 +548,32 @@ def announce_when_ready(
         emit(f"Không mở được trình duyệt; hãy tự mở {url}")
 
 
+BROWSER_HELPER = "import sys, webbrowser; webbrowser.open(sys.argv[1])"
+JOB_WARNING = (
+    "Cảnh báo: không gán được Job Object cho Holocron; nếu đóng cửa sổ thay vì nhấn Ctrl+C, "
+    "tiến trình con có thể còn chạy."
+)
+
+
 def open_browser_default(url: str) -> None:
+    """Mở trình duyệt; trên Windows qua một Python phụ tách khỏi Job (`CREATE_BREAKAWAY_FROM_JOB`).
+
+    Trình duyệt chưa chạy sẽ là tiến trình con của tiến trình mở nó; nếu nằm trong Job `KILL_ON_JOB_CLOSE` của
+    launcher thì tắt Holocron sẽ giết luôn trình duyệt. Không tách được (Job ngoài không cho breakaway) ⇒ mở trực tiếp.
+    """
+    if sys.platform == "win32":
+        try:
+            subprocess.Popen(
+                [sys.executable, "-I", "-c", BROWSER_HELPER, url],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                creationflags=subprocess.CREATE_BREAKAWAY_FROM_JOB | subprocess.CREATE_NO_WINDOW,
+            )
+        except OSError:
+            webbrowser.open(url)
+        return
     webbrowser.open(url)
 
 
@@ -540,6 +633,7 @@ class LauncherDeps:
     sleep: Callable[[float], object] = time.sleep
     open_browser: Callable[[str], object] = open_browser_default
     serve: Callable[[socket.socket], None] = serve_app
+    assign_job: Callable[[], int | None] = assign_to_kill_on_close_job
     pid: int = field(default_factory=os.getpid)
 
 
@@ -552,8 +646,14 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 
 
 def _serve_with_lock(args: argparse.Namespace, deps: LauncherDeps, launch: LaunchEnvironment) -> int:
-    """Đang giữ khoá: bind → ghi `instance.json` → serve; luôn xoá `instance.json` khi serve kết thúc."""
+    """Đang giữ khoá: Job Object → bind → ghi `instance.json` → serve; luôn xoá `instance.json` khi serve kết thúc.
+
+    `job` là handle Job Object (Windows); giữ tới khi tiến trình thoát, Windows đóng nó và giết tiến trình con còn lại.
+    """
     apply_environment(deps.environ, launch.updates)
+    job = deps.assign_job()
+    if job is None and deps.platform == "win32":
+        deps.emit(JOB_WARNING)
     with bind_listening_socket(args.port) as sock:
         port = int(sock.getsockname()[1])
         write_instance_info(launch.data_dir, InstanceInfo(port=port, pid=deps.pid))

@@ -1280,8 +1280,9 @@ def _ready_to_confirm(pages: list[PageExtraction]) -> bool:
 
 
 def _confirmed_lines(page: PageExtraction) -> list[str]:
-    """Các dòng của trang đi vào văn bản xác nhận: bỏ dòng có `text` rỗng (§6.5)."""
-    return [line.text for line in page.lines if line.text]
+    """Các dòng của trang đi vào văn bản xác nhận: bỏ dòng không có văn bản (rỗng hoặc chỉ có khoảng trắng, §6.5),
+    cùng định nghĩa "có văn bản" với `_has_text`."""
+    return [line.text for line in page.lines if line.text.strip()]
 
 
 def _fits_vault(page: PageExtraction) -> bool:

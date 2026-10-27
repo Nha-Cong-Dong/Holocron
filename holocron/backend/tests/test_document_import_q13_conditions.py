@@ -6,6 +6,7 @@ sửa sau review /finish-run 28/10.
 - 13.6: lỗi môi trường lặp lại khi mở bộ đọc (`PdfWorkerError`, `OSError`) được thử lại có giới hạn rồi để tài liệu
   `processing`; lối ra là xếp lại khi khởi động (`requeue_on_startup`) hoặc `DELETE` rồi `POST` lại (202).
 - Request tới sau khi `lifespan` đã gỡ bộ nhập: 500 kèm `detail`, không 500 trần.
+- Dòng chỉ có khoảng trắng không vào văn bản xác nhận (`ConfirmedPage`), như dòng rỗng.
 
 Chạy trên ba loại kho (`tests/vault_support.py`); byte PDF và văn bản là mẫu tự tạo.
 """
@@ -18,8 +19,11 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from holocron_core.domain.documents import CrossCheck, ExtractedLine, PageExtraction
 from holocron_core.domain.ingestion import IngestionItem, UploadedDocument
-from holocron_core.domain.schemas import SourceKind
+from holocron_core.domain.repositories import ImportedDocument
+from holocron_core.domain.schemas import DocumentMeta, SourceKind
+from holocron_core.domain.vault import MAX_PAGE_LINES
 from holocron_core.infrastructure.document_readers.pdf_reader import PdfWorkerError
 from holocron_core.infrastructure.storage import DATA_DIR_ENV, DATABASE_FILENAME, SQLiteStore
 from holocron_core.infrastructure.storage.original_files import OriginalFileStore
@@ -33,6 +37,7 @@ from holocron_core.services.document_import import (
     RetryPolicy,
     SynchronousImportQueue,
     accept_document,
+    confirmed_text,
 )
 from holocron_core.services.ingestion_gate import recompute_item
 from tests.document_import_support import FakePdfReader, ImportEnv, install, pdf_bytes
@@ -340,3 +345,96 @@ def test_post_after_the_real_lifespan_has_ended_answers_500_with_a_detail(
         "/v1/documents", data=_FORM, files={"file": ("c.pdf", pdf_bytes("da-tat"), "application/pdf")}
     )
     assert response.status_code == 500 and response.json() == UNAVAILABLE
+
+
+# --------------------------------------------------------------------------- #
+# Review NIT §5.7: dòng chỉ có khoảng trắng không vào văn bản xác nhận
+# --------------------------------------------------------------------------- #
+
+WHITESPACE_LINES = ["   ", "	", "   ", ""]
+
+
+def _page_with_lines(document_id: str, page_number: int, texts: list[str], *, confirmed: bool) -> PageExtraction:
+    return PageExtraction(
+        document_id=document_id,
+        page_number=page_number,
+        status="ok",
+        tier_used="text_layer",
+        text_score=0.95,
+        lines=[
+            ExtractedLine(line_index=index, text=text, bbox=None, conf=0.95, engine="text_layer")
+            for index, text in enumerate(texts)
+        ],
+        cross_check=CrossCheck(status="not_applicable", secondary_engine=None),
+        confirmed=confirmed,
+        confirmed_at=NOW if confirmed else None,
+    )
+
+
+def _with_raw_texts(page: PageExtraction, texts: dict[int, str]) -> PageExtraction:
+    """Đặt nguyên văn `text` của vài dòng, KHÔNG qua validate (model đã bỏ khoảng trắng hai đầu khi validate): giả
+    lập dữ liệu không đi qua model, để `_confirmed_lines` tự giữ định nghĩa "có văn bản" của `_has_text`."""
+    lines = [
+        line.model_copy(update={"text": texts[line.line_index]}) if line.line_index in texts else line
+        for line in page.lines
+    ]
+    return page.model_copy(update={"lines": lines})
+
+
+def _imported(doc_id: str) -> ImportedDocument:
+    return ImportedDocument(
+        meta=DocumentMeta(
+            doc_id=doc_id,
+            subject_code="ET4010",
+            title="Mẫu",
+            source_kind=SourceKind.TEXTBOOK,
+            sha256="a" * 64,
+            page_count=1,
+            has_text_layer=True,
+            uploaded_at=NOW,
+        ),
+        filename="mau.pdf",
+        size_bytes=10,
+        output_language="vi",
+        chapter_code="ch3",
+        status="review",
+    )
+
+
+def test_whitespace_only_lines_are_left_out_of_the_confirmed_text() -> None:
+    doc_id = "doc_" + "a" * 16
+    texts = ["Dòng đầu có chữ.", "x", "x", "x", "x", "Dòng cuối."]
+    raw = {index + 1: text for index, text in enumerate(WHITESPACE_LINES)}
+    page = _with_raw_texts(_page_with_lines(doc_id, 1, texts, confirmed=True), raw)
+    assert [line.text for line in page.lines][1:5] == WHITESPACE_LINES
+    text = confirmed_text(_imported(doc_id), [page])
+    assert text is not None
+    assert [p.lines for p in text.pages] == [["Dòng đầu có chữ.", "Dòng cuối."]]
+
+
+def test_page_of_only_whitespace_lines_gives_no_confirmed_lines() -> None:
+    doc_id = "doc_" + "b" * 16
+    blank = _with_raw_texts(
+        _page_with_lines(doc_id, 2, ["x"] * len(WHITESPACE_LINES), confirmed=True), dict(enumerate(WHITESPACE_LINES))
+    )
+    first = _page_with_lines(doc_id, 1, ["Có chữ."], confirmed=True)
+    text = confirmed_text(_imported(doc_id), [first, blank])
+    assert text is not None and [(p.page_number, p.lines) for p in text.pages] == [(1, ["Có chữ."]), (2, [])]
+
+
+def test_whitespace_only_lines_do_not_count_toward_the_vault_page_limit(env: ImportEnv) -> None:
+    """Qua API: trang đúng `MAX_PAGE_LINES` dòng có chữ cộng các dòng chỉ có khoảng trắng (thành rỗng khi validate)
+    vẫn xác nhận được và vào Vault."""
+    texts = [f"Dòng {index}." for index in range(MAX_PAGE_LINES)] + WHITESPACE_LINES
+    env.reader.page_count = 1
+    env.reader.custom_pages = {1: lambda d: _page_with_lines(d, 1, texts, confirmed=False)}
+    content = pdf_bytes("khoang-trang")
+    doc_id = _doc_id(content)
+    assert env.post(content).status_code == 202
+    page = env.client.get(f"/v1/documents/{doc_id}/pages/1").json()
+    response = env.client.post(
+        f"/v1/documents/{doc_id}/pages/1/confirm", json={"editor_id": EDITOR, "expected_version": page["version"]}
+    )
+    assert response.status_code == 200, response.text
+    assert _document(env.client, doc_id)["status"] == "confirmed"
+    assert env.store.has_document_chunks(doc_id)

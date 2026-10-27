@@ -16,6 +16,10 @@ import {
   FILENAME_MAX_CHARS,
   LINE_TEXT_MAX_CHARS,
   MAX_THEORY_SLOTS,
+  PAIR_QUOTE_MAX_CHARS,
+  PAIR_QUOTE_MIN_CHARS,
+  PAIR_TERM_MAX_CHARS,
+  PAIR_TERM_MIN_CHARS,
   QUANTUM_MAX,
   QUANTUM_MIN,
   TOPIC_KEY_MAX_CHARS,
@@ -81,7 +85,11 @@ export type ErrorContext =
   | "document_confirm"
   | "document_delete"
   | "vault_labels"
-  | "subject_create";
+  | "subject_create"
+  | "pairs_list"
+  | "pair_create"
+  | "pair_confirm"
+  | "pair_reject";
 
 export interface ClassifyOptions {
   /** Request có gửi `expected_version`: 409 dạng chuỗi được hiểu là bản đã đổi ở nơi khác. */
@@ -121,6 +129,16 @@ const MESSAGES: Record<Exclude<ErrorKind, "network" | "capability" | "blocking">
   busy: "Kho dữ liệu đang bận. Thử lại sau giây lát.",
   unknown: "Đã có lỗi không mong muốn. Thử lại sau.",
 };
+
+/** 404 khi tạo, xác nhận hay từ chối cặp khái niệm (§6.6). */
+const PAIR_NOT_FOUND_VI = "Cặp hoặc chunk không còn (tài liệu có thể đã bị xoá). Tải lại để xem dữ liệu mới nhất.";
+
+/** 409 lệch phiên bản khi xác nhận hay từ chối cặp khái niệm (§6.6). */
+const PAIR_CONFLICT_VI = "Cặp này vừa được sửa ở nơi khác nên thao tác chưa được ghi. Tải lại để xem bản mới nhất.";
+
+/** 422 của tạo, xác nhận cặp theo field lỗi (`detail[].loc`, §6.0); số lấy từ `lib/limits.ts`. */
+export const PAIR_QUOTE_INVALID_VI = `Đoạn định nghĩa chưa hợp lệ: phải trùng nguyên văn với chunk, dài từ ${PAIR_QUOTE_MIN_CHARS} đến ${PAIR_QUOTE_MAX_CHARS} ký tự.`;
+export const PAIR_TERM_INVALID_VI = `Thuật ngữ phải có từ ${PAIR_TERM_MIN_CHARS} đến ${PAIR_TERM_MAX_CHARS} ký tự.`;
 
 type ContextualKind = "bad_request" | "not_found" | "too_large" | "unsupported_media" | "validation";
 
@@ -200,6 +218,14 @@ const CONTEXT_MESSAGES: Record<ErrorContext, Partial<Record<ContextualKind, stri
       "Backend đang chạy chưa hỗ trợ tạo môn riêng. Môn sẽ tự được tạo khi bạn nhập tài liệu đầu tiên với mã môn đó.",
     validation: "Mã môn hoặc tên môn không hợp lệ. Mã môn gồm 2–6 chữ cái in hoa rồi 2–4 chữ số, ví dụ MAU101.",
   },
+  pairs_list: {
+    not_found:
+      "Backend đang chạy chưa có cặp khái niệm trong kho tri thức. Cập nhật backend lên bản có Vault rồi thử lại.",
+    validation: "Bộ lọc không hợp lệ. Mã chương có dạng ch1 hoặc ch2.1; chọn lại môn ở thanh bên nếu vẫn lỗi.",
+  },
+  pair_create: { not_found: PAIR_NOT_FOUND_VI },
+  pair_confirm: { not_found: PAIR_NOT_FOUND_VI },
+  pair_reject: { not_found: PAIR_NOT_FOUND_VI },
 };
 
 /**
@@ -239,6 +265,8 @@ const CONTEXT_CONFLICTS: Partial<Record<ErrorContext, { kind: ErrorKind; message
     kind: "duplicate",
     message: "Mã môn này đã có (có thể đã được tạo tự động khi nhập tài liệu). Chọn môn đó ở thanh bên.",
   },
+  pair_confirm: { kind: "version_conflict", message: PAIR_CONFLICT_VI },
+  pair_reject: { kind: "version_conflict", message: PAIR_CONFLICT_VI },
 };
 
 function contextual(kind: ContextualKind, options: ClassifyOptions): UiError {
@@ -345,6 +373,9 @@ export function classifyHttpError(status: number, body: unknown, options: Classi
     case 415:
       return contextual("unsupported_media", options);
     case 422:
+      if (options.context === "pair_create" || options.context === "pair_confirm") {
+        return build("validation", pairValidationMessage(detail));
+      }
       return contextual("validation", options);
     case 503:
       // 503 chỉ dùng khi kho SQLite bận (§6.0); thân không phải JSON nghĩa là proxy không tới được backend.
@@ -353,6 +384,25 @@ export function classifyHttpError(status: number, body: unknown, options: Classi
       if (status >= 500) return build("server", MESSAGES.server);
       return build("unknown", MESSAGES.unknown);
   }
+}
+
+/** Field cuối của `loc` trong một lỗi validate `{loc, msg, type}` (§6.0); `null` khi sai dạng. */
+function lastLocField(error: unknown): string | null {
+  if (!isRecord(error) || !Array.isArray(error.loc) || error.loc.length === 0) return null;
+  const last: unknown = error.loc[error.loc.length - 1];
+  return typeof last === "string" ? last : null;
+}
+
+/**
+ * Câu cho 422 của tạo, xác nhận cặp khái niệm, theo phần tử cuối của `loc` trong `detail`: có `definition_quote` ⇒
+ * câu về đoạn định nghĩa (ưu tiên khi có nhiều lỗi); chỉ có `term` ⇒ câu về thuật ngữ; field khác (`chunk_id`,
+ * `expected_version`, `["body"]`) hoặc `detail` không đúng dạng ⇒ câu chung.
+ */
+export function pairValidationMessage(detail: unknown): string {
+  const fields = Array.isArray(detail) ? detail.map(lastLocField) : [];
+  if (fields.includes("definition_quote")) return PAIR_QUOTE_INVALID_VI;
+  if (fields.includes("term")) return PAIR_TERM_INVALID_VI;
+  return MESSAGES.validation;
 }
 
 /** Luồng sinh câu: 409 nghĩa là bộ đề dựa trên đề chưa duyệt hoặc còn lỗi chặn (I5), không phải bản cũ cần tải lại. */

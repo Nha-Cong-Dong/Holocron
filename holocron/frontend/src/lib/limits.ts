@@ -61,3 +61,28 @@ export const VAULT_BROWSE_PAGE_SIZE = 50;
 export const TOPIC_KEY_PATTERN = /^[a-z0-9_]+(\.[a-z0-9_]+){2,}$/;
 export const TOPIC_KEYS_MAX = 32;
 export const TOPIC_KEY_MAX_CHARS = 128;
+
+/**
+ * Cặp khái niệm (§5.8, §6.6). Chép từ backend: `ConceptPairCreate`/`ConceptPairConfirm` ở
+ * `holocron_core/routers/vault.py:111-123` (`term` 1–120, `definition_quote` 8–600 ký tự, kiểm sau khi Pydantic bỏ
+ * khoảng trắng hai đầu theo `str_strip_whitespace`, `domain/schemas.py:69`) và `ConceptPair._quote_nfc` ở
+ * `holocron_core/domain/vault.py:142-148` (`MIN_QUOTE_CHARS = 8`, `domain/vault.py:30`, đếm sau NFC và gộp khoảng
+ * trắng). Đơn vị là code point, như `len()` của Python.
+ */
+export const PAIR_TERM_MIN_CHARS = 1;
+export const PAIR_TERM_MAX_CHARS = 120;
+export const PAIR_QUOTE_MIN_CHARS = 8;
+export const PAIR_QUOTE_MAX_CHARS = 600;
+
+/** `chunk_id` tối đa 128 ký tự (`MAX_ID_CHARS`, `holocron_core/domain/vault.py:34`). */
+export const CHUNK_ID_MAX_CHARS = 128;
+
+/**
+ * Tải toàn bộ chunk của môn để tra nguồn của cặp khái niệm: mỗi trang 200 chunk (giới hạn `limit` ≤ 200 của
+ * `GET /v1/vault/chunks`, `holocron_core/routers/vault.py:168`), tối đa 25 request mỗi lần tải (tối đa 5000 chunk).
+ */
+export const PAIRS_CHUNK_PAGE_SIZE = 200;
+export const PAIRS_CHUNK_MAX_REQUESTS = 25;
+
+/** Khi chưa chọn chương, cột chunk chỉ hiện chừng này chunk đầu tiên của môn. */
+export const PAIRS_CHUNK_PREVIEW_COUNT = 50;

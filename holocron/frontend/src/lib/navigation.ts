@@ -20,6 +20,12 @@ export const NAV_ITEMS: readonly NavItem[] = [
     description: "Môn học, nhập tài liệu PDF, xem lại trang và kho tri thức",
   },
   {
+    href: "/pairs",
+    label: "Cặp khái niệm",
+    short: "CK",
+    description: "Bôi định nghĩa trong văn bản của Vault, xác nhận hoặc từ chối cặp khái niệm",
+  },
+  {
     href: "/practice",
     label: "Luyện tập",
     short: "LT",

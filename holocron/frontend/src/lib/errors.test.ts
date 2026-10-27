@@ -16,10 +16,20 @@ import {
   isCapabilityError,
   keyedMessages,
   localError,
+  PAIR_QUOTE_INVALID_VI,
+  PAIR_TERM_INVALID_VI,
+  pairValidationMessage,
   renderError,
   toUiError,
 } from "./errors";
-import { DOCUMENT_UPLOAD_MAX_MIB, EXAM_UPLOAD_MAX_MIB } from "./limits";
+import {
+  DOCUMENT_UPLOAD_MAX_MIB,
+  EXAM_UPLOAD_MAX_MIB,
+  PAIR_QUOTE_MAX_CHARS,
+  PAIR_QUOTE_MIN_CHARS,
+  PAIR_TERM_MAX_CHARS,
+  PAIR_TERM_MIN_CHARS,
+} from "./limits";
 import { MAX_TWIN_COUNT, MIN_TWIN_COUNT } from "./twin";
 
 /** Thông điệp hiển thị không được lộ mã HTTP hay tên field/nhận dạng nội bộ của backend. */
@@ -336,5 +346,72 @@ describe("ApiError và toUiError", () => {
     expect(toUiError(new ApiError(409, info))).toEqual(info);
     expect(toUiError(new Error("x")).kind).toBe("unknown");
     expect(localError("Câu trả lời đang trống.").action).toBe("none");
+  });
+});
+
+describe("cặp khái niệm (§6.6)", () => {
+  const GENERIC_422 = classifyHttpError(422, { detail: [] }).message;
+
+  function invalid(...fields: unknown[][]): { detail: { loc: unknown[]; msg: string; type: string }[] } {
+    return { detail: fields.map((loc) => ({ loc, msg: "x", type: "value_error" })) };
+  }
+
+  it("câu 422 lấy số từ limits.ts", () => {
+    expect(PAIR_QUOTE_INVALID_VI).toContain(`${PAIR_QUOTE_MIN_CHARS} đến ${PAIR_QUOTE_MAX_CHARS}`);
+    expect(PAIR_TERM_INVALID_VI).toContain(`${PAIR_TERM_MIN_CHARS} đến ${PAIR_TERM_MAX_CHARS}`);
+    expectUserFacing(PAIR_QUOTE_INVALID_VI);
+    expectUserFacing(PAIR_TERM_INVALID_VI);
+  });
+
+  it("pairValidationMessage đọc phần tử cuối của loc; ưu tiên definition_quote; field khác hay sai dạng ⇒ câu chung", () => {
+    expect(pairValidationMessage(invalid(["body", "definition_quote"]).detail)).toBe(PAIR_QUOTE_INVALID_VI);
+    expect(pairValidationMessage([{ loc: ["body", "term"] }])).toBe(PAIR_TERM_INVALID_VI);
+    expect(pairValidationMessage([{ loc: ["body", "term"] }, { loc: ["body", "definition_quote"] }])).toBe(
+      PAIR_QUOTE_INVALID_VI,
+    );
+    expect(pairValidationMessage([{ loc: ["body", "chunk_id"] }])).toBe(GENERIC_422);
+    expect(pairValidationMessage([{ loc: ["body", "expected_version"] }])).toBe(GENERIC_422);
+    expect(pairValidationMessage([{ loc: ["body"] }])).toBe(GENERIC_422);
+    expect(pairValidationMessage([{ loc: ["body", "term", 0] }])).toBe(GENERIC_422);
+    expect(pairValidationMessage("trích dẫn không khớp")).toBe(GENERIC_422);
+    expect(pairValidationMessage(undefined)).toBe(GENERIC_422);
+  });
+
+  it("422 tạo, xác nhận theo field; 422 từ chối luôn là câu chung", () => {
+    for (const context of ["pair_create", "pair_confirm"] satisfies ErrorContext[]) {
+      const quote = classifyHttpError(422, invalid(["body", "definition_quote"]), { context });
+      expect(quote).toMatchObject({ kind: "validation", action: "none", message: PAIR_QUOTE_INVALID_VI });
+      const term = classifyHttpError(422, invalid(["body", "term"]), { context });
+      expect(term.message).toBe(PAIR_TERM_INVALID_VI);
+      expect(classifyHttpError(422, invalid(["body", "chunk_id"]), { context }).message).toBe(GENERIC_422);
+    }
+    const reject = classifyHttpError(422, invalid(["body", "definition_quote"]), { context: "pair_reject" });
+    expect(reject.message).toBe(GENERIC_422);
+  });
+
+  it("409 xác nhận, từ chối: lệch phiên bản, tải lại; 404: cặp hoặc chunk không còn", () => {
+    for (const context of ["pair_confirm", "pair_reject"] satisfies ErrorContext[]) {
+      const conflict = classifyHttpError(409, { detail: "version lệch" }, { context, versioned: true });
+      expect(conflict).toMatchObject({ kind: "version_conflict", action: "reload" });
+      expect(conflict.message).toContain("Cặp này vừa được sửa ở nơi khác");
+      expectUserFacing(conflict.message);
+    }
+    for (const context of ["pair_create", "pair_confirm", "pair_reject"] satisfies ErrorContext[]) {
+      const missing = classifyHttpError(404, { detail: "không tìm thấy chunk" }, { context });
+      expect(missing.kind).toBe("not_found");
+      expect(missing.message).toContain("Cặp hoặc chunk không còn (tài liệu có thể đã bị xoá)");
+      expectUserFacing(missing.message);
+    }
+  });
+
+  it("danh sách cặp: 404 và 422 có câu riêng, không lộ mã hay field", () => {
+    const missing = classifyHttpError(404, { detail: "Not Found" }, { context: "pairs_list" });
+    const invalidFilter = classifyHttpError(422, invalid(["query", "chapter_code"]), { context: "pairs_list" });
+    expect(missing.kind).toBe("not_found");
+    expect(invalidFilter.kind).toBe("validation");
+    expect(missing.message).not.toBe(classifyHttpError(404, { detail: "x" }).message);
+    expect(invalidFilter.message).not.toBe(GENERIC_422);
+    expectUserFacing(missing.message);
+    expectUserFacing(invalidFilter.message);
   });
 });

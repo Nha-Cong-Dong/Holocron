@@ -25,6 +25,7 @@ import {
   classifyNetworkError,
   invalidResponseError,
 } from "@/lib/errors";
+import { type ConceptPairList, parseConceptPair, parseConceptPairList } from "@/lib/pairs";
 import {
   type ChunkPageView,
   type EssayGradeView,
@@ -72,6 +73,11 @@ import type {
 import type {
   CellPatch,
   ChunkLabelsPatch,
+  ConceptPair,
+  ConceptPairConfirm,
+  ConceptPairCreate,
+  ConceptPairReject,
+  ConceptPairStatus,
   IngestionItem,
   NonCloneableRequest,
   TablePatchRequest,
@@ -160,6 +166,19 @@ export interface ChunkQuery {
   limit: number;
 }
 
+/** Tham số của `GET /v1/vault/concept-pairs` (§6.6); `null` là không lọc. */
+export interface ConceptPairQuery {
+  subjectCode: string;
+  chapterCode: string | null;
+  status: ConceptPairStatus | null;
+}
+
+/** Phần sửa khi xác nhận cặp (§6.6); field `undefined` thì giữ nguyên ở backend. */
+export interface ConceptPairEdits {
+  term?: string;
+  definitionQuote?: string;
+}
+
 /** Dữ liệu của form nhập tài liệu, đã kiểm ở `lib/documents.ts`. */
 export interface DocumentImportInput {
   file: File;
@@ -243,6 +262,14 @@ export interface HolocronApi {
    * `expected_version` (dựng ở `lib/vault.ts`). Trả chunk đã kiểm dạng.
    */
   patchChunkLabels: (chunkId: string, change: ChunkLabelChange) => Promise<ChunkView>;
+  /** `GET /v1/vault/concept-pairs` (§6.6), đã kiểm dạng; giữ thứ tự backend `(chapter_code, term, pair_id)`. */
+  listConceptPairs: (query: ConceptPairQuery) => Promise<ConceptPairList>;
+  /** `POST /v1/vault/concept-pairs` (§6.6): 201, cặp `confirmed` với `proposed_by = "user"`. */
+  createConceptPair: (chunkId: string, term: string, definitionQuote: string) => Promise<ConceptPair>;
+  /** `POST /v1/vault/concept-pairs/{pair_id}/confirm` (§6.6): sửa (nếu có) rồi xác nhận. */
+  confirmConceptPair: (pairId: string, expectedVersion: number, edits: ConceptPairEdits) => Promise<ConceptPair>;
+  /** `POST /v1/vault/concept-pairs/{pair_id}/reject` (§6.6). */
+  rejectConceptPair: (pairId: string, expectedVersion: number) => Promise<ConceptPair>;
 }
 
 /**
@@ -455,6 +482,52 @@ export const realApi: HolocronApi = {
       context: "vault_labels",
     });
     return validated(parseKnowledgeChunk(raw));
+  },
+
+  listConceptPairs: async (query) => {
+    const params = new URLSearchParams({ subject_code: query.subjectCode });
+    if (query.chapterCode !== null) params.set("chapter_code", query.chapterCode);
+    if (query.status !== null) params.set("status", query.status);
+    const raw = await request<unknown>(
+      `/v1/vault/concept-pairs?${params.toString()}`,
+      { method: "GET" },
+      { context: "pairs_list" },
+    );
+    return validated(parseConceptPairList(raw));
+  },
+
+  createConceptPair: async (chunkId, term, definitionQuote) => {
+    const payload: ConceptPairCreate = {
+      editor_id: LOCAL_EDITOR_ID,
+      chunk_id: chunkId,
+      term,
+      definition_quote: definitionQuote,
+    };
+    const raw = await request<unknown>("/v1/vault/concept-pairs", jsonSpec("POST", payload), {
+      context: "pair_create",
+    });
+    return validated(parseConceptPair(raw));
+  },
+
+  confirmConceptPair: async (pairId, expectedVersion, edits) => {
+    const payload: ConceptPairConfirm = { editor_id: LOCAL_EDITOR_ID, expected_version: expectedVersion };
+    if (edits.term !== undefined) payload.term = edits.term;
+    if (edits.definitionQuote !== undefined) payload.definition_quote = edits.definitionQuote;
+    const raw = await request<unknown>(
+      `/v1/vault/concept-pairs/${segment(pairId)}/confirm`,
+      jsonSpec("POST", payload),
+      { versioned: true, context: "pair_confirm" },
+    );
+    return validated(parseConceptPair(raw));
+  },
+
+  rejectConceptPair: async (pairId, expectedVersion) => {
+    const payload: ConceptPairReject = { editor_id: LOCAL_EDITOR_ID, expected_version: expectedVersion };
+    const raw = await request<unknown>(`/v1/vault/concept-pairs/${segment(pairId)}/reject`, jsonSpec("POST", payload), {
+      versioned: true,
+      context: "pair_reject",
+    });
+    return validated(parseConceptPair(raw));
   },
 };
 

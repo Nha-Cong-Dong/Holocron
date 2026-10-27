@@ -164,9 +164,9 @@ class IngestionStore:
         """Lưu blueprint kèm danh sách item đã được duyệt mà nó được dựng từ (để kiểm lại I5 khi sinh twin); môn tạo
         ngầm (nếu có) được ghi dưới cùng khoá."""
         with self._lock:
+            self._ensure_subject(implicit_subject)  # trước: lỗi ở đây thì chưa ghi gì (nguyên tử)
             self._blueprints[blueprint.blueprint_id] = blueprint
             self._blueprint_items[blueprint.blueprint_id] = tuple(item_ids)
-            self._ensure_subject(implicit_subject)
         return blueprint
 
     def get_blueprint(self, blueprint_id: str) -> ExamBlueprint | None:
@@ -205,6 +205,8 @@ class IngestionStore:
         return None if now - stored.batch.created_at > IDEMPOTENCY_TTL else stored
 
     def _insert_batch(self, batch: TwinBatch, body_digest: str, key: str | None) -> None:
+        if batch.batch_id in self._batches:  # cùng ngữ nghĩa khoá chính `twin_batches.batch_id` của SQLite
+            raise StorageError(f"UNIQUE: batch_id {batch.batch_id} đã được lưu")
         if key is not None:
             previous = self._idempotency.get((batch.blueprint_id, key))
             if previous is not None:

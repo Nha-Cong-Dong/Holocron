@@ -116,23 +116,6 @@
   color: var(--text-muted);
 }
 
-.citation {
-  margin: 0.75rem 0;
-  padding: 0.5rem 0.875rem;
-  border-left: 3px solid var(--accent);
-  background: var(--surface-raised);
-}
-
-.citation p {
-  margin: 0 0 0.25rem;
-  font-style: italic;
-}
-
-.citation footer {
-  font-size: 0.8125rem;
-  color: var(--text-muted);
-}
-
 .trace {
   margin: 0.5rem 0 0;
   font-size: 0.8125rem;

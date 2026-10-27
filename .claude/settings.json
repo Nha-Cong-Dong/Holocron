@@ -1,4 +1,8 @@
 {
+  "env": {
+    "CLAUDE_CODE_SUBAGENT_MODEL": "sonnet",
+    "BASH_MAX_OUTPUT_LENGTH": "20000"
+  },
   "permissions": {
     "allow": [
       "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)",
@@ -6,14 +10,15 @@
       "Bash(git switch:*)", "Bash(git checkout:*)", "Bash(git branch:*)",
       "Bash(git fetch:*)", "Bash(git pull --ff-only:*)",
       "Bash(git push -u origin:*)", "Bash(git push origin:*)",
-      "Bash(gh pr create --draft:*)", "Bash(gh pr view:*)", "Bash(gh pr list:*)"
+      "Bash(gh pr create --draft:*)", "Bash(gh pr view:*)", "Bash(gh pr list:*)",
+      "Bash(git merge origin/develop:*)", "Bash(git merge --no-edit origin/develop:*)"
     ],
     "deny": [
       "Bash(git push --force:*)", "Bash(git push -f:*)",
       "Bash(git push origin develop:*)", "Bash(git push origin main:*)",
       "Bash(git push origin --delete:*)", "Bash(git branch -D:*)",
       "Bash(gh pr merge:*)", "Bash(gh pr ready:*)",
-      "Bash(git merge:*)", "Bash(git rebase:*)", "Bash(git reset --hard:*)"
+      "Bash(git rebase:*)", "Bash(git reset --hard:*)"
     ]
   }
 }

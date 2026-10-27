@@ -1,0 +1,12 @@
+Cài Tesseract để Holocron đọc được trang PDF scan (ảnh chụp). PDF có sẵn lớp chữ không cần bước này.
+
+1. Tải bộ cài Tesseract 5 cho Windows 64-bit (bản của UB Mannheim:
+   https://github.com/UB-Mannheim/tesseract/wiki) và cài vào thư mục mặc định
+   (C:\Program Files\Tesseract-OCR\). Không cần thêm vào PATH.
+2. Tải gói tiếng Việt vie.traineddata bản tessdata_best:
+   https://github.com/tesseract-ocr/tessdata_best/raw/main/vie.traineddata
+3. Chép vie.traineddata vào thư mục %LOCALAPPDATA%\Holocron\tessdata\ (tạo thư mục nếu chưa có).
+   Nếu tên người dùng Windows có dấu tiếng Việt: chép vào C:\Tesseract-tessdata\ rồi đặt biến
+   môi trường HOLOCRON_TESSDATA_DIR=C:\Tesseract-tessdata (Settings > "Edit environment variables").
+4. Mở lại Holocron.cmd và xem dòng trạng thái OCR trong cửa sổ đen: cần thấy có Tesseract và có "vie".
+Cài Tesseract ở thư mục khác: đặt HOLOCRON_TESSERACT_CMD trỏ tới file tesseract.exe.

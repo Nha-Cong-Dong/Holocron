@@ -23,6 +23,20 @@ export interface Citation {
   chunk_id: string | null;
 }
 
+export type SourceKind = "textbook" | "lecture_slides" | "past_exam" | "lab_manual";
+
+/** Thông tin tài liệu môn học (§5.8). `doc_id` = "doc_" + sha256[:16]; `has_text_layer` true khi ≥ 1 trang dùng tầng 1. */
+export interface DocumentMeta {
+  doc_id: string;
+  subject_code: string;
+  title: string;
+  source_kind: SourceKind;
+  sha256: string;
+  page_count: number;
+  has_text_layer: boolean;
+  uploaded_at: string;
+}
+
 export type ChunkCategory = "THEORY" | "PRACTICE";
 
 export type LabelStatus = "proposed" | "confirmed";
@@ -235,6 +249,112 @@ export interface UploadedDocument {
   uploaded_at: string;
 }
 
+// -------------------------------------------------------------- domain/documents.py
+
+export type LineEngine = "text_layer" | "tesseract" | "vlm" | "human";
+
+export type TierUsed = "text_layer" | "ocr" | "layout" | "vlm";
+
+export type LineFlag = "LOW_LINE_CONF" | "TOKEN_MISMATCH" | "HIGH_LINE_CER";
+
+/** Lý do trang cần xem kỹ (§5.7), sắp theo thứ tự khai báo, không trùng. */
+export type ReviewReason =
+  | "LOW_OCR_SCORE"
+  | "LOW_LINE_COVERAGE"
+  | "HIGH_INK_OUTSIDE_TEXT"
+  | "FIGURE_ON_SCAN"
+  | "FORMULA_ON_SCAN"
+  | "TIER3_UNAVAILABLE"
+  | "LOW_CONF_LINES"
+  | "TOKEN_MISMATCH"
+  | "CROSS_CHECK_UNAVAILABLE"
+  | "HIGH_PAGE_CER"
+  | "OCR_ENGINE_MISSING";
+
+export type FailureReason = "PAGE_TIMEOUT" | "PAGE_ERROR" | "OCR_ENGINE_MISSING";
+
+export type PageStatus = "pending" | "ok" | "needs_review" | "failed";
+
+export type CrossCheckStatus = "ok" | "mismatch" | "unavailable" | "not_applicable";
+
+/** Một dòng văn bản của trang (NFC). `bbox` = [x0, y0, x1, y1] chia theo khổ trang, ∈ [0, 1], gốc trên-trái. */
+export interface ExtractedLine {
+  line_index: number;
+  text: string;
+  bbox: [number, number, number, number] | null;
+  conf: number;
+  engine: LineEngine;
+  flags: LineFlag[];
+  edited_by_human: boolean;
+}
+
+export interface TokenMismatch {
+  line_index: number;
+  primary_value: string;
+  secondary_value: string | null;
+}
+
+export interface CrossCheck {
+  status: CrossCheckStatus;
+  secondary_engine: "rapidocr" | null;
+  mismatches: TokenMismatch[];
+}
+
+/** Kết quả đọc một trang PDF (§5.7); mọi điểm và cờ do backend tính, frontend chỉ hiển thị. */
+export interface PageExtraction {
+  document_id: string;
+  page_number: number;
+  version: number;
+  status: PageStatus;
+  tier_used: TierUsed | null;
+  text_score: number | null;
+  ocr_score: number | null;
+  coverage_ratio: number | null;
+  ink_outside_text_ratio: number | null;
+  has_figure: boolean;
+  has_table: boolean;
+  has_formula: boolean;
+  lines: ExtractedLine[];
+  tables: ExtractedTable[];
+  cross_check: CrossCheck;
+  review_reasons: ReviewReason[];
+  failure_reason: FailureReason | null;
+  confirmed: boolean;
+  confirmed_at: string | null;
+}
+
+export type DocumentStatus = "processing" | "review" | "confirmed" | "failed";
+
+export type OutputLanguage = "vi" | "en";
+
+export interface PageSummary {
+  page_number: number;
+  status: PageStatus;
+  tier_used: TierUsed | null;
+  review_reasons: ReviewReason[];
+  confirmed: boolean;
+}
+
+/** `POST /v1/documents` (202 hoặc 200) và `GET /v1/documents/{document_id}`; `pages` đủ `page_count` phần tử. */
+export interface DocumentImport {
+  meta: DocumentMeta;
+  filename: string;
+  size_bytes: number;
+  output_language: OutputLanguage;
+  status: DocumentStatus;
+  pages: PageSummary[];
+}
+
+/** Một phần tử của `GET /v1/documents`, mới nhất trước. */
+export interface DocumentSummary {
+  meta: DocumentMeta;
+  status: DocumentStatus;
+  pages_pending: number;
+  pages_needs_review: number;
+  pages_failed: number;
+  pages_confirmed: number;
+}
+
 // ------------------------------------------------------------------ domain/vault.py
 
 export type ConceptPairStatus = "proposed" | "confirmed" | "rejected";
@@ -434,9 +554,4 @@ export interface ValidationErrorItem {
   loc: (string | number)[];
   msg: string;
   type: string;
-}
-
-/** Thân lỗi do backend trả về: chuỗi, danh sách lỗi validate, hoặc chi tiết BLOCKING khi approve (409). */
-export interface ApiErrorBody {
-  detail: string | ValidationErrorItem[] | { message: string; issues: string[] };
 }

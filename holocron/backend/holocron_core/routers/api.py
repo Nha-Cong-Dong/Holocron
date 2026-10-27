@@ -1,6 +1,6 @@
 """Ứng dụng FastAPI của Holocron: tạo `app` và gắn các router theo đúng thứ tự route.
 
-Route nằm ở `runtime.py`, `ingestion.py`, `blueprints.py`, `vault.py`; dependency injection ở `deps.py`. Module này
+Route nằm ở `runtime.py`, `ingestion.py`, `blueprints.py`, `vault.py`, `documents.py`; dependency injection ở `deps.py`. Module này
 re-export các tên cũ (`MAX_UPLOAD_BYTES`, `get_*`, `IngestionStore`, `IngestionItem`, `_recompute`…) để mã và test
 đang import từ `holocron_core.routers.api` không phải đổi; hàm DI re-export là đúng đối tượng các route dùng.
 """
@@ -17,8 +17,9 @@ from ..domain.ingestion import IngestionItem, IngestionItemCreate
 from ..domain.repositories import StorageBusyError
 from ..domain.twins import IdempotencyRecord
 from ..infrastructure.memory_store import IDEMPOTENCY_TTL, IngestionStore
-from ..infrastructure.storage import SQLiteStore
-from . import blueprints, ingestion, runtime, vault
+from ..infrastructure.storage import SQLiteStore, data_dir_from_env
+from ..services.document_import import ImportRuntime
+from . import blueprints, documents, ingestion, runtime, static_site, vault
 from .access import LocalAccessMiddleware, get_allowed_hosts, get_required_token
 from .blueprints import create_twins
 from .deps import (
@@ -103,16 +104,27 @@ STORE_BUSY_DETAIL = "Kho dữ liệu đang bận, thử lại"
 
 
 @asynccontextmanager
-async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
+async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     """Mở kho ngay khi khởi động: DB SQLite mới hơn code thì app từ chối khởi động (SPECIFICATION §5.13).
 
-    Khi tắt app, đóng kết nối SQLite của kho mặc định và bỏ nó khỏi cache, để lần khởi động sau trong cùng tiến trình
-    (test, `--reload`) mở lại kết nối mới thay vì dùng kết nối đã đóng. Kho in-memory không có gì để đóng.
+    Sau khi mở kho, tạo bộ nhập tài liệu (kho file gốc, hàng đợi đọc nền, §6.5), gắn vào `app.state`, dọn file gốc
+    mồ côi và xếp lại các tài liệu còn đang đọc dở. Khi tắt app (kể cả khi chính bước tạo bộ nhập lỗi): dừng bộ nhập
+    (chờ có hạn; luồng đọc nền chưa dừng kịp thì thư mục file tạm được giữ lại cho lần khởi động sau, luồng đó tự
+    thoát êm khi thấy kho đã đóng), rồi đóng kết nối SQLite của kho mặc định và bỏ nó khỏi cache, để lần khởi động
+    sau trong cùng tiến trình (test, `--reload`) mở lại kết nối mới thay vì dùng kết nối đã đóng. Kho in-memory
+    không có gì để đóng.
     """
     store = get_store()
+    import_runtime: ImportRuntime | None = None
     try:
+        import_runtime = documents.create_import_runtime(data_dir_from_env())
+        setattr(application.state, documents.RUNTIME_STATE_ATTR, import_runtime)
+        documents.requeue_on_startup(store, import_runtime)
         yield
     finally:
+        if import_runtime is not None:
+            import_runtime.close()
+            delattr(application.state, documents.RUNTIME_STATE_ATTR)
         if isinstance(store, SQLiteStore):
             store.close()
             _default_store.cache_clear()
@@ -132,3 +144,9 @@ app.include_router(runtime.router)
 app.include_router(ingestion.router)
 app.include_router(blueprints.router)
 app.include_router(vault.router)
+app.include_router(documents.router)
+
+# Bản export tĩnh của frontend (chế độ portable): chỉ gắn khi đặt `HOLOCRON_WEB_DIR`, sau mọi `include_router`.
+_web_dir = static_site.web_dir_from_env()
+if _web_dir is not None:
+    static_site.attach_static_site(app, _web_dir)

@@ -1096,3 +1096,32 @@ def test_browser_helper_runs_outside_launcher_job() -> None:
     result = _run_in_launcher_job(BREAKAWAY_BODY)
     assert result.returncode == 0, result.stderr[-2000:]
     assert result.stdout.strip() == "0"
+
+
+# --- instance.json cũ còn sót ------------------------------------------------------------------------------------
+
+
+def test_stale_instance_file_is_removed_before_serving(tmp_path: Path) -> None:
+    """Phiên trước bị Job giết (không chạy finally) để lại cổng chết: lần sau lấy khoá thì xoá rồi ghi cổng mới."""
+    data_dir = tmp_path / ACCENTED
+    data_dir.mkdir()
+    launcher.write_instance_info(data_dir, InstanceInfo(port=1, pid=42))
+    seen: list[dict[str, int]] = []
+
+    def serve(sock: socket.socket) -> None:
+        seen.append(json.loads((data_dir / INSTANCE_FILENAME).read_text(encoding="utf-8")))
+
+    deps = _deps(tmp_path, Recorder(), serve)
+    assert launcher.main(["--no-browser", "--data-dir", str(data_dir)], deps) == EXIT_OK
+    assert seen[0]["pid"] == 1234 and seen[0]["port"] != 1
+
+
+def test_stale_instance_file_is_removed_even_when_bind_fails(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    launcher.write_instance_info(data_dir, InstanceInfo(port=1, pid=42))
+    with launcher.bind_listening_socket(0) as taken:
+        port = taken.getsockname()[1]
+        deps = _deps(tmp_path, Recorder(), _never_serve)
+        assert launcher.main(["--data-dir", str(data_dir), "--port", str(port)], deps) == EXIT_ERROR
+    assert not (data_dir / INSTANCE_FILENAME).exists(), "không để lại cổng chết cho lần mở sau"

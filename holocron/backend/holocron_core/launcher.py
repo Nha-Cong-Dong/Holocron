@@ -646,10 +646,13 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 
 
 def _serve_with_lock(args: argparse.Namespace, deps: LauncherDeps, launch: LaunchEnvironment) -> int:
-    """Đang giữ khoá: Job Object → bind → ghi `instance.json` → serve; luôn xoá `instance.json` khi serve kết thúc.
+    """Đang giữ khoá: xoá `instance.json` cũ → Job Object → bind → ghi `instance.json` → serve; luôn xoá khi thoát.
 
+    `instance.json` cũ còn sót khi phiên trước chết không qua `finally` (đóng cửa sổ console, Job giết tiến trình):
+    xoá ngay khi vừa lấy khoá để lần mở sau không đọc cổng chết, kể cả khi bước bind phía dưới thất bại.
     `job` là handle Job Object (Windows); giữ tới khi tiến trình thoát, Windows đóng nó và giết tiến trình con còn lại.
     """
+    remove_instance_info(launch.data_dir)
     apply_environment(deps.environ, launch.updates)
     job = deps.assign_job()
     if job is None and deps.platform == "win32":

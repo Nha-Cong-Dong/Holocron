@@ -430,6 +430,16 @@ def app_url(port: int) -> str:
     return f"http://{HOST}:{port}/"
 
 
+def open_browser_or_print(url: str, open_browser: Callable[[str], object], emit: Emit) -> bool:
+    """Mở trình duyệt; lỗi (`OSError`, `webbrowser.Error`) ⇒ in URL để người dùng tự mở, trả False."""
+    try:
+        open_browser(url)
+    except (OSError, webbrowser.Error):
+        emit(f"Không mở được trình duyệt; hãy tự mở {url}")
+        return False
+    return True
+
+
 def handle_running_instance(
     data_dir: Path,
     port: int | None,
@@ -447,8 +457,7 @@ def handle_running_instance(
         return EXIT_BUSY
     url = app_url(port)
     emit(f"Holocron đã chạy sẵn tại {url} (thư mục dữ liệu {data_dir}).")
-    if not no_browser:
-        open_browser(url)
+    if not no_browser and open_browser_or_print(url, open_browser, emit):
         emit("Đã mở trình duyệt tới phiên bản đang chạy.")
     return EXIT_OK
 
@@ -549,10 +558,7 @@ def announce_when_ready(
         emit(f"Holocron đã sẵn sàng tại {url}")
         return
     emit(f"Holocron đã sẵn sàng; đang mở trình duyệt tới {url}")
-    try:
-        open_browser(url)
-    except (OSError, webbrowser.Error):
-        emit(f"Không mở được trình duyệt; hãy tự mở {url}")
+    open_browser_or_print(url, open_browser, emit)
 
 
 BROWSER_HELPER = "import sys, webbrowser; webbrowser.open(sys.argv[1])"

@@ -12,6 +12,7 @@ import socket
 import subprocess
 import sys
 import threading
+import webbrowser
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import ClassVar
@@ -427,6 +428,18 @@ def test_running_instance_opens_old_port(data_dir: Path) -> None:
     assert code == EXIT_OK
     assert opened == ["http://127.0.0.1:45678/"]
     assert "http://127.0.0.1:45678/" in lines[0]
+
+
+@pytest.mark.parametrize("error", [OSError("không có trình duyệt"), webbrowser.Error("không có trình duyệt")])
+def test_running_instance_browser_failure_prints_url(data_dir: Path, error: Exception) -> None:
+    def broken(_: str) -> None:
+        raise error
+
+    lines: list[str] = []
+    code = launcher.handle_running_instance(data_dir, 45678, no_browser=False, open_browser=broken, emit=lines.append)
+    assert code == EXIT_OK
+    assert lines[-1] == "Không mở được trình duyệt; hãy tự mở http://127.0.0.1:45678/"
+    assert not any("Đã mở trình duyệt" in line for line in lines)
 
 
 def test_running_instance_no_browser(data_dir: Path) -> None:

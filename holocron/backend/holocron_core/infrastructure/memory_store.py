@@ -1,4 +1,4 @@
-"""Kho in-memory cho item, tài liệu, blueprint, bản ghi idempotency và Knowledge Vault.
+"""Kho in-memory cho item, tài liệu, môn học, blueprint, batch twin (kèm khoá idempotency) và Knowledge Vault.
 
 Thoả `domain.repositories.AppStore`; dùng cho test và chế độ dev (không đặt `HOLOCRON_DATA_DIR`). Bản lưu lâu dài
 là `infrastructure/storage/` (SQLite, SPECIFICATION §5.13). Bản này không có FTS5 (`vault_search_available = False`),
@@ -28,14 +28,15 @@ from ..domain.repositories import (
     RecordNotFoundError,
     SearchIndex,
     StorageError,
+    SubjectExistsError,
     VaultEntity,
     VaultSearchUnavailableError,
     VersionConflictError,
     check_page_audit,
     same_item_state,
 )
-from ..domain.schemas import ExamBlueprint, KnowledgeChunk
-from ..domain.twins import IdempotencyRecord
+from ..domain.schemas import BlueprintSummary, ExamBlueprint, ExamFormat, KnowledgeChunk, Subject
+from ..domain.twins import IdempotencyRecord, TwinBatch
 from ..domain.vault import ConceptPair, ConceptPairStatus, VaultEdit, check_definition_quote, link_practice_chunks
 
 __all__ = ["IDEMPOTENCY_TTL", "IngestionStore"]
@@ -81,6 +82,15 @@ class _StoredPage:
         )
 
 
+@dataclass
+class _StoredBatch:
+    """Một dòng `twin_batches` (kèm twin và ticket); `idempotency_key` thành `None` khi khoá được dọn."""
+
+    batch: TwinBatch
+    body_digest: str
+    idempotency_key: str | None
+
+
 def _dump(model: BaseModel) -> str:
     """JSON của model, bỏ computed field (như `sqlite_store._dump`)."""
     return model.model_dump_json(exclude=set(type(model).model_computed_fields))
@@ -94,7 +104,10 @@ class IngestionStore:
         self._documents: dict[str, UploadedDocument] = {}
         self._blueprints: dict[str, ExamBlueprint] = {}
         self._blueprint_items: dict[str, tuple[str, ...]] = {}
-        self._idempotency: dict[tuple[str, str], IdempotencyRecord] = {}
+        # `twin_batches`: mọi batch đã lưu theo thứ tự ghi; `_idempotency` trỏ `(blueprint, khoá)` tới `batch_id`.
+        self._batches: dict[str, _StoredBatch] = {}
+        self._idempotency: dict[tuple[str, str], str] = {}
+        self._subjects: dict[str, Subject] = {}
         self._chunks: dict[str, KnowledgeChunk] = {}
         self._pairs: dict[str, ConceptPair] = {}
         self._edits: dict[tuple[VaultEntity, str], VaultEdit] = {}
@@ -145,10 +158,15 @@ class IngestionStore:
     def get_document(self, document_id: str) -> UploadedDocument | None:
         return self._documents.get(document_id)
 
-    def save_blueprint(self, blueprint: ExamBlueprint, item_ids: Sequence[str] = ()) -> ExamBlueprint:
-        """Lưu blueprint kèm danh sách item đã được duyệt mà nó được dựng từ (để kiểm lại I5 khi sinh twin)."""
-        self._blueprints[blueprint.blueprint_id] = blueprint
-        self._blueprint_items[blueprint.blueprint_id] = tuple(item_ids)
+    def save_blueprint(
+        self, blueprint: ExamBlueprint, item_ids: Sequence[str] = (), *, implicit_subject: Subject | None = None
+    ) -> ExamBlueprint:
+        """Lưu blueprint kèm danh sách item đã được duyệt mà nó được dựng từ (để kiểm lại I5 khi sinh twin); môn tạo
+        ngầm (nếu có) được ghi dưới cùng khoá."""
+        with self._lock:
+            self._blueprints[blueprint.blueprint_id] = blueprint
+            self._blueprint_items[blueprint.blueprint_id] = tuple(item_ids)
+            self._ensure_subject(implicit_subject)
         return blueprint
 
     def get_blueprint(self, blueprint_id: str) -> ExamBlueprint | None:
@@ -157,15 +175,130 @@ class IngestionStore:
     def blueprint_item_ids(self, blueprint_id: str) -> tuple[str, ...]:
         return self._blueprint_items.get(blueprint_id, ())
 
+    def list_blueprint_summaries(self, subject_code: str | None = None) -> list[BlueprintSummary]:
+        with self._lock:
+            counts: dict[str, int] = {}
+            for stored in self._batches.values():
+                counts[stored.batch.blueprint_id] = counts.get(stored.batch.blueprint_id, 0) + 1
+            summaries = [
+                BlueprintSummary(
+                    blueprint_id=blueprint.blueprint_id,
+                    subject_code=blueprint.subject_code,
+                    total_questions=blueprint.total_questions,
+                    created_at=blueprint.created_at,
+                    batch_count=counts.get(blueprint.blueprint_id, 0),
+                )
+                for blueprint in self._blueprints.values()
+                if subject_code is None or blueprint.subject_code == subject_code
+            ]
+        return sorted(summaries, key=lambda summary: (summary.created_at, summary.blueprint_id), reverse=True)
+
+    # ------------------------------------------------------------------ #
+    # TwinBatchRepository (cùng ngữ nghĩa với bản SQLite)
+    # ------------------------------------------------------------------ #
+
+    def _live_batch(self, blueprint_id: str, key: str, now: datetime) -> _StoredBatch | None:
+        batch_id = self._idempotency.get((blueprint_id, key))
+        if batch_id is None:
+            return None
+        stored = self._batches[batch_id]
+        return None if now - stored.batch.created_at > IDEMPOTENCY_TTL else stored
+
+    def _insert_batch(self, batch: TwinBatch, body_digest: str, key: str | None) -> None:
+        if key is not None:
+            previous = self._idempotency.get((batch.blueprint_id, key))
+            if previous is not None:
+                self._batches[previous].idempotency_key = None
+            self._idempotency[(batch.blueprint_id, key)] = batch.batch_id
+        self._batches[batch.batch_id] = _StoredBatch(batch, body_digest, key)
+
     def get_idempotent(self, blueprint_id: str, key: str, now: datetime) -> IdempotencyRecord | None:
         """Bản ghi còn hiệu lực (< 24 h) của `(blueprint, key)`; hết hạn thì coi như không có."""
-        record = self._idempotency.get((blueprint_id, key))
-        if record is None or now - record.stored_at > IDEMPOTENCY_TTL:
+        with self._lock:
+            stored = self._live_batch(blueprint_id, key, now)
+        if stored is None:
             return None
-        return record
+        return IdempotencyRecord(body_digest=stored.body_digest, stored_at=stored.batch.created_at, batch=stored.batch)
+
+    def save_batch(self, batch: TwinBatch, idempotency_key: str | None, body_digest: str) -> TwinBatch:
+        key = idempotency_key
+        with self._lock:
+            if key is not None:
+                live = self._live_batch(batch.blueprint_id, key, batch.created_at)
+                if live is not None and live.body_digest == body_digest:
+                    return live.batch
+                if live is not None:
+                    key = None  # khác body: request mới, không đụng bản ghi của khoá
+            self._insert_batch(batch, body_digest, key)
+        return batch
 
     def save_idempotent(self, blueprint_id: str, key: str, record: IdempotencyRecord) -> None:
-        self._idempotency[(blueprint_id, key)] = record
+        batch = record.batch
+        if batch.blueprint_id != blueprint_id:
+            batch = batch.model_copy(update={"blueprint_id": blueprint_id})
+        with self._lock:
+            self._insert_batch(batch, record.body_digest, key)
+
+    # ------------------------------------------------------------------ #
+    # SubjectRepository
+    # ------------------------------------------------------------------ #
+
+    def _ensure_subject(self, subject: Subject | None) -> None:
+        """Tạo môn ngầm khi chưa có; gọi dưới `_lock`, cùng lần ghi với bản ghi chính."""
+        if subject is not None:
+            self._subjects.setdefault(subject.subject_code, subject.model_copy(update={"version": 1}))
+
+    def _drop_implicit_subject(self, subject: Subject | None) -> None:
+        """Gỡ môn tạo ngầm của một lần nhập bị huỷ, nếu nó còn nguyên và không còn tài liệu hay blueprint nào cùng môn."""
+        if subject is None or self._subjects.get(subject.subject_code) != subject.model_copy(update={"version": 1}):
+            return
+        code = subject.subject_code
+        in_use = any(document.meta.subject_code == code for document in self._imported.values()) or any(
+            blueprint.subject_code == code for blueprint in self._blueprints.values()
+        )
+        if not in_use:
+            del self._subjects[code]
+
+    def list_subjects(self) -> list[Subject]:
+        with self._lock:
+            return [self._subjects[code].model_copy() for code in sorted(self._subjects)]
+
+    def get_subject(self, subject_code: str) -> Subject | None:
+        with self._lock:
+            subject = self._subjects.get(subject_code)
+            return None if subject is None else subject.model_copy()
+
+    def create_subject(self, subject: Subject) -> Subject:
+        stored = subject.model_copy(update={"version": 1})
+        with self._lock:
+            if subject.subject_code in self._subjects:
+                raise SubjectExistsError(subject.subject_code)
+            self._subjects[subject.subject_code] = stored
+        return stored.model_copy()
+
+    def update_subject(
+        self,
+        subject_code: str,
+        expected_version: int,
+        *,
+        display_name: str | None,
+        exam_format: ExamFormat | None,
+        now: datetime,
+    ) -> Subject:
+        with self._lock:
+            current = self._subjects.get(subject_code)
+            if current is None:
+                raise RecordNotFoundError("môn học", subject_code)
+            if current.version != expected_version:
+                raise VersionConflictError("môn học", subject_code, expected_version, current.version)
+            changes: dict[str, object] = {"version": expected_version + 1, "updated_at": now}
+            if display_name is not None:
+                changes["display_name"] = display_name
+            if exam_format is not None:
+                changes["exam_format"] = exam_format
+            updated = Subject.model_validate({**current.model_dump(), **changes})
+            self._subjects[subject_code] = updated
+        return updated.model_copy()
 
     # ------------------------------------------------------------------ #
     # DocumentRepository (cùng ngữ nghĩa với bản SQLite)
@@ -219,6 +352,7 @@ class IngestionStore:
             current = self._document_versions.get(document_id)
             stored = self._put_imported(document, 1 if current is None else current + 1)
             self._pages.update(rows)
+            self._ensure_subject(Subject.implicit(document.meta.subject_code, document.meta.uploaded_at))
             return stored
 
     def get_imported_document(self, document_id: str) -> ImportedDocument | None:
@@ -261,16 +395,20 @@ class IngestionStore:
         return True
 
     def revert_imported_document(self, document_id: str, upload: UploadedDocument | None) -> bool:
-        """Như bản SQLite: không có `upload` ⇒ xoá hẳn; có ⇒ giữ dòng `documents` của upload đề, bỏ phần của bộ nhập."""
+        """Như bản SQLite: không có `upload` ⇒ xoá hẳn; có ⇒ giữ dòng `documents` của upload đề, bỏ phần của bộ nhập.
+        Môn tạo ngầm của lần nhập được gỡ theo `_drop_implicit_subject`."""
         with self._lock:
-            if document_id not in self._imported:
+            imported = self._imported.get(document_id)
+            if imported is None:
                 return False
             if upload is None:
-                return self.delete_document(document_id)
-            self._drop_import_data(document_id)
-            self._documents[document_id] = upload.model_copy(deep=True)
-            del self._imported[document_id]
-            self._document_versions[document_id] = self._document_versions.get(document_id, 0) + 1
+                self.delete_document(document_id)
+            else:
+                self._drop_import_data(document_id)
+                self._documents[document_id] = upload.model_copy(deep=True)
+                del self._imported[document_id]
+                self._document_versions[document_id] = self._document_versions.get(document_id, 0) + 1
+            self._drop_implicit_subject(Subject.implicit(imported.meta.subject_code, imported.meta.uploaded_at))
         return True
 
     def _drop_import_data(self, document_id: str) -> None:

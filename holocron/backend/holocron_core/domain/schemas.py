@@ -14,13 +14,15 @@ import re
 import unicodedata
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Literal
+from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Discriminator,
     Field,
+    Tag,
     computed_field,
     field_validator,
     model_validator,
@@ -30,6 +32,8 @@ TOPIC_KEY_PATTERN = r"^[a-z0-9_]+(\.[a-z0-9_]+){2,}$"
 CPU_SCHEDULING_TOPIC_PREFIX = "os.cpu_sched."
 MISCONCEPTION_CODE_PATTERN = r"^[A-Z][A-Z0-9_]{2,63}$"
 TAG_PATTERN = r"^#[a-z0-9_]+$"
+SUBJECT_CODE_PATTERN = r"^[A-Z]{2,6}[0-9]{2,4}$"
+CHAPTER_CODE_PATTERN = r"^ch[0-9]{1,2}(\.[0-9]{1,2})?$"
 
 SEED_SPACE = 2**63
 """Miền seed của twin và câu lý thuyết: `[0, 2**63)` (SPECIFICATION §6.3, §10)."""
@@ -92,6 +96,25 @@ class SourceKind(str, Enum):
 class QuestionFormat(str, Enum):
     MCQ4 = "MCQ4"
     NUMERICAL = "NUMERICAL"
+    ESSAY = "ESSAY"  # thêm 2026-10-25 (§5.14); chỉ slot lý thuyết mang được, chưa có câu ESSAY nào được sinh
+
+
+COMPUTATIONAL_FORMATS: frozenset[QuestionFormat] = frozenset({QuestionFormat.MCQ4, QuestionFormat.NUMERICAL})
+"""Hình thức của câu tính toán và của `TwinBatchRequest.format` (§6.3: gửi `ESSAY` ⇒ 422)."""
+THEORY_FORMATS: frozenset[QuestionFormat] = frozenset({QuestionFormat.MCQ4, QuestionFormat.ESSAY})
+"""Hình thức của slot lý thuyết (§5.9 validator `theory`, §5.14)."""
+
+
+class ExamFormat(str, Enum):
+    """Hình thức thi của môn (§5.14): mặc định cho `TheorySlotSpec.format` khi null và để UI hiển thị."""
+
+    MCQ = "mcq"
+    ESSAY = "essay"
+    MIXED = "mixed"
+
+    def default_theory_format(self) -> QuestionFormat:
+        """`mcq` → `MCQ4`, `essay` → `ESSAY`, `mixed` → `MCQ4` (§5.14, §6.7 bước 5)."""
+        return QuestionFormat.ESSAY if self is ExamFormat.ESSAY else QuestionFormat.MCQ4
 
 
 class OptionKey(str, Enum):
@@ -349,13 +372,58 @@ class BlueprintSlot(StrictModel):
         return self
 
 
+class TheorySlot(StrictModel):
+    """Slot lý thuyết của blueprint, dựng từ `TheorySlotSpec` (§5.9; quyết định 14(b) ngày 2026-10-28).
+
+    Model riêng thay cho `BlueprintSlot.question_kind = "theory"` của §5.9 (nợ ADR-004, chuyển sang phương án (a) sau
+    29/10): `BlueprintSlot` giữ nguyên để JSON `examples/` không đổi. Có đủ các field mà computed field của
+    `ExamBlueprint` đọc trên slot (`chapter_code`, `format`, `non_cloneable`, `mapping_confidence`). `is_computational`
+    luôn `False` và là khoá phân biệt với `BlueprintSlot` trong `ExamBlueprint.slots`.
+    """
+
+    slot_index: int = Field(ge=1)
+    is_computational: Literal[False] = False
+    question_kind: Literal["theory"] = "theory"
+    chapter_code: str = Field(pattern=CHAPTER_CODE_PATTERN)  # TheorySlotSpec.chapter_code (người dùng)
+    source_chunk_id: str | None = Field(default=None, min_length=1, max_length=128)  # ngoài §5.9
+    format: QuestionFormat  # TheorySlotSpec.format, hoặc mặc định theo Subject.exam_format
+    topic_key: str | None = None  # §5.9: null với slot lý thuyết
+    cognitive_level: CognitiveLevel = CognitiveLevel.REMEMBER  # TheorySlotSpec.cognitive_level
+    non_cloneable: Literal[False] = False
+    mapping_confidence: float = Field(default=1.0, ge=0.0, le=1.0)  # người dùng chọn chương
+    review_status: ReviewStatus = ReviewStatus.NEEDS_REVIEW
+
+    @model_validator(mode="after")
+    def _theory_rules(self) -> TheorySlot:
+        if self.format not in THEORY_FORMATS:
+            raise ValueError("slot lý thuyết chỉ nhận format MCQ4 hoặc ESSAY")
+        if self.cognitive_level not in (CognitiveLevel.REMEMBER, CognitiveLevel.UNDERSTAND):
+            raise ValueError("slot lý thuyết chỉ nhận cognitive_level remember hoặc understand")
+        return self
+
+
+def _slot_kind(value: Any) -> str:
+    """Khoá phân biệt của `ExamBlueprint.slots`: `is_computational is False` ⇒ `"theory"`, còn lại `"computational"`.
+
+    Nhận cả dict (khi validate JSON) lẫn object (khi dựng bằng code); thiếu `is_computational` thì coi là tính toán.
+    """
+    flag = value.get("is_computational") if isinstance(value, dict) else getattr(value, "is_computational", None)
+    return "theory" if flag is False else "computational"
+
+
+ExamBlueprintSlot = Annotated[
+    Annotated[BlueprintSlot, Tag("computational")] | Annotated[TheorySlot, Tag("theory")],
+    Discriminator(_slot_kind),
+]
+
+
 class ExamBlueprint(StrictModel):
     blueprint_id: str = Field(default_factory=lambda: _new_id("bp"))
-    source_exam_doc_id: str = Field(min_length=3, max_length=128)
-    subject_code: str = Field(pattern=r"^[A-Z]{2,6}[0-9]{2,4}$")
+    source_exam_doc_id: str | None = Field(default=None, min_length=3, max_length=128)
+    subject_code: str = Field(pattern=SUBJECT_CODE_PATTERN)
     total_questions: int = Field(ge=1, le=200)
     duration_minutes: int | None = Field(default=None, ge=5, le=300)
-    slots: list[BlueprintSlot]
+    slots: list[ExamBlueprintSlot]
     created_at: datetime = Field(default_factory=_utcnow)
 
     def _chapter_distribution(self) -> dict[str, int]:
@@ -392,6 +460,79 @@ class ExamBlueprint(StrictModel):
         if indices != list(range(1, self.total_questions + 1)):
             raise ValueError("slot_index phải liên tục 1..N, không trùng")
         return self
+
+    @model_validator(mode="after")
+    def _source_exam_doc_rule(self) -> ExamBlueprint:
+        """`source_exam_doc_id = null` chỉ khi blueprint không có slot tính toán (§5.9, duyệt 2026-10-26 chiều)."""
+        if self.source_exam_doc_id is None and any(isinstance(s, BlueprintSlot) for s in self.slots):
+            raise ValueError("blueprint có slot tính toán phải có source_exam_doc_id")
+        return self
+
+
+class TheorySlotSpec(StrictModel):
+    """Một slot lý thuyết người dùng yêu cầu ở `POST /v1/blueprints` (§5.9, duyệt 2026-10-26)."""
+
+    chapter_code: str = Field(pattern=CHAPTER_CODE_PATTERN)
+    cognitive_level: Literal["remember", "understand"] = "remember"
+    source_chunk_id: str | None = Field(default=None, min_length=1, max_length=128)
+    format: Literal["MCQ4", "ESSAY"] | None = None  # null ⇒ mặc định theo Subject.exam_format (§5.14)
+
+
+MAX_BLUEPRINT_ITEMS = 50
+MAX_THEORY_SLOTS = 50
+
+
+class BlueprintCreate(StrictModel):
+    """Body của `POST /v1/blueprints` (§5.9, §6.7): ≤ 50 item và ≤ 50 slot lý thuyết."""
+
+    subject_code: str = Field(pattern=SUBJECT_CODE_PATTERN)
+    item_ids: list[str] = Field(default_factory=list, max_length=MAX_BLUEPRINT_ITEMS)
+    theory_slots: list[TheorySlotSpec] = Field(default_factory=list, max_length=MAX_THEORY_SLOTS)
+    duration_minutes: int | None = Field(default=None, ge=5, le=300)
+
+    @model_validator(mode="after")
+    def _rules(self) -> BlueprintCreate:
+        if len(set(self.item_ids)) != len(self.item_ids):
+            raise ValueError("item_ids không được trùng")
+        if not self.item_ids and not self.theory_slots:
+            raise ValueError("item_ids và theory_slots không được cùng rỗng")
+        return self
+
+
+class BlueprintSummary(StrictModel):
+    """Một dòng của `GET /v1/blueprints` (§6.7, F18)."""
+
+    blueprint_id: str
+    subject_code: str
+    total_questions: int
+    created_at: datetime
+    batch_count: int = Field(ge=0)  # code: số batch twin đã lưu của blueprint
+
+
+SUBJECT_DISPLAY_NAME_MAX_CHARS = 200
+
+
+class Subject(StrictModel):
+    """Môn học (§5.14, duyệt 2026-10-25): nơi lưu `exam_format`; `version` cho optimistic locking (§6.8)."""
+
+    subject_code: str = Field(pattern=SUBJECT_CODE_PATTERN)
+    display_name: str = Field(min_length=1, max_length=SUBJECT_DISPLAY_NAME_MAX_CHARS)
+    exam_format: ExamFormat = ExamFormat.MIXED
+    version: int = Field(default=1, ge=1)
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def implicit(cls, subject_code: str, now: datetime) -> Subject:
+        """Môn tạo ngầm khi nhập tài liệu hay tạo blueprint gặp môn chưa có (§5.14): `display_name = subject_code`,
+        `exam_format = mixed`."""
+        return cls(
+            subject_code=subject_code,
+            display_name=subject_code,
+            exam_format=ExamFormat.MIXED,
+            created_at=now,
+            updated_at=now,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -575,6 +716,8 @@ class TwinQuestion(StrictModel):
                 raise ValueError("distractor_to_misconception_map phải phủ đúng 3 phương án sai")
             if self.numerical_answer is not None:
                 raise ValueError("MCQ4 không dùng numerical_answer")
+        elif self.format is QuestionFormat.ESSAY:
+            raise ValueError("câu tính toán không có hình thức ESSAY")
         else:
             if self.options is not None or self.correct_key is not None:
                 raise ValueError("NUMERICAL không có options/correct_key")

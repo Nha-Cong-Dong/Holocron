@@ -736,7 +736,7 @@ def generate_theory_question(
     seed: int,
     blueprint_id: str,
     slot_index: int,
-    topic_key: str,
+    topic_key: str | None,
     chapter_code: str | None = None,
 ) -> TheoryQuestion | ReviewTicket:
     """Sinh một câu lý thuyết MCQ4, hoặc `ReviewTicket` khi Vault không đủ căn cứ.
@@ -804,7 +804,7 @@ def generate_theory_question_from_vault(
     seed: int,
     blueprint_id: str,
     slot_index: int,
-    topic_key: str,
+    topic_key: str | None,
     chapter_code: str | None = None,
 ) -> TheoryQuestion | ReviewTicket:
     """Như `generate_theory_question`, với cặp đã xác nhận của môn `subject_code` đọc từ Vault.

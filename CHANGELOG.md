@@ -28,6 +28,7 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 - Template SJF không ưu tiên `os_sjf_avg_waiting` (topic `os.cpu_sched.sjf.avg_waiting_time`) với 3 misconception `WAIT_CONFUSED_WITH_TURNAROUND`, `SJF_IGNORES_ARRIVAL`, `SJF_COMPUTED_AS_SRTF`, đăng ký trong `template_library` và registry; kiểm bằng bộ giải tham chiếu độc lập, property test 200 seed (tỉ lệ nhận seed 16 %), tất định và sandbox không thoát bất thường. Chưa đăng ký ở Ingestion Gate (`TABLE_SCHEMAS`, `TOPIC_ALGORITHMS`).
 
 ### 🛠️ Cải tiến & Tối ưu
+- Spec/ADR-008/ADR-004: ghi ngoại lệ GEOS LGPL-2.1 cho bản zip đủ (Q4, PR #74)
 - Hook pre-commit `mypy-strict` cài thêm `uvicorn` (PR #70).
 - Spec: contract chế độ portable §6.0, §11.2 (PR #72); chốt tên Q8 và ghi Q1(a) (PR #73).
 - Frontend (PR #48): đoạn nguồn của trích dẫn ở màn luyện tập tìm theo môn của blueprint (ADR-006 mục 6); dữ liệu mẫu tài liệu theo một kịch bản cố định; câu lỗi riêng cho xác nhận trang, xác nhận tài liệu và sửa nhãn. Route `/vault?subject=&doc=&page=&tab=` thay cho `/subjects` và `/documents` của ui-plan (chờ duyệt). Hoãn: ảnh trang ở màn xem lại (chưa có cách lấy file gốc).

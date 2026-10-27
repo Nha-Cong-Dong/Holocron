@@ -1304,3 +1304,29 @@ def test_install_wheels_rejects_installed_set_differing_from_lock(
 
     with pytest.raises(BuildError, match=message):
         bp.install_wheels(python="py", lock_files=[lock], site_dir=tmp_path / "site", run=run)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    ["Lib/site-packages", "Lib/site-packages/sub", "LIB/Site-Packages"],
+)
+def test_evaluate_probe_rejects_site_packages_inside_python_dir(tmp_path: Path, entry: str) -> None:
+    python_dir = tmp_path / "python"
+    capture = _capture(python_dir, path=[str(python_dir / "python314.zip"), str(python_dir / entry)])
+    problems = sp.evaluate_probe(capture, python_dir)
+    assert any("ngoài thư viện chuẩn" in problem for problem in problems), problems
+
+
+def test_stdlib_path_keeps_python_lib_but_not_site_packages(tmp_path: Path) -> None:
+    python_dir = tmp_path / "python"
+    assert sp.is_stdlib_path(str(python_dir / "Lib"), python_dir)
+    assert sp.is_stdlib_path(str(python_dir / "python314.zip"), python_dir)
+    assert not sp.is_stdlib_path(str(python_dir / "Lib" / "site-packages"), python_dir)
+    assert not sp.is_stdlib_path(str(tmp_path / "app"), python_dir)
+
+
+def test_pytest_overlay_is_pinned_to_the_venv_version() -> None:
+    assert sp.PYTEST_PIN == "pytest==9.1.1"
+    import pytest as installed
+
+    assert sp.PYTEST_PIN == f"pytest=={installed.__version__}"

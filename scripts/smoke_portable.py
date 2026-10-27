@@ -27,7 +27,6 @@ from __future__ import annotations
 import argparse
 import http.client
 import importlib
-import importlib.metadata
 import io
 import json
 import os
@@ -84,6 +83,8 @@ sys.exit(pytest.main(["-q", "-p", "no:cacheprovider", "--rootdir", run_dir, "-c"
 PAGE_OBJECT = (
     "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>"
 )
+# pytest cài vào overlay tạm: ghim đúng bản trong `.venv` đã qua bộ test (không lấy bản mới nhất).
+PYTEST_PIN = "pytest==9.1.1"
 # Cờ của mọi lời gọi `python.exe` của zip (như `Holocron.cmd`).
 ZIP_PYTHON_FLAGS = ("-I", "-X", "utf8")
 APP_IMPORT_CODE = (
@@ -439,10 +440,15 @@ def evaluate_probe(capture: Mapping[str, object], python_dir: Path) -> list[str]
     if not isinstance(paths, list) or not paths:
         problems.append("không đọc được sys.path của tiến trình probe")
     else:
-        outside = [str(entry) for entry in paths if not is_inside(str(entry), python_dir)]
+        outside = [str(entry) for entry in paths if not is_stdlib_path(str(entry), python_dir)]
         if outside:
-            problems.append(f"sys.path có phần tử ngoài {python_dir}: {', '.join(outside)}")
+            problems.append(f"sys.path có phần tử ngoài thư viện chuẩn của {python_dir}: {', '.join(outside)}")
     return problems
+
+
+def is_stdlib_path(entry: str, python_dir: Path) -> bool:
+    """Trong `python/` của zip nhưng KHÔNG thuộc `python/Lib/site-packages` (nơi có `holocron.pth`)."""
+    return is_inside(entry, python_dir) and not is_inside(entry, python_dir / "Lib" / "site-packages")
 
 
 def run_sandbox_probe(root: Path, work: Path) -> tuple[dict[str, object] | None, str]:
@@ -670,10 +676,7 @@ def check_pytest(report: Report, root: Path, work: Path) -> None:
         shutil.copyfile(TESTS_DIR / name, run_dir / "tests" / name)
     ini = run_dir / "empty.ini"
     ini.write_text("[pytest]\n", encoding="utf-8")
-    try:
-        pytest_requirement = f"pytest=={importlib.metadata.version('pytest')}"
-    except importlib.metadata.PackageNotFoundError:
-        pytest_requirement = "pytest"
+    pytest_requirement = PYTEST_PIN
     pip = pip_command(sys.executable, "install", "--target", str(overlay), "--only-binary=:all:")
     code, output = run_text([*pip, pytest_requirement], env=pip_env(os.environ))
     if not report.check(f"cài {pytest_requirement} vào overlay tạm", code == 0, output.strip()[-300:] if code else ""):

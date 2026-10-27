@@ -1306,14 +1306,22 @@ def test_install_wheels_rejects_installed_set_differing_from_lock(
         bp.install_wheels(python="py", lock_files=[lock], site_dir=tmp_path / "site", run=run)
 
 
-@pytest.mark.parametrize(
-    "entry",
-    ["Lib/site-packages", "Lib/site-packages/sub", "LIB/Site-Packages"],
-)
-def test_evaluate_probe_rejects_site_packages_inside_python_dir(tmp_path: Path, entry: str) -> None:
+def _site_packages_problems(tmp_path: Path, entry: str) -> list[str]:
     python_dir = tmp_path / "python"
     capture = _capture(python_dir, path=[str(python_dir / "python314.zip"), str(python_dir / entry)])
-    problems = sp.evaluate_probe(capture, python_dir)
+    problems: list[str] = sp.evaluate_probe(capture, python_dir)
+    return problems
+
+
+@pytest.mark.parametrize("entry", ["Lib/site-packages", "Lib/site-packages/sub"])
+def test_evaluate_probe_rejects_site_packages_inside_python_dir(tmp_path: Path, entry: str) -> None:
+    problems = _site_packages_problems(tmp_path, entry)
+    assert any("ngoài thư viện chuẩn" in problem for problem in problems), problems
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="hệ tệp Windows không phân biệt hoa thường; POSIX thì có")
+def test_evaluate_probe_rejects_site_packages_in_other_case_on_windows(tmp_path: Path) -> None:
+    problems = _site_packages_problems(tmp_path, "LIB/Site-Packages")
     assert any("ngoài thư viện chuẩn" in problem for problem in problems), problems
 
 

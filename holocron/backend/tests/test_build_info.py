@@ -6,6 +6,8 @@ from __future__ import annotations
 import importlib.metadata
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta, timezone
@@ -286,10 +288,80 @@ def test_smoke_log_dir_matches_launcher(tmp_path: Path) -> None:
         )
 
 
-def test_detect_tesseract_uses_launcher_search(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+class FakeZipPython:
+    """Runner giả cho `detect_tesseract`: ghi lại lệnh/env, trả kết quả dựng sẵn hoặc ném lỗi."""
+
+    def __init__(self, code: int = 0, output: str = "", error: Exception | None = None) -> None:
+        self.code = code
+        self.output = output
+        self.error = error
+        self.calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def __call__(self, args: list[str], env: dict[str, str]) -> tuple[int, str]:
+        self.calls.append((args, env))
+        if self.error is not None:
+            raise self.error
+        return self.code, self.output
+
+
+def test_detect_tesseract_runs_zip_python_with_real_env(tmp_path: Path) -> None:
+    exe = "C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+    result = json.dumps({"tesseract": exe})
+    runner = FakeZipPython(output=f"rác trước\n{sp.TESSERACT_PREFIX}{result}\nwarning từ stderr\n")
+    real = {"LOCALAPPDATA": "C:\\Users\\u\\AppData\\Local", "PATH": "x"}
+    assert sp.detect_tesseract(tmp_path, real, runner) == exe
+    ((args, env),) = runner.calls
+    assert args[:4] == sp.zip_python(tmp_path), "dò bằng python -I của zip, không phải Python host"
+    assert args[4] == "-c" and "holocron_core.launcher import find_tesseract" in args[5]
+    assert env == real and env is not real
+
+
+@pytest.mark.parametrize(
+    "runner",
+    [
+        FakeZipPython(output=f'{"HOLOCRON_TESSERACT:"}{{"tesseract": null}}'),
+        FakeZipPython(code=1, output="Traceback (most recent call last):\nModuleNotFoundError: holocron_core"),
+        FakeZipPython(output="không có dòng kết quả"),
+        FakeZipPython(output="HOLOCRON_TESSERACT:không phải json"),
+        FakeZipPython(output='HOLOCRON_TESSERACT:{"tesseract": 5}'),
+        FakeZipPython(error=FileNotFoundError("python.exe")),
+        FakeZipPython(error=subprocess.TimeoutExpired(["python.exe"], 60)),
+    ],
+    ids=["khong-tim-thay", "ma-thoat-khac-0", "khong-co-dong", "json-hong", "sai-kieu", "khong-chay-duoc", "het-gio"],
+)
+def test_detect_tesseract_failure_is_skipped_without_traceback(
+    tmp_path: Path, runner: FakeZipPython, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert sp.detect_tesseract(tmp_path, {}, runner) is None
+    out = capsys.readouterr().out
+    assert out.startswith("BỎ QUA  dò Tesseract")
+    assert "Traceback" not in out
+
+
+def test_detect_tesseract_code_runs_launcher_search(tmp_path: Path) -> None:
+    """Đoạn mã chạy trong python của zip dùng đúng `find_tesseract` (chạy thật bằng Python của test, cwd ở backend)."""
+    import holocron_core
+
     exe = tmp_path / "tesseract.exe"
     exe.write_bytes(b"")
-    assert sp.detect_tesseract({"HOLOCRON_TESSERACT_CMD": str(exe)}) == str(exe)
+    backend = Path(holocron_core.__file__).parents[1]
+
+    def run(args: list[str], env: dict[str, str]) -> tuple[int, str]:
+        assert args[4] == "-c"
+        completed = subprocess.run(
+            [sys.executable, "-c", args[5]],
+            cwd=backend,
+            env=env,
+            capture_output=True,
+            encoding="utf-8",
+            check=False,
+            timeout=120,
+        )
+        return completed.returncode, completed.stdout + completed.stderr
+
+    env = {**os.environ, "HOLOCRON_TESSERACT_CMD": str(exe)}
+    env.pop("PYTHONPATH", None)
+    assert sp.detect_tesseract(tmp_path, env, run) == str(exe)
 
 
 def _zip_root(tmp_path: Path, info: object) -> Path:

@@ -44,7 +44,7 @@ import threading
 import time
 import uuid
 import zlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -62,6 +62,15 @@ BUILD_INFO_KEYS = frozenset({"version", "commit", "dirty", "built_at"})
 COMMIT_HEX = re.compile(r"[0-9a-f]{40}")
 LOG_FILENAME = "holocron.log"
 LOCAL_STATE_DIR = "localappdata"
+TESSERACT_PREFIX = "HOLOCRON_TESSERACT:"
+TESSERACT_DETECT_TIMEOUT_S = 60.0
+TESSERACT_DETECT_CODE = f"""
+import json, os, shutil, sys
+from pathlib import Path
+from holocron_core.launcher import find_tesseract
+found = find_tesseract(os.environ, platform=sys.platform, home=Path.home(), which=shutil.which, exists=Path.exists)
+print("{TESSERACT_PREFIX}" + json.dumps({{"tesseract": found}}))
+"""
 PDF_LINES = (
     "Holocron smoke test page one.",
     "The scheduler gives each ready process the processor for one time quantum.",
@@ -170,6 +179,9 @@ print(json.dumps({{
     "tokens": [token for line in lines for token in line.tokens],
 }}))
 """
+
+
+EnvRunner = Callable[[list[str], dict[str, str]], tuple[int, str]]
 
 
 class SmokeError(Exception):
@@ -300,11 +312,29 @@ def multipart(fields: dict[str, str], filename: str, content: bytes) -> tuple[by
 # ---------------------------------------------------------------- tiến trình (Windows)
 
 
-def detect_tesseract(environ: Mapping[str, str]) -> str | None:
-    """Tesseract dò bằng hàm của launcher trên env THẬT (trước khi đổi `LOCALAPPDATA` sang thư mục tạm)."""
-    from holocron_core.launcher import find_tesseract
+def run_with_env(args: list[str], env: dict[str, str]) -> tuple[int, str]:
+    return run_text(args, env=env, timeout=TESSERACT_DETECT_TIMEOUT_S)
 
-    return find_tesseract(environ, platform=sys.platform, home=Path.home(), which=shutil.which, exists=Path.exists)
+
+def detect_tesseract(root: Path, environ: Mapping[str, str], run: EnvRunner = run_with_env) -> str | None:
+    """Tesseract dò bằng `find_tesseract` của launcher TRONG zip (`python -I` của zip), trên env THẬT (trước khi đổi
+    `LOCALAPPDATA` sang thư mục tạm). Không import `holocron_core` của Python host (có thể không có hoặc khác bản).
+
+    Dò lỗi (không chạy được, mã thoát khác 0, output không có dòng kết quả) ⇒ None kèm một dòng BỎ QUA: smoke không
+    truyền `HOLOCRON_TESSERACT_CMD`, launcher tự dò như bình thường.
+    """
+    try:
+        code, output = run([*zip_python(root), "-c", TESSERACT_DETECT_CODE], dict(environ))
+        result = parse_prefixed(output, TESSERACT_PREFIX) if code == 0 else None
+    except (OSError, subprocess.SubprocessError, SmokeError) as exc:
+        print(f"BỎ QUA  dò Tesseract bằng python của zip: {exc}", flush=True)
+        return None
+    found = result.get("tesseract") if result is not None else None
+    if not isinstance(found, str) or not found:
+        reason = f"mã thoát {code}" if code != 0 else "không dò thấy hoặc không có dòng kết quả"
+        print(f"BỎ QUA  dò Tesseract bằng python của zip: {reason}", flush=True)
+        return None
+    return found
 
 
 def smoke_env(environ: Mapping[str, str], state_dir: Path, tesseract: str | None, *, platform: str) -> dict[str, str]:
@@ -810,7 +840,7 @@ def smoke(
 
     data_dir = work / ACCENTED_DATA
     state_dir = work / LOCAL_STATE_DIR
-    env = smoke_env(os.environ, state_dir, detect_tesseract(os.environ), platform=sys.platform)
+    env = smoke_env(os.environ, state_dir, detect_tesseract(root, os.environ), platform=sys.platform)
     process = start_server(root, data_dir, env)
     try:
         reader = OutputReader(process)

@@ -46,9 +46,11 @@ export function PairEditor({ target, onSaved, onCancel, onReloadList, onReloadAl
   const [saveError, setSaveError] = useState<UiError | null>(null);
   const termInput = useRef<HTMLInputElement>(null);
 
+  // Phụ thuộc `pair_id` (không phải object cặp): tải lại danh sách tạo object mới nhưng không được kéo focus về ô này.
+  const editingPairId = editing?.pair_id ?? null;
   useEffect(() => {
-    if (editing !== null) termInput.current?.focus();
-  }, [editing]);
+    if (editingPairId !== null) termInput.current?.focus();
+  }, [editingPairId]);
 
   const onSelect = useCallback((selected: string) => {
     setQuote(selected);

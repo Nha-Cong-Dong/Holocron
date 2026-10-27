@@ -358,6 +358,8 @@ class BlueprintSlot(StrictModel):
 
     @model_validator(mode="after")
     def _rules(self) -> BlueprintSlot:
+        if self.format not in COMPUTATIONAL_FORMATS:
+            raise ValueError("slot tính toán chỉ nhận format MCQ4 hoặc NUMERICAL")
         if self.non_cloneable and not self.non_cloneable_reason:
             raise ValueError("non_cloneable=True bắt buộc có non_cloneable_reason")
         if not self.non_cloneable and self.non_cloneable_reason:
@@ -403,12 +405,13 @@ class TheorySlot(StrictModel):
 
 
 def _slot_kind(value: Any) -> str:
-    """Khoá phân biệt của `ExamBlueprint.slots`: `is_computational is False` ⇒ `"theory"`, còn lại `"computational"`.
+    """Khoá phân biệt của `ExamBlueprint.slots`: `question_kind == "theory"` ⇒ `"theory"`, còn lại `"computational"`.
 
-    Nhận cả dict (khi validate JSON) lẫn object (khi dựng bằng code); thiếu `is_computational` thì coi là tính toán.
+    Nhận cả dict (khi validate JSON) lẫn object (khi dựng bằng code). Mọi slot không mang `question_kind = "theory"`
+    (kể cả JSON cũ có slot tính toán `is_computational = false`) đều đọc như `BlueprintSlot`.
     """
-    flag = value.get("is_computational") if isinstance(value, dict) else getattr(value, "is_computational", None)
-    return "theory" if flag is False else "computational"
+    kind = value.get("question_kind") if isinstance(value, dict) else getattr(value, "question_kind", None)
+    return "theory" if kind == "theory" else "computational"
 
 
 ExamBlueprintSlot = Annotated[

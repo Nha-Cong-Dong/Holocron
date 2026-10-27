@@ -63,7 +63,10 @@ def get_build_info() -> BuildInfo:
 
 
 def get_log_dir() -> str | None:
-    """Thư mục log do launcher đặt qua `HOLOCRON_LOG_DIR`; không chạy qua launcher thì `None`."""
+    """Thư mục log do launcher đặt qua `HOLOCRON_LOG_DIR`; không chạy qua launcher thì `None`.
+
+    Biến này do launcher quản lý (đặt khi mở được log, xoá khi không); đặt tay khi chạy uvicorn trực tiếp không được đảm bảo.
+    """
     # Bỏ ký tự điều khiển/định dạng như `clean_field` nhưng không cắt độ dài: đường dẫn log có thể dài hơn 64 ký tự.
     value = "".join(
         ch for ch in os.environ.get(LOG_DIR_ENV, "") if not unicodedata.category(ch).startswith("C")

@@ -1252,3 +1252,55 @@ def test_stop_server_never_masks_the_original_error(
     monkeypatch.setattr(sp, "powershell_lines", broken)
     sp.stop_server(_FakeProcess(False), tmp_path)
     assert "dọn tiến trình" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------- nhánh lỗi còn lại của build
+
+
+def test_resolve_lock_rejects_base_differing_from_full(tmp_path: Path) -> None:
+    """Gói resolve được ở base nhưng không có (hoặc khác) trong base+OCR ⇒ dừng."""
+    extra = "h11-0.16.0-py3-none-any.whl"
+    pip = FakePip({**FREEZE, "h11": "0.16.0"}, {"base": [*BASE_WHEELS, extra], "full": BASE_WHEELS + OCR_WHEELS})
+    with pytest.raises(BuildError, match="h11 resolve khác nhau giữa base và base\\+OCR"):
+        _resolve(tmp_path, pip)
+
+
+@pytest.mark.parametrize("missing", ["base", "ocr"])
+def test_read_locks_without_lock_file_stops(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, missing: str) -> None:
+    base, ocr = tmp_path / "base.txt", tmp_path / "ocr.txt"
+    (ocr if missing == "base" else base).write_text("", encoding="utf-8")
+    monkeypatch.setattr(bp, "LOCK_BASE", base)
+    monkeypatch.setattr(bp, "LOCK_OCR", ocr)
+    with pytest.raises(BuildError, match="thiếu file lock"):
+        bp.read_locks("full")
+
+
+@pytest.mark.parametrize("url", ["http://www.python.org/x.zip", "ftp://x/y", "file:///etc/passwd", "x.zip"])
+def test_download_refuses_non_https(tmp_path: Path, url: str) -> None:
+    with pytest.raises(BuildError, match="HTTPS"):
+        bp.download_url(url, tmp_path / "x.zip")
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize(
+    ("installed", "message"),
+    [
+        ([("fastapi", "0.162.0"), ("evil", "1.0")], "evil"),
+        ([("fastapi", "0.161.0")], "0.161.0"),
+        ([], "gói đã cài khác lock"),
+    ],
+)
+def test_install_wheels_rejects_installed_set_differing_from_lock(
+    tmp_path: Path, installed: list[tuple[str, str]], message: str
+) -> None:
+    lock = tmp_path / "lock.txt"
+    lock.write_text(f"fastapi==0.162.0 --hash=sha256:{HASH_A}\n", encoding="utf-8")
+
+    def run(args: Sequence[str], cwd: Path | None) -> str:
+        (tmp_path / "site").mkdir(exist_ok=True)
+        for name, version in installed:
+            _dist(tmp_path / "site", name, version, "License-Expression: MIT\n")
+        return ""
+
+    with pytest.raises(BuildError, match=message):
+        bp.install_wheels(python="py", lock_files=[lock], site_dir=tmp_path / "site", run=run)

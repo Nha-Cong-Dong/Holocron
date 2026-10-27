@@ -60,8 +60,15 @@ def test_log_dir_from_launcher_env(client: TestClient, monkeypatch: pytest.Monke
     assert client.get("/v1/runtime").json()["log_dir"] is None
 
 
-def test_default_build_info_is_cached_and_clean() -> None:
+def test_default_build_info_is_cached() -> None:
     assert deps.get_build_info() is deps.get_build_info()
+
+
+def test_get_log_dir_strips_control_chars_and_keeps_long_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    long_path = "/" + "d" * 100 + "/logs"
+    monkeypatch.setenv("HOLOCRON_LOG_DIR", f"\x1b[31m{long_path}\n\x00 ")
+    assert deps.get_log_dir() == long_path
+    assert len(long_path) > 64
 
 
 def test_existing_fields_unchanged_and_no_secrets(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

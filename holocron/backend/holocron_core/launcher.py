@@ -11,6 +11,8 @@ Là composition root ở gốc package (ngoài năm tầng của CLAUDE.md §2.2
 3. Bind + listen socket `127.0.0.1:<port>` (mặc định cổng ngẫu nhiên), ghi `instance.json` nguyên tử, rồi giao socket
    cho uvicorn chạy ở luồng chính (Ctrl+C/Ctrl+Break đi qua lifespan: dừng bộ nhập, đóng SQLite). Luồng phụ thăm
    `GET /v1/runtime` tới khi có phản hồi rồi mở trình duyệt.
+4. Chỉ phiên bản đang giữ khoá mới mở log file (`launcher_logging`): in `Holocron <version> (<commit7>)` và `Log: …`
+   sau bốn dòng đầu; handler file được gắn lại sau `uvicorn.Config` (bước đó xoá handler của logger `uvicorn*`).
 
 Các bước là hàm nhận phụ thuộc qua tham số (`environ`, `which`, `exists`, `fetch`, `sleep`, `clock`, `open_browser`)
 để test không cần binary thật, trình duyệt hay uvicorn.
@@ -21,6 +23,7 @@ from __future__ import annotations
 import argparse
 import http.client
 import io
+import logging
 import os
 import shutil
 import signal
@@ -39,6 +42,16 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .infrastructure.document_readers.config import ENV_TESSDATA_DIR, ENV_TESSERACT_CMD
 from .infrastructure.storage import DATA_DIR_ENV
+from .launcher_logging import (
+    LAUNCHER_LOGGER,
+    LOG_FILENAME,
+    default_build_info_path,
+    default_log_dir,
+    file_logging,
+    read_build_info,
+    reattach_file_handlers,
+    version_line,
+)
 
 if sys.platform == "win32":
     import msvcrt
@@ -626,6 +639,7 @@ def serve_app(sock: socket.socket) -> None:
 
     install_shutdown_signals()
     config = uvicorn.Config(app, log_level="warning", access_log=False)
+    reattach_file_handlers()
     uvicorn.Server(config).run(sockets=[sock])
 
 
@@ -661,6 +675,7 @@ class LauncherDeps:
     serve: Callable[[socket.socket], None] = serve_app
     assign_job: Callable[[], int | None] = assign_to_kill_on_close_job
     pid: int = field(default_factory=os.getpid)
+    build_info_path: Path = field(default_factory=default_build_info_path)
 
 
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -691,30 +706,47 @@ def _serve_with_lock(args: argparse.Namespace, deps: LauncherDeps, launch: Launc
             deps.emit(f"Thư mục dữ liệu: {launch.data_dir}")
             deps.emit(ocr_status_line(launch))
             deps.emit("Đóng cửa sổ này hoặc nhấn Ctrl+C để tắt Holocron.")
-            stop = threading.Event()
-            poller = threading.Thread(
-                target=announce_when_ready,
-                name="holocron-ready",
-                daemon=True,
-                kwargs={
-                    "port": port,
-                    "stop": stop,
-                    "no_browser": args.no_browser,
-                    "fetch": deps.fetch,
-                    "sleep": stop.wait,
-                    "clock": deps.clock,
-                    "open_browser": deps.open_browser,
-                    "emit": deps.emit,
-                },
-            )
-            poller.start()
-            try:
-                deps.serve(sock)
-            finally:
-                stop.set()
+            _run_logged(args, deps, sock, port)
         finally:
             remove_instance_info(launch.data_dir)
     return EXIT_OK
+
+
+def _run_logged(args: argparse.Namespace, deps: LauncherDeps, sock: socket.socket, port: int) -> None:
+    """Mở log file (sau khi đã giữ khoá) → in dòng version và vị trí log → luồng thăm → serve.
+
+    Thư mục log suy từ `deps.environ`/platform/home; bí mật cần che lấy từ env đã đặt cho backend. Không mở được file
+    log thì in cảnh báo thay cho dòng `Log:` và chạy tiếp. Ngoại lệ từ `deps.serve` ghi vào log rồi ném lại.
+    """
+    log_dir = default_log_dir(deps.environ, deps.platform, deps.home)
+    header = (version_line(read_build_info(deps.build_info_path)), f"Log: {log_dir / LOG_FILENAME}")
+    with file_logging(log_dir, deps.environ, header) as warning:
+        deps.emit(header[0])
+        deps.emit(warning or header[1])
+        stop = threading.Event()
+        poller = threading.Thread(
+            target=announce_when_ready,
+            name="holocron-ready",
+            daemon=True,
+            kwargs={
+                "port": port,
+                "stop": stop,
+                "no_browser": args.no_browser,
+                "fetch": deps.fetch,
+                "sleep": stop.wait,
+                "clock": deps.clock,
+                "open_browser": deps.open_browser,
+                "emit": deps.emit,
+            },
+        )
+        poller.start()
+        try:
+            deps.serve(sock)
+        except Exception:
+            logging.getLogger(LAUNCHER_LOGGER).exception("Holocron dừng vì lỗi không mong đợi")
+            raise
+        finally:
+            stop.set()
 
 
 def main(argv: Sequence[str] | None = None, deps: LauncherDeps | None = None) -> int:

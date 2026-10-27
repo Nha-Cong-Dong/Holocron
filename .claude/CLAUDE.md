@@ -213,6 +213,8 @@ Frontmatter `model`/`effort` của agent là mặc định. Orchestrator nâng h
 - `FAILED` → giao lại một lần kèm `ERROR_LOG` và hướng sửa (cân nhắc nâng opus/high). Vẫn `FAILED` → `BLOCKED`, ghi vào `handoff.md`, dừng task.
 - Báo "đã giao việc" thì cùng lượt phải có lời gọi Agent tool.
 - Song song tối đa 3 worker khi tập file không giao nhau; gặp lỗi 429 thì giảm xuống 1.
+- Khi một nhánh đang ở /finish-run (cổng, reviewer, mutation chạy nền), orchestrator giao ngay task kế tiếp trong hàng đợi cho worker mới ở worktree riêng dưới `D:/prj/holocron-wt/` nếu tập FILES không giao với diff của nhánh đang kiểm. Không chờ review xong mới giao.
+- Lệnh nặng (push có hook pre-push, build, cổng Cấp 2) luôn chạy nền (`run_in_background`); phiên chính không chạy chúng ở foreground.
 
 ### 10.3 I/O và output terminal
 - Định vị trước bằng `rg -n`/Grep/`ast-grep`. File > 300 dòng chỉ đọc theo offset/limit. `SPECIFICATION.md` luôn đọc theo mục (`rg -n "^#{1,3} " SPECIFICATION.md` trước).

@@ -1001,3 +1001,14 @@ def test_scan_cross_check_requires_rapidocr_pass(cross_check: object, expected: 
     ok, detail = sp.scan_cross_check_verdict(page)
     assert ok is expected
     assert "cross_check=" in detail
+
+
+def test_clean_windows_checklist_only_touches_the_probe_registry_subkey() -> None:
+    text = (bp.PACKAGING_DIR / "CHECKLIST-WINDOWS-SACH.md").read_text(encoding="utf-8")
+    commands = [line.strip() for line in text.splitlines() if line.strip().startswith(("reg add", "reg delete"))]
+    assert any(c.startswith("reg add") for c in commands) and any(c.startswith("reg delete") for c in commands)
+    probe_key = r'"HKCU\Software\Python\PythonCore\3.14\PythonPath\HolocronProbe"'
+    for command in commands:
+        assert command.split(" ", 2)[2].startswith(probe_key), command
+    assert "/ve /d" in next(c for c in commands if c.startswith("reg add"))
+    assert "HỎNG — báo orchestrator" in text

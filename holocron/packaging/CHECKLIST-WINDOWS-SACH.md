@@ -12,7 +12,27 @@ Chạy đủ checklist trên **từng** môi trường dưới đây (mỗi môi
 | A | Windows Sandbox (Windows 10/11 Pro), không Python, không VC++ Redistributable | Bật tính năng "Windows Sandbox", mở Sandbox, chép zip vào |
 | B | Máy/VM Windows 10 hoặc 11 64-bit không cài Python, không cài VC++ Redistributable | Kiểm `Apps & features` không có "Python" và "Microsoft Visual C++ 2015-2022 Redistributable" |
 | C | Máy có Python 3.14 cài chuẩn (bộ cài python.org, có khoá registry `PythonPath`) | Kiểm `reg query "HKCU\Software\Python\PythonCore\3.14\PythonPath"` hoặc `HKLM\...` có giá trị |
-| D | Như A hoặc B, thêm subkey HKCU giả | `reg add "HKCU\Software\Python\PythonCore\3.14\PythonPath" /ve /d "C:\gia-mao" /f` và tạo `C:\gia-mao\fastapi.py` chứa `raise SystemExit("gia mao")`; xoá subkey sau khi thử: `reg delete "HKCU\Software\Python\PythonCore\3.14" /f` |
+| D | Như A, B hoặc C, thêm một subkey HKCU giả dưới `PythonPath` | Xem các lệnh ngay dưới bảng |
+
+Dựng môi trường D (chỉ tạo và chỉ xoá đúng subkey `HolocronProbe`; KHÔNG xoá `...\PythonCore\3.14` hay
+`...\PythonPath`, vì đó có thể là khoá của bản Python đã cài trên máy):
+
+```
+mkdir C:\gia-mao
+echo raise SystemExit("gia mao")> C:\gia-mao\fastapi.py
+reg add "HKCU\Software\Python\PythonCore\3.14\PythonPath\HolocronProbe" /ve /d "C:\gia-mao" /f
+reg query "HKCU\Software\Python\PythonCore\3.14\PythonPath\HolocronProbe"
+```
+
+Dọn sau khi thử xong môi trường D (đúng subkey đã tạo):
+
+```
+reg delete "HKCU\Software\Python\PythonCore\3.14\PythonPath\HolocronProbe" /f
+rmdir /s /q C:\gia-mao
+```
+
+Kỳ vọng ở môi trường D: thư mục `C:\gia-mao` KHÔNG được xuất hiện trong `sys.path` của tiến trình sandbox (mục 5) và
+của launcher. Thấy `C:\gia-mao` trong `sys.path` hoặc thấy chữ "gia mao" ⇒ ghi **HỎNG — báo orchestrator**.
 
 Ghi lại: phiên bản Windows (`winver`), tên file zip và SHA-256 (so với file `.sha256` đi kèm:
 `certutil -hashfile Holocron-<version>-win64.zip SHA256`).
@@ -33,7 +53,8 @@ Ghi lại: phiên bản Windows (`winver`), tên file zip và SHA-256 (so với 
 3. Nếu hiện lỗi thiếu `msvcp140.dll`, `vcruntime140.dll` hoặc `VCRUNTIME140_1.dll` (hộp thoại hệ thống hoặc
    `ImportError: DLL load failed`): ghi **HỎNG — báo orchestrator** kèm ảnh chụp và nguyên văn lỗi. KHÔNG tự cài VC++
    Redistributable để chữa (chưa có quyết định đóng gói VC++ runtime); dừng ở đây với môi trường đó.
-4. Môi trường C và D: launcher phải chạy bình thường; nếu thấy "gia mao" hoặc lỗi import lạ, ghi HỎNG.
+4. Môi trường C và D: launcher phải chạy bình thường; nếu thấy "gia mao" hoặc lỗi import lạ, ghi **HỎNG — báo
+   orchestrator**.
 
 ## 3. Giao diện và API (trình duyệt)
 
@@ -47,7 +68,8 @@ Ghi lại: phiên bản Windows (`winver`), tên file zip và SHA-256 (so với 
 1. Tải lên một PDF có sẵn chữ (tự tạo, ví dụ in ra PDF từ Word/Notepad). Chờ đọc xong; trang 1 hiện đúng văn bản.
 2. Tải lên một PDF scan không có lớp chữ (chụp/quét một trang chữ in, hoặc "Microsoft Print to PDF" một ảnh).
    Chờ đọc xong; mở trang 1:
-   - có Tesseract: trang có văn bản OCR; ô đối chiếu (cross-check) KHÔNG phải "không khả dụng";
+   - có Tesseract: trang có văn bản OCR; ô đối chiếu (cross-check) là "khớp" hoặc "lệch" với lượt RapidOCR
+     (KHÔNG phải "không khả dụng" hay "không áp dụng");
    - không có Tesseract: ghi lại thông báo hiển thị (dự kiến hướng dẫn cài Tesseract).
 
 ## 5. Kiểm sandbox bằng tay (I1)
@@ -58,9 +80,10 @@ Mở `cmd` tại thư mục đã giải nén, chạy:
 python\python.exe -S -s -P -c "import sys; print(sys.path); import holocron_core"
 ```
 
-Đạt khi: mọi đường dẫn in ra đều nằm trong thư mục `python\` của zip VÀ dòng `import holocron_core` báo
-`ModuleNotFoundError`. Môi trường C và D: thêm `import fastapi` thay cho `import holocron_core` ở lệnh trên, cũng phải
-`ModuleNotFoundError` (không được in "gia mao").
+Đạt khi: mọi đường dẫn in ra đều nằm trong thư mục `python\` của zip, KHÔNG có `python\Lib\site-packages`, VÀ dòng
+`import holocron_core` báo `ModuleNotFoundError`. Môi trường C và D: thêm `import fastapi` thay cho `import holocron_core`
+ở lệnh trên, cũng phải `ModuleNotFoundError` (không được in "gia mao"). Môi trường D: `C:\gia-mao` có trong danh sách
+in ra ⇒ **HỎNG — báo orchestrator**.
 
 ## 6. Tắt
 

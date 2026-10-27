@@ -906,3 +906,46 @@ def test_windows_unc_and_drive_urls_do_not_touch_the_target(
         assert "\\\\host" not in lowered, path
         assert "share" not in lowered, path
         assert "win.ini" not in lowered, path
+
+
+# --- HTML không UTF-8: Content-Type không kèm charset; lỗi đọc HTML ⇒ 404 ---
+
+
+def test_non_utf8_html_has_no_charset(web_dir: Path) -> None:
+    (web_dir / "vault" / "index.html").write_bytes(b"<html><head>\xff\xfe</head></html>")
+    app = _sample_app()
+    attach_static_site(app, web_dir)
+    client = TestClient(app)
+    raw = client.get("/vault/")
+    assert raw.status_code == 200
+    assert raw.headers["content-type"] == "text/html"
+    assert client.head("/vault/").headers["content-type"] == "text/html"
+    injected = client.get("/")
+    assert injected.headers["content-type"] == "text/html; charset=utf-8"
+
+
+def test_html_read_error_is_404(site: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    def unreadable(path: str) -> tuple[bytes, str]:
+        raise PermissionError(13, "Permission denied", path)
+
+    monkeypatch.setattr(static_site, "_read_injected", unreadable)
+    for url in ("/", "/vault/", "/khong-co"):
+        response = site.get(url)
+        assert response.status_code == 404
+        assert response.json() == {"detail": "Not Found"}
+
+
+def test_html_vanishing_after_lookup_is_404(web_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """File bị xoá giữa lúc tra và lúc đọc: `open` thật ném `FileNotFoundError` ⇒ 404, không 500."""
+    app = _sample_app()
+    attach_static_site(app, web_dir)
+    real_read = static_site._read_injected
+
+    def delete_then_read(path: str) -> tuple[bytes, str]:
+        Path(path).unlink()
+        return real_read(path)
+
+    monkeypatch.setattr(static_site, "_read_injected", delete_then_read)
+    response = TestClient(app).get("/vault/")
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not Found"}

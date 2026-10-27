@@ -50,6 +50,8 @@ CACHE_NO_STORE = "no-store"
 CACHE_NO_CACHE = "no-cache"
 
 HTML_MEDIA_TYPE = "text/html; charset=utf-8"
+# HTML không phải UTF-8 hợp lệ: trả nguyên văn, không khẳng định bảng mã.
+RAW_HTML_MEDIA_TYPE = "text/html"
 
 # Thẻ mở `<head>` (không phân biệt hoa thường, cho phép thuộc tính); không khớp `<header>`.
 _HEAD_OPEN_TAG = re.compile(rb"<head(?:\s[^>]*)?>", re.IGNORECASE)
@@ -161,14 +163,18 @@ def _cache_control(relative_path: PurePath, status_code: int) -> str:
     return CACHE_NO_CACHE
 
 
-def _read_injected(path: str) -> bytes:
-    """Nội dung HTML đã chèn runtime; file không phải UTF-8 hợp lệ thì trả nguyên văn, không chèn."""
+def _read_injected(path: str) -> tuple[bytes, str]:
+    """Nội dung HTML đã chèn runtime kèm `Content-Type`.
+
+    File không phải UTF-8 hợp lệ thì trả nguyên văn, không chèn, `Content-Type` không kèm `charset`. Lỗi đọc file
+    (`OSError`) để nguyên cho nơi gọi xử lý.
+    """
     with open(path, "rb") as handle:
         raw = handle.read()
     try:
-        return inject_runtime(raw)
+        return inject_runtime(raw), HTML_MEDIA_TYPE
     except UnicodeDecodeError:
-        return raw
+        return raw, RAW_HTML_MEDIA_TYPE
 
 
 class _StaticSite(StaticFiles):
@@ -217,12 +223,16 @@ class _StaticSite(StaticFiles):
         file_path = os.fspath(response.path)
         if not _is_html(file_path):
             return response
-        body = await run_in_threadpool(_read_injected, file_path)
+        try:
+            body, media_type = await run_in_threadpool(_read_injected, file_path)
+        except OSError:
+            # File biến mất hoặc không đọc được giữa lúc tra và lúc đọc: coi như không có trang.
+            raise HTTPException(status_code=404) from None
+        # `Content-Type` đặt qua header, không qua `media_type`: Starlette tự thêm `charset` cho `text/*`.
         return Response(
             content=body,
             status_code=response.status_code,
-            media_type=HTML_MEDIA_TYPE,
-            headers={"Cache-Control": CACHE_NO_STORE},
+            headers={"Content-Type": media_type, "Cache-Control": CACHE_NO_STORE},
         )
 
 
@@ -239,8 +249,7 @@ def _validated_web_dir(web_dir: Path) -> Path:
     try:
         is_regular = stat.S_ISREG(index.stat().st_mode)
         if is_regular:
-            with index.open("rb"):
-                pass
+            index.open("rb").close()
     except (OSError, ValueError):
         raise ConfigError(f"{ENV_WEB_DIR} không hợp lệ: không đọc được file {INDEX_FILE}") from None
     if not is_regular:

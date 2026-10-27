@@ -826,3 +826,83 @@ def test_config_errors_suppress_context(tmp_path: Path, monkeypatch: pytest.Monk
             attach_static_site(_sample_app(), web)
     assert unresolvable.value.__suppress_context__ is True
     assert unresolvable.value.__context__ is not None
+
+
+# --- Đường dẫn tuyệt đối, UNC, ổ đĩa: tự chặn, không dựa vào Starlette ---
+
+
+@pytest.mark.parametrize(
+    ("path", "unsafe"),
+    [
+        ("\\\\host\\share\\x", True),
+        ("\\\\?\\C:\\Windows\\win.ini", True),
+        ("\\x", True),
+        ("/etc/passwd", True),
+        ("//host/share/x", True),
+        ("C:\\Windows\\win.ini", True),
+        ("c:x", True),
+        ("C:", True),
+        ("vault\\index.html", False),
+        ("vault/index.html", False),
+        ("index.html", False),
+        (".", False),
+        ("vault\\CON", True),
+    ],
+)
+def test_is_unsafe_path_table(path: str, unsafe: bool) -> None:
+    assert static_site._is_unsafe_path(path) is unsafe
+
+
+@pytest.mark.parametrize("path", ["\\\\host\\share\\x", "//host/share/x", "/etc/passwd", "C:\\Windows\\win.ini", "C:x"])
+def test_absolute_unc_and_drive_paths_never_reach_starlette(
+    web_dir: Path, monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    calls: list[str] = []
+
+    def record(self: StaticFiles, lookup: str) -> tuple[str, os.stat_result | None]:
+        calls.append(lookup)
+        return "", None
+
+    site_files = static_site._StaticSite(web_dir)
+    monkeypatch.setattr(StaticFiles, "lookup_path", record)
+    assert site_files.lookup_path(path) == ("", None)
+    assert calls == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="UNC và ổ đĩa là đường dẫn Windows")
+@pytest.mark.parametrize(
+    "url",
+    [
+        "/%5c%5chost%5cshare%5cx",
+        "/%5c%5chost%5cshare%5cindex.html",
+        "/vault/%2e%2e/%5c%5chost%5cshare%5cx",
+        "/C:%5cWindows%5cwin.ini",
+        "/vault/C:%5cWindows%5cwin.ini",
+    ],
+)
+def test_windows_unc_and_drive_urls_do_not_touch_the_target(
+    site: TestClient, monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    touched: list[str] = []
+    real_stat = os.stat
+    real_realpath = os.path.realpath
+
+    def spy_stat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        touched.append(os.fspath(path))
+        return real_stat(path, *args, **kwargs)
+
+    def spy_realpath(path: Any, *args: Any, **kwargs: Any) -> Any:
+        touched.append(os.fspath(path))
+        return real_realpath(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", spy_stat)
+    monkeypatch.setattr(os.path, "realpath", spy_realpath)
+    response = site.get(url)
+    assert response.status_code == 404
+    assert "Không tìm thấy trang" in response.text
+    assert touched, "404.html phải được tra qua os.stat/realpath"
+    for path in touched:
+        lowered = path.lower()
+        assert "\\\\host" not in lowered, path
+        assert "share" not in lowered, path
+        assert "win.ini" not in lowered, path

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import re
 import stat
@@ -134,6 +135,18 @@ def _is_unsafe_segment(segment: str) -> bool:
     return stem in _WINDOWS_DEVICE_NAMES
 
 
+def _is_unsafe_path(path: str) -> bool:
+    """Đường dẫn (đã giải mã, tương đối thư mục web) không được tra trên đĩa.
+
+    Tự chặn, không dựa vào phiên bản Starlette: đường dẫn bắt đầu bằng dấu `/` hoặc dấu gạch ngược (tuyệt đối,
+    hoặc UNC dạng `//máy/share` viết bằng gạch ngược, khiến Windows mở kết nối SMB và có thể gửi thông tin xác thực
+    NTLM), có ký tự ổ đĩa (`C:`) theo quy tắc Windows trên mọi nền tảng, hoặc có một đoạn lạ (`_is_unsafe_segment`).
+    """
+    if path.startswith(("/", "\\")) or ntpath.splitdrive(path)[0]:
+        return True
+    return any(_is_unsafe_segment(segment) for segment in _PATH_SEPARATORS.split(path))
+
+
 def _cache_control(relative_path: PurePath, status_code: int) -> str:
     """`_next/static/*` (tên có hash) cache lâu khi 200; payload RSC `*.txt` không lưu; file khác phải hỏi lại.
 
@@ -173,7 +186,7 @@ class _StaticSite(StaticFiles):
         tên chứa ký tự Windows không nhận. Ở đây mọi `OSError` khi tra file đều coi như không có file (404 hoặc
         `404.html`).
         """
-        if any(_is_unsafe_segment(segment) for segment in _PATH_SEPARATORS.split(path)):
+        if _is_unsafe_path(path):
             return "", None
         try:
             return super().lookup_path(path)

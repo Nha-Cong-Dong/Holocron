@@ -20,6 +20,7 @@ import {
   PAIR_TERM_MIN_CHARS,
   SUBJECT_CODE_PATTERN,
 } from "@/lib/limits";
+import { splitsSurrogate } from "@/lib/text";
 import { type ChunkListView, type ChunkView, hasNextPage, nextPageOffset } from "@/lib/vault";
 import type { Citation, ConceptPair, ConceptPairStatus } from "@/types/holocron";
 
@@ -107,24 +108,6 @@ export interface TextRange {
   end: number;
 }
 
-function isHighSurrogate(code: number): boolean {
-  return code >= 0xd800 && code <= 0xdbff;
-}
-
-function isLowSurrogate(code: number): boolean {
-  return code >= 0xdc00 && code <= 0xdfff;
-}
-
-/** Vị trí `offset` rơi giữa một cặp surrogate. */
-function splitsSurrogate(text: string, offset: number): boolean {
-  return (
-    offset > 0 &&
-    offset < text.length &&
-    isHighSurrogate(text.charCodeAt(offset - 1)) &&
-    isLowSurrogate(text.charCodeAt(offset))
-  );
-}
-
 /**
  * Vùng bôi trong văn bản chunk, chuẩn hoá bôi ngược (`focus` trước `anchor`). `null` khi vùng bôi không nằm trọn trong
  * cùng một text node (`sameNode = false`), node đó không phải văn bản chunk (`nodeData !== rawText`), hoặc vị trí ngoài
@@ -197,43 +180,6 @@ export function termSegments(quote: string, termSpans: readonly unknown[]): [num
     lastEnd = end;
   }
   return result;
-}
-
-export interface HighlightSegment {
-  /** Vị trí UTF-16 của đoạn trong văn bản gốc (dùng làm khoá React ổn định). */
-  start: number;
-  text: string;
-  marked: boolean;
-}
-
-/**
- * Tách `text` thành đoạn thường và đoạn tô theo `ranges` (UTF-16). Ghép các đoạn lại luôn ra đúng `text`. Khoảng
- * sai dạng, rỗng, ngoài biên, chồng nhau hoặc cắt đôi cặp surrogate bị bỏ.
- */
-export function highlightSegments(text: string, ranges: readonly (readonly [number, number])[]): HighlightSegment[] {
-  const sorted = [...ranges]
-    .filter(
-      ([start, end]) =>
-        Number.isInteger(start) &&
-        Number.isInteger(end) &&
-        start >= 0 &&
-        start < end &&
-        end <= text.length &&
-        !splitsSurrogate(text, start) &&
-        !splitsSurrogate(text, end),
-    )
-    .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  const segments: HighlightSegment[] = [];
-  let cursor = 0;
-  for (const [start, end] of sorted) {
-    if (start < cursor) continue;
-    if (start > cursor) segments.push({ start: cursor, text: text.slice(cursor, start), marked: false });
-    segments.push({ start, text: text.slice(start, end), marked: true });
-    cursor = end;
-  }
-  if (cursor < text.length || segments.length === 0)
-    segments.push({ start: cursor, text: text.slice(cursor), marked: false });
-  return segments;
 }
 
 // ------------------------------------------------------------------------------------ kiểm dạng

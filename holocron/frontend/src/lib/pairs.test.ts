@@ -8,7 +8,6 @@ import {
   chaptersOf,
   chunksToPick,
   collapseWhitespace,
-  highlightSegments,
   INITIAL_SUBJECT_ENTRY,
   loadChunkMap,
   lookupChunk,
@@ -189,7 +188,7 @@ describe("selectionRange và selectionToQuote", () => {
   });
 });
 
-describe("termSegments và highlightSegments", () => {
+describe("termSegments", () => {
   it("đổi vị trí code point sang UTF-16 khi có ký tự ngoài BMP trước term", () => {
     const quote = "𝑥 là biến";
     // Python: "𝑥" là 1 code point nên "biến" ở [5, 9); trong UTF-16 "𝑥" chiếm 2 đơn vị.
@@ -211,21 +210,6 @@ describe("termSegments và highlightSegments", () => {
       [4, 7],
       [8, 11],
     ]);
-  });
-
-  it("highlightSegments: ghép lại đúng văn bản, bỏ khoảng sai", () => {
-    const text = "a𝑥 biến c";
-    const segments = highlightSegments(text, [
-      [4, 8],
-      [2, 3],
-      [5, 6],
-      [0, 99],
-    ]);
-    expect(segments.map((segment) => segment.text).join("")).toBe(text);
-    expect(segments.filter((segment) => segment.marked).map((segment) => segment.text)).toEqual(["biến"]);
-    expect(segments.map((segment) => segment.start)).toEqual([0, 4, 8]);
-    expect(highlightSegments("", [])).toEqual([{ start: 0, text: "", marked: false }]);
-    expect(highlightSegments("ab", [[0, 2]])).toEqual([{ start: 0, text: "ab", marked: true }]);
   });
 });
 

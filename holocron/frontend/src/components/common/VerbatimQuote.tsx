@@ -1,4 +1,4 @@
-import { highlightSegments } from "@/lib/pairs";
+import { highlightSegments } from "@/lib/text";
 import type { Citation } from "@/types/holocron";
 
 import styles from "./VerbatimQuote.module.css";

@@ -373,7 +373,9 @@ def test_remove_instance_info_ignores_os_error(data_dir: Path) -> None:
     launcher.remove_instance_info(data_dir)
 
 
-def test_wait_for_instance_port_sees_late_write(data_dir: Path) -> None:
+def test_wait_for_instance_sees_late_port_while_lock_is_held(data_dir: Path) -> None:
+    held = launcher.try_acquire_instance_lock(data_dir)
+    assert held is not None
     clock = FakeClock()
 
     def sleep(seconds: float) -> None:
@@ -381,23 +383,46 @@ def test_wait_for_instance_port_sees_late_write(data_dir: Path) -> None:
         if len(clock.sleeps) == 3:
             launcher.write_instance_info(data_dir, InstanceInfo(port=40000, pid=7))
 
-    assert launcher.wait_for_instance_port(data_dir, sleep=sleep, clock=clock.clock) == 40000
-    assert clock.sleeps == [0.2, 0.2, 0.2]
+    try:
+        assert launcher.wait_for_instance(data_dir, sleep=sleep, clock=clock.clock) == 40000
+        assert clock.sleeps == [0.2, 0.2, 0.2]
+    finally:
+        held.release()
 
 
-def test_wait_for_instance_port_gives_up_after_timeout(data_dir: Path) -> None:
+def test_wait_for_instance_gives_up_after_timeout(data_dir: Path) -> None:
+    held = launcher.try_acquire_instance_lock(data_dir)
+    assert held is not None
     clock = FakeClock()
-    assert launcher.wait_for_instance_port(data_dir, sleep=clock.sleep, clock=clock.clock) is None
-    assert 10.0 <= clock.now <= 10.0 + 0.2 + 1e-6
+    try:
+        assert launcher.wait_for_instance(data_dir, sleep=clock.sleep, clock=clock.clock) is None
+        assert 10.0 <= clock.now <= 10.0 + 0.2 + 1e-6
+    finally:
+        held.release()
+
+
+def test_wait_for_instance_takes_lock_when_old_instance_exits(data_dir: Path) -> None:
+    """Phiên cũ thoát trong lúc chờ (để lại cổng chết): lấy được khoá, không trả cổng cũ."""
+    held = launcher.try_acquire_instance_lock(data_dir)
+    assert held is not None
+    clock = FakeClock()
+
+    def sleep(seconds: float) -> None:
+        clock.sleep(seconds)
+        if len(clock.sleeps) == 2:
+            held.release()
+            launcher.write_instance_info(data_dir, InstanceInfo(port=1, pid=42))
+
+    outcome = launcher.wait_for_instance(data_dir, sleep=sleep, clock=clock.clock)
+    assert isinstance(outcome, launcher.InstanceLock)
+    outcome.release()
 
 
 def test_running_instance_opens_old_port(data_dir: Path) -> None:
-    launcher.write_instance_info(data_dir, InstanceInfo(port=45678, pid=9))
     opened: list[str] = []
     lines: list[str] = []
-    clock = FakeClock()
     code = launcher.handle_running_instance(
-        data_dir, no_browser=False, open_browser=opened.append, emit=lines.append, sleep=clock.sleep, clock=clock.clock
+        data_dir, 45678, no_browser=False, open_browser=opened.append, emit=lines.append
     )
     assert code == EXIT_OK
     assert opened == ["http://127.0.0.1:45678/"]
@@ -405,12 +430,10 @@ def test_running_instance_opens_old_port(data_dir: Path) -> None:
 
 
 def test_running_instance_no_browser(data_dir: Path) -> None:
-    launcher.write_instance_info(data_dir, InstanceInfo(port=45678, pid=9))
     opened: list[str] = []
     lines: list[str] = []
-    clock = FakeClock()
     code = launcher.handle_running_instance(
-        data_dir, no_browser=True, open_browser=opened.append, emit=lines.append, sleep=clock.sleep, clock=clock.clock
+        data_dir, 45678, no_browser=True, open_browser=opened.append, emit=lines.append
     )
     assert (code, opened, len(lines)) == (EXIT_OK, [], 1)
 
@@ -418,9 +441,8 @@ def test_running_instance_no_browser(data_dir: Path) -> None:
 def test_running_instance_without_port_exits_busy(data_dir: Path) -> None:
     opened: list[str] = []
     lines: list[str] = []
-    clock = FakeClock()
     code = launcher.handle_running_instance(
-        data_dir, no_browser=False, open_browser=opened.append, emit=lines.append, sleep=clock.sleep, clock=clock.clock
+        data_dir, None, no_browser=False, open_browser=opened.append, emit=lines.append
     )
     assert code == EXIT_BUSY
     assert opened == []
@@ -1125,3 +1147,26 @@ def test_stale_instance_file_is_removed_even_when_bind_fails(tmp_path: Path) -> 
         deps = _deps(tmp_path, Recorder(), _never_serve)
         assert launcher.main(["--data-dir", str(data_dir), "--port", str(port)], deps) == EXIT_ERROR
     assert not (data_dir / INSTANCE_FILENAME).exists(), "không để lại cổng chết cho lần mở sau"
+
+
+def test_second_launch_runs_normally_when_first_exits_while_waiting(tmp_path: Path) -> None:
+    """Lần mở thứ hai thấy khoá bị giữ; phiên đầu thoát trong lúc chờ ⇒ chạy như lần đầu, không báo treo."""
+    data_dir = tmp_path / ACCENTED
+    data_dir.mkdir()
+    held = launcher.try_acquire_instance_lock(data_dir)
+    assert held is not None
+    recorder = Recorder()
+    served: list[int] = []
+    deps = _deps(tmp_path, recorder, lambda sock: served.append(int(sock.getsockname()[1])))
+    clock = FakeClock()
+
+    def sleep(seconds: float) -> None:
+        clock.sleep(seconds)
+        held.release()
+
+    deps.sleep = sleep
+    deps.clock = clock.clock
+    assert launcher.main(["--no-browser", "--data-dir", str(data_dir)], deps) == EXIT_OK
+    assert len(served) == 1
+    assert not any("bị treo" in line for line in recorder.lines)
+    assert recorder.lines[0] == f"Holocron: http://127.0.0.1:{served[0]}/"

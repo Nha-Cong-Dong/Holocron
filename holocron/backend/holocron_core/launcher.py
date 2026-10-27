@@ -400,21 +400,30 @@ def remove_instance_info(data_dir: Path) -> None:
         return
 
 
-def wait_for_instance_port(
+def wait_for_instance(
     data_dir: Path,
     *,
     sleep: Callable[[float], object],
     clock: Callable[[], float],
     timeout: float = INSTANCE_WAIT_S,
     interval: float = READY_INTERVAL_S,
-) -> int | None:
-    """Thăm `instance.json` tới khi có cổng hoặc hết `timeout` giây."""
+) -> int | InstanceLock | None:
+    """Khoá đang bị giữ: thăm tới khi có cổng (`int`), lấy lại được khoá (`InstanceLock`) hoặc hết `timeout` (None).
+
+    Lấy lại được khoá nghĩa là phiên bản kia đã thoát trong lúc chờ: người gọi chạy như lần mở đầu tiên thay vì báo
+    treo. Sau mỗi lần ngủ, thử khoá TRƯỚC khi đọc cổng, để không đọc nhầm cổng chết mà phiên vừa thoát để lại.
+    """
     deadline = clock() + timeout
     while True:
         port = read_instance_port(data_dir)
-        if port is not None or clock() >= deadline:
+        if port is not None:
             return port
+        if clock() >= deadline:
+            return None
         sleep(interval)
+        lock = try_acquire_instance_lock(data_dir)
+        if lock is not None:
+            return lock
 
 
 def app_url(port: int) -> str:
@@ -423,15 +432,13 @@ def app_url(port: int) -> str:
 
 def handle_running_instance(
     data_dir: Path,
+    port: int | None,
     *,
     no_browser: bool,
     open_browser: Callable[[str], object],
     emit: Emit,
-    sleep: Callable[[float], object],
-    clock: Callable[[], float],
 ) -> int:
-    """Lần mở thứ hai: có cổng ⇒ mở trình duyệt tới phiên bản cũ, mã 0; không đọc được cổng sau 10 s ⇒ mã 1."""
-    port = wait_for_instance_port(data_dir, sleep=sleep, clock=clock)
+    """Lần mở thứ hai: có cổng ⇒ mở trình duyệt tới phiên bản cũ, mã 0; không có cổng sau khi chờ ⇒ mã 1."""
     if port is None:
         emit(
             f"Holocron đang khởi động hoặc bị treo (thư mục dữ liệu {data_dir} đang bị khoá nhưng chưa có cổng). "
@@ -692,7 +699,7 @@ def _serve_with_lock(args: argparse.Namespace, deps: LauncherDeps, launch: Launc
 
 
 def main(argv: Sequence[str] | None = None, deps: LauncherDeps | None = None) -> int:
-    """Điều phối mỏng: dựng env → tạo thư mục dữ liệu → khoá → (phiên bản thứ hai thoát) → serve."""
+    """Điều phối mỏng: dựng env → tạo thư mục dữ liệu → khoá (bị giữ thì chờ cổng hoặc khoá) → serve."""
     deps = deps or LauncherDeps()
     args = parse_args(argv)
     try:
@@ -708,14 +715,12 @@ def main(argv: Sequence[str] | None = None, deps: LauncherDeps | None = None) ->
         ensure_data_dir(launch.data_dir)
         lock = try_acquire_instance_lock(launch.data_dir)
         if lock is None:
-            return handle_running_instance(
-                launch.data_dir,
-                no_browser=args.no_browser,
-                open_browser=deps.open_browser,
-                emit=deps.emit,
-                sleep=deps.sleep,
-                clock=deps.clock,
-            )
+            outcome = wait_for_instance(launch.data_dir, sleep=deps.sleep, clock=deps.clock)
+            if not isinstance(outcome, InstanceLock):
+                return handle_running_instance(
+                    launch.data_dir, outcome, no_browser=args.no_browser, open_browser=deps.open_browser, emit=deps.emit
+                )
+            lock = outcome
         try:
             return _serve_with_lock(args, deps, launch)
         finally:

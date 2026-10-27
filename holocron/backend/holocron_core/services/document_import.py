@@ -772,31 +772,36 @@ def _write_final_status(store: DocumentRepository, document_id: str, status: Lit
 _SETTLE_DATA_ERRORS: tuple[type[Exception], ...] = (ValueError, TypeError, LookupError, ArithmeticError, RuntimeError)
 
 
-def _settle_after_read(store: DocumentRepository, vault: VaultRepository, document_id: str) -> None:
-    """Đọc xong: tài liệu đủ điều kiện (mọi trang có văn bản đã xác nhận từ trước) thì nhập Vault và thành
-    `confirmed` (`settle_document`). Lỗi ở bước này không làm hỏng lần đọc: tài liệu giữ `review` (các trang đã
-    đọc và đã xác nhận giữ nguyên), lần gọi xác nhận kế tiếp settle lại.
+def _settle_after_read(
+    store: DocumentRepository, vault: VaultRepository, document_id: str, status: Literal["review", "failed"]
+) -> None:
+    """Lần đọc kết thúc (`status` vừa ghi là `review` hoặc `failed`): tài liệu đủ điều kiện (mọi trang có văn bản đã
+    xác nhận từ trước) thì nhập Vault và thành `confirmed` (`settle_document`, §5.7 "Chốt trạng thái tài liệu").
+    Lỗi ở bước này không làm hỏng lần đọc: tài liệu giữ `status` vừa ghi (các trang đã đọc và đã xác nhận giữ
+    nguyên), lần gọi xác nhận kế tiếp settle lại.
 
-    Mọi trang đã được đọc và ghi xong trước bước này, nên lỗi dữ liệu của settle không được thoát ra `run_job` (nơi
-    lỗi lạ làm tài liệu `failed`, trái §5.7). Lỗi đã biết (kho, thiếu `chapter_code`, tài liệu vừa bị xoá) ghi cảnh
-    báo. Lỗi bất ngờ thuộc `_SETTLE_DATA_ERRORS` (ví dụ `ValidationError` khi văn bản đã xác nhận không dựng được
-    `ConfirmedDocumentText`) ghi lỗi chỉ kèm tên lớp ngoại lệ, không kèm thông điệp hay traceback vì chúng có thể
-    chứa văn bản của tài liệu.
+    Mọi trang đã được ghi xong trước bước này, nên lỗi dữ liệu của settle không được thoát ra `run_job` (nơi lỗi lạ
+    làm tài liệu `failed`, trái §5.7) hay ra bước khởi động (`requeue_pending`). Lỗi đã biết (kho, thiếu
+    `chapter_code`, tài liệu vừa bị xoá) ghi cảnh báo. Lỗi bất ngờ thuộc `_SETTLE_DATA_ERRORS` (ví dụ
+    `ValidationError` khi văn bản đã xác nhận không dựng được `ConfirmedDocumentText`) ghi lỗi chỉ kèm tên lớp ngoại
+    lệ, không kèm thông điệp hay traceback vì chúng có thể chứa văn bản của tài liệu.
     """
     try:
         settle_document(store, vault, document_id)
     except (StorageError, DocumentChapterMissingError, DocumentNotFoundError) as exc:
         _LOGGER.warning(
-            "đã đọc xong tài liệu %s nhưng chưa hoàn tất xác nhận (%s); tài liệu giữ review, gọi lại xác nhận để "
-            "hoàn tất",
+            "lần đọc tài liệu %s đã kết thúc nhưng chưa hoàn tất xác nhận (%s); tài liệu giữ %s, gọi lại xác nhận "
+            "để hoàn tất",
             document_id,
             type(exc).__name__,
+            status,
         )
     except _SETTLE_DATA_ERRORS as exc:
         _LOGGER.error(
-            "đã đọc xong tài liệu %s nhưng bước nhập Vault lỗi bất ngờ (%s); tài liệu giữ review",
+            "lần đọc tài liệu %s đã kết thúc nhưng bước nhập Vault lỗi bất ngờ (%s); tài liệu giữ %s",
             document_id,
             type(exc).__name__,
+            status,
         )
 
 
@@ -806,23 +811,31 @@ def _finish(
     status: Literal["review", "failed"],
     vault: VaultRepository | None = None,
 ) -> None:
-    """Đặt trạng thái cuối của lần đọc (`_write_final_status`); đọc xong (`review`) và có `vault` thì settle luôn
-    tài liệu nếu đủ điều kiện (`_settle_after_read`), để tài liệu không kẹt `review` khi người dùng đã xác nhận mọi
-    trang có văn bản trong lúc các trang còn lại đang đọc (rồi thành `failed` hoặc trắng)."""
-    if _write_final_status(store, document_id, status) and status == "review" and vault is not None:
-        _settle_after_read(store, vault, document_id)
+    """Đặt trạng thái cuối của lần đọc (`_write_final_status`); có `vault` thì settle luôn tài liệu nếu đủ điều kiện
+    (`_settle_after_read`), ở cả đường đọc xong (`review`) lẫn đường `failed` (§5.7 "Chốt trạng thái tài liệu"),
+    để tài liệu không kẹt `review` hay `failed` khi người dùng đã xác nhận mọi trang có văn bản trong lúc các trang
+    còn lại đang đọc (rồi thành `failed` hoặc trắng)."""
+    if _write_final_status(store, document_id, status) and vault is not None:
+        _settle_after_read(store, vault, document_id, status)
 
 
-def mark_document_failed(store: DocumentRepository, document_id: str, locks: KeyedLocks | None = None) -> None:
-    """Tài liệu không đọc tiếp được: trang còn `pending` thành `failed` (`PAGE_ERROR`), tài liệu thành `failed`.
+def mark_document_failed(
+    store: DocumentRepository,
+    document_id: str,
+    locks: KeyedLocks | None = None,
+    vault: VaultRepository | None = None,
+) -> None:
+    """Tài liệu không đọc tiếp được: trang còn `pending` thành `failed` (`PAGE_ERROR`), tài liệu thành `failed`;
+    có `vault` (thường là `ReadJob.vault`) thì sau đó settle như bước kết thúc lần đọc (`_finish`): mọi trang có văn
+    bản đã xác nhận ⇒ tài liệu `confirmed` và (khác `past_exam`) được cắt chunk vào Vault (§5.7).
 
     Chạy dưới khoá của tài liệu (`locks`, thường là `ReadJob.locks`) như bước kết thúc lần đọc và các request sửa,
-    xác nhận: lần ghi trạng thái `failed` không chen vào giữa một lần xác nhận đang settle tài liệu. `locks = None`
-    (test, script) ⇒ không lấy khoá (chỉ còn so version).
+    xác nhận: lần ghi trạng thái `failed` và bước settle sau nó không chen vào giữa một lần xác nhận đang settle tài
+    liệu. `locks = None` (test, script) ⇒ không lấy khoá (chỉ còn so version); `vault = None` ⇒ không settle.
     """
     with locks.hold(document_id) if locks is not None else contextlib.nullcontext():
         _fail_pending(store, document_id, "PAGE_ERROR")
-        _finish(store, document_id, "failed")
+        _finish(store, document_id, "failed", vault)
 
 
 def _close_pages(pages: Iterator[PageExtraction]) -> None:
@@ -849,7 +862,7 @@ def _open_pages(
         except (PdfInputError, ValueError, FileNotFoundError):
             _close_pages(pages)
             _LOGGER.warning("không mở lại được tài liệu %s để đọc", job.document_id)
-            mark_document_failed(job.store, job.document_id, job.locks)
+            mark_document_failed(job.store, job.document_id, job.locks, job.vault)
             return None
         except (PdfWorkerError, OSError) as exc:
             _close_pages(pages)
@@ -949,7 +962,7 @@ def run_job(run: Callable[[], None], job: ReadJob, should_stop: Callable[[], boo
             return
         _LOGGER.exception("lỗi khi đọc tài liệu %s", job.document_id)
         try:
-            mark_document_failed(job.store, job.document_id, job.locks)
+            mark_document_failed(job.store, job.document_id, job.locks, job.vault)
         except Exception:
             _LOGGER.exception("không đánh dấu được tài liệu %s là failed", job.document_id)
 
@@ -1054,7 +1067,7 @@ def requeue_pending(
         document_id = document.meta.doc_id
         if not files.exists(document.meta.sha256):
             _LOGGER.warning("mất file gốc của tài liệu %s; đánh dấu failed", document_id)
-            mark_document_failed(store, document_id, locks)
+            mark_document_failed(store, document_id, locks, vault)
             continue
         path = files.path_for(document.meta.sha256)
         jobs.submit(

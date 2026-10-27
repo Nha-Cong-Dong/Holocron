@@ -1,8 +1,8 @@
 # ADR 007: Câu lý thuyết sinh tất định từ Vault; chấm tự luận offline (MVP nếu còn thời gian); AnswerJudge sau MVP
 
 - Trạng thái: Chấp nhận (2026-10-23), gồm câu chữ I2 và I4 ở mục 4. Sửa ngày 2026-10-25 theo quyết định của người dùng: tiêu đề, nhà cung cấp LLM ở mục 1 và 3, khoá sắp xếp `pool_sha256` ở mục 2, mục 5 tách thành 5a (chấm offline) và 5b (`AnswerJudge` sau MVP), phần Hệ quả. Sửa ngày 2026-10-26 theo quyết định của người dùng: mục 2 thêm cách chọn dạng câu; phần Hệ quả cập nhật trạng thái field nullable của `BlueprintSlot`. Sửa chiều 2026-10-26 theo quyết định của người dùng: mục 1 thêm hướng luật "đúng một đáp án" (so trên dãy token chữ/số, theo khái niệm ở cả ba dạng; chi tiết chờ duyệt), mục 2 ghi luật mới dùng `generator_version = "theory_mcq4_v3"`. Sửa tiếp 2026-10-26 theo quyết định của người dùng (câu 19 và lịch MVP-1): mục 5a ghi tham số bộ chấm là giá trị ban đầu đã duyệt, bỏ n-gram thuộc `term`, thêm `term` vào điều kiện tái lập, lịch tự luận 30/10–2/11. Trạng thái không đổi.
-- Sửa đổi 2026-10-27: bỏ nhà cung cấp mặc định DeepSeek, xem PR #<PR>.
-- Ngày: 2026-10-23; cập nhật 2026-10-25, 2026-10-26
+- Sửa đổi 2026-10-27: bỏ nhà cung cấp mặc định DeepSeek, xem PR #61.
+- Ngày: 2026-10-23; cập nhật 2026-10-25, 2026-10-26, 2026-10-27
 
 ## Bối cảnh
 

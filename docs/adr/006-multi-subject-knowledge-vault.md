@@ -1,8 +1,8 @@
 # ADR 006: Knowledge Vault đa môn
 
 - Trạng thái: Chấp nhận (2026-10-23). Bổ sung mục 9 (so khớp I3 sau chuẩn hoá NFC), người dùng đồng ý ngày 2026-10-24. Sửa câu chữ nhà cung cấp LLM ở mục 2 và phần Hệ quả theo quyết định ngày 2026-10-25 (LLM tuỳ chọn, nhà cung cấp do cấu hình quyết định). Sửa câu chữ mục 2 về `chapter_code` theo quyết định ngày 2026-10-26 (chiều): `chapter_code` lấy từ field bắt buộc khi nhập tài liệu, LLM chỉ đề xuất đổi chương cho từng chunk. Trạng thái không đổi.
-- Sửa đổi 2026-10-27: bỏ nhà cung cấp mặc định DeepSeek, xem PR #<PR>.
-- Ngày: 2026-10-23; cập nhật 2026-10-24, 2026-10-25, 2026-10-26
+- Sửa đổi 2026-10-27: bỏ nhà cung cấp mặc định DeepSeek, xem PR #61.
+- Ngày: 2026-10-23; cập nhật 2026-10-24, 2026-10-25, 2026-10-26, 2026-10-27
 
 ## Bối cảnh
 

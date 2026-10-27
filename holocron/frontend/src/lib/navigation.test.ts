@@ -19,6 +19,16 @@ describe("navItemForPath", () => {
   });
 });
 
+describe("mục Cặp khái niệm", () => {
+  it("có trong điều hướng, đường dẫn tĩnh, viết tắt không trùng mục khác", () => {
+    const item = navItemForPath("/pairs/");
+    expect(item?.label).toBe("Cặp khái niệm");
+    expect(titleForPath("/pairs")).toBe("Cặp khái niệm");
+    const shorts = NAV_ITEMS.map((entry) => entry.short);
+    expect(new Set(shorts).size).toBe(shorts.length);
+  });
+});
+
 describe("foldForSearch và filterCommands", () => {
   const commands = [
     { id: "a", label: "Nhập đề thi", hint: "Tải ảnh đề" },

@@ -22,6 +22,8 @@ Quy tắc cứng:
 - Tìm brief tương ứng trong `.claude/state/briefs/` (theo tên nhánh hoặc nội dung). Không có thì ghi "không có brief".
 
 ## 2. Cổng chất lượng (CLAUDE.md §5 Cấp 2), chạy thật
+Bước 2, 3 và 4 chạy ĐỒNG THỜI: chạy cổng ở nền (`run_in_background`), cùng lượt gọi `reviewer` và (khi bước 4 yêu cầu) `mutation-tester` ở nền. Report (bước 5) viết sau khi cả ba xong; mọi bước vẫn bắt buộc.
+Điều kiện khi chạy đồng thời: `reviewer` và `mutation-tester` KHÔNG ĐƯỢC chạy test hay build trong cùng thư mục với cổng đang chạy (tránh tranh `.pytest_cache`, coverage, `.next`). Chúng chỉ đọc mà không chạy test, hoặc chạy trong worktree detach riêng dưới `D:/prj/holocron-wt/` (tạo bằng `git worktree add --detach`, gỡ bằng `git -c core.longpaths=true worktree remove` khi xong). Brief giao cho chúng ghi rõ worktree được chạy test.
 Luôn gọi qua `python -m …` với venv ở gốc repo chính (Windows: `<repo>/.venv/Scripts/python.exe`; Linux: `<repo>/.venv/bin/python`). Chạy trong `holocron/backend` của worktree, dạng có lọc (CLAUDE.md §10). Mỗi lệnh Bash mở đầu bằng `set -o pipefail;` để mã thoát là của lệnh kiểm, không phải của `tail`:
 - `python -m pytest --cov -q --tb=short 2>&1 | tail -n 40`
 - `python -m ruff check . 2>&1 | tail -n 30`

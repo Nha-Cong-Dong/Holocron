@@ -34,3 +34,9 @@
 .doc {
   font-size: var(--text-xs);
 }
+
+.mark {
+  background: var(--accent-soft);
+  color: inherit;
+  font-weight: 600;
+}

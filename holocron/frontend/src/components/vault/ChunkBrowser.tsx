@@ -10,6 +10,7 @@ import { api, toUiError } from "@/lib/api";
 import type { UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
 import { VAULT_BROWSE_PAGE_SIZE, VAULT_SEARCH_LIMIT } from "@/lib/limits";
+import { pairsHref } from "@/lib/pairs";
 import { CAPABILITY_LABEL_VI, capabilityOf, freshRuntime } from "@/lib/runtime";
 import { locateQuote } from "@/lib/source";
 import {
@@ -382,6 +383,11 @@ function ChunkCard({ chunk, onLabelsSaved, onReload }: ChunkCardProps) {
           Dạng bài: <span className={styles.code}>{chunk.topicKeys.join(", ")}</span>
         </p>
       )}
+      <p className={styles.hint}>
+        <Link href={pairsHref({ subject: chunk.subjectCode, chapter: chunk.chapterCode, chunk: chunk.chunkId })}>
+          Tạo cặp từ chunk này
+        </Link>
+      </p>
       {editing ? (
         <LabelEditor
           chunk={chunk}

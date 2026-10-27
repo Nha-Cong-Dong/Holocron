@@ -45,7 +45,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from build_portable import BuildError, safe_extract
+from build_portable import BuildError, pip_command, pip_env, safe_extract
 
 ROOT = Path(__file__).resolve().parent.parent
 TESTS_DIR = ROOT / "holocron" / "backend" / "tests"
@@ -674,8 +674,8 @@ def check_pytest(report: Report, root: Path, work: Path) -> None:
         pytest_requirement = f"pytest=={importlib.metadata.version('pytest')}"
     except importlib.metadata.PackageNotFoundError:
         pytest_requirement = "pytest"
-    pip = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--target", str(overlay)]
-    code, output = run_text([*pip, "--only-binary=:all:", pytest_requirement])
+    pip = pip_command(sys.executable, "install", "--target", str(overlay), "--only-binary=:all:")
+    code, output = run_text([*pip, pytest_requirement], env=pip_env(os.environ))
     if not report.check(f"cài {pytest_requirement} vào overlay tạm", code == 0, output.strip()[-300:] if code else ""):
         return
     args = [*zip_python(root), "-c", PYTEST_CODE, str(run_dir), str(overlay), str(root / "app"), str(ini)]

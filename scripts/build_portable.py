@@ -93,6 +93,31 @@ GEOS_BY_SHAPELY: Mapping[str, GeosSource] = {
 LGPL_NAME = "LGPL-2.1.txt"
 LGPL_SHA256 = "72b672113d642cbb8ef5dcc76938db801983c56e50b1400ab930f1a64d6dc8d9"
 
+# pip luôn chạy `--isolated` (bỏ qua PIP_* và pip.ini/pip.conf), chỉ PyPI chính thức, với env tối thiểu (`pip_env`).
+PYPI_INDEX = "https://pypi.org/simple"
+PIP_ISOLATED = ("--isolated", "--disable-pip-version-check")
+PIP_INDEX_ARGS = ("--index-url", PYPI_INDEX)
+# Biến môi trường được chuyển cho pip: đủ để Windows/Linux chạy mạng và thư mục tạm; KHÔNG có PIP_*, PYTHON*.
+PIP_ENV_KEEP = frozenset(
+    {
+        "APPDATA",
+        "COMSPEC",
+        "HOME",
+        "LOCALAPPDATA",
+        "PATH",
+        "SYSTEMDRIVE",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "USERPROFILE",
+        "WINDIR",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+    }
+)
+
 # Nền tảng đích cho `pip download`/`pip install --target` (cài chéo được từ Linux).
 TARGET_PIP_ARGS = (
     "--platform",
@@ -285,11 +310,32 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def run_command(args: Sequence[str], cwd: Path | None = None) -> str:
-    """Chạy lệnh, đọc output UTF-8 tường minh; mã thoát khác 0 ⇒ BuildError kèm đuôi output."""
-    env = dict(os.environ)
+def is_pip_command(args: Sequence[str]) -> bool:
+    return len(args) >= 3 and args[1] == "-m" and args[2] == "pip"
+
+
+def pip_command(python: str, subcommand: str, *args: str, index: bool = True) -> list[str]:
+    """Lệnh pip luôn `--isolated`; `index=True` thêm `--index-url https://pypi.org/simple` (freeze không nhận cờ này)."""
+    return [python, "-m", "pip", subcommand, *PIP_ISOLATED, *(PIP_INDEX_ARGS if index else ()), *args]
+
+
+def pip_env(environ: Mapping[str, str]) -> dict[str, str]:
+    """Env tối thiểu cho pip: chỉ các biến trong `PIP_ENV_KEEP` (không phân biệt hoa thường), không PIP_*/PYTHON*."""
+    env = {key: value for key, value in environ.items() if key.upper() in PIP_ENV_KEEP}
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
+    return env
+
+
+def run_command(args: Sequence[str], cwd: Path | None = None) -> str:
+    """Chạy lệnh, đọc output UTF-8 tường minh; mã thoát khác 0 ⇒ BuildError kèm đuôi output. Lệnh pip chạy với
+    `pip_env` (không kế thừa PIP_*)."""
+    if is_pip_command(args):
+        env = pip_env(os.environ)
+    else:
+        env = dict(os.environ)
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
     completed = subprocess.run(
         list(args),
         cwd=cwd,
@@ -455,15 +501,24 @@ def format_lock(entries: Iterable[LockEntry]) -> str:
     return "\n".join([*LOCK_HEADER, *(entry.line() for entry in ordered)]) + "\n"
 
 
-def validate_lock_sets(base: Sequence[LockEntry], ocr: Sequence[LockEntry]) -> None:
-    """`base ⊆ BASE_PACKAGES`, `ocr ⊆ OCR_PACKAGES`, `base ∩ ocr = ∅`; vi phạm ⇒ dừng (không thêm dependency)."""
+def validate_lock_sets(
+    base: Sequence[LockEntry],
+    ocr: Sequence[LockEntry],
+    base_closure: frozenset[str] = BASE_PACKAGES,
+    ocr_closure: frozenset[str] = OCR_PACKAGES,
+) -> None:
+    """`base == base_closure`, `ocr == ocr_closure` (không thừa, không thiếu), `base ∩ ocr = ∅`; vi phạm ⇒ dừng."""
     base_names = {entry.name for entry in base}
     ocr_names = {entry.name for entry in ocr}
     problems: list[str] = []
-    if outside := sorted(base_names - BASE_PACKAGES):
+    if outside := sorted(base_names - base_closure):
         problems.append(f"gói ngoài closure base: {', '.join(outside)}")
-    if outside := sorted(ocr_names - OCR_PACKAGES):
+    if outside := sorted(ocr_names - ocr_closure):
         problems.append(f"gói ngoài closure OCR: {', '.join(outside)}")
+    if missing := sorted(base_closure - base_names):
+        problems.append(f"thiếu gói của closure base: {', '.join(missing)}")
+    if missing := sorted(ocr_closure - ocr_names):
+        problems.append(f"thiếu gói của closure OCR: {', '.join(missing)}")
     if overlap := sorted(base_names & ocr_names):
         problems.append(f"gói trùng giữa base và OCR: {', '.join(overlap)}")
     if problems:
@@ -547,10 +602,16 @@ def collect_wheels(directory: Path) -> dict[str, LockEntry]:
 
 
 def resolve_lock(
-    *, python: str, work_dir: Path, pyproject: Path, run: Runner
+    *,
+    python: str,
+    work_dir: Path,
+    pyproject: Path,
+    run: Runner,
+    base_closure: frozenset[str] = BASE_PACKAGES,
+    ocr_closure: frozenset[str] = OCR_PACKAGES,
 ) -> tuple[list[LockEntry], list[LockEntry]]:
     """Resolve base và base+OCR bằng `pip download` cho win_amd64/cp314 với constraint = `pip freeze`."""
-    pins = parse_freeze(run([python, "-m", "pip", "freeze", "--exclude-editable"], None))
+    pins = parse_freeze(run(pip_command(python, "freeze", "--exclude-editable", index=False), None))
     if not pins:
         raise BuildError("pip freeze rỗng: chạy script bằng Python của .venv đã qua bộ test")
     if work_dir.exists():
@@ -563,7 +624,7 @@ def resolve_lock(
     for label, roots in (("base", base_roots), ("full", [*base_roots, *ocr_roots])):
         dest = work_dir / label
         dest.mkdir()
-        pip = [python, "-m", "pip", "download", "--disable-pip-version-check", "--dest", str(dest)]
+        pip = pip_command(python, "download", "--dest", str(dest))
         run([*pip, *TARGET_PIP_ARGS, "-c", str(constraints), *roots], None)
         resolved[label] = collect_wheels(dest)
     base, full = resolved["base"], resolved["full"]
@@ -579,7 +640,7 @@ def resolve_lock(
             raise BuildError(f"gói {name} resolve khác nhau giữa base và base+OCR")
     base_entries = sorted(base.values(), key=lambda entry: entry.name)
     ocr_entries = sorted((entry for name, entry in full.items() if name not in base), key=lambda entry: entry.name)
-    validate_lock_sets(base_entries, ocr_entries)
+    validate_lock_sets(base_entries, ocr_entries, base_closure, ocr_closure)
     return base_entries, ocr_entries
 
 
@@ -617,7 +678,7 @@ def install_wheels(*, python: str, lock_files: Sequence[Path], site_dir: Path, r
     """Cài wheel đã ghim hash vào `site-packages/` của bản zip; kiểm đúng tập gói của lock."""
     site_dir.mkdir(parents=True, exist_ok=True)
     requirement_args = [arg for path in lock_files for arg in ("-r", str(path))]
-    pip = [python, "-m", "pip", "install", "--disable-pip-version-check", "--target", str(site_dir)]
+    pip = pip_command(python, "install", "--target", str(site_dir))
     run([*pip, "--no-deps", "--require-hashes", "--no-compile", *TARGET_PIP_ARGS, *requirement_args], None)
     installed = {name: version for name, (version, _) in installed_distributions(site_dir).items()}
     expected = expected_packages(lock_files)
@@ -1256,7 +1317,13 @@ def compile_bytecode(stage: Path, run: Runner) -> None:
     run([*args, "app", "site-packages"], stage)
 
 
-def run_lock(run: Runner) -> int:
+def run_lock(run: Runner, platform: str = sys.platform) -> int:
+    """`--lock` chỉ chạy trên Windows: marker môi trường của dependency (`sys_platform`, …) được pip đánh giá theo
+    máy đang chạy, nên resolve trên Linux có thể ra closure khác bản Windows."""
+    if platform != "win32":
+        raise BuildError(
+            f"--lock chỉ chạy trên Windows (đang ở {platform}); chạy lại bằng Python của .venv trên Windows"
+        )
     base, ocr = resolve_lock(python=sys.executable, work_dir=BUILD_DIR / "lock", pyproject=PYPROJECT, run=run)
     PACKAGING_DIR.mkdir(parents=True, exist_ok=True)
     LOCK_BASE.write_text(format_lock(base), encoding="utf-8", newline="\n")

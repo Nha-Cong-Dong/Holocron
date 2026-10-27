@@ -207,20 +207,30 @@ def _entry(name: str) -> object:
 
 def test_lock_sets_reject_package_in_both_base_and_ocr() -> None:
     with pytest.raises(BuildError, match="trùng giữa base và OCR: idna"):
-        bp.validate_lock_sets([_entry("idna")], [_entry("idna"), _entry("numpy")])
+        bp.validate_lock_sets(
+            [_entry("idna")], [_entry("idna"), _entry("numpy")], frozenset({"idna"}), frozenset({"idna", "numpy"})
+        )
 
 
 @pytest.mark.parametrize(
     ("base", "ocr", "message"),
     [
-        (["fastapi", "evil-pkg"], [], "ngoài closure base: evil-pkg"),
+        (["fastapi", "evil-pkg"], ["numpy"], "ngoài closure base: evil-pkg"),
         (["fastapi"], ["numpy", "httpx"], "ngoài closure OCR: httpx"),
-        (["numpy"], [], "ngoài closure base: numpy"),
+        (["fastapi", "numpy"], [], "ngoài closure base: numpy"),
+        ([], ["numpy"], "thiếu gói của closure base: fastapi"),
+        (["fastapi"], [], "thiếu gói của closure OCR: numpy"),
     ],
 )
-def test_lock_sets_reject_package_outside_closure(base: list[str], ocr: list[str], message: str) -> None:
+def test_lock_sets_must_equal_closure(base: list[str], ocr: list[str], message: str) -> None:
     with pytest.raises(BuildError, match=message):
-        bp.validate_lock_sets([_entry(n) for n in base], [_entry(n) for n in ocr])
+        bp.validate_lock_sets(
+            [_entry(n) for n in base], [_entry(n) for n in ocr], frozenset({"fastapi"}), frozenset({"numpy"})
+        )
+
+
+def test_lock_sets_equal_to_closure_pass() -> None:
+    bp.validate_lock_sets([_entry("fastapi")], [_entry("numpy")], frozenset({"fastapi"}), frozenset({"numpy"}))
 
 
 def test_committed_lock_files_are_valid_and_cover_the_closure() -> None:
@@ -300,11 +310,22 @@ OCR_WHEELS = [
 ]
 FREEZE = {"fastapi": "0.162.0", "idna": "3.20", "rapidocr": "3.10.0", "onnxruntime": "1.31.0"}
 FREEZE["opencv-python-headless"] = "5.0.0.93"
+TEST_CLOSURES = {
+    "base_closure": frozenset({"fastapi", "idna"}),
+    "ocr_closure": frozenset({"onnxruntime", "opencv-python-headless", "rapidocr"}),
+}
+
+
+def _resolve(tmp_path: Path, pip: FakePip) -> tuple[list[object], list[object]]:
+    result: tuple[list[object], list[object]] = bp.resolve_lock(
+        python="py", work_dir=tmp_path / "w", pyproject=_pyproject(tmp_path), run=pip, **TEST_CLOSURES
+    )
+    return result
 
 
 def test_resolve_lock_splits_base_and_ocr_with_constraints(tmp_path: Path) -> None:
     pip = FakePip(FREEZE, {"base": BASE_WHEELS, "full": BASE_WHEELS + OCR_WHEELS})
-    base, ocr = bp.resolve_lock(python="py", work_dir=tmp_path / "w", pyproject=_pyproject(tmp_path), run=pip)
+    base, ocr = _resolve(tmp_path, pip)
     assert [e.name for e in base] == ["fastapi", "idna"]
     assert [e.name for e in ocr] == ["onnxruntime", "opencv-python-headless", "rapidocr"]
     downloads = [call for call in pip.calls if "download" in call]
@@ -313,18 +334,99 @@ def test_resolve_lock_splits_base_and_ocr_with_constraints(tmp_path: Path) -> No
     assert (tmp_path / "w" / "constraints.txt").read_text(encoding="utf-8").count("==") == len(FREEZE)
 
 
+def test_resolve_lock_runs_pip_isolated_against_pypi_only(tmp_path: Path) -> None:
+    pip = FakePip(FREEZE, {"base": BASE_WHEELS, "full": BASE_WHEELS + OCR_WHEELS})
+    _resolve(tmp_path, pip)
+    for call in pip.calls:
+        assert call[1:3] == ["-m", "pip"] and "--isolated" in call
+    for call in (c for c in pip.calls if "download" in c):
+        assert call[call.index("--index-url") + 1] == "https://pypi.org/simple"
+    freeze = next(c for c in pip.calls if "freeze" in c)
+    assert "--index-url" not in freeze
+
+
 def test_resolve_lock_rejects_package_outside_closure(tmp_path: Path) -> None:
     freeze = {**FREEZE, "evil-pkg": "1.0"}
     wheels = [*BASE_WHEELS, "evil_pkg-1.0-py3-none-any.whl"]
     pip = FakePip(freeze, {"base": wheels, "full": wheels + OCR_WHEELS})
     with pytest.raises(BuildError, match="ngoài closure base: evil-pkg"):
-        bp.resolve_lock(python="py", work_dir=tmp_path / "w", pyproject=_pyproject(tmp_path), run=pip)
+        _resolve(tmp_path, pip)
 
 
 def test_resolve_lock_rejects_version_drift_from_venv(tmp_path: Path) -> None:
     pip = FakePip({**FREEZE, "fastapi": "0.161.9"}, {"base": BASE_WHEELS, "full": BASE_WHEELS + OCR_WHEELS})
     with pytest.raises(BuildError, match="khác pip freeze"):
-        bp.resolve_lock(python="py", work_dir=tmp_path / "w", pyproject=_pyproject(tmp_path), run=pip)
+        _resolve(tmp_path, pip)
+
+
+def test_pip_env_drops_pip_and_python_variables() -> None:
+    environ = {
+        "PATH": "p",
+        "SystemRoot": "C:\\Windows",
+        "TEMP": "t",
+        "HTTPS_PROXY": "http://proxy",
+        "PIP_INDEX_URL": "https://evil.example/simple",
+        "PIP_EXTRA_INDEX_URL": "https://evil.example/simple",
+        "PIP_CONFIG_FILE": "evil.ini",
+        "PYTHONPATH": "evil",
+        "PYTHONHOME": "evil",
+        "RANDOM_SECRET": "x",
+    }
+    env = bp.pip_env(environ)
+    assert env == {
+        "PATH": "p",
+        "SystemRoot": "C:\\Windows",
+        "TEMP": "t",
+        "HTTPS_PROXY": "http://proxy",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
+    }
+
+
+def test_run_command_gives_pip_the_minimal_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[dict[str, str]] = []
+
+    class Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(args: list[str], **kwargs: object) -> Completed:
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        seen.append(env)
+        return Completed()
+
+    monkeypatch.setenv("PIP_INDEX_URL", "https://evil.example/simple")
+    monkeypatch.setattr(bp.subprocess, "run", fake_run)
+    bp.run_command(["py", "-m", "pip", "freeze"])
+    bp.run_command(["git", "status"])
+    assert "PIP_INDEX_URL" not in seen[0]
+    assert seen[1]["PIP_INDEX_URL"] == "https://evil.example/simple"
+
+
+def test_install_wheels_uses_isolated_pypi_and_hashes(tmp_path: Path) -> None:
+    lock = tmp_path / "lock.txt"
+    lock.write_text(f"fastapi==0.162.0 --hash=sha256:{HASH_A}\n", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def run(args: Sequence[str], cwd: Path | None) -> str:
+        calls.append(list(args))
+        _dist(tmp_path / "site", "fastapi", "0.162.0", "License-Expression: MIT\n")
+        return ""
+
+    bp.install_wheels(python="py", lock_files=[lock], site_dir=tmp_path / "site", run=run)
+    (call,) = calls
+    assert "--isolated" in call and "--require-hashes" in call and "--no-deps" in call
+    assert call[call.index("--index-url") + 1] == "https://pypi.org/simple"
+
+
+def test_lock_refuses_to_run_off_windows() -> None:
+    def run(args: Sequence[str], cwd: Path | None) -> str:
+        raise AssertionError("không được gọi pip khi không phải Windows")
+
+    with pytest.raises(BuildError, match="chỉ chạy trên Windows"):
+        bp.run_lock(run, platform="linux")
 
 
 # ---------------------------------------------------------------- bỏ khỏi zip

@@ -5,12 +5,19 @@ Cách dùng (gốc repo, chạy bằng Python của `.venv` đã qua bộ test):
       Sinh `holocron/packaging/requirements-portable.txt` (base) và `requirements-portable-ocr.txt` (phần thêm
       của RapidOCR): resolve với constraint = `pip freeze` của interpreter đang chạy, ghim `==` + SHA-256 của
       đúng wheel win_amd64 cp314/abi3/py3-none-any. Cần mạng.
-  python scripts/build_portable.py [--ocr lite|full] [--app-src holocron/backend] [--web-out <thư mục out>]
-      Dựng `dist/Holocron-<version>-win64.zip` và `.sha256` cạnh nó. Cần mạng (Python embeddable, wheel).
+  python scripts/build_portable.py [--ocr full|lite] [--app-src holocron/backend] [--web-out <thư mục out>]
+      Dựng `dist/Holocron-<version>-win64.zip` và `.sha256` cạnh nó. Cần mạng (Python embeddable, wheel, mã nguồn
+      GEOS).
 
-`--ocr lite` (mặc định TẠM THỜI) bỏ RapidOCR; `--ocr full` dừng ở bước license chờ người dùng quyết Q4
-(GEOS LGPL-2.1). Script chỉ dùng thư viện chuẩn; chạy được trên Windows và Linux (bước biên dịch `.pyc` chỉ chạy
-trên Windows vì cần chạy `python.exe` của bản embeddable).
+`--ocr full` (mặc định, bản giao MVP-1) kèm RapidOCR; GEOS (LGPL-2.1, DLL trong `shapely.libs/`) đi kèm toàn văn
+LGPL-2.1 và mã nguồn GEOS tương ứng trong `licenses/`. `--ocr lite` bỏ RapidOCR.
+
+Bản embeddable chạy KHÔNG có `python314._pth` (xoá khi dựng): launcher chạy `python -I`, `site` xử lý
+`python/Lib/site-packages/holocron.pth` để thấy `app/` và `site-packages/`; tiến trình con sandbox (`-S`) không chạy
+`site` nên chỉ thấy thư viện chuẩn trong `python/` (I1).
+
+Script chỉ dùng thư viện chuẩn; chạy được trên Windows và Linux (bước biên dịch `.pyc` chỉ chạy trên Windows vì cần
+chạy `python.exe` của bản embeddable).
 """
 
 from __future__ import annotations
@@ -51,7 +58,40 @@ PYTHON_VERSION = "3.14.10"
 PYTHON_EMBED_NAME = f"python-{PYTHON_VERSION}-embed-amd64.zip"
 PYTHON_EMBED_URL = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/{PYTHON_EMBED_NAME}"
 PYTHON_EMBED_SHA256 = "90905e64a840557d8c1bc4f5b74db3d7ee85e3ffb217611cac1c7813acea4159"
-PTH_FILE = "python314._pth"
+# `._pth` cạnh `python.exe` bật chế độ "đường dẫn cố định" và `import site` của nó chạy cả khi có `-S`, kéo `app/`
+# vào tiến trình con sandbox. Bản zip KHÔNG được có file `._pth` nào (kiểm ở `check_zip_members`).
+PTH_SUFFIX = "._pth"
+
+# GEOS (LGPL-2.1) do wheel shapely nhúng ở `shapely.libs/` (delvewheel đổi tên DLL, sửa bảng import). Ánh xạ ghim
+# theo phiên bản shapely trong lock OCR; lock đổi shapely mà chưa có ánh xạ ⇒ dừng. Đối chiếu shapely 2.2.0 ⇒
+# GEOS 3.14.1: `shapely.geos_version_string` của chính wheel win_amd64 cp314 (cài trong `.venv`) và chuỗi
+# `3.14.1-CAPI-1.20.5` trong `shapely.libs/geos_c-*.dll` (build kiểm lại chuỗi này trên DLL thật). SHA-256 mã nguồn
+# trùng trường `digest` của asset `geos-3.14.1.tar.bz2` trên GitHub release libgeos/geos 3.14.1 (độc lập với file tải).
+GEOS_UPSTREAM = "https://github.com/libgeos/geos"
+
+
+@dataclass(frozen=True)
+class GeosSource:
+    version: str
+    sha256: str
+
+    @property
+    def archive_name(self) -> str:
+        return f"geos-{self.version}.tar.bz2"
+
+    @property
+    def url(self) -> str:
+        return f"https://download.osgeo.org/geos/{self.archive_name}"
+
+
+GEOS_BY_SHAPELY: Mapping[str, GeosSource] = {
+    "2.2.0": GeosSource("3.14.1", "3c20919cda9a505db07b5216baa980bacdaa0702da715b43f176fb07eff7e716"),
+}
+# Toàn văn LGPL-2.1 (https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt, SHA-256 bản tải 20e50fe7…5d95), commit
+# trong repo; hook trailing-whitespace đổi 9 dòng chỉ có form feed thành dòng trống, chữ giữ nguyên. SHA-256 ghim là
+# của bản đã commit.
+LGPL_NAME = "LGPL-2.1.txt"
+LGPL_SHA256 = "72b672113d642cbb8ef5dcc76938db801983c56e50b1400ab930f1a64d6dc8d9"
 
 # Nền tảng đích cho `pip download`/`pip install --target` (cài chéo được từ Linux).
 TARGET_PIP_ARGS = (
@@ -137,7 +177,7 @@ PERMISSIVE_LICENSES = frozenset(
         "ZLIB",
     }
 )
-# LGPL/MPL chỉ được phép với đúng gói đã duyệt (kế hoạch §5 bước 7). GEOS LGPL-2.1 chờ Q4, KHÔNG có ở đây.
+# LGPL/MPL chỉ được phép với đúng gói đã duyệt (kế hoạch §5 bước 7). GEOS (LGPL-2.1) là DLL, đi qua BINARY_ALLOWLIST.
 WEAK_COPYLEFT_ALLOWED = frozenset({("certifi", "MPL-2.0"), ("tqdm", "MPL-2.0")})
 # Metadata không phải biểu thức SPDX, đã đọc tay; ghim theo phiên bản để bản mới buộc xem lại.
 # pypdfium2: `License: BSD-3-Clause, Apache-2.0, dependency licenses`; license của PDFium và thư viện nó nhúng
@@ -168,12 +208,44 @@ CLASSIFIER_LICENSES: Mapping[str, str] = {
 }
 CLASSIFIER_IGNORED = frozenset({"License :: OSI Approved"})
 
-Q4_MESSAGE = "chờ Q4: GEOS LGPL-2.1 (shapely.libs/geos*.dll, kéo theo bởi rapidocr) chưa được người dùng duyệt"
+
+@dataclass(frozen=True)
+class BinaryRule:
+    """Mục cho phép của cổng DLL/PYD: glob tương đối gốc zip (`*` không vượt `/`, `**` vượt nhiều cấp) + giấy phép."""
+
+    pattern: str
+    license: str
+
+
+VC_REDIST = "Microsoft Visual C++ Redistributable (mã phân phối lại được, delvewheel chép kèm wheel)"
+# Mọi `*.dll`/`*.pyd` trong zip phải khớp một mục ở đây; không khớp ⇒ build dừng. GEOS chỉ được ở
+# `site-packages/shapely.libs/`.
+BINARY_ALLOWLIST: tuple[BinaryRule, ...] = (
+    BinaryRule("python/*.dll", "PSF-2.0 (Python embeddable; OpenSSL Apache-2.0, libffi MIT, SQLite public domain)"),
+    BinaryRule("python/*.pyd", "PSF-2.0 (thư viện chuẩn của Python embeddable)"),
+    BinaryRule("site-packages/pydantic_core/*.pyd", "MIT"),
+    BinaryRule("site-packages/pypdfium2_raw/pdfium.dll", "BSD-3-Clause AND Apache-2.0 (PDFium, xem pypdfium2)"),
+    BinaryRule("site-packages/charset_normalizer/*.pyd", "MIT"),
+    BinaryRule("site-packages/numpy/**/*.pyd", "BSD-3-Clause"),
+    BinaryRule("site-packages/numpy.libs/libscipy_openblas64_*.dll", "BSD-3-Clause (OpenBLAS, kèm numpy)"),
+    BinaryRule("site-packages/numpy.libs/msvcp140-*.dll", VC_REDIST),
+    BinaryRule("site-packages/shapely/*.pyd", "BSD-3-Clause"),
+    BinaryRule("site-packages/shapely.libs/geos-*.dll", "LGPL-2.1 (GEOS, xem licenses/)"),
+    BinaryRule("site-packages/shapely.libs/geos_c-*.dll", "LGPL-2.1 (GEOS C API, xem licenses/)"),
+    BinaryRule("site-packages/shapely.libs/msvcp140-*.dll", VC_REDIST),
+    BinaryRule("site-packages/onnxruntime/capi/*.dll", "MIT (ONNX Runtime)"),
+    BinaryRule("site-packages/onnxruntime/capi/*.pyd", "MIT (ONNX Runtime)"),
+    BinaryRule("site-packages/cv2/*.pyd", "Apache-2.0 (OpenCV, kèm thư viện tĩnh, xem opencv-python-headless)"),
+    BinaryRule("site-packages/PIL/*.pyd", "MIT-CMU (Pillow, kèm thư viện tĩnh, xem pillow)"),
+    BinaryRule("site-packages/google/_upb/*.pyd", "BSD-3-Clause (protobuf)"),
+    BinaryRule("site-packages/pyclipper/*.pyd", "MIT"),
+    BinaryRule("site-packages/yaml/*.pyd", "MIT"),
+)
 
 HOLOCRON_CMD = (
     "@echo off",
     "setlocal",
-    '"%~dp0python\\python.exe" -X utf8 -m holocron_core.launcher %*',
+    '"%~dp0python\\python.exe" -I -X utf8 -m holocron_core.launcher %*',
     "exit /b %ERRORLEVEL%",
 )
 HOLOCRON_PTH_LINES = ("..\\..\\..\\app", "..\\..\\..\\site-packages")
@@ -301,18 +373,19 @@ def safe_extract(archive: Path, destination: Path) -> list[Path]:
     return written
 
 
-def enable_site_in_pth(text: str) -> str:
-    """Bỏ `#` trước `import site` của `._pth`, giữ nguyên các dòng khác (không thêm đường dẫn nào).
+def remove_pth_files(python_dir: Path) -> list[str]:
+    """Xoá mọi `*._pth` cạnh `python.exe`; không có file nào ⇒ dừng (bản embeddable khác dự kiến).
 
-    Thêm `app`/`site-packages` thẳng vào `._pth` sẽ lọt vào `sys.path` của cả tiến trình sandbox (`python -S`);
-    vì vậy chúng đi qua `holocron.pth`, chỉ được xử lý khi `site` chạy (kế hoạch §3).
+    Không còn `._pth`, Python tự tính `sys.path` từ vị trí `python.exe` (thư viện chuẩn trong `python/`) và `site`
+    chỉ chạy khi không có `-S`: launcher (`-I`) thấy `app/` qua `holocron.pth`, tiến trình con sandbox
+    (`-S -s -P`) thì không.
     """
-    lines = text.splitlines()
-    positions = [index for index, line in enumerate(lines) if line.strip() == "#import site"]
-    if len(positions) != 1:
-        raise BuildError(f"{PTH_FILE} phải có đúng một dòng '#import site' (bản embeddable khác dự kiến)")
-    lines[positions[0]] = "import site"
-    return "\r\n".join(lines) + "\r\n"
+    found = sorted(path for path in python_dir.iterdir() if path.name.lower().endswith(PTH_SUFFIX))
+    if not found:
+        raise BuildError(f"bản embeddable không có file *{PTH_SUFFIX} nào (khác dự kiến, dừng)")
+    for path in found:
+        path.unlink()
+    return [path.name for path in found]
 
 
 def holocron_pth_text() -> str:
@@ -326,13 +399,10 @@ def holocron_cmd_bytes() -> bytes:
 
 
 def install_python(stage: Path, embed_zip: Path) -> Path:
-    """Giải Python embeddable vào `python/`, bật `import site`, ghi `holocron.pth`; trả thư mục `python/`."""
+    """Giải Python embeddable vào `python/`, xoá `*._pth`, ghi `holocron.pth`; trả thư mục `python/`."""
     python_dir = stage / "python"
     safe_extract(embed_zip, python_dir)
-    pth = python_dir / PTH_FILE
-    if not pth.exists():
-        raise BuildError(f"bản embeddable thiếu {PTH_FILE}")
-    pth.write_bytes(enable_site_in_pth(pth.read_text(encoding="utf-8")).encode("utf-8"))
+    remove_pth_files(python_dir)
     site_dir = python_dir / "Lib" / "site-packages"
     site_dir.mkdir(parents=True, exist_ok=True)
     (site_dir / "holocron.pth").write_bytes(holocron_pth_text().encode("ascii"))
@@ -783,15 +853,99 @@ def check_python_licenses(site_dir: Path) -> list[PackageLicense]:
     return records
 
 
-def check_bundled_dlls(site_dir: Path) -> None:
-    """Kiểm DLL theo tên: `geos*.dll` ⇒ chờ Q4; `opencv_videoio_ffmpeg*` phải đã bị bỏ."""
-    dlls = [path for path in site_dir.rglob("*.dll") if path.is_file()]
-    ffmpeg = [path.name for path in dlls if path.name.lower().startswith("opencv_videoio_ffmpeg")]
-    if ffmpeg:
-        raise BuildError(f"DLL LGPL của ffmpeg còn trong bản zip: {', '.join(sorted(ffmpeg))}")
-    geos = [path.name for path in dlls if path.name.lower().startswith("geos")]
-    if geos:
-        raise BuildError(f"{Q4_MESSAGE}: {', '.join(sorted(geos))}")
+def glob_regex(pattern: str) -> re.Pattern[str]:
+    """Glob đường dẫn POSIX ⇒ regex: `**/` khớp 0..n thư mục, `*` không vượt `/`, `?` một ký tự (không phân biệt hoa
+    thường, như hệ tệp Windows)."""
+    out: list[str] = []
+    position = 0
+    while position < len(pattern):
+        if pattern.startswith("**/", position):
+            out.append("(?:[^/]+/)*")
+            position += 3
+        elif pattern[position] == "*":
+            out.append("[^/]*")
+            position += 1
+        elif pattern[position] == "?":
+            out.append("[^/]")
+            position += 1
+        else:
+            out.append(re.escape(pattern[position]))
+            position += 1
+    return re.compile("^" + "".join(out) + "$", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class BinaryRecord:
+    path: str
+    license: str
+
+
+def classify_binaries(
+    relative_paths: Iterable[str], rules: Sequence[BinaryRule] = BINARY_ALLOWLIST
+) -> list[BinaryRecord]:
+    """Cổng DLL/PYD (allowlist): mọi `*.dll`/`*.pyd` phải khớp một mục cho phép; GEOS chỉ ở `shapely.libs/`;
+    `opencv_videoio_ffmpeg*` phải đã bị bỏ. Vi phạm ⇒ BuildError liệt kê đủ."""
+    compiled = [(glob_regex(rule.pattern), rule) for rule in rules]
+    records: list[BinaryRecord] = []
+    problems: list[str] = []
+    for relative in sorted(relative_paths):
+        name = PurePosixPath(relative).name.lower()
+        if not name.endswith((".dll", ".pyd")):
+            continue
+        if name.startswith("opencv_videoio_ffmpeg"):
+            problems.append(f"DLL LGPL của ffmpeg còn trong bản zip: {relative}")
+            continue
+        if (
+            name.startswith("geos")
+            and name.endswith(".dll")
+            and PurePosixPath(relative).parent.as_posix().lower() != ("site-packages/shapely.libs")
+        ):
+            problems.append(f"DLL GEOS ngoài site-packages/shapely.libs/: {relative}")
+            continue
+        rule = next((rule for regex, rule in compiled if regex.match(relative)), None)
+        if rule is None:
+            problems.append(f"DLL/PYD không có trong danh sách cho phép: {relative}")
+            continue
+        records.append(BinaryRecord(relative, rule.license))
+    if problems:
+        raise BuildError("cổng DLL/PYD không đạt:\n  " + "\n  ".join(problems))
+    return records
+
+
+def check_stage_binaries(stage: Path) -> list[BinaryRecord]:
+    return classify_binaries(path.relative_to(stage).as_posix() for path in stage.rglob("*") if path.is_file())
+
+
+def geos_source_for(ocr_entries: Sequence[LockEntry]) -> GeosSource:
+    """GEOS tương ứng shapely trong lock OCR; thiếu shapely hoặc chưa có ánh xạ ⇒ dừng."""
+    shapely = next((entry for entry in ocr_entries if entry.name == "shapely"), None)
+    if shapely is None:
+        raise BuildError("lock OCR không có shapely: không xác định được GEOS cần kèm mã nguồn")
+    source = GEOS_BY_SHAPELY.get(shapely.version)
+    if source is None:
+        raise BuildError(
+            f"lock có shapely=={shapely.version} nhưng GEOS_BY_SHAPELY chưa có ánh xạ (đối chiếu wheel thật rồi thêm)"
+        )
+    return source
+
+
+def check_geos_version(site_dir: Path, geos: GeosSource) -> None:
+    """DLL `shapely.libs/geos_c-*.dll` thật phải mang chuỗi phiên bản `<geos>-CAPI-` của ánh xạ ghim."""
+    libs = site_dir / "shapely.libs"
+    candidates = sorted(libs.glob("geos_c*.dll")) if libs.is_dir() else []
+    if not candidates:
+        raise BuildError("không thấy site-packages/shapely.libs/geos_c*.dll để đối chiếu phiên bản GEOS")
+    marker = f"{geos.version}-CAPI-".encode("ascii")
+    if not any(marker in path.read_bytes() for path in candidates):
+        raise BuildError(f"GEOS trong shapely.libs không phải {geos.version} (không thấy chuỗi {marker.decode()})")
+
+
+def read_lgpl_text(path: Path, sha256: str = LGPL_SHA256) -> str:
+    if not path.is_file():
+        raise BuildError(f"thiếu toàn văn LGPL-2.1: {path}")
+    if sha256_file(path) != sha256:
+        raise BuildError(f"{path} khác bản ghim (SHA-256 {sha256})")
+    return path.read_text(encoding="utf-8")
 
 
 @dataclass(frozen=True)
@@ -875,16 +1029,35 @@ def check_npm_licenses(frontend_dir: Path, npm: str, run: Runner) -> list[Packag
     return records
 
 
-def license_gate(site_dir: Path, ocr_mode: str) -> list[PackageLicense]:
-    """Bước license của gói Python + DLL; `--ocr full` luôn dừng ở đây chờ Q4."""
-    records = check_python_licenses(site_dir)
-    check_bundled_dlls(site_dir)
-    if ocr_mode == "full":
-        raise BuildError(Q4_MESSAGE)
-    return records
+@dataclass(frozen=True)
+class GeosNotice:
+    source: GeosSource
+    shapely_version: str
+    lgpl_text: str
 
 
-def render_notices(python_license: str, records: Sequence[PackageLicense], read: Callable[[Path], str]) -> str:
+def geos_notice_lines(notice: GeosNotice) -> list[str]:
+    geos = notice.source
+    return [
+        f"GEOS {geos.version} — LGPL-2.1 (thư viện hình học, kèm theo shapely {notice.shapely_version}, do rapidocr cần)",
+        "Tệp: site-packages/shapely.libs/geos-*.dll và geos_c-*.dll, liên kết động, KHÔNG sửa mã nguồn GEOS.",
+        "Các DLL này do delvewheel (công cụ đóng gói wheel của shapely) đổi tên (thêm hậu tố băm) và sửa bảng import",
+        "để trỏ tới tên mới; nội dung thư viện giữ nguyên bản dựng của shapely.",
+        f"Mã nguồn tương ứng: licenses/{geos.archive_name} trong bản zip này,",
+        f"tải từ {geos.url} (SHA-256 {geos.sha256}); upstream {GEOS_UPSTREAM} (tag {geos.version}).",
+        "Bạn có quyền thay các DLL này bằng bản GEOS cùng giao diện do bạn tự dựng (LGPL-2.1 §6).",
+        f"Toàn văn LGPL-2.1 ở dưới và ở licenses/{LGPL_NAME}.",
+    ]
+
+
+def render_notices(
+    python_license: str,
+    records: Sequence[PackageLicense],
+    read: Callable[[Path], str],
+    *,
+    binaries: Sequence[BinaryRecord] = (),
+    geos: GeosNotice | None = None,
+) -> str:
     rule = "=" * 78
     parts = [
         "THIRD_PARTY_NOTICES — thành phần bên thứ ba trong bản zip portable Holocron",
@@ -896,11 +1069,32 @@ def render_notices(python_license: str, records: Sequence[PackageLicense], read:
         python_license.strip(),
         "",
     ]
+    if geos is not None:
+        parts += [rule, *geos_notice_lines(geos), rule, geos.lgpl_text.strip(), ""]
+    if binaries:
+        parts += [rule, "Thư viện nhị phân (DLL/PYD) trong bản zip và giấy phép", rule]
+        parts += [f"{record.path} — {record.license}" for record in binaries]
+        parts.append("")
     for record in records:
         parts += [rule, f"[{record.source}] {record.name} {record.version} — {record.expression}", rule]
         for path in record.license_files:
             parts += [f"--- {path.name}", read(path).strip(), ""]
     return "\n".join(parts) + "\n"
+
+
+def check_notices(text: str, geos: GeosNotice | None) -> None:
+    """Có GEOS thì THIRD_PARTY_NOTICES phải có toàn văn LGPL-2.1 và nguồn GEOS (phiên bản, URL, tệp mã nguồn)."""
+    if geos is None:
+        return
+    problems: list[str] = []
+    if not geos.lgpl_text.strip() or geos.lgpl_text.strip() not in text:
+        problems.append("thiếu toàn văn LGPL-2.1")
+    source = geos.source
+    for needle in (f"GEOS {source.version}", source.url, f"licenses/{source.archive_name}", GEOS_UPSTREAM):
+        if needle not in text:
+            problems.append(f"thiếu nguồn GEOS: {needle}")
+    if problems:
+        raise BuildError("THIRD_PARTY_NOTICES không đạt: " + "; ".join(problems))
 
 
 def read_text_lenient(path: Path) -> str:
@@ -997,8 +1191,8 @@ def write_zip(stage: Path, zip_path: Path) -> int:
     return len(files)
 
 
-def check_zip_members(names: Sequence[str], root: str) -> None:
-    """Nội dung bắt buộc và nội dung cấm của bản zip cuối."""
+def check_zip_members(names: Sequence[str], root: str, extra_required: Sequence[str] = ()) -> None:
+    """Nội dung bắt buộc và nội dung cấm của bản zip cuối (cấm mọi `*._pth`: chốt I1 ngay ở bước build)."""
     present = set(names)
     required = [
         "Holocron.cmd",
@@ -1007,10 +1201,10 @@ def check_zip_members(names: Sequence[str], root: str) -> None:
         "HUONG-DAN-TESSERACT.txt",
         "THIRD_PARTY_NOTICES.txt",
         "python/python.exe",
-        f"python/{PTH_FILE}",
         "python/Lib/site-packages/holocron.pth",
         "app/holocron_core/launcher.py",
         "web/index.html",
+        *extra_required,
     ]
     problems = [f"thiếu {item}" for item in required if f"{root}/{item}" not in present]
     patterns = {
@@ -1028,6 +1222,8 @@ def check_zip_members(names: Sequence[str], root: str) -> None:
         lower = name.lower()
         if lower.endswith(".pyi") or "/opencv_videoio_ffmpeg" in lower:
             problems.append(f"mục bị cấm: {name}")
+        if lower.endswith(PTH_SUFFIX):
+            problems.append(f"mục bị cấm ({PTH_SUFFIX} đưa app/ vào tiến trình sandbox): {name}")
         if lower.startswith(f"{root.lower()}/site-packages/bin/") or "/site-packages/onnxruntime/tools/" in lower:
             problems.append(f"mục bị cấm: {name}")
     if problems:
@@ -1045,9 +1241,9 @@ def read_frontend_version() -> str:
 
 
 def compile_bytecode(stage: Path, run: Runner) -> None:
-    """Biên dịch `.pyc` bằng chính `python.exe` của bản zip (`unchecked-hash`: không phụ thuộc mtime khi giải zip)."""
+    """Biên dịch `.pyc` bằng chính `python.exe -I` của bản zip (`unchecked-hash`: không phụ thuộc mtime khi giải)."""
     python = stage / "python" / "python.exe"
-    args = [str(python), "-m", "compileall", "-q", "-j", "0", "--invalidation-mode", "unchecked-hash"]
+    args = [str(python), "-I", "-m", "compileall", "-q", "-j", "0", "--invalidation-mode", "unchecked-hash"]
     run([*args, "app", "site-packages"], stage)
 
 
@@ -1066,6 +1262,8 @@ def run_build(args: argparse.Namespace, run: Runner) -> int:
     version = read_frontend_version()
     root_name = f"Holocron-{version}-win64"
     lock_files = read_locks(args.ocr)
+    ocr_entries = parse_lock(LOCK_OCR.read_text(encoding="utf-8"), LOCK_OCR.name)
+    geos = geos_source_for(ocr_entries) if args.ocr == "full" else None
     stage = BUILD_DIR / "stage" / root_name
     if stage.exists():
         remove_tree(stage)
@@ -1097,12 +1295,36 @@ def run_build(args: argparse.Namespace, run: Runner) -> int:
     removed = prune_site_packages(site_dir)
     print(f"[site-packages] bỏ {len(removed)} mục: {', '.join(removed[:8])}{' …' if len(removed) > 8 else ''}")
 
-    records = license_gate(site_dir, args.ocr)
+    binaries = check_stage_binaries(stage)
+    print(f"[dll/pyd] {len(binaries)} file khớp danh sách cho phép")
+    geos_notice: GeosNotice | None = None
+    if geos is not None:
+        check_geos_version(site_dir, geos)
+        licenses_dir = stage / "licenses"
+        licenses_dir.mkdir()
+        geos_archive = ensure_cached_download(
+            BUILD_DIR / "cache", geos.archive_name, geos.url, geos.sha256, download_url
+        )
+        shutil.copyfile(geos_archive, licenses_dir / geos.archive_name)
+        lgpl_text = read_lgpl_text(PACKAGING_DIR / "licenses" / LGPL_NAME)
+        shutil.copyfile(PACKAGING_DIR / "licenses" / LGPL_NAME, licenses_dir / LGPL_NAME)
+        shapely_version = next(entry.version for entry in ocr_entries if entry.name == "shapely")
+        geos_notice = GeosNotice(geos, shapely_version, lgpl_text)
+        print(f"[geos] GEOS {geos.version} (shapely {shapely_version}): mã nguồn + LGPL-2.1 vào licenses/")
+
+    records = check_python_licenses(site_dir)
     npm_for_licenses = shutil.which("npm")
     if npm_for_licenses is None:
         raise BuildError("không tìm thấy npm trong PATH (cần `npm ls` để kiểm license frontend)")
     records += check_npm_licenses(frontend_dir, npm_for_licenses, run)
-    notices = render_notices(read_text_lenient(python_dir / "LICENSE.txt"), records, read_text_lenient)
+    notices = render_notices(
+        read_text_lenient(python_dir / "LICENSE.txt"),
+        records,
+        read_text_lenient,
+        binaries=binaries,
+        geos=geos_notice,
+    )
+    check_notices(notices, geos_notice)
     (stage / "THIRD_PARTY_NOTICES.txt").write_bytes(text_crlf_bom(notices))
 
     if sys.platform == "win32":
@@ -1118,7 +1340,8 @@ def run_build(args: argparse.Namespace, run: Runner) -> int:
     zip_path = DIST_DIR / f"{root_name}.zip"
     files = write_zip(stage, zip_path)
     with zipfile.ZipFile(zip_path) as bundle:
-        check_zip_members(bundle.namelist(), root_name)
+        extra = [f"licenses/{geos.archive_name}", f"licenses/{LGPL_NAME}"] if geos is not None else []
+        check_zip_members(bundle.namelist(), root_name, extra)
     digest = sha256_file(zip_path)
     zip_path.with_name(zip_path.name + ".sha256").write_text(f"{digest} *{zip_path.name}\n", encoding="ascii")
     elapsed = time.monotonic() - started
@@ -1133,8 +1356,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--ocr",
         choices=("lite", "full"),
-        default="lite",
-        help="lite: không RapidOCR (mặc định TẠM, chờ Q3); full: dừng ở bước license chờ Q4",
+        default="full",
+        help="full (mặc định): kèm RapidOCR + GEOS (LGPL-2.1, kèm mã nguồn); lite: không RapidOCR",
     )
     parser.add_argument("--app-src", default=str(BACKEND_DIR), help="thư mục holocron/backend chứa holocron_core/")
     parser.add_argument("--web-out", default=None, help="thư mục out/ đã dựng sẵn (bỏ bước build frontend)")

@@ -1,14 +1,20 @@
 """Smoke test bản zip portable trên Windows (opt-in, chạy tay; kế hoạch đóng gói §7 bước 1–5, chưa gồm token Q1).
 
 Cách dùng (gốc repo, bằng Python của `.venv`; cần mạng một lần để cài pytest vào thư mục overlay tạm):
-  python scripts/smoke_portable.py dist/Holocron-<version>-win64.zip [--keep]
+  python scripts/smoke_portable.py dist/Holocron-<version>-win64.zip [--keep] [--only sandbox-probe]
 
-1. Giải zip (chống zip-slip) vào thư mục tạm có dấu, chạy `Holocron.cmd --no-browser --data-dir <thư mục có dấu>`,
-   đọc URL từ stdout; kiểm `python.exe -S -s -P` của zip chỉ thấy thư viện chuẩn (như tiến trình con sandbox).
-2. `GET /` có `__HOLOCRON_RUNTIME__`; `/vault/` 200; `/v1/khong-co` JSON 404; `/v1/runtime` 200;
-   `Host: evil.example` ⇒ 403.
-3. Tải lên một PDF tự tạo có lớp chữ, chờ đọc xong, trang 1 có văn bản.
-4. Chạy `tests/test_sandbox_security.py` và `tests/test_pdf_input_limits.py` bằng `python.exe` của zip (pytest ở
+Mọi lời gọi `python/python.exe` của zip đều có `-I` (như `Holocron.cmd`).
+1. Giải zip (chống zip-slip) vào thư mục tạm có dấu. `python -I` của zip nạp `holocron_core` từ `app/` qua
+   `holocron.pth`. Probe sandbox (BẮT BUỘC, I1): chạy `run_template` thật của `holocron_core.sandbox` với một template
+   nhỏ, bắt nguyên `args`/`env`/`cwd` của `subprocess.run`, chạy lại đúng lệnh đó với script probe thay cho
+   `CHILD_SCRIPT`; tiến trình probe phải có `no_site`, không nạp `site`, `hash_randomization == 0`, không import được
+   `holocron_core`/`fastapi`/`pydantic`/`numpy`, và mọi phần tử `sys.path` nằm trong `python/` của zip.
+2. RapidOCR thật (bản `full`): import `rapidocr`, `onnxruntime`, `cv2`, `shapely`; một lần suy luận trên ảnh có chữ tự
+   tạo bằng adapter của app (model đóng sẵn, không tải mạng).
+3. `Holocron.cmd --no-browser --data-dir <thư mục có dấu>`, đọc URL từ stdout. `GET /` có `__HOLOCRON_RUNTIME__`;
+   `/vault/` 200; `/v1/khong-co` JSON 404; `/v1/runtime` 200; `Host: evil.example` ⇒ 403. Tải lên một PDF có lớp chữ
+   (trang 1 có văn bản) và một PDF scan không có lớp chữ (bản `full`: `cross_check` khác `unavailable`).
+4. Chạy `tests/test_sandbox_security.py` và `tests/test_pdf_input_limits.py` bằng `python -I` của zip (pytest ở
    overlay tạm ngoài zip), khẳng định `holocron_core` được nạp từ `app/` của zip.
 5. Gửi Ctrl+Break, tiến trình thoát trong 10 s, không còn tiến trình con, DB SQLite mở lại được.
 In PASS/FAIL từng mục; thoát mã 1 nếu có mục FAIL.
@@ -18,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import http.client
+import importlib
 import importlib.metadata
 import io
 import json
@@ -31,6 +38,8 @@ import tempfile
 import threading
 import time
 import uuid
+import zlib
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -73,7 +82,82 @@ sys.exit(pytest.main(["-q", "-p", "no:cacheprovider", "--rootdir", run_dir, "-c"
 PAGE_OBJECT = (
     "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>"
 )
-SYS_PATH_CODE = "import json, sys; print(json.dumps(sys.path))"
+# Cờ của mọi lời gọi `python.exe` của zip (như `Holocron.cmd`).
+ZIP_PYTHON_FLAGS = ("-I", "-X", "utf8")
+APP_IMPORT_CODE = (
+    "import json, sys, holocron_core; print(json.dumps({'file': holocron_core.__file__, 'path': sys.path}))"
+)
+
+# Probe sandbox: tiến trình con chạy đúng lệnh `run_template` dựng (bắt từ `subprocess.run` lúc chạy), chỉ thay
+# `CHILD_SCRIPT` bằng script dưới đây. Script chỉ dùng thư viện chuẩn và in đúng một dòng có tiền tố.
+SANDBOX_MODULE = "holocron_core.sandbox.sandbox"
+PROBE_PREFIX = "HOLOCRON_PROBE:"
+CAPTURE_PREFIX = "HOLOCRON_CAPTURE:"
+FORBIDDEN_IN_SANDBOX = ("holocron_core", "fastapi", "pydantic", "numpy")
+PROBE_SCRIPT = f"""
+import json
+import sys
+
+result = {{
+    "no_site": sys.flags.no_site,
+    "site_loaded": "site" in sys.modules,
+    "hash_randomization": sys.flags.hash_randomization,
+    "path": list(sys.path),
+    "imports": {{}},
+}}
+for name in {FORBIDDEN_IN_SANDBOX!r}:
+    try:
+        __import__(name)
+        result["imports"][name] = "imported"
+    except ImportError:
+        result["imports"][name] = "ImportError"
+    except Exception as exc:
+        result["imports"][name] = type(exc).__name__
+print({PROBE_PREFIX!r} + json.dumps(result))
+"""
+# Template hợp lệ nhỏ để `run_template` đi hết đường thật (ASTGuard ⇒ tiến trình con).
+PROBE_TEMPLATE = (
+    "def generate_params(seed):\n    return {'a': seed % 7 + 1}\n"
+    "def validate(p):\n    assert p['a'] > 0\n"
+    "def solve(p):\n    return {'value': p['a'], 'display': str(p['a']), 'explanation_vi': 'x'}\n"
+    "def make_distractors(p, s):\n"
+    "    return [{'misconception_code': 'A_B_C', 'value': p['a'] + i, 'display': str(p['a'] + i),"
+    " 'rationale_vi': 'r'} for i in range(1, 4)]\n"
+    "def render_stem(p):\n    return 'stem'\n"
+)
+# Chạy trong `python -I` của zip: nạp module này (thư mục scripts/ truyền qua argv) rồi gọi `capture_sandbox_probe`.
+CAPTURE_CODE = f"""
+import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import smoke_portable
+print({CAPTURE_PREFIX!r} + json.dumps(smoke_portable.capture_sandbox_probe(Path(sys.argv[2]))))
+"""
+
+# RapidOCR thật trong `python -I` của zip: vẽ chữ bằng OpenCV (không cần font), đọc bằng adapter của app (model đóng
+# sẵn, đường dẫn tường minh, không tải mạng), ghi ảnh xám thô để dựng PDF scan.
+SCAN_TEXT = "HOLOCRON 2026 OCR 31415"
+SCAN_SIZE = (1240, 1754)  # A4 ở 150 dpi
+OCR_CODE = f"""
+import json, sys
+from pathlib import Path
+import cv2, numpy, onnxruntime, rapidocr, shapely
+from holocron_core.infrastructure.document_readers.rapidocr_adapter import RapidOcrBackend
+width, height = {SCAN_SIZE!r}
+image = numpy.full((height, width), 255, dtype=numpy.uint8)
+for row in range(3):
+    cv2.putText(image, {SCAN_TEXT!r}, (90, 260 + row * 220), cv2.FONT_HERSHEY_SIMPLEX, 2.6, 0, 6, cv2.LINE_AA)
+Path(sys.argv[1]).write_bytes(image.tobytes())
+ok, png = cv2.imencode(".png", image)
+backend = RapidOcrBackend.load()
+lines = backend.read(png.tobytes(), width, height).lines if backend is not None and ok else []
+print(json.dumps({{
+    "modules": {{m.__name__: str(getattr(m, "__file__", "")) for m in (cv2, numpy, onnxruntime, rapidocr, shapely)}},
+    "geos": shapely.geos_version_string,
+    "loaded": backend is not None,
+    "tokens": [token for line in lines for token in line.tokens],
+}}))
+"""
 
 
 class SmokeError(Exception):
@@ -225,18 +309,164 @@ class OutputReader:
 # ---------------------------------------------------------------- các bước
 
 
-def check_sandbox_path(report: Report, root: Path) -> None:
-    python = root / "python" / "python.exe"
-    code, output = run_text([str(python), "-S", "-s", "-P", "-c", SYS_PATH_CODE], timeout=60)
-    if not report.check("python -S -s -P chạy được", code == 0, output.strip()[-300:] if code else ""):
+def zip_python(root: Path) -> list[str]:
+    """Lệnh gọi `python.exe` của zip, luôn kèm `-I` như `Holocron.cmd`."""
+    return [str(root / "python" / "python.exe"), *ZIP_PYTHON_FLAGS]
+
+
+def normalized(path: str | Path) -> Path:
+    """Đường dẫn tuyệt đối đã resolve và normcase (so sánh không phân biệt hoa thường trên Windows)."""
+    return Path(os.path.normcase(str(Path(path).resolve())))
+
+
+def is_inside(path: str | Path, root: str | Path) -> bool:
+    return normalized(path).is_relative_to(normalized(root))
+
+
+def swap_child_script(args: Sequence[str], child_script: str, probe: str) -> list[str]:
+    """Lệnh của sandbox với đúng một phần tử `CHILD_SCRIPT` thay bằng script probe; không thấy hoặc thấy nhiều ⇒ lỗi."""
+    target = normalized(child_script)
+    positions = [index for index, arg in enumerate(args) if not arg.startswith("-") and normalized(arg) == target]
+    if len(positions) != 1:
+        raise SmokeError(f"lệnh sandbox phải chứa đúng một lần CHILD_SCRIPT ({child_script}): {list(args)}")
+    swapped = list(args)
+    swapped[positions[0]] = probe
+    return swapped
+
+
+def parse_prefixed(output: str, prefix: str) -> dict[str, object] | None:
+    """Dòng cuối có tiền tố `prefix` ⇒ dict JSON; không có ⇒ None."""
+    for line in reversed(output.splitlines()):
+        if line.startswith(prefix):
+            value = json.loads(line[len(prefix) :])
+            if not isinstance(value, dict):
+                raise SmokeError(f"dữ liệu sau {prefix} không phải object JSON")
+            return {str(key): item for key, item in value.items()}
+    return None
+
+
+def capture_sandbox_probe(probe_script: Path) -> dict[str, object]:
+    """Chạy `run_template` thật; bọc `subprocess.run` của module sandbox để bắt nguyên `args`/`env`/`cwd` rồi chạy lại
+    đúng lệnh đó (cùng kwargs, cùng `cwd` còn tồn tại) với `probe_script` thay cho `CHILD_SCRIPT`.
+
+    Chạy bên trong `python -I` của zip (qua `CAPTURE_CODE`); không tự dựng lệnh hay môi trường nào.
+    """
+    module = importlib.import_module(SANDBOX_MODULE)
+    child_script = str(module.CHILD_SCRIPT)
+    process_module = module.subprocess
+    real_run = process_module.run
+    captured: dict[str, object] = {}
+
+    def wrapper(args: Sequence[str], **kwargs: object) -> object:
+        result = real_run(args, **kwargs)
+        if "args" not in captured:
+            probe_args = swap_child_script(args, child_script, str(probe_script))
+            probe = real_run(probe_args, **{**kwargs, "input": ""})
+            env = kwargs.get("env")
+            captured.update(
+                args=list(args),
+                env=dict(env) if isinstance(env, dict) else None,
+                cwd=str(kwargs.get("cwd")),
+                probe_args=probe_args,
+                probe_returncode=probe.returncode,
+                probe=parse_prefixed(str(probe.stdout), PROBE_PREFIX),
+                probe_stderr=str(probe.stderr)[-2000:],
+            )
+        return result
+
+    process_module.run = wrapper
+    try:
+        outcome = module.run_template(PROBE_TEMPLATE, seed=7)
+    finally:
+        process_module.run = real_run
+    captured["template_status"] = str(getattr(outcome.status, "value", outcome.status))
+    captured["executable"] = sys.executable
+    return captured
+
+
+def evaluate_probe(capture: Mapping[str, object], python_dir: Path) -> list[str]:
+    """Các vi phạm I1 trong kết quả probe (rỗng = đạt)."""
+    problems: list[str] = []
+    if capture.get("template_status") != "ok":
+        problems.append(f"run_template không chạy hết đường thật: status={capture.get('template_status')}")
+    probe = capture.get("probe")
+    if not isinstance(probe, dict):
+        tail = str(capture.get("probe_stderr", ""))[-300:]
+        return [*problems, f"tiến trình probe không trả kết quả (mã {capture.get('probe_returncode')}): {tail}"]
+    if probe.get("no_site") != 1:
+        problems.append(f"sys.flags.no_site = {probe.get('no_site')} (cần 1)")
+    if probe.get("site_loaded") is not False:
+        problems.append("module 'site' đã được nạp trong tiến trình sandbox")
+    if probe.get("hash_randomization") != 0:
+        problems.append(f"sys.flags.hash_randomization = {probe.get('hash_randomization')} (cần 0)")
+    imports = probe.get("imports")
+    imports = imports if isinstance(imports, dict) else {}
+    for name in FORBIDDEN_IN_SANDBOX:
+        if imports.get(name) != "ImportError":
+            problems.append(f"import {name} trong sandbox: {imports.get(name)} (cần ImportError)")
+    paths = probe.get("path")
+    if not isinstance(paths, list) or not paths:
+        problems.append("không đọc được sys.path của tiến trình probe")
+    else:
+        outside = [str(entry) for entry in paths if not is_inside(str(entry), python_dir)]
+        if outside:
+            problems.append(f"sys.path có phần tử ngoài {python_dir}: {', '.join(outside)}")
+    return problems
+
+
+def run_sandbox_probe(root: Path, work: Path) -> tuple[dict[str, object] | None, str]:
+    """Chạy `CAPTURE_CODE` bằng `python -I` của zip; trả (kết quả bắt được, output thô)."""
+    probe_dir = work / "probe"
+    probe_dir.mkdir(parents=True, exist_ok=True)
+    probe_script = probe_dir / "sandbox_probe.py"
+    probe_script.write_text(PROBE_SCRIPT, encoding="utf-8")
+    args = [*zip_python(root), "-c", CAPTURE_CODE, str(Path(__file__).resolve().parent), str(probe_script)]
+    code, output = run_text(args, cwd=probe_dir, timeout=120)
+    capture = parse_prefixed(output, CAPTURE_PREFIX) if code == 0 else None
+    return capture, output
+
+
+def check_sandbox_probe(report: Report, root: Path, work: Path) -> None:
+    capture, output = run_sandbox_probe(root, work)
+    if capture is None:
+        report.check("probe sandbox (I1) chạy được", False, output.strip()[-400:])
         return
-    entries = [Path(entry) for entry in json.loads(output.strip().splitlines()[-1])]
-    extra = [
-        str(entry)
-        for entry in entries
-        if entry.name.lower() == "site-packages" or entry.resolve() == (root / "app").resolve()
-    ]
-    report.check("sandbox (-S) chỉ thấy thư viện chuẩn", not extra, ", ".join(extra))
+    probe = capture.get("probe")
+    print(f"  lệnh sandbox: {capture.get('args')}", flush=True)
+    print(f"  env sandbox: {capture.get('env')}", flush=True)
+    if isinstance(probe, dict):
+        print(f"  sys.path trong sandbox: {probe.get('path')}", flush=True)
+    problems = evaluate_probe(capture, root / "python")
+    report.check("probe sandbox (I1): chỉ thư viện chuẩn trong python/, không site", not problems, "; ".join(problems))
+
+
+def check_app_import(report: Report, root: Path) -> None:
+    code, output = run_text([*zip_python(root), "-c", APP_IMPORT_CODE], timeout=120)
+    if not report.check("python -I nạp được holocron_core", code == 0, output.strip()[-300:] if code else ""):
+        return
+    data = json.loads(output.strip().splitlines()[-1])
+    print(f"  sys.path của python -I: {data['path']}", flush=True)
+    report.check("holocron_core nạp từ app/ của zip", is_inside(str(data["file"]), root / "app"), str(data["file"]))
+
+
+def check_rapidocr(report: Report, root: Path, work: Path) -> Path | None:
+    """RapidOCR thật; trả file ảnh xám thô của trang scan tự tạo (None nếu bước lỗi)."""
+    gray = work / "scan.gray"
+    code, output = run_text([*zip_python(root), "-c", OCR_CODE, str(gray)], cwd=work, timeout=300)
+    if not report.check("import rapidocr/onnxruntime/cv2/shapely", code == 0, output.strip()[-400:] if code else ""):
+        return None
+    data = json.loads(output.strip().splitlines()[-1])
+    modules = data.get("modules", {})
+    outside = [name for name, path in modules.items() if not is_inside(str(path), root)]
+    report.check("module OCR nạp từ zip", not outside, ", ".join(outside))
+    print(f"  GEOS của shapely: {data.get('geos')}", flush=True)
+    tokens = [str(token) for token in data.get("tokens", [])]
+    report.check(
+        "RapidOCR suy luận ảnh tự tạo (model đóng sẵn)",
+        bool(data.get("loaded")) and any(token in tokens for token in ("2026", "31415")),
+        f"loaded={data.get('loaded')}, token={tokens[:8]}",
+    )
+    return gray
 
 
 def check_http(report: Report, port: int) -> None:
@@ -253,30 +483,91 @@ def check_http(report: Report, port: int) -> None:
     status, kind, _ = http_request(port, "GET", "/v1/runtime")
     report.check("GET /v1/runtime 200", status == 200 and "json" in kind, f"{status}")
     status, _, _ = http_request(port, "GET", "/v1/runtime", headers={"Host": "evil.example"})
-    report.check("Host: evil.example bị chặn 403", status == 403, f"{status}")
+    report.check("Host: evil.example bị chặn 403 (kiểm Host thuộc B4, chưa ở develop)", status == 403, f"{status}")
 
 
-def check_upload(report: Report, port: int) -> None:
+def upload_and_read_page(report: Report, port: int, label: str, filename: str, content: bytes) -> dict[str, object]:
+    """Tải PDF lên, chờ đọc xong (≤ 300 s), trả JSON trang 1 (rỗng nếu bước nào FAIL)."""
     body, content_type = multipart(
-        {"subject_code": "SMOKE101", "source_kind": "lecture_slides", "output_language": "vi"},
-        "smoke.pdf",
-        minimal_pdf(PDF_LINES),
+        {"subject_code": "SMOKE101", "source_kind": "lecture_slides", "output_language": "vi"}, filename, content
     )
     status, _, text = http_request(port, "POST", "/v1/documents", body=body, headers={"Content-Type": content_type})
-    if not report.check("POST /v1/documents nhận PDF", status in (200, 202), f"{status} {text[:200]}"):
-        return
+    if not report.check(f"POST /v1/documents nhận {label}", status in (200, 202), f"{status} {text[:200]}"):
+        return {}
     document_id = str(json.loads(text)["meta"]["doc_id"])
-    deadline = time.monotonic() + 180
+    deadline = time.monotonic() + 300
     document_status = "processing"
     while document_status == "processing" and time.monotonic() < deadline:
         time.sleep(1)
         _, _, text = http_request(port, "GET", f"/v1/documents/{document_id}")
         document_status = str(json.loads(text).get("status"))
-    if not report.check("tài liệu đọc xong trong 180 s", document_status != "processing", document_status):
-        return
+    if not report.check(f"{label}: đọc xong trong 300 s", document_status != "processing", document_status):
+        return {}
     status, _, text = http_request(port, "GET", f"/v1/documents/{document_id}/pages/1")
-    lines = [str(line.get("text", "")) for line in json.loads(text).get("lines", [])] if status == 200 else []
-    report.check("trang 1 có văn bản", any("Holocron" in line for line in lines), f"{status}, {len(lines)} dòng")
+    page = json.loads(text) if status == 200 else None
+    if not report.check(f"{label}: GET trang 1", isinstance(page, dict), f"{status}"):
+        return {}
+    assert isinstance(page, dict)
+    return {str(key): value for key, value in page.items()}
+
+
+def page_lines(page: Mapping[str, object]) -> list[str]:
+    lines = page.get("lines")
+    return [str(line.get("text", "")) for line in lines if isinstance(line, dict)] if isinstance(lines, list) else []
+
+
+def check_upload(report: Report, port: int) -> None:
+    page = upload_and_read_page(report, port, "PDF có lớp chữ", "smoke.pdf", minimal_pdf(PDF_LINES))
+    if page:
+        lines = page_lines(page)
+        report.check("trang 1 có văn bản", any("Holocron" in line for line in lines), f"{len(lines)} dòng")
+
+
+def image_pdf(gray: bytes, width: int, height: int) -> bytes:
+    """PDF một trang A4 chỉ có một ảnh xám (FlateDecode), KHÔNG có lớp chữ (PDF scan), dựng bằng thư viện chuẩn."""
+    if len(gray) != width * height:
+        raise SmokeError(f"ảnh xám có {len(gray)} byte, cần {width * height}")
+    data = zlib.compress(gray, 9)
+    content = b"q 595 0 0 842 0 0 cm /Im1 Do Q"
+    page = (
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R"
+        b" /Resources << /XObject << /Im1 5 0 R >> >> >>"
+    )
+    image_header = (
+        b"<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceGray /BitsPerComponent 8"
+        b" /Filter /FlateDecode /Length %d >>\nstream\n" % (width, height, len(data))
+    )
+    objects: list[bytes] = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        page,
+        b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
+        image_header + data + b"\nendstream",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets: list[int] = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % number + body + b"\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode("ascii")
+    out += "".join(f"{offset:010d} 00000 n \n" for offset in offsets).encode("ascii")
+    out += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode("ascii")
+    return bytes(out)
+
+
+def check_scan_upload(report: Report, port: int, gray: Path) -> None:
+    width, height = SCAN_SIZE
+    page = upload_and_read_page(report, port, "PDF scan", "scan.pdf", image_pdf(gray.read_bytes(), width, height))
+    if not page:
+        return
+    cross_check = page.get("cross_check")
+    status = cross_check.get("status") if isinstance(cross_check, dict) else None
+    detail = f"tier={page.get('tier_used')}, cross_check={status}, review={page.get('review_reasons')}"
+    detail += f", lỗi={page.get('failure_reason')}" if page.get("failure_reason") else ""
+    report.check(
+        "PDF scan: cross_check khác unavailable (có lượt RapidOCR)", status not in (None, "unavailable"), detail
+    )
 
 
 def check_shutdown(report: Report, process: subprocess.Popen[bytes], root: Path, data_dir: Path) -> None:
@@ -318,32 +609,50 @@ def check_pytest(report: Report, root: Path, work: Path) -> None:
     code, output = run_text([*pip, "--only-binary=:all:", pytest_requirement])
     if not report.check(f"cài {pytest_requirement} vào overlay tạm", code == 0, output.strip()[-300:] if code else ""):
         return
-    python = root / "python" / "python.exe"
-    args = [str(python), "-X", "utf8", "-c", PYTEST_CODE, str(run_dir), str(overlay), str(root / "app"), str(ini)]
+    args = [*zip_python(root), "-c", PYTEST_CODE, str(run_dir), str(overlay), str(root / "app"), str(ini)]
     code, output = run_text([*args, *(f"tests/{name}" for name in TEST_FILES)], cwd=run_dir)
     tail = output.strip().splitlines()[-1] if output.strip() else ""
-    report.check("pytest sandbox + giới hạn PDF bằng python.exe của zip", code == 0, tail)
+    report.check("pytest sandbox + giới hạn PDF bằng python -I của zip", code == 0, tail)
 
 
-def smoke(zip_path: Path, work: Path) -> Report:
-    report = Report()
+STEPS = ("all", "sandbox-probe")
+
+
+def extract_root(zip_path: Path, work: Path) -> Path:
     base = work / ACCENTED_DIR
-    data_dir = work / ACCENTED_DATA
     safe_extract(zip_path, base)
     roots = [path for path in base.iterdir() if path.is_dir()]
     if len(roots) != 1:
         raise SmokeError(f"zip phải có đúng một thư mục gốc, có {len(roots)}")
-    root = roots[0]
-    print(f"Giải nén vào: {root}", flush=True)
-    check_sandbox_path(report, root)
+    print(f"Giải nén vào: {roots[0]}", flush=True)
+    return roots[0]
 
+
+def smoke(zip_path: Path, work: Path, only: str = "all") -> Report:
+    report = Report()
+    root = extract_root(zip_path, work)
+    check_sandbox_probe(report, root, work)
+    if only == "sandbox-probe":
+        return report
+    check_app_import(report, root)
+    gray: Path | None = None
+    if (root / "site-packages" / "rapidocr").is_dir():
+        gray = check_rapidocr(report, root, work)
+    else:
+        print("BỎ QUA  RapidOCR — bản lite (không có site-packages/rapidocr)", flush=True)
+
+    data_dir = work / ACCENTED_DATA
     process = start_server(root, data_dir)
     reader = OutputReader(process)
     reader.ready.wait(timeout=60)
     if report.check("Holocron.cmd in URL trong 60 s", reader.port is not None, " | ".join(reader.lines[-5:])):
         assert reader.port is not None
+        for line in reader.lines:
+            print(f"  {line}", flush=True)
         check_http(report, reader.port)
         check_upload(report, reader.port)
+        if gray is not None:
+            check_scan_upload(report, reader.port, gray)
         check_shutdown(report, process, root, data_dir)
     elif process.poll() is None:
         process.kill()
@@ -360,13 +669,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Smoke test bản zip portable Holocron (Windows).")
     parser.add_argument("zip", help="đường dẫn Holocron-<version>-win64.zip")
     parser.add_argument("--keep", action="store_true", help="giữ thư mục tạm để xem lại")
+    parser.add_argument("--only", choices=STEPS, default="all", help="sandbox-probe: chỉ chạy probe sandbox (I1)")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     if sys.platform != "win32":
         print("Smoke test chỉ chạy trên Windows.", file=sys.stderr)
         return 2
     work = Path(tempfile.mkdtemp(prefix="holocron-smoke-"))
     try:
-        report = smoke(Path(args.zip).resolve(), work)
+        report = smoke(Path(args.zip).resolve(), work, args.only)
     except (BuildError, SmokeError, OSError, subprocess.SubprocessError) as exc:
         print(f"LỖI smoke: {exc}", file=sys.stderr)
         return 1

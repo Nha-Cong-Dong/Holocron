@@ -1,6 +1,7 @@
 # ADR 008: Bộ nhập PDF theo tầng
 
 - Trạng thái: Chấp nhận (2026-10-23). Engine OCR của tầng 2 đã chốt ngày 2026-10-24, sau phép đo ở mục 5 của phần Quyết định (đo trên scan giả lập): Tesseract `vie` là engine chính, RapidOCR chỉ đối chiếu token số và mã (mục 8). Các mục 8–14 bổ sung ngày 2026-10-24. Bảy điểm từng ghi "đề xuất" trong các mục này được người dùng duyệt ngày 2026-10-24, ghi lại tại chỗ là "đã duyệt 2026-10-24". Contract chi tiết (mục 11, 13) nằm ở spec §5.7, §6.5 và §7.4. Sửa ngày 2026-10-25 theo quyết định của người dùng: câu chữ VLM và nhà cung cấp LLM (Bối cảnh, Phương án đã loại), pdfplumber đã duyệt (mục 1, Hệ quả), ghi chú `find_tables` (mục 6), lệnh Tesseract (mục 8), `page_number` (mục 13), chữ hiếm được phép thiếu (mục 14).
+- Sửa đổi 2026-10-27: bỏ nhà cung cấp mặc định DeepSeek, xem PR #<PR>.
 - Ngày: 2026-10-23; cập nhật 2026-10-24 (kết quả đo, engine OCR, chuyển tầng, đối chiếu chéo; duyệt các điểm đề xuất; contract ở spec); cập nhật 2026-10-25
 
 ## Bối cảnh

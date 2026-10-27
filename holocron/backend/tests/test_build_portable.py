@@ -748,16 +748,53 @@ def test_copy_app_uses_git_listing_and_skips_caches(tmp_path: Path) -> None:
         "holocron_core/infrastructure/templates/rr.py",
         "holocron_core/infrastructure/storage/migrations/0001.sql",
         "holocron_core/__pycache__/x.cpython-314.pyc",
-        "holocron_core/deleted.py",
     ]
+    calls: list[list[str]] = []
 
     def run(args: Sequence[str], cwd: Path | None) -> str:
-        assert args[:2] == ["git", "ls-files"] and cwd == src
-        return "\0".join(listed) + "\0"
+        assert cwd == src
+        calls.append(list(args))
+        return "" if args[1] == "status" else "\0".join(listed) + "\0"
 
     count = bp.copy_app(src, tmp_path / "app", run)
     assert count == 4
     assert not (tmp_path / "app" / "holocron_core" / "__pycache__").exists()
+    ls_files = next(call for call in calls if call[1] == "ls-files")
+    assert "--cached" in ls_files and "--others" not in ls_files
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        " M holocron_core/launcher.py\0",
+        "?? holocron_core/new_module.py\0",
+        " D holocron_core/deleted.py\0",
+        "A  holocron_core/staged.py\0",
+        "R  holocron_core/new.py\0holocron_core/old.py\0",
+    ],
+)
+def test_copy_app_refuses_uncommitted_or_untracked_files(tmp_path: Path, status: str) -> None:
+    src = tmp_path / "src"
+    _app_tree(src)
+
+    def run(args: Sequence[str], cwd: Path | None) -> str:
+        assert args[1] == "status", "không được liệt kê file khi cây chưa sạch"
+        assert "--untracked-files=all" in args and args[-1] == "holocron_core"
+        return status
+
+    with pytest.raises(BuildError, match="chưa commit hoặc file untracked"):
+        bp.copy_app(src, tmp_path / "app", run)
+
+
+def test_copy_app_tracked_file_missing_on_disk_stops(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    _app_tree(src)
+
+    def run(args: Sequence[str], cwd: Path | None) -> str:
+        return "" if args[1] == "status" else "holocron_core/ghost.py\0"
+
+    with pytest.raises(BuildError, match="ghost.py"):
+        bp.copy_app(src, tmp_path / "app", run)
 
 
 def test_missing_web_index_stops(tmp_path: Path) -> None:

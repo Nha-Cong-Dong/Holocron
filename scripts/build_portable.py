@@ -1105,17 +1105,26 @@ def read_text_lenient(path: Path) -> str:
 
 
 def git_app_files(app_src: Path, run: Runner) -> list[str]:
-    """File của `holocron_core/` theo git (đã commit + chưa track nhưng không bị ignore), bỏ cache/build."""
-    output = run(
-        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "holocron_core"], app_src
-    )
+    """File ĐÃ TRACK của `holocron_core/` (`git ls-files --cached`), bỏ cache/build.
+
+    `holocron_core/` có thay đổi chưa commit, file đã xoá, hoặc file untracked không bị ignore ⇒ dừng: bản zip chỉ
+    chứa đúng mã đã commit.
+    """
+    status = run(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "holocron_core"], app_src)
+    dirty = sorted({entry[3:] for entry in status.split("\0") if len(entry) > 3 and entry[2] == " "})
+    if dirty:
+        shown = ", ".join(dirty[:10]) + (" …" if len(dirty) > 10 else "")
+        raise BuildError(f"holocron_core/ có thay đổi chưa commit hoặc file untracked (commit/xoá trước): {shown}")
+    output = run(["git", "ls-files", "-z", "--cached", "--", "holocron_core"], app_src)
     files: list[str] = []
     for relative in sorted(set(filter(None, output.split("\0")))):
         parts = PurePosixPath(relative).parts
         if any(part == "__pycache__" or part == "build" or part.endswith(".egg-info") for part in parts):
             continue
-        if relative.endswith((".pyc", ".pyo")) or not (app_src / relative).is_file():
+        if relative.endswith((".pyc", ".pyo")):
             continue
+        if not (app_src / relative).is_file():
+            raise BuildError(f"file đã track nhưng không có trên đĩa: {relative}")
         files.append(relative)
     return files
 

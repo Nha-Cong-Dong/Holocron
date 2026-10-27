@@ -16,7 +16,7 @@ import pytest
 from holocron_core.domain.documents import CrossCheck, DocumentImport, PageExtraction
 from holocron_core.domain.schemas import ChunkCategory, normalize_quote
 from holocron_core.routers.api import app
-from holocron_core.services.document_import import SynchronousImportQueue
+from holocron_core.services.document_import import IMPORT_ERROR_MESSAGES, SynchronousImportQueue
 from tests.document_import_support import FakePdfReader, HoldingQueue, ImportEnv, install, ok_page, pdf_bytes
 from tests.vault_support import NOW, STORE_KINDS, open_store
 
@@ -151,12 +151,13 @@ def test_missing_or_invalid_chapter_code_is_422_and_stores_nothing(env: ImportEn
     assert env.reader.probed == [] and list(env.files.root.iterdir()) == []
 
 
-def test_same_content_same_subject_other_chapter_returns_the_existing_record(env: ImportEnv) -> None:
-    """§6.5 bước 3 chưa quyết trường hợp này: tạm trả bản ghi cũ (200), không đọc lại, không đổi chương."""
+def test_same_content_same_subject_other_chapter_is_a_409(env: ImportEnv) -> None:
+    """§6.5 bước 3 (duyệt 2026-10-26 chiều): cùng nội dung, cùng môn, khác chương ⇒ 409; không đọc lại, không đổi
+    chương."""
     content = pdf_bytes("hai-chuong")
     env.post(content, chapter_code="ch3")
     again = env.post(content, chapter_code="ch4")
-    assert again.status_code == 200 and again.json()["chapter_code"] == "ch3"
+    assert again.status_code == 409 and again.json() == {"detail": IMPORT_ERROR_MESSAGES["CHAPTER_CONFLICT"]}
     assert len(env.reader.probed) == 1
 
 
@@ -232,7 +233,7 @@ def test_appended_lines_go_to_the_end_as_human_lines(env: ImportEnv) -> None:
     assert len(after.lines) == len(page.lines) + 2
     added = after.lines[len(page.lines)]
     assert added.text == unicodedata.normalize("NFC", nfd)
-    assert (added.engine, added.bbox, added.conf, added.edited_by_human) == ("human", None, 1.0, False)
+    assert (added.engine, added.bbox, added.conf, added.edited_by_human) == ("human", None, 1.0, True)
     assert after.lines[-1].text == "" and after.status == "ok"
     changes = env.store.list_page_audits(doc_id, 1)[0].changes
     assert [(c.line_index, c.old) for c in changes] == [(1, None), (2, None)]

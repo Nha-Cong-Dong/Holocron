@@ -84,6 +84,7 @@ ERROR_STATUS: dict[ImportErrorCode, int] = {
     "NOT_PDF": 415,
     "CONTENT_TYPE_MISMATCH": 415,
     "SUBJECT_CONFLICT": 409,
+    "CHAPTER_CONFLICT": 409,
     "PASSWORD_REQUIRED": 422,
     "OPEN_FAILED": 422,
     "TOO_MANY_PAGES": 422,
@@ -152,7 +153,7 @@ ReaderDep = Annotated[PdfReader, Depends(get_pdf_reader)]
     "/v1/documents",
     response_model=DocumentImport,
     status_code=202,
-    responses={200: {"model": DocumentImport, "description": "Đã nhập cùng nội dung cho cùng môn"}},
+    responses={200: {"model": DocumentImport, "description": "Đã nhập cùng nội dung cho cùng môn và cùng chương"}},
 )
 def import_document(
     response: Response,

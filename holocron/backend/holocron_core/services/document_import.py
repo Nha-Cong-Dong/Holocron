@@ -106,6 +106,7 @@ ImportErrorCode = Literal[
     "NOT_PDF",
     "CONTENT_TYPE_MISMATCH",
     "SUBJECT_CONFLICT",
+    "CHAPTER_CONFLICT",
     "PASSWORD_REQUIRED",
     "OPEN_FAILED",
     "TOO_MANY_PAGES",
@@ -118,6 +119,10 @@ IMPORT_ERROR_MESSAGES: dict[ImportErrorCode, str] = {
     "NOT_PDF": "Chỉ nhận PDF (thiếu magic bytes %PDF-); ảnh đề thi tải lên qua /v1/ingestion/upload",
     "CONTENT_TYPE_MISMATCH": "Content-Type khai báo không khớp nội dung PDF",
     "SUBJECT_CONFLICT": "Tài liệu này đã được nhập cho một môn khác",
+    "CHAPTER_CONFLICT": (
+        "Tài liệu này đã được nhập cho một chương khác của môn này; muốn đổi chương thì sửa nhãn chunk hoặc xoá tài "
+        "liệu rồi nhập lại"
+    ),
     "PASSWORD_REQUIRED": "PDF có mật khẩu",
     "OPEN_FAILED": "Không mở được tài liệu",
     "TOO_MANY_PAGES": "PDF vượt giới hạn số trang",
@@ -368,10 +373,9 @@ class ImportRequest:
 
 @dataclass(frozen=True)
 class ImportOutcome:
-    """`created = False`: tài liệu cùng nội dung đã được nhập cho cùng môn (§6.5 bước 3, trả 200 thay vì 202).
-
-    Cùng môn mà khác `chapter_code`: spec chưa quyết (§6.5 bước 3, §17 D8); tạm trả bản ghi cũ như trùng cùng môn.
-    """
+    """`created = False`: tài liệu cùng nội dung đã được nhập cho cùng môn và cùng `chapter_code` (§6.5 bước 3, trả
+    200 thay vì 202). Cùng môn mà khác `chapter_code` thì không có `ImportOutcome`: `_existing_outcome` ném
+    `CHAPTER_CONFLICT` (409, duyệt 2026-10-26 chiều)."""
 
     created: bool
     document: DocumentImport
@@ -488,10 +492,14 @@ def _probe(reader: PdfReader, staged: StagedFile) -> int:
         raise DocumentImportError(_PROBE_ERRORS[exc.code]) from exc
 
 
-def _existing_outcome(store: DocumentRepository, existing: ImportedDocument, subject_code: str) -> ImportOutcome:
-    """§6.5 bước 3: cùng môn ⇒ 200 với tài liệu hiện có; khác môn ⇒ `SUBJECT_CONFLICT`."""
-    if existing.meta.subject_code != subject_code:
+def _existing_outcome(store: DocumentRepository, existing: ImportedDocument, request: ImportRequest) -> ImportOutcome:
+    """§6.5 bước 3, kiểm theo thứ tự: khác môn ⇒ `SUBJECT_CONFLICT`; bản ghi nhập trước khi có `chapter_code` ⇒
+    `DocumentChapterMissingError` (§5.7); khác `chapter_code` ⇒ `CHAPTER_CONFLICT`; cùng môn, cùng chương ⇒ 200 với
+    tài liệu hiện có. Không ghi gì xuống kho."""
+    if existing.meta.subject_code != request.subject_code:
         raise DocumentImportError("SUBJECT_CONFLICT")
+    if _chapter_code(existing) != request.chapter_code:
+        raise DocumentImportError("CHAPTER_CONFLICT")
     return ImportOutcome(created=False, document=document_view(store, existing))
 
 
@@ -564,7 +572,8 @@ def accept_document(
 
     Sau bước kiểm byte (§6.5 bước 1–2), lần nhận đi qua cổng `runtime.gate` cho tới khi xong, nên `runtime.close`
     chờ cả lượt đang ghi file tạm hay mở thử. Phần còn lại chạy dưới khoá của `document_id` (`runtime.locks`):
-    request thứ hai cùng nội dung chờ request đầu xong rồi thấy tài liệu đã có (200, hoặc 409 khi khác môn). Tài liệu
+    request thứ hai cùng nội dung chờ request đầu xong rồi thấy tài liệu đã có (200, hoặc 409 theo
+    `_existing_outcome`). Tài liệu
     cùng mọi trang `pending` được tạo trong MỘT giao dịch (`create_imported_document`); nếu một tiến trình khác vẫn
     kịp tạo trước (`DocumentExistsError`) thì trả tài liệu đó như bước 3.
 
@@ -587,7 +596,7 @@ def accept_document(
         with runtime.locks.hold(document_id):
             existing = store.get_imported_document(document_id)
             if existing is not None:
-                return _existing_outcome(store, existing, request.subject_code)
+                return _existing_outcome(store, existing, request)
             upload = store.get_document(document_id)
             staged = runtime.files.stage(request.content)
             try:
@@ -643,7 +652,7 @@ def _store_and_queue(
         if existing is None:
             _discard_unused_file(store, runtime.files, document_id, staged.sha256)
             raise
-        return _existing_outcome(store, existing, request.subject_code)
+        return _existing_outcome(store, existing, request)
     except BaseException:
         _discard_unused_file(store, runtime.files, document_id, staged.sha256)
         raise
@@ -1142,8 +1151,9 @@ def apply_line_edits(
     """Áp `patch` lên trang (hàm thuần, §6.5); trả trang mới (version + 1) và danh sách dòng đổi cho audit.
 
     - Dòng sửa: văn bản mới (NFC), `edited_by_human = true`, bỏ `flags`, bỏ `TokenMismatch` của dòng đó; `engine` và
-      `conf` giữ nguyên (đổi chúng là đề xuất chưa duyệt).
-    - Dòng gõ thêm: cuối trang, `engine = "human"`, `bbox = null`, `conf = 1.0`, `edited_by_human = false`.
+      `conf` gốc của engine giữ nguyên (duyệt 2026-10-26 chiều).
+    - Dòng gõ thêm: cuối trang, `engine = "human"`, `bbox = null`, `conf = 1.0`, `edited_by_human = true` (duyệt
+      2026-10-26 chiều).
     - `cross_check.status`: `mismatch` mà hết token lệch ⇒ `ok`; trạng thái khác giữ nguyên.
     - `review_reasons`: bỏ `TOKEN_MISMATCH` khi hết token lệch; bỏ `LOW_CONF_LINES` khi không còn dòng nào có
       `conf < line_conf_min` (dòng `edited_by_human` không tính); lý do khác giữ nguyên; không thêm lý do nào.
@@ -1164,7 +1174,9 @@ def apply_line_edits(
         for line in page.lines
     ]
     lines += [
-        ExtractedLine(line_index=len(page.lines) + offset, text=text, bbox=None, conf=1.0, engine="human")
+        ExtractedLine(
+            line_index=len(page.lines) + offset, text=text, bbox=None, conf=1.0, engine="human", edited_by_human=True
+        )
         for offset, text in enumerate(patch.appended_lines)
     ]
     mismatches = [m for m in page.cross_check.mismatches if m.line_index not in edits]

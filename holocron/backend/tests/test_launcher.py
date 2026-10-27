@@ -225,7 +225,7 @@ def test_tessdata_missing_everywhere() -> None:
     result = launcher.find_tessdata(
         {}, data_dir=Path("/d/data"), data_dir_is_default=True, tesseract_cmd=None, exists=_no_exists
     )
-    assert result == (None, False)
+    assert result == (None, None), "không dò thấy và không đặt biến: không xác định, không khẳng định thiếu"
 
 
 # --- Dựng env -----------------------------------------------------------------------------------------------------
@@ -289,7 +289,7 @@ def test_apply_environment_writes_only_updates() -> None:
     assert environ == {"KEEP": "1", DATA_ENV: "/d"}
 
 
-def _launch(tesseract: str | None, vie: bool) -> LaunchEnvironment:
+def _launch(tesseract: str | None, vie: bool | None) -> LaunchEnvironment:
     return LaunchEnvironment(
         data_dir=Path("/d"),
         data_dir_is_default=True,
@@ -308,6 +308,29 @@ def test_ocr_status_line_variants() -> None:
     assert "thiếu vie.traineddata" in missing_vie and "HUONG-DAN-TESSERACT.txt" in missing_vie
     missing_all = launcher.ocr_status_line(_launch(None, False))
     assert missing_all.startswith("OCR: thiếu Tesseract, thiếu vie.traineddata.")
+
+
+def test_ocr_status_line_unknown_vie_is_not_reported_missing() -> None:
+    unknown = launcher.ocr_status_line(_launch("/usr/bin/tesseract", None))
+    assert unknown == (
+        "OCR: có Tesseract (/usr/bin/tesseract), không xác định được vie.traineddata "
+        "(Tesseract sẽ dùng thư mục mặc định của nó). Nếu trang scan không đọc được, xem HUONG-DAN-TESSERACT.txt."
+    )
+    assert "thiếu vie" not in unknown
+    no_engine = launcher.ocr_status_line(_launch(None, None))
+    assert no_engine.startswith("OCR: thiếu Tesseract, không xác định được vie.traineddata")
+    assert no_engine.endswith("Trang scan sẽ không đọc được; xem HUONG-DAN-TESSERACT.txt.")
+
+
+def test_build_environment_reports_unknown_vie_without_tessdata_env(tmp_path: Path) -> None:
+    def which(cmd: str) -> str | None:
+        return "/usr/bin/tesseract" if cmd == "tesseract" else None
+
+    launch = launcher.build_launch_environment(
+        {}, cli_data_dir=None, zip_root=tmp_path, platform="linux", home=HOME, which=which, exists=_no_exists
+    )
+    assert launch.vie_available is None
+    assert TESSDATA_ENV not in launch.updates
 
 
 # --- Khoá và instance.json ----------------------------------------------------------------------------------------
@@ -821,7 +844,10 @@ def test_main_serves_then_cleans_up(tmp_path: Path) -> None:
     assert recorder.lines[:4] == [
         f"Holocron: http://127.0.0.1:{port}/",
         f"Thư mục dữ liệu: {data_dir}",
-        "OCR: thiếu Tesseract, thiếu vie.traineddata. Trang scan sẽ không đọc được; xem HUONG-DAN-TESSERACT.txt.",
+        (
+            "OCR: thiếu Tesseract, không xác định được vie.traineddata (Tesseract sẽ dùng thư mục mặc định của nó). "
+            "Trang scan sẽ không đọc được; xem HUONG-DAN-TESSERACT.txt."
+        ),
         "Đóng cửa sổ này hoặc nhấn Ctrl+C để tắt Holocron.",
     ]
     assert not (data_dir / INSTANCE_FILENAME).exists()

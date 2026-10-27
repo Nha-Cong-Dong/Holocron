@@ -181,7 +181,7 @@ class LaunchEnvironment:
     web_dir: Path | None
     tesseract_cmd: str | None
     tessdata_dir: Path | None
-    vie_available: bool
+    vie_available: bool | None  # None: không đặt HOLOCRON_TESSDATA_DIR và không dò thấy, Tesseract tự dùng mặc định
     updates: Mapping[str, str]
 
 
@@ -259,11 +259,13 @@ def find_tessdata(
     data_dir_is_default: bool,
     tesseract_cmd: str | None,
     exists: PathExists,
-) -> tuple[Path | None, bool]:
-    """Thư mục chứa `vie.traineddata` và cờ có/thiếu `vie`.
+) -> tuple[Path | None, bool | None]:
+    """Thư mục chứa `vie.traineddata` và cờ có (True) / thiếu (False) / không xác định (None) `vie`.
 
-    Thứ tự: `HOLOCRON_TESSDATA_DIR` (đã đặt thì chỉ kiểm nó) ⇒ `<data>/../tessdata` (CHỈ khi thư mục dữ liệu là mặc
-    định, để `--data-dir` tuỳ ý không dò lên gốc ổ đĩa) ⇒ `tessdata` cạnh file chạy Tesseract.
+    Thứ tự: `HOLOCRON_TESSDATA_DIR` (đã đặt thì chỉ kiểm nó: có hoặc thiếu) ⇒ `<data>/../tessdata` (CHỈ khi thư mục
+    dữ liệu là mặc định, để `--data-dir` tuỳ ý không dò lên gốc ổ đĩa) ⇒ `tessdata` cạnh file chạy Tesseract.
+    Không dò thấy ở đâu thì KHÔNG khẳng định thiếu: Tesseract còn thư mục mặc định riêng (ví dụ `/usr/share/...`
+    trên Linux, `TESSDATA_PREFIX`) mà launcher không biết.
     """
     configured = _env_value(environ, ENV_TESSDATA_DIR)
     if configured is not None:
@@ -275,7 +277,7 @@ def find_tessdata(
     if tesseract_cmd is not None:
         candidates.append(Path(tesseract_cmd).parent / "tessdata")
     found = next((path for path in candidates if exists(path / VIE_TRAINEDDATA)), None)
-    return found, found is not None
+    return found, (True if found is not None else None)
 
 
 def build_launch_environment(
@@ -322,10 +324,15 @@ def apply_environment(environ: MutableMapping[str, str], updates: Mapping[str, s
 def ocr_status_line(launch: LaunchEnvironment) -> str:
     """Một dòng trạng thái OCR cho console."""
     engine = f"có Tesseract ({launch.tesseract_cmd})" if launch.tesseract_cmd else "thiếu Tesseract"
-    language = f"có {VIE_TRAINEDDATA}" if launch.vie_available else f"thiếu {VIE_TRAINEDDATA}"
+    if launch.vie_available is None:
+        language = f"không xác định được {VIE_TRAINEDDATA} (Tesseract sẽ dùng thư mục mặc định của nó)"
+    else:
+        language = f"có {VIE_TRAINEDDATA}" if launch.vie_available else f"thiếu {VIE_TRAINEDDATA}"
     line = f"OCR: {engine}, {language}."
-    if launch.tesseract_cmd is None or not launch.vie_available:
+    if launch.tesseract_cmd is None or launch.vie_available is False:
         line += f" Trang scan sẽ không đọc được; xem {TESSERACT_HELP_FILE}."
+    elif launch.vie_available is None:
+        line += f" Nếu trang scan không đọc được, xem {TESSERACT_HELP_FILE}."
     return line
 
 

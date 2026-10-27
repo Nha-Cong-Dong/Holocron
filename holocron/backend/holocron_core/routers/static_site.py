@@ -143,8 +143,13 @@ def _cache_control(route_path: str, file_path: str, status_code: int) -> str:
 
 
 def _read_injected(path: str) -> bytes:
+    """Nội dung HTML đã chèn runtime; file không phải UTF-8 hợp lệ thì trả nguyên văn, không chèn."""
     with open(path, "rb") as handle:
-        return inject_runtime(handle.read())
+        raw = handle.read()
+    try:
+        return inject_runtime(raw)
+    except UnicodeDecodeError:
+        return raw
 
 
 class _StaticSite(StaticFiles):

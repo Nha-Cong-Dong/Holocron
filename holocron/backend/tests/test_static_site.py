@@ -537,3 +537,26 @@ def test_os_error_while_looking_up_file_is_404(site: TestClient, monkeypatch: py
     response = site.get("/vault/")
     assert response.status_code == 404
     assert response.json() == {"detail": "Not Found"}
+
+
+# --- HTML không phải UTF-8: trả nguyên văn, không chèn runtime, vẫn no-store ---
+
+
+def test_non_utf8_html_is_served_unchanged(web_dir: Path) -> None:
+    utf16_html = "<html><head><title>Tiếng Việt</title></head></html>".encode("utf-16")
+    (web_dir / "vault" / "index.html").write_bytes(utf16_html)
+    broken_404 = b"<html><head>\xff\xfe kh\xf4ng th\xe2y</head></html>"
+    (web_dir / "404.html").write_bytes(broken_404)
+    app = _sample_app()
+    attach_static_site(app, web_dir)
+    client = TestClient(app)
+    for url, status, body in (("/vault/", 200, utf16_html), ("/khong-co", 404, broken_404)):
+        response = client.get(url)
+        assert response.status_code == status
+        assert response.content == body
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["content-length"] == str(len(body))
+        assert "etag" not in response.headers
+        head = client.head(url)
+        assert head.status_code == status
+        assert head.headers["content-length"] == str(len(body))

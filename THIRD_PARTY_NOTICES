@@ -73,3 +73,23 @@ File giấy phép trong gói: LICENSE.txt, LICENSE-3RD-PARTY.txt.
 Wheel `win_amd64` đóng kèm plugin video FFmpeg `cv2/opencv_videoio_ffmpeg500_64.dll` theo LGPL-2.1 (đã kiểm ngày
 2026-10-23, ADR-008 phần "Hệ quả"). OCR không dùng plugin này. Việc bỏ plugin khi đóng gói và kiểm wheel Linux,
 macOS là nợ PKG-001 (docs/adr/004-engineering-discipline.md).
+
+
+shapely 2.2.0
+-------------
+Dùng cho: phụ thuộc bắc cầu do rapidocr 3.10.0 khai báo trong metadata (Requires-Dist); chỉ có trong bản zip portable đủ.
+Nguồn: https://github.com/shapely/shapely
+Giấy phép: BSD-3-Clause.
+Wheel `win_amd64` nhúng thư viện GEOS (mục dưới) trong thư mục `shapely.libs/`.
+
+
+GEOS 3.14.1
+-----------
+Dùng cho: thư viện hình học mà shapely 2.2.0 gọi (liên kết động); chỉ có trong bản zip portable đủ có RapidOCR,
+bản lite không có.
+Nguồn: https://github.com/libgeos/geos (tag 3.14.1).
+Giấy phép: LGPL-2.1 (đã duyệt ngày 2026-10-27, docs/adr/008-tiered-pdf-importer.md, Sửa đổi Q4).
+Tệp: site-packages/shapely.libs/geos-*.dll và geos_c-*.dll. Các DLL này do delvewheel (công cụ đóng gói wheel của
+shapely) đổi tên (thêm hậu tố băm) và sửa bảng import; nội dung thư viện giữ nguyên bản dựng của shapely.
+Bản zip kèm toàn văn LGPL-2.1 và mã nguồn GEOS tương ứng trong `licenses/` (geos-3.14.1.tar.bz2, SHA-256 ghi trong
+THIRD_PARTY_NOTICES của zip).

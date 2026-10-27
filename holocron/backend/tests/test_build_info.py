@@ -25,8 +25,8 @@ VALID = {"version": "1.0.0-rc.1", "commit": COMMIT, "dirty": False, "built_at": 
 
 
 def _load(name: str) -> ModuleType:
-    if str(SCRIPTS) not in sys.path:
-        sys.path.insert(0, str(SCRIPTS))  # smoke_portable import `build_portable` theo tên
+    """Nạp script theo đường dẫn, không đụng `sys.path`: `build_portable` nạp TRƯỚC nên `from build_portable import …`
+    của `smoke_portable` lấy từ `sys.modules`."""
     cached = sys.modules.get(name)
     if cached is not None:
         return cached
@@ -424,3 +424,8 @@ def test_smoke_build_info_missing_or_mismatched_log_fails(tmp_path: Path) -> Non
     report = sp.Report()
     sp.check_build_info(report, root, tmp_path / "logs")
     assert [ok for _, ok, _ in _results(report)] == [True, True, False]
+
+
+def test_loading_scripts_does_not_leak_sys_path() -> None:
+    assert str(SCRIPTS) not in sys.path
+    assert sp.BuildError is bp.BuildError, "smoke_portable dùng đúng module build_portable đã nạp"

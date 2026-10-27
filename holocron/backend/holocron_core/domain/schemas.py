@@ -31,6 +31,9 @@ CPU_SCHEDULING_TOPIC_PREFIX = "os.cpu_sched."
 MISCONCEPTION_CODE_PATTERN = r"^[A-Z][A-Z0-9_]{2,63}$"
 TAG_PATTERN = r"^#[a-z0-9_]+$"
 
+SEED_SPACE = 2**63
+"""Miền seed của twin và câu lý thuyết: `[0, 2**63)` (SPECIFICATION §6.3, §10)."""
+
 REQUIRED_TEMPLATE_ENTRYPOINTS: tuple[str, ...] = (
     "generate_params",
     "validate",

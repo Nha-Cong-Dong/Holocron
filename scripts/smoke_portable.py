@@ -561,13 +561,24 @@ def check_scan_upload(report: Report, port: int, gray: Path) -> None:
     page = upload_and_read_page(report, port, "PDF scan", "scan.pdf", image_pdf(gray.read_bytes(), width, height))
     if not page:
         return
+    ok, detail = scan_cross_check_verdict(page)
+    report.check("PDF scan: cross_check ok/mismatch với lượt RapidOCR", ok, detail)
+
+
+SCAN_CROSS_CHECK_STATUSES = ("ok", "mismatch")
+
+
+def scan_cross_check_verdict(page: Mapping[str, object]) -> tuple[bool, str]:
+    """Trang scan đạt khi `cross_check.status` ∈ {ok, mismatch} VÀ `secondary_engine == "rapidocr"`.
+
+    `not_applicable` (trang không qua OCR, ví dụ đã failed), `unavailable` hay thiếu trường đều FAIL.
+    """
     cross_check = page.get("cross_check")
     status = cross_check.get("status") if isinstance(cross_check, dict) else None
-    detail = f"tier={page.get('tier_used')}, cross_check={status}, review={page.get('review_reasons')}"
+    engine = cross_check.get("secondary_engine") if isinstance(cross_check, dict) else None
+    detail = f"tier={page.get('tier_used')}, cross_check={status}, engine={engine}, review={page.get('review_reasons')}"
     detail += f", lỗi={page.get('failure_reason')}" if page.get("failure_reason") else ""
-    report.check(
-        "PDF scan: cross_check khác unavailable (có lượt RapidOCR)", status not in (None, "unavailable"), detail
-    )
+    return status in SCAN_CROSS_CHECK_STATUSES and engine == "rapidocr", detail
 
 
 def check_shutdown(report: Report, process: subprocess.Popen[bytes], root: Path, data_dir: Path) -> None:

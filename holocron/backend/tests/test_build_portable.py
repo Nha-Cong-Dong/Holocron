@@ -979,3 +979,25 @@ def test_capture_runs_the_real_sandbox_command_with_probe(tmp_path: Path) -> Non
     assert env.get("PYTHONHASHSEED") == "0"
     assert sandbox.subprocess.run.__name__ == "run"  # bọc đã được gỡ
     assert sp.evaluate_probe(capture, Path(sys.base_prefix)) == []
+
+
+@pytest.mark.parametrize(
+    "cross_check, expected",
+    [
+        ({"status": "ok", "secondary_engine": "rapidocr"}, True),
+        ({"status": "mismatch", "secondary_engine": "rapidocr", "mismatches": [{}]}, True),
+        ({"status": "not_applicable", "secondary_engine": None}, False),
+        ({"status": "unavailable", "secondary_engine": None}, False),
+        ({"status": "ok", "secondary_engine": None}, False),
+        ({"status": "ok", "secondary_engine": "tesseract"}, False),
+        ({}, False),
+        (None, False),
+    ],
+)
+def test_scan_cross_check_requires_rapidocr_pass(cross_check: object, expected: bool) -> None:
+    page: dict[str, object] = {"tier_used": "ocr", "review_reasons": []}
+    if cross_check is not None:
+        page["cross_check"] = cross_check
+    ok, detail = sp.scan_cross_check_verdict(page)
+    assert ok is expected
+    assert "cross_check=" in detail

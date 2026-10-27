@@ -153,8 +153,11 @@ def test_runtime_endpoint_reflects_the_extractor_in_use_not_only_the_environment
 # --------------------------------------------------------------------------- #
 
 GUARDED_LAYERS = ("services", "routers", "domain", "sandbox")
-# Tên model hoặc họ model thường gặp, kể cả dạng `<x>-chat` không kèm URL.
-MODEL_NAME_PATTERN = re.compile(r"(?i)(-chat|gpt-|claude-|gemini-|llama|mistral|qwen|haiku|sonnet|opus)")
+# Tên model hoặc họ model thường gặp, kể cả dạng `<x>-chat` không kèm URL. Có ranh giới từ để chữ thường
+# như "corpus" không bị coi là tên model.
+MODEL_NAME_PATTERN = re.compile(
+    r"(?i)(-chat\b|\bgpt-|\bclaude-|\bgemini-|\bllama|\bmistral|\bqwen|\bhaiku\b|\bsonnet\b|\bopus\b)"
+)
 # Tên nhà cung cấp mặc định cũ (bản v0.5), viết dạng regex để bắt cả biến thể có dấu cách hay gạch nối.
 OLD_PROVIDER_PATTERN = re.compile(r"(?i)deep[\W_]?seek")
 DEFAULT_LLM_PREFIX = "DEFAULT_LLM_"
@@ -241,6 +244,13 @@ def test_the_constant_scan_ignores_docstrings_and_harmless_strings() -> None:
 @pytest.mark.parametrize("line", ["# dùng Deep Seek", "x = 1  # deep-seek", '"""Model haiku."""'])
 def test_the_text_scan_flags_comments_and_docstrings(line: str) -> None:
     assert provider_mentions(line) == [1]
+
+
+@pytest.mark.parametrize(
+    "line", ["# đếm n-gram trên corpus", '"""Chuỗi opuscule và bichat."""', "x = 1  # chat, gpt và corpora"]
+)
+def test_the_text_scan_ignores_words_that_only_contain_a_model_name(line: str) -> None:
+    assert provider_mentions(line) == []
 
 
 def test_model_names_are_not_hard_coded_outside_the_config_module() -> None:

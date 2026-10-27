@@ -1904,7 +1904,7 @@ System prompt gồm, theo thứ tự: (1) hợp đồng §8 nguyên văn; (2) da
 
 ### 11.4 LLM là tuỳ chọn: chế độ khả năng (đã duyệt 2026-10-25)
 
-Quy tắc "503 khi thiếu key" của v0.5 bị bỏ. Thay vào đó, `GET /v1/runtime` báo từng khả năng kèm `available` và lý do (§5.12). Chỉ endpoint thực sự cần một khả năng mới trả lỗi rõ ràng (409 `CapabilityError`, §6.0, mã đã duyệt 2026-10-25); mọi phần còn lại chạy offline. Cột "Khi không khả dụng" là đề xuất (chờ duyệt).
+Quy tắc "503 khi thiếu key" của v0.5 bị bỏ. Thay vào đó, `GET /v1/runtime` báo từng khả năng kèm `available` và lý do (§5.12). Chỉ endpoint thực sự cần một khả năng mới trả lỗi rõ ràng (409 `CapabilityError`, §6.0, mã đã duyệt 2026-10-25); mọi phần còn lại chạy offline. Cột "Khi không khả dụng" là đề xuất (chờ duyệt), trừ hành vi 409 `CapabilityError` không gọi mạng của khả năng cần LLM (dòng `concept_pair_llm_proposal`), đã duyệt 2026-10-27 (§11.2).
 
 | Khả năng | Cần | Endpoint hoặc luồng bị ảnh hưởng | Khi không khả dụng |
 |---|---|---|---|
@@ -1912,7 +1912,7 @@ Quy tắc "503 khi thiếu key" của v0.5 bị bỏ. Thay vào đó, `GET /v1/r
 | `ocr_cross_check` | RapidOCR, `HOLOCRON_PDF_OCR_SECONDARY` khác rỗng | Đối chiếu chéo trang OCR (§7.4) | `cross_check = unavailable` ⇒ WARNING `CROSS_CHECK_UNAVAILABLE`, ô số không AUTO_PASS |
 | `vault_search` | Không gì ngoài code (FTS5 hoặc BM25 tự cài) | `GET /v1/vault/search` (§6.6) | Luôn khả dụng khi đã có code |
 | `theory_generation` | Không gì ngoài code | Slot lý thuyết `MCQ4` trong `POST …/twins` | Luôn khả dụng khi đã có code; thiếu cặp đã xác nhận thì `ReviewTicket` như ADR-007 |
-| `concept_pair_llm_proposal` | LLM đã cấu hình | `POST /v1/vault/concept-pairs/propose` (§6.6) | 409 `CapabilityError`; người dùng tự tạo cặp bằng `POST /v1/vault/concept-pairs` |
+| `concept_pair_llm_proposal` | LLM đã cấu hình | `POST /v1/vault/concept-pairs/propose` (§6.6) | 409 `CapabilityError`, không gọi mạng (duyệt 2026-10-27); người dùng tự tạo cặp bằng `POST /v1/vault/concept-pairs` |
 | `essay_grading_offline` | Không gì ngoài code; phần tự luận có trong bản đang chạy | Slot `ESSAY` ở `POST /v1/blueprints`, `POST /v1/twins/{id}/essay-grade` (§6.9) | 409 `CapabilityError` với `reason = "not_implemented"` nếu phần tự luận bị chuyển sang sau MVP |
 | `essay_grading_llm` | LLM đã cấu hình và có `AnswerJudge` (sau MVP) | Chưa có endpoint | Luôn `not_implemented` trong MVP |
 | `template_authoring_llm` | LLM đã cấu hình | Slot tính toán trong `POST …/twins` (§10) | Không trả lỗi: pipeline dùng template đã kiểm chứng làm fallback như hiện nay (`UnconfiguredTemplateAuthor`); không có fallback thì `ReviewTicket` |

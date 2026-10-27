@@ -1,9 +1,11 @@
-"""Bộ nhập tài liệu (SPECIFICATION §5.7, §6.1, §6.5; ADR-008 mục 7): điều kiện duyệt câu 13.2 và 13.6.
+"""Bộ nhập tài liệu (SPECIFICATION §5.7, §6.1, §6.5; ADR-008 mục 7): điều kiện duyệt câu 13.2 và 13.6, cùng hai
+sửa sau review /finish-run 28/10.
 
 - 13.2: hàng đợi từ chối lần nhập một PDF trùng nội dung với đề đã upload (§6.1) ⇒ file gốc bị xoá; item của đề
   vẫn đọc, sửa và approve được như trước, vì không đường nào của item cần file gốc.
 - 13.6: lỗi môi trường lặp lại khi mở bộ đọc (`PdfWorkerError`, `OSError`) được thử lại có giới hạn rồi để tài liệu
   `processing`; lối ra là xếp lại khi khởi động (`requeue_on_startup`) hoặc `DELETE` rồi `POST` lại (202).
+- Request tới sau khi `lifespan` đã gỡ bộ nhập: 500 kèm `detail`, không 500 trần.
 
 Chạy trên ba loại kho (`tests/vault_support.py`); byte PDF và văn bản là mẫu tự tạo.
 """
@@ -260,3 +262,81 @@ def test_app_startup_reads_a_document_left_processing_by_exhausted_retries(
         assert started.queue.wait_until_idle(WAIT_S)
         assert _document(client, doc_id)["status"] == "review"
     assert reader.reads == [(doc_id, [1, 2])]
+
+
+# --------------------------------------------------------------------------- #
+# Review MAJOR: request tới sau khi `lifespan` đã gỡ bộ nhập ⇒ 500 kèm `detail`
+# --------------------------------------------------------------------------- #
+
+UNAVAILABLE = {"detail": IMPORT_UNAVAILABLE_DETAIL}
+_FORM = {"subject_code": "ET4010", "source_kind": "textbook", "chapter_code": "ch3"}
+
+
+def _without_runtime() -> TestClient:
+    """Bỏ override của bộ nhập: `app.state` không có runtime, như sau khi `lifespan` đã gỡ nó."""
+    app.dependency_overrides.pop(documents.get_import_runtime, None)
+    app.dependency_overrides.pop(documents.get_pdf_reader, None)
+    assert not hasattr(app.state, documents.RUNTIME_STATE_ATTR)
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def _runtime_routes(doc_id: str) -> list[tuple[str, str, dict[str, Any]]]:
+    return [
+        ("POST", "/v1/documents", {"data": _FORM, "files": {"file": ("b.pdf", pdf_bytes("sau"), "application/pdf")}}),
+        ("DELETE", f"/v1/documents/{doc_id}", {}),
+        (
+            "PATCH",
+            f"/v1/documents/{doc_id}/pages/1/lines",
+            {"json": {"editor_id": EDITOR, "expected_version": 2, "edits": [], "appended_lines": ["thêm"]}},
+        ),
+        ("POST", f"/v1/documents/{doc_id}/pages/1/confirm", {"json": {"editor_id": EDITOR, "expected_version": 2}}),
+        ("POST", f"/v1/documents/{doc_id}/confirm", {"json": {"editor_id": EDITOR}}),
+    ]
+
+
+@pytest.mark.parametrize("route", range(5), ids=["post", "delete", "patch_lines", "confirm_page", "confirm_document"])
+def test_runtime_routes_after_lifespan_teardown_answer_500_with_a_detail(env: ImportEnv, route: int) -> None:
+    content = pdf_bytes("truoc-khi-tat")
+    doc_id = _doc_id(content)
+    assert env.post(content).status_code == 202
+    before = _document(env.client, doc_id)
+    files_before = _stored_files(env.files)
+    client = _without_runtime()
+    method, path, kwargs = _runtime_routes(doc_id)[route]
+    response = client.request(method, path, **kwargs)
+    assert response.status_code == 500 and response.json() == UNAVAILABLE, response.text
+    assert _document(client, doc_id) == before, "không ghi gì"
+    assert _stored_files(env.files) == files_before
+    assert len(env.reader.probed) == 1, "chỉ lần nhận trước khi tắt được mở thử; request sau khi tắt không mở file nào"
+
+
+def test_read_routes_after_lifespan_teardown_still_answer(env: ImportEnv) -> None:
+    """`GET` không dùng bộ nhập: vẫn trả dữ liệu đang lưu (200/404 như thường), không 500 trần."""
+    content = pdf_bytes("doc-sau-khi-tat")
+    doc_id = _doc_id(content)
+    assert env.post(content).status_code == 202
+    before = {path: env.client.get(path).json() for path in _read_paths(doc_id)}
+    client = _without_runtime()
+    for path, body in before.items():
+        response = client.get(path)
+        assert response.status_code == 200 and response.json() == body, path
+    missing = client.get("/v1/documents/doc_0000000000000000")
+    assert missing.status_code == 404 and missing.json() == {"detail": documents.NOT_FOUND_DETAIL}
+
+
+def _read_paths(doc_id: str) -> list[str]:
+    return ["/v1/documents", f"/v1/documents/{doc_id}", f"/v1/documents/{doc_id}/pages/1"]
+
+
+def test_post_after_the_real_lifespan_has_ended_answers_500_with_a_detail(
+    monkeypatch: pytest.MonkeyPatch, fresh_default_store: None
+) -> None:
+    monkeypatch.delenv(DATA_DIR_ENV, raising=False)
+    client = TestClient(app, raise_server_exceptions=False)
+    with client:
+        assert hasattr(app.state, documents.RUNTIME_STATE_ATTR)
+    assert not hasattr(app.state, documents.RUNTIME_STATE_ATTR)
+    response = client.post(
+        "/v1/documents", data=_FORM, files={"file": ("c.pdf", pdf_bytes("da-tat"), "application/pdf")}
+    )
+    assert response.status_code == 500 and response.json() == UNAVAILABLE

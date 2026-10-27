@@ -530,6 +530,9 @@ def _metadata(headers: str) -> object:
             "BSD-3-Clause AND Apache-2.0 AND CC-BY-4.0",
         ),
         ("pypdfium2", "9.9.9", "License: BSD-3-Clause, Apache-2.0, dependency licenses\n", None),
+        ("colorama", "0.4.6", "Classifier: License :: OSI Approved :: BSD License\n", "BSD-3-Clause"),
+        ("omegaconf", "2.4.0", "Classifier: License :: OSI Approved :: BSD License\n", "BSD-3-Clause"),
+        ("colorama", "0.4.7", "Classifier: License :: OSI Approved :: BSD License\n", "LicenseRef-BSD"),
     ],
 )
 def test_license_expression_from_metadata(name: str, version: str, headers: str, expected: str | None) -> None:
@@ -565,6 +568,24 @@ def test_python_licenses_fail_closed(tmp_path: Path, headers: str, message: str)
     _dist(tmp_path, "good", "1.0", "License-Expression: MIT\n")
     _dist(tmp_path, "bad", "1.0", headers)
     with pytest.raises(BuildError, match=message):
+        bp.check_python_licenses(tmp_path)
+
+
+def test_generic_bsd_classifier_needs_a_version_pinned_override(tmp_path: Path) -> None:
+    """Classifier "BSD License" chung chung chỉ qua khi có mục ghim đúng phiên bản (duyệt 2026-10-27)."""
+    bsd = "Classifier: License :: OSI Approved :: BSD License\n"
+    _dist(tmp_path, "colorama", "0.4.6", bsd)
+    _dist(tmp_path, "omegaconf", "2.4.0", bsd)
+    records = bp.check_python_licenses(tmp_path)
+    assert [(r.name, r.expression) for r in records] == [("colorama", "BSD-3-Clause"), ("omegaconf", "BSD-3-Clause")]
+    _dist(tmp_path, "unpinned", "1.0", bsd)
+    with pytest.raises(BuildError, match=r"unpinned 1\.0: LicenseRef-BSD"):
+        bp.check_python_licenses(tmp_path)
+
+
+def test_bsd_classifier_override_does_not_carry_over_to_other_versions(tmp_path: Path) -> None:
+    _dist(tmp_path, "omegaconf", "2.4.1", "Classifier: License :: OSI Approved :: BSD License\n")
+    with pytest.raises(BuildError, match=r"omegaconf 2\.4\.1: LicenseRef-BSD"):
         bp.check_python_licenses(tmp_path)
 
 
@@ -611,6 +632,10 @@ def test_binary_gate_accepts_known_layout_and_reports_licenses() -> None:
         ("python/Lib/site-packages/x.pyd", "không có trong danh sách cho phép"),
         ("app/holocron_core/x.DLL", "không có trong danh sách cho phép"),
         ("site-packages/cv2/opencv_videoio_ffmpeg500_64.dll", "ffmpeg"),
+        ("site-packages/onnxruntime/capi/msvcp140.dll", "msvcp140 ngoài numpy.libs/, shapely.libs/"),
+        ("python/msvcp140.dll", "msvcp140 ngoài numpy.libs/, shapely.libs/"),
+        ("site-packages/numpy.libs/sub/msvcp140-1.dll", "msvcp140 ngoài numpy.libs/, shapely.libs/"),
+        ("site-packages/cv2/MSVCP140_1.DLL", "msvcp140 ngoài numpy.libs/, shapely.libs/"),
     ],
 )
 def test_binary_gate_rejects_unknown_or_misplaced_dll(path: str, message: str) -> None:

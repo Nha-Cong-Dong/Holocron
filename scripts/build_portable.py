@@ -182,8 +182,9 @@ OCR_PACKAGES = frozenset(
     }
 )
 
-# Giấy phép cho phép (SPDX, so khớp không phân biệt hoa thường). `LicenseRef-BSD` là classifier
-# "BSD License" chung chung của PyPI; CC-BY-4.0 là giấy phép chỉ đòi ghi công (dữ liệu caniuse-lite, PDFium).
+# Giấy phép cho phép (SPDX, so khớp không phân biệt hoa thường). CC-BY-4.0 là giấy phép chỉ đòi ghi công (dữ liệu
+# caniuse-lite, PDFium). Classifier "BSD License" chung chung của PyPI (`LicenseRef-BSD`) KHÔNG được phép: gói chỉ
+# khai classifier đó phải có mục ghim theo phiên bản trong LICENSE_OVERRIDES sau khi đọc file LICENSE của wheel.
 PERMISSIVE_LICENSES = frozenset(
     {
         "0BSD",
@@ -195,7 +196,6 @@ PERMISSIVE_LICENSES = frozenset(
         "CC0-1.0",
         "HPND",
         "ISC",
-        "LICENSEREF-BSD",
         "MIT",
         "MIT-0",
         "MIT-CMU",
@@ -210,7 +210,12 @@ WEAK_COPYLEFT_ALLOWED = frozenset({("certifi", "MPL-2.0"), ("tqdm", "MPL-2.0")})
 # Metadata không phải biểu thức SPDX, đã đọc tay; ghim theo phiên bản để bản mới buộc xem lại.
 # pypdfium2: `License: BSD-3-Clause, Apache-2.0, dependency licenses`; license của PDFium và thư viện nó nhúng
 # (freetype chọn FTL, ICU, lcms, libjpeg-turbo, openjpeg, libpng, zlib, abseil…) nằm trong dist-info/licenses.
+# colorama 0.4.6 (`licenses/LICENSE.txt`) và omegaconf 2.4.0 (`licenses/LICENSE`, kèm antlr4 nhúng ở
+# `licenses/ATTRIBUTION/LICENSE-antlr4`) chỉ khai classifier "BSD License"; văn bản trong wheel là BSD-3-Clause
+# (duyệt 2026-10-27).
 LICENSE_OVERRIDES: Mapping[tuple[str, str], str] = {
+    ("colorama", "0.4.6"): "BSD-3-Clause",
+    ("omegaconf", "2.4.0"): "BSD-3-Clause",
     ("pypdfium2", "5.14.0"): "BSD-3-Clause AND Apache-2.0 AND CC-BY-4.0",
 }
 LICENSE_ALIASES: Mapping[str, str] = {
@@ -247,7 +252,8 @@ class BinaryRule:
 
 VC_REDIST = "Microsoft Visual C++ Redistributable (mã phân phối lại được, delvewheel chép kèm wheel)"
 # Mọi `*.dll`/`*.pyd` trong zip phải khớp một mục ở đây; không khớp ⇒ build dừng. GEOS chỉ được ở
-# `site-packages/shapely.libs/`.
+# `site-packages/shapely.libs/`; `msvcp140*.dll` chỉ được ở `numpy.libs/` và `shapely.libs/` (duyệt 2026-10-27).
+MSVCP_DIRS = frozenset({"site-packages/numpy.libs", "site-packages/shapely.libs"})
 BINARY_ALLOWLIST: tuple[BinaryRule, ...] = (
     BinaryRule("python/*.dll", "PSF-2.0 (Python embeddable; OpenSSL Apache-2.0, libffi MIT, SQLite public domain)"),
     BinaryRule("python/*.pyd", "PSF-2.0 (thư viện chuẩn của Python embeddable)"),
@@ -948,7 +954,8 @@ def classify_binaries(
     relative_paths: Iterable[str], rules: Sequence[BinaryRule] = BINARY_ALLOWLIST
 ) -> list[BinaryRecord]:
     """Cổng DLL/PYD (allowlist): mọi `*.dll`/`*.pyd` phải khớp một mục cho phép; GEOS chỉ ở `shapely.libs/`;
-    `opencv_videoio_ffmpeg*` phải đã bị bỏ. Vi phạm ⇒ BuildError liệt kê đủ."""
+    `msvcp140*` chỉ ở `numpy.libs/`, `shapely.libs/`; `opencv_videoio_ffmpeg*` phải đã bị bỏ. Vi phạm ⇒ BuildError
+    liệt kê đủ."""
     compiled = [(glob_regex(rule.pattern), rule) for rule in rules]
     records: list[BinaryRecord] = []
     problems: list[str] = []
@@ -965,6 +972,9 @@ def classify_binaries(
             and PurePosixPath(relative).parent.as_posix().lower() != ("site-packages/shapely.libs")
         ):
             problems.append(f"DLL GEOS ngoài site-packages/shapely.libs/: {relative}")
+            continue
+        if name.startswith("msvcp140") and PurePosixPath(relative).parent.as_posix().lower() not in MSVCP_DIRS:
+            problems.append(f"DLL msvcp140 ngoài numpy.libs/, shapely.libs/: {relative}")
             continue
         rule = next((rule for regex, rule in compiled if regex.match(relative)), None)
         if rule is None:

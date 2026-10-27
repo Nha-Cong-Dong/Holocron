@@ -13,6 +13,7 @@ Chạy đủ checklist trên **từng** môi trường dưới đây (mỗi môi
 | B | Máy/VM Windows 10 hoặc 11 64-bit không cài Python, không cài VC++ Redistributable | Kiểm `Apps & features` không có "Python" và "Microsoft Visual C++ 2015-2022 Redistributable" |
 | C | Máy có Python 3.14 cài chuẩn (bộ cài python.org, có khoá registry `PythonPath`) | Kiểm `reg query "HKCU\Software\Python\PythonCore\3.14\PythonPath"` hoặc `HKLM\...` có giá trị |
 | D | Như A, B hoặc C, thêm một subkey HKCU giả dưới `PythonPath` | Xem các lệnh ngay dưới bảng |
+| E | Máy ĐÃ cài sẵn một Python khác (bản 3.x bất kỳ, có registry `PythonCore`), thêm `PYTHONPATH`/`PYTHONHOME` | Xem mục 7 |
 
 Dựng môi trường D. Chỉ tạo subkey `HolocronProbe`; không sửa hay xoá khoá nào có sẵn trên máy (có thể là khoá của
 bản Python đã cài).
@@ -114,19 +115,52 @@ in ra ⇒ **HỎNG — báo orchestrator**.
 1. Đóng cửa sổ đen (hoặc Ctrl+C). Trong 10 s, Task Manager không còn `python.exe` hay `tesseract.exe` chạy từ thư mục zip.
 2. Mở lại `Holocron.cmd`: tài liệu đã nhập ở bước 4 vẫn còn.
 
+## 7. Máy đã cài sẵn Python khác (môi trường E)
+
+Mục tiêu: xác nhận app và sandbox KHÔNG lấy nhầm đường dẫn của Python đã cài trên máy, kể cả khi đặt
+`PYTHONPATH`/`PYTHONHOME`. Chỉ đặt biến trong MỘT cửa sổ `cmd` (lệnh `set`); không dùng `setx`, không sửa biến hệ thống.
+Ở môi trường E chạy cả mục 1–6 trong chính cửa sổ `cmd` đã đặt biến ở bước 3 (mở `Holocron.cmd` bằng cách gõ tên).
+
+1. Ghi lại Python đã cài: `where python` và `reg query "HKCU\Software\Python\PythonCore" /s` (không có thì thử
+   `HKLM\Software\Python\PythonCore`). Ghi thư mục cài (ví dụ
+   `C:\Users\<tên>\AppData\Local\Programs\Python\Python313`), gọi là `<PYKHAC>`.
+2. Tạo thư mục giả (nếu chưa có từ môi trường D):
+   ```
+   mkdir C:\gia-mao
+   echo raise SystemExit("gia mao")> C:\gia-mao\fastapi.py
+   ```
+3. Mở `cmd` tại thư mục đã giải nén, đặt biến chỉ trong cửa sổ này (thay `<PYKHAC>` bằng đường dẫn thật):
+   ```
+   set PYTHONPATH=C:\gia-mao;<PYKHAC>\Lib\site-packages
+   set PYTHONHOME=<PYKHAC>
+   ```
+4. Trong cùng cửa sổ, kiểm Python của zip:
+   ```
+   python\python.exe -I -X utf8 -c "import sys; print(sys.executable); print(sys.prefix); print(sys.path)"
+   ```
+   Đạt khi: `sys.executable` và `sys.prefix` nằm trong thư mục `python\` của zip; mọi đường dẫn in ra nằm trong thư
+   mục đã giải nén; KHÔNG có `C:\gia-mao`, KHÔNG có đường dẫn nào bắt đầu bằng `<PYKHAC>`.
+5. Trong cùng cửa sổ, chạy lệnh ở mục 5 (cả biến thể `import holocron_core` và `import fastapi`): phải
+   `ModuleNotFoundError`, KHÔNG in "gia mao", danh sách in ra không có `C:\gia-mao` hay `<PYKHAC>`.
+6. Trong cùng cửa sổ, gõ `Holocron.cmd` (không nhấp đúp, để kế thừa biến). Launcher phải chạy bình thường như mục
+   2–3, rồi nhập một PDF có chữ như mục 4.1 (bước này chạy sandbox). Thấy "gia mao", lỗi import lạ,
+   `Fatal Python error: init_fs_encoding` hay `No module named 'encodings'` ⇒ **HỎNG — báo orchestrator**.
+7. Đóng cửa sổ `cmd` (biến mất theo cửa sổ). Nếu thư mục giả tạo ở bước 2: `rmdir /s /q C:\gia-mao`.
+
 ## Kết quả
 
-| Mục | A | B | C | D | Ghi chú |
-|---|---|---|---|---|---|
-| 1. Unblock, giải nén ASCII | | | | | |
-| 1. Giải nén đường dẫn có dấu | | | | | |
-| 1.4 Không có `*._pth` | | | | | |
-| 2. Khởi động, URL hiện | | | | | |
-| 2.3 Thiếu `msvcp140.dll`/VC++ | | | | | ghi HỎNG — báo orchestrator nếu gặp |
-| 3. Giao diện và API | | | | | |
-| 4.1 PDF có chữ | | | | | |
-| 4.2 PDF scan, cross-check | | | | | |
-| 5. Sandbox chỉ thấy `python\` | | | | | |
-| 6. Tắt sạch, dữ liệu còn | | | | | |
+| Mục | A | B | C | D | E | Ghi chú |
+|---|---|---|---|---|---|---|
+| 1. Unblock, giải nén ASCII | | | | | | |
+| 1. Giải nén đường dẫn có dấu | | | | | | |
+| 1.4 Không có `*._pth` | | | | | | |
+| 2. Khởi động, URL hiện | | | | | | |
+| 2.3 Thiếu `msvcp140.dll`/VC++ | | | | | | ghi HỎNG — báo orchestrator nếu gặp |
+| 3. Giao diện và API | | | | | | |
+| 4.1 PDF có chữ | | | | | | |
+| 4.2 PDF scan, cross-check | | | | | | |
+| 5. Sandbox chỉ thấy `python\` | | | | | | |
+| 6. Tắt sạch, dữ liệu còn | | | | | | |
+| 7. Python khác + `PYTHONPATH`/`PYTHONHOME` | – | – | – | – | | chỉ chạy ở E |
 
 Người kiểm: ________ Ngày: ________ Phiên bản zip/SHA-256: ________

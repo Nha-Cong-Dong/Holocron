@@ -534,6 +534,61 @@ export function statusAfterCreate(current: ConceptPairStatus | null): ConceptPai
   return current === "proposed" || current === "rejected" ? "confirmed" : current;
 }
 
+// ---------------------------------------------------------------------------- môn khi vào trang
+
+/**
+ * Trạng thái đồng bộ một chiều giữa `?subject=` (chỉ đọc khi vào trang) và môn ở thanh bên (nguồn duy nhất sau đó).
+ * - `expected`: môn mà màn đang coi là môn hiện tại.
+ * - `waitingFrom`: đã yêu cầu thanh bên chọn `expected` nhưng thanh bên chưa đổi; giữ môn của thanh bên lúc yêu cầu.
+ */
+export interface SubjectEntryState {
+  done: boolean;
+  expected: string | null;
+  waitingFrom: string | null;
+}
+
+export const INITIAL_SUBJECT_ENTRY: SubjectEntryState = { done: false, expected: null, waitingFrom: null };
+
+/** Việc màn phải làm sau một bước: chọn môn ở thanh bên một lần, hoặc bỏ chương và chunk vì người dùng đổi môn. */
+export type SubjectEntryAction = { kind: "none" } | { kind: "select"; subject: string } | { kind: "reset" };
+
+export interface SubjectEntryStep {
+  state: SubjectEntryState;
+  action: SubjectEntryAction;
+  /** Môn đã ổn định (không còn chờ thanh bên đổi): màn được tải dữ liệu theo môn của thanh bên. */
+  ready: boolean;
+}
+
+/**
+ * Một bước đồng bộ, idempotent: gọi lại với cùng đầu vào (ví dụ effect chạy hai lần dưới React StrictMode) không yêu
+ * cầu chọn môn lần nữa và không coi là người dùng đổi môn. Chỉ khi thanh bên đổi sang môn khác `expected` (và không phải
+ * do đang chờ yêu cầu của chính màn) mới trả `reset`.
+ */
+export function subjectEntryStep(
+  state: SubjectEntryState,
+  urlSubject: string | null,
+  shellSubject: string | null,
+): SubjectEntryStep {
+  if (!state.done) {
+    if (urlSubject !== null && urlSubject !== shellSubject) {
+      return {
+        state: { done: true, expected: urlSubject, waitingFrom: shellSubject },
+        action: { kind: "select", subject: urlSubject },
+        ready: false,
+      };
+    }
+    return { state: { done: true, expected: shellSubject, waitingFrom: null }, action: { kind: "none" }, ready: true };
+  }
+  if (shellSubject === state.expected) {
+    return { state: { ...state, waitingFrom: null }, action: { kind: "none" }, ready: true };
+  }
+  if (state.waitingFrom !== null && shellSubject === state.waitingFrom) {
+    // Thanh bên chưa áp yêu cầu chọn môn của chính màn: chưa phải người dùng đổi môn.
+    return { state, action: { kind: "none" }, ready: false };
+  }
+  return { state: { done: true, expected: shellSubject, waitingFrom: null }, action: { kind: "reset" }, ready: true };
+}
+
 // ---------------------------------------------------------------------------- chạy đua
 
 export type Outcome<T> = { ok: true; value: T } | { ok: false; error: UiError };

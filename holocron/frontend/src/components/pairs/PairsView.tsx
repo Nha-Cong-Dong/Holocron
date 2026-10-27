@@ -13,6 +13,7 @@ import { PAIRS_CHUNK_MAX_REQUESTS, PAIRS_CHUNK_PAGE_SIZE } from "@/lib/limits";
 import {
   type ChunkMapResult,
   chaptersOf,
+  INITIAL_SUBJECT_ENTRY,
   loadChunkMap,
   lookupChunk,
   PAIR_STATUS_FILTERS,
@@ -20,7 +21,9 @@ import {
   pairsHref,
   parsePairsLocation,
   runLatest,
+  type SubjectEntryState,
   statusAfterCreate,
+  subjectEntryStep,
 } from "@/lib/pairs";
 import { type ChunkView, parseChapterFilter, vaultHref } from "@/lib/vault";
 import type { ConceptPair, ConceptPairStatus } from "@/types/holocron";
@@ -54,29 +57,21 @@ export function PairsView() {
   const { subjectCode, selectSubject } = useShell();
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  // `?subject=` chỉ đọc một lần khi vào trang; sau đó đổi môn ở thanh bên thì bỏ chương và chunk của môn cũ.
-  const entry = useRef<{ done: boolean; shell: string | null }>({ done: false, shell: null });
+  // `?subject=` chỉ đọc một lần khi vào trang; sau đó đổi môn ở thanh bên thì bỏ chương và chunk của môn cũ. Bước
+  // đồng bộ idempotent (`subjectEntryStep`) nên effect chạy lại (React StrictMode) không làm mất `?chapter=`/`?chunk=`.
+  const entry = useRef<SubjectEntryState>(INITIAL_SUBJECT_ENTRY);
   const [entryDone, setEntryDone] = useState(false);
   const locationSubject = location.subject;
   const locationStatus = location.status;
   useEffect(() => {
-    const state = entry.current;
-    if (!state.done) {
-      state.done = true;
-      if (locationSubject !== null && locationSubject !== subjectCode) {
-        state.shell = locationSubject;
-        selectSubject(locationSubject);
-      } else {
-        state.shell = subjectCode;
-      }
-      setEntryDone(true);
-      return;
-    }
-    if (subjectCode !== state.shell) {
-      state.shell = subjectCode;
+    const step = subjectEntryStep(entry.current, locationSubject, subjectCode);
+    entry.current = step.state;
+    if (step.action.kind === "select") selectSubject(step.action.subject);
+    if (step.action.kind === "reset") {
       setEditingId(null);
       router.replace(pairsHref({ subject: subjectCode, status: locationStatus }));
     }
+    setEntryDone(step.ready);
   }, [subjectCode, selectSubject, router, locationSubject, locationStatus]);
 
   const subject = entryDone ? subjectCode : null;

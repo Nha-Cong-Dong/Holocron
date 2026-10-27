@@ -9,6 +9,7 @@ import {
   chunksToPick,
   collapseWhitespace,
   highlightSegments,
+  INITIAL_SUBJECT_ENTRY,
   loadChunkMap,
   lookupChunk,
   lookupLabel,
@@ -28,6 +29,7 @@ import {
   selectionRange,
   selectionToQuote,
   statusAfterCreate,
+  subjectEntryStep,
   termLengthOk,
   termSegments,
 } from "./pairs";
@@ -520,5 +522,43 @@ describe("runLatest", () => {
     pending.resolve(1);
     await run;
     expect(outcomes).toEqual(["network"]);
+  });
+});
+
+describe("subjectEntryStep", () => {
+  it("vào trang với ?subject= khác thanh bên: chọn môn đúng một lần, chạy lại (StrictMode) không reset", () => {
+    const first = subjectEntryStep(INITIAL_SUBJECT_ENTRY, "MAU101", "OLD200");
+    expect(first.action).toEqual({ kind: "select", subject: "MAU101" });
+    expect(first.ready).toBe(false);
+    // Effect chạy lại với cùng đầu vào trước khi thanh bên kịp đổi.
+    const rerun = subjectEntryStep(first.state, "MAU101", "OLD200");
+    expect(rerun.action).toEqual({ kind: "none" });
+    expect(rerun.ready).toBe(false);
+    // Thanh bên đã áp môn: ổn định, không reset.
+    const applied = subjectEntryStep(rerun.state, "MAU101", "MAU101");
+    expect(applied).toMatchObject({ action: { kind: "none" }, ready: true });
+    expect(subjectEntryStep(applied.state, "MAU101", "MAU101").action).toEqual({ kind: "none" });
+  });
+
+  it("?subject= trùng thanh bên hoặc không có: không chọn, sẵn sàng ngay; chạy lại vẫn idempotent", () => {
+    const same = subjectEntryStep(INITIAL_SUBJECT_ENTRY, "MAU101", "MAU101");
+    expect(same).toMatchObject({ action: { kind: "none" }, ready: true });
+    expect(subjectEntryStep(same.state, "MAU101", "MAU101").action).toEqual({ kind: "none" });
+    const none = subjectEntryStep(INITIAL_SUBJECT_ENTRY, null, null);
+    expect(none).toMatchObject({ action: { kind: "none" }, ready: true });
+    expect(subjectEntryStep(none.state, null, null).action).toEqual({ kind: "none" });
+  });
+
+  it("người dùng đổi môn ở thanh bên sau đó ⇒ reset đúng một lần; ?subject= cũ không được đọc lại", () => {
+    const entered = subjectEntryStep(INITIAL_SUBJECT_ENTRY, "MAU101", "MAU101");
+    const changed = subjectEntryStep(entered.state, "MAU101", "KHA202");
+    expect(changed).toMatchObject({ action: { kind: "reset" }, ready: true });
+    expect(subjectEntryStep(changed.state, "MAU101", "KHA202").action).toEqual({ kind: "none" });
+    expect(subjectEntryStep(changed.state, null, "KHA202").action).toEqual({ kind: "none" });
+  });
+
+  it("đang chờ thanh bên mà thanh bên đổi sang môn thứ ba ⇒ coi là người dùng đổi môn", () => {
+    const first = subjectEntryStep(INITIAL_SUBJECT_ENTRY, "MAU101", "OLD200");
+    expect(subjectEntryStep(first.state, "MAU101", "KHA202").action).toEqual({ kind: "reset" });
   });
 });

@@ -10,6 +10,7 @@ import { invalidResponseError, type UiError } from "@/lib/errors";
 import { essayHeadline } from "@/lib/essay";
 import { CHAPTER_CODE_PATTERN, MAX_THEORY_SLOTS } from "@/lib/limits";
 import type { EssayGradeView, PracticeQuestion } from "@/lib/practice-data";
+import type { CapabilityView } from "@/lib/runtime";
 import type { ShortcutAction, ShortcutScope } from "@/lib/shortcuts";
 import type { BlueprintCreate, ExamFormat, TheorySlotFormat, TheorySlotSpec } from "@/types/contract-pending";
 import type { OptionKey } from "@/types/holocron";
@@ -50,6 +51,27 @@ export function formatChoices(essayAvailable: boolean): FormatChoice[] {
 export function defaultFormatChoice(examFormat: ExamFormat, allowed: readonly FormatChoice[]): FormatChoice | null {
   const preferred: FormatChoice = examFormat === "mcq" ? "MCQ4" : examFormat === "essay" ? "ESSAY" : "mixed";
   return allowed.includes(preferred) ? preferred : null;
+}
+
+/** Dòng giải thích khi môn thi tự luận hoặc kết hợp nhưng chưa dùng được tự luận (đề chỉ gồm trắc nghiệm). */
+export const ESSAY_NOT_AVAILABLE_VI = "Tự luận chưa có trong bản này";
+
+/**
+ * Chỉ cho chọn câu tự luận khi backend báo rõ khả năng chấm tự luận offline là khả dụng. Backend chưa báo danh sách
+ * khả năng (`unknown`) hay báo không khả dụng thì chỉ còn trắc nghiệm, để luồng mặc định không gửi slot ESSAY rồi nhận
+ * 409 (`CapabilityError`).
+ */
+export function essayChoiceAvailable(essayGrading: CapabilityView): boolean {
+  return essayGrading.state === "available";
+}
+
+/**
+ * Lựa chọn điền sẵn của form tạo đề. Tự luận dùng được thì theo `exam_format` của môn (`defaultFormatChoice`); không
+ * thì luôn là trắc nghiệm, kể cả môn thi tự luận hay kết hợp (giao diện kèm dòng `ESSAY_NOT_AVAILABLE_VI`).
+ */
+export function prefilledFormatChoice(examFormat: ExamFormat, essayAvailable: boolean): FormatChoice {
+  if (!essayAvailable) return "MCQ4";
+  return defaultFormatChoice(examFormat, formatChoices(true)) ?? "MCQ4";
 }
 
 export interface BuilderInput {

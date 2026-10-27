@@ -45,6 +45,7 @@ from .infrastructure.storage import DATA_DIR_ENV
 from .launcher_logging import (
     FILE_ONLY,
     LAUNCHER_LOGGER,
+    LOG_DIR_ENV,
     LOG_FILENAME,
     default_build_info_path,
     default_log_dir,
@@ -724,6 +725,9 @@ def _run_logged(args: argparse.Namespace, deps: LauncherDeps, sock: socket.socke
     with file_logging(log_dir, deps.environ, header) as warning:
         deps.emit(header[0])
         deps.emit(warning or header[1])
+        if warning is None:
+            # Cho `GET /v1/runtime` báo thư mục log đang ghi; không đặt khi không mở được file log.
+            deps.environ[LOG_DIR_ENV] = str(log_dir)
         stop = threading.Event()
         poller = threading.Thread(
             target=announce_when_ready,

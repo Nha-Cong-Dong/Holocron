@@ -39,6 +39,10 @@ export interface RuntimeView {
   mock_extractor: boolean | null;
   /** `null` khi backend chưa báo danh sách khả năng (bản cũ). */
   capabilities: CapabilityEntry[] | null;
+  /** Thông tin bản chạy; vắng khi backend cũ chưa báo hoặc `log_dir = null` (không chạy qua launcher). */
+  app_version?: string;
+  commit?: string;
+  log_dir?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -87,7 +91,26 @@ export function normalizeRuntimeInfo(value: unknown): RuntimeView | null {
     vlm_configured,
     mock_extractor: typeof value.mock_extractor === "boolean" ? value.mock_extractor : null,
     capabilities,
+    ...(typeof value.app_version === "string" ? { app_version: value.app_version } : {}),
+    ...(typeof value.commit === "string" ? { commit: value.commit } : {}),
+    ...(typeof value.log_dir === "string" && value.log_dir !== "" ? { log_dir: value.log_dir } : {}),
   };
+}
+
+/** Số ký tự đầu của commit hiển thị trên thanh trạng thái. */
+export const COMMIT_DISPLAY_LENGTH = 7;
+
+/** Nhãn bản chạy `Holocron <app_version> (<commit 7 ký tự>)`; `null` khi backend chưa báo version. */
+export function buildLabel(runtime: RuntimeView | null): string | null {
+  if (runtime === null || runtime.app_version === undefined) return null;
+  const base = `Holocron ${runtime.app_version}`;
+  if (runtime.commit === undefined || runtime.commit === "") return base;
+  return `${base} (${runtime.commit.slice(0, COMMIT_DISPLAY_LENGTH)})`;
+}
+
+/** Thư mục log launcher đang ghi; `null` khi không chạy qua launcher hoặc backend chưa báo. */
+export function logDirOf(runtime: RuntimeView | null): string | null {
+  return runtime?.log_dir ?? null;
 }
 
 // ------------------------------------------------------------------------------------- trạng thái tải

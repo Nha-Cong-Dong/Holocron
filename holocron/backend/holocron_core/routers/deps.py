@@ -5,6 +5,8 @@ Test thay phụ thuộc bằng `app.dependency_overrides[get_xxx]`; mọi router
 
 from __future__ import annotations
 
+import os
+import unicodedata
 from collections.abc import Callable
 from datetime import UTC, datetime
 from functools import cache
@@ -16,6 +18,7 @@ from ..domain.repositories import AppStore, VaultRepository
 from ..infrastructure.llm_config import RuntimeConfig, load_runtime_config_lenient
 from ..infrastructure.storage import open_store_from_env
 from ..infrastructure.template_library import InMemoryTemplateRegistry
+from ..launcher_logging import LOG_DIR_ENV, BuildInfo, read_build_info
 from ..services.extraction import DocumentExtractor, MockDualPassExtractor
 from ..services.pipeline import TemplateAuthor
 from ..services.twin_batch import CitationProvider, NoCitationProvider, UnconfiguredTemplateAuthor
@@ -49,6 +52,25 @@ def get_runtime_config() -> RuntimeConfig:
     return load_runtime_config_lenient()
 
 
+@cache
+def _default_build_info() -> BuildInfo:
+    return read_build_info()
+
+
+def get_build_info() -> BuildInfo:
+    """Version và commit của bản đang chạy (đọc `holocron_build.json` một lần); thiếu/hỏng thì giá trị lùi."""
+    return _default_build_info()
+
+
+def get_log_dir() -> str | None:
+    """Thư mục log do launcher đặt qua `HOLOCRON_LOG_DIR`; không chạy qua launcher thì `None`."""
+    # Bỏ ký tự điều khiển/định dạng như `clean_field` nhưng không cắt độ dài: đường dẫn log có thể dài hơn 64 ký tự.
+    value = "".join(
+        ch for ch in os.environ.get(LOG_DIR_ENV, "") if not unicodedata.category(ch).startswith("C")
+    ).strip()
+    return value or None
+
+
 def get_template_author() -> TemplateAuthor:
     return UnconfiguredTemplateAuthor()
 
@@ -72,6 +94,8 @@ def get_vault(store: StoreDep) -> VaultRepository:
 VaultDep = Annotated[VaultRepository, Depends(get_vault)]
 ExtractorDep = Annotated[DocumentExtractor, Depends(get_extractor)]
 RuntimeConfigDep = Annotated[RuntimeConfig, Depends(get_runtime_config)]
+BuildInfoDep = Annotated[BuildInfo, Depends(get_build_info)]
+LogDirDep = Annotated[str | None, Depends(get_log_dir)]
 AuthorDep = Annotated[TemplateAuthor, Depends(get_template_author)]
 CitationDep = Annotated[CitationProvider, Depends(get_citation_provider)]
 ClockDep = Annotated[Callable[[], datetime], Depends(get_clock)]

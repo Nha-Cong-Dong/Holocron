@@ -6,7 +6,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from ..services.extraction import MockDualPassExtractor
-from .deps import ExtractorDep, RuntimeConfigDep
+from .deps import BuildInfoDep, ExtractorDep, LogDirDep, RuntimeConfigDep
 
 router = APIRouter()
 
@@ -17,12 +17,20 @@ class RuntimeInfo(BaseModel):
     demo_mode: bool
     llm_configured: bool
     vlm_configured: bool
+    app_version: str
+    commit: str
+    log_dir: str | None
 
 
 @router.get("/v1/runtime", response_model=RuntimeInfo)
-def get_runtime(config: RuntimeConfigDep, extractor: ExtractorDep) -> RuntimeInfo:
+def get_runtime(
+    config: RuntimeConfigDep, extractor: ExtractorDep, build: BuildInfoDep, log_dir: LogDirDep
+) -> RuntimeInfo:
     return RuntimeInfo(
         demo_mode=isinstance(extractor, MockDualPassExtractor),
         llm_configured=config.llm_configured,
         vlm_configured=config.vlm is not None,
+        app_version=build.version,
+        commit=build.commit,
+        log_dir=log_dir,
     )

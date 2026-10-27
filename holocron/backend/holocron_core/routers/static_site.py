@@ -23,8 +23,8 @@ import stat
 from collections.abc import Mapping
 from pathlib import Path, PurePath
 
-import anyio.to_thread
 from fastapi import FastAPI
+from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import Headers
 from starlette.exceptions import HTTPException
 from starlette.responses import FileResponse, Response
@@ -204,7 +204,7 @@ class _StaticSite(StaticFiles):
         file_path = os.fspath(response.path)
         if not _is_html(file_path):
             return response
-        body = await anyio.to_thread.run_sync(_read_injected, file_path)
+        body = await run_in_threadpool(_read_injected, file_path)
         return Response(
             content=body,
             status_code=response.status_code,

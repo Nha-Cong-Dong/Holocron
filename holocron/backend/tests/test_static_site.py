@@ -5,6 +5,7 @@ Yêu cầu chính: mọi phản hồi của API (mã, `Allow`, redirect, thân J
 
 from __future__ import annotations
 
+import ast
 import errno
 import importlib.util
 import json
@@ -22,7 +23,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocketDisconnect
 
 from holocron_core.infrastructure.llm_config import ConfigError
-from holocron_core.routers import api
+from holocron_core.routers import api, static_site
 from holocron_core.routers.static_site import (
     CACHE_IMMUTABLE,
     ENV_WEB_DIR,
@@ -590,3 +591,16 @@ def test_file_directly_in_next_static_dir_name_is_not_special(web_dir: Path) -> 
     client = TestClient(app)
     assert client.get("/_next/static.txt").headers["cache-control"] == "no-store"
     assert client.get("/_next/staticx/a.js").headers["cache-control"] == "no-cache"
+
+
+def test_static_site_does_not_import_anyio_directly() -> None:
+    """`anyio` chỉ là phụ thuộc bắc cầu của starlette, không khai trong `pyproject.toml`: không import trực tiếp."""
+    source = Path(static_site.__file__).read_text(encoding="utf-8")
+    roots: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            roots.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module is not None and node.level == 0:
+            roots.add(node.module.split(".")[0])
+    assert "anyio" not in roots
+    assert "starlette" in roots

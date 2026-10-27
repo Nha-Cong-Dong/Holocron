@@ -5,8 +5,10 @@ Yêu cầu chính: mọi phản hồi của API (mã, `Allow`, redirect, thân J
 
 from __future__ import annotations
 
+import errno
 import importlib.util
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -16,6 +18,7 @@ from typing import IO, Any
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocketDisconnect
 
 from holocron_core.infrastructure.llm_config import ConfigError
@@ -497,3 +500,40 @@ def test_unresolvable_web_dir_raises_config_error_without_path(tmp_path: Path, m
     assert ENV_WEB_DIR in str(caught.value)
     assert str(tmp_path) not in str(caught.value)
     assert caught.value.__cause__ is None
+
+
+# --- Ký tự Windows không nhận và đoạn quá dài: 404 như đường dẫn lạ khác, không 500 ---
+
+ODD_NAME_URLS = ["/a%2Ab", "/a%3Fb", "/a%3Cb", "/a%3Eb", "/a%7Cb", "/a%22b", "/vault/a%2Ab.txt", "/" + "a" * 256]
+
+
+@pytest.mark.parametrize("url", ODD_NAME_URLS)
+def test_odd_names_are_404_html_not_500(site: TestClient, url: str) -> None:
+    response = site.get(url)
+    assert response.status_code == 404
+    assert "Không tìm thấy trang" in response.text
+
+
+@pytest.mark.parametrize("url", ODD_NAME_URLS)
+def test_odd_names_without_404_html_are_json_404(tmp_path: Path, url: str) -> None:
+    app = _sample_app()
+    attach_static_site(app, _make_web_dir(tmp_path, with_404=False))
+    response = TestClient(app).get(url)
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not Found"}
+
+
+def test_segment_of_255_chars_is_still_looked_up(site: TestClient) -> None:
+    response = site.get("/" + "a" * 255)
+    assert response.status_code == 404
+    assert "Không tìm thấy trang" in response.text
+
+
+def test_os_error_while_looking_up_file_is_404(site: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken_lookup(self: StaticFiles, path: str) -> tuple[str, os.stat_result | None]:
+        raise OSError(errno.EINVAL, "Invalid argument", path)
+
+    monkeypatch.setattr(StaticFiles, "lookup_path", broken_lookup)
+    response = site.get("/vault/")
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not Found"}

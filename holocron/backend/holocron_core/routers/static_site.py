@@ -55,6 +55,10 @@ _HEAD_OPEN_TAG = re.compile(rb"<head(?:\s[^>]*)?>", re.IGNORECASE)
 # Tách đoạn đường dẫn theo cả `/` và `\` (dấu phân cách trên Windows sau `os.path.normpath`).
 _PATH_SEPARATORS = re.compile(r"[\\/]")
 
+# Ký tự Windows không cho trong tên file (ngoài `:` và ký tự điều khiển, kiểm riêng) và độ dài tối đa một đoạn.
+_FORBIDDEN_CHARS = frozenset(':*?<>|"')
+MAX_SEGMENT_LENGTH = 255
+
 # Tên thiết bị Windows: `CON`, `NUL.txt`… trỏ tới thiết bị chứ không phải file trong thư mục web.
 _WINDOWS_DEVICE_NAMES = frozenset(
     {"con", "prn", "aux", "nul", "conin$", "conout$"}
@@ -113,12 +117,15 @@ def _is_unsafe_segment(segment: str) -> bool:
     """Đoạn đường dẫn có thể trỏ tới thứ khác file thường của thư mục web (đặc biệt trên Windows).
 
     Từ chối trên mọi nền tảng để hành vi giống nhau: `:` (luồng dữ liệu phụ NTFS như `index.html::$DATA`), ký tự
-    điều khiển, đoạn kết thúc bằng dấu chấm hoặc khoảng trắng (Windows bỏ chúng, nên `index.html.` trỏ tới
-    `index.html`) và tên thiết bị Windows (`CON`, `NUL.txt`…). `..` để `StaticFiles` chặn như thường.
+    Windows không cho trong tên file (`* ? < > | "`, `os.stat` ném WinError 123), ký tự điều khiển, đoạn dài quá
+    `MAX_SEGMENT_LENGTH`, đoạn kết thúc bằng dấu chấm hoặc khoảng trắng (Windows bỏ chúng, nên `index.html.` trỏ
+    tới `index.html`) và tên thiết bị Windows (`CON`, `NUL.txt`…). `..` để `StaticFiles` chặn như thường.
     """
     if segment in ("", ".", ".."):
         return False
-    if ":" in segment or any(ord(char) < 0x20 or ord(char) == 0x7F for char in segment):
+    if len(segment) > MAX_SEGMENT_LENGTH or not _FORBIDDEN_CHARS.isdisjoint(segment):
+        return True
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in segment):
         return True
     if segment[-1] in ". ":
         return True
@@ -144,9 +151,18 @@ class _StaticSite(StaticFiles):
     """`StaticFiles(html=True)` có chèn runtime vào HTML và đặt `Cache-Control` theo loại file."""
 
     def lookup_path(self, path: str) -> tuple[str, os.stat_result | None]:
+        """Như `StaticFiles.lookup_path`, nhưng đoạn đường dẫn lạ hoặc lỗi hệ điều hành khi tra file ⇒ không thấy file.
+
+        Bản gốc chỉ đổi `ENAMETOOLONG` thành 404 và ném lại mọi `OSError` khác (thành 500), ví dụ WinError 123 với
+        tên chứa ký tự Windows không nhận. Ở đây mọi `OSError` khi tra file đều coi như không có file (404 hoặc
+        `404.html`).
+        """
         if any(_is_unsafe_segment(segment) for segment in _PATH_SEPARATORS.split(path)):
             return "", None
-        return super().lookup_path(path)
+        try:
+            return super().lookup_path(path)
+        except OSError:
+            return "", None
 
     def file_response(
         self,

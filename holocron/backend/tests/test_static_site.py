@@ -12,7 +12,7 @@ import json
 import os
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePath
 from types import ModuleType
 from typing import IO, Any
 
@@ -604,3 +604,225 @@ def test_static_site_does_not_import_anyio_directly() -> None:
             roots.add(node.module.split(".")[0])
     assert "anyio" not in roots
     assert "starlette" in roots
+
+
+# --- Bắt các đột biến sống sót (report mutation 2026-10-27 11:10) ---
+
+
+@pytest.mark.parametrize(
+    ("path", "root_path", "expected"),
+    [
+        ("/base/vault/", "/base", "/vault/"),
+        ("/base/", "/base", "/"),
+        ("/base", "/base", ""),
+        ("/basement/", "/base", "/basement/"),
+        ("/bas", "/base", "/bas"),
+        ("/vault/", "/base", "/vault/"),
+        ("/x/base/v1", "/base", "/x/base/v1"),
+        ("/vault/", "", "/vault/"),
+    ],
+)
+def test_route_path_table(path: str, root_path: str, expected: str) -> None:
+    assert static_site._route_path({"path": path, "root_path": root_path}) == expected
+
+
+def test_route_path_without_root_path_key() -> None:
+    assert static_site._route_path({"path": "/vault/"}) == "/vault/"
+
+
+def test_root_path_is_stripped_before_api_check(web_dir: Path) -> None:
+    """Chạy sau proxy có `root_path`: `/base/v1/...` vẫn là API (404 JSON), `/base/vault/` vẫn là trang."""
+    app = _sample_app()
+    attach_static_site(app, web_dir)
+    client = TestClient(app, root_path="/base")
+    plain = TestClient(_sample_app(), root_path="/base")
+    for method, url in (("GET", "/base/v1/khong-co"), ("POST", "/base/v1/khong-co"), ("GET", "/base/docs/x")):
+        assert _snapshot(client, method, url) == _snapshot(plain, method, url)
+        assert client.request(method, url).json() == {"detail": "Not Found"}
+    page = client.get("/base/vault/")
+    assert page.status_code == 200
+    assert _runtime_of(page.text) == {"apiBase": "/"}
+
+
+@pytest.mark.parametrize(
+    ("path", "is_api"),
+    [
+        ("/v1", True),
+        ("/v1/", True),
+        ("/v1/x", True),
+        ("/v1x", False),
+        ("/v10/x", False),
+        ("/docs", True),
+        ("/docs/x", True),
+        ("/docsx", False),
+        ("/redoc", True),
+        ("/redocx", False),
+        ("/openapi.json", True),
+        ("/openapi.json/x", True),
+        ("/openapi.jsonx", False),
+        ("/", False),
+        ("/vault/v1", False),
+    ],
+)
+def test_is_api_path_table(path: str, is_api: bool) -> None:
+    assert static_site._is_api_path(path) is is_api
+
+
+@pytest.mark.parametrize("url", ["/v1x", "/v10/khong-co", "/docsx", "/redocx", "/openapi.jsonx"])
+def test_paths_that_only_share_a_prefix_are_static(site: TestClient, url: str) -> None:
+    response = site.get(url)
+    assert response.status_code == 404
+    assert "Không tìm thấy trang" in response.text
+    assert site.post(url).headers["allow"] == "GET, HEAD"
+
+
+def test_uppercase_extensions_are_handled(web_dir: Path) -> None:
+    (web_dir / "UPPER.HTML").write_text("<HEAD>hoa</HEAD>", encoding="utf-8")
+    (web_dir / "PAYLOAD.TXT").write_text("rsc", encoding="utf-8")
+    app = _sample_app()
+    attach_static_site(app, web_dir)
+    client = TestClient(app)
+    page = client.get("/UPPER.HTML")
+    assert page.status_code == 200
+    assert _runtime_of(page.text) == {"apiBase": "/"}
+    assert page.headers["cache-control"] == "no-store"
+    assert "etag" not in page.headers
+    payload = client.get("/PAYLOAD.TXT")
+    assert payload.status_code == 200
+    assert payload.headers["cache-control"] == "no-store"
+    assert static_site._is_html("a/B.HtMl") is True
+    assert static_site._is_html("a.htm") is False
+
+
+@pytest.mark.parametrize(
+    ("segment", "unsafe"),
+    [
+        ("", False),
+        (".", False),
+        ("..", False),
+        ("index.html", False),
+        ("a" * 255, False),
+        ("a" * 256, True),
+        ("tiếng-việt.html", False),
+        ("a b.txt", False),
+        ("~a", False),
+        ("a\x1fb", True),
+        ("\x00", True),
+        ("a\x7fb", True),
+        ("a\tb", True),
+        ("index.html.", True),
+        ("index.html ", True),
+        ("CON", True),
+        ("con", True),
+        ("Con.txt", True),
+        ("CON .txt", True),
+        ("nul.tar.gz", True),
+        ("LPT9", True),
+        ("com¹", True),
+        ("conin$", True),
+        ("console.js", False),
+        ("icon", False),
+        ("com10", False),
+    ]
+    + [(f"a{char}b", True) for char in ':*?<>|"'],
+)
+def test_is_unsafe_segment_table(segment: str, unsafe: bool) -> None:
+    assert static_site._is_unsafe_segment(segment) is unsafe
+
+
+@pytest.mark.parametrize(
+    ("relative", "status", "cache"),
+    [
+        ("_next/static/chunks/a.js", 200, CACHE_IMMUTABLE),
+        ("_next/static/a.txt", 200, CACHE_IMMUTABLE),
+        ("_next/static/chunks/a.js", 304, "no-cache"),
+        ("_next/static/a.txt", 404, "no-store"),
+        ("_next/static", 200, "no-cache"),
+        ("_next/static.txt", 200, "no-store"),
+        ("_next/a.js", 200, "no-cache"),
+        ("x/_next/static/a.js", 200, "no-cache"),
+        ("static/_next/a.js", 200, "no-cache"),
+        ("vault/index.txt", 200, "no-store"),
+        ("vault/INDEX.TXT", 200, "no-store"),
+        ("a.txt.js", 200, "no-cache"),
+        ("favicon.ico", 200, "no-cache"),
+    ],
+)
+def test_cache_control_table(relative: str, status: int, cache: str) -> None:
+    assert static_site._cache_control(PurePath(relative), status) == cache
+
+
+@pytest.mark.parametrize("path", ["vault\\CON", "vault/CON", "a\\b:c", "a\\" + "x" * 256, "vault\\index.html."])
+def test_unsafe_segments_are_rejected_before_starlette_lookup(
+    web_dir: Path, monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    """Tách đoạn theo cả `/` và `\\` trên mọi nền tảng; đoạn lạ bị từ chối trước khi Starlette tra file."""
+    calls: list[str] = []
+
+    def record(self: StaticFiles, lookup: str) -> tuple[str, os.stat_result | None]:
+        calls.append(lookup)
+        return "", None
+
+    site_files = static_site._StaticSite(web_dir)
+    monkeypatch.setattr(StaticFiles, "lookup_path", record)
+    assert site_files.lookup_path(path) == ("", None)
+    assert calls == []
+    assert site_files.lookup_path("vault\\index.html") == ("", None)
+    assert calls == ["vault\\index.html"]
+
+
+def test_value_error_while_resolving_web_dir_is_config_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    web = _make_web_dir(tmp_path)
+
+    def fail_resolve(self: Path, strict: bool = False) -> Path:
+        raise ValueError(f"embedded null byte in {self}")
+
+    monkeypatch.setattr(Path, "resolve", fail_resolve)
+    with pytest.raises(ConfigError) as caught:
+        attach_static_site(_sample_app(), web)
+    assert str(tmp_path) not in str(caught.value)
+    assert caught.value.__suppress_context__ is True
+
+
+def test_value_error_while_checking_index_is_config_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    web = _make_web_dir(tmp_path)
+    real_stat = Path.stat
+
+    def fail_index_stat(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if self.name == "index.html":
+            raise ValueError(f"bad {self}")
+        return real_stat(self, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "stat", fail_index_stat)
+    with pytest.raises(ConfigError) as caught:
+        attach_static_site(_sample_app(), web)
+    assert str(tmp_path) not in str(caught.value)
+    assert caught.value.__suppress_context__ is True
+
+
+def test_config_errors_suppress_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`raise … from None`: traceback không kèm ngoại lệ gốc (có thể mang đường dẫn)."""
+    web = _make_web_dir(tmp_path)
+    real_open = Path.open
+
+    def deny_index(self: Path, mode: str = "r", *args: Any, **kwargs: Any) -> IO[Any]:
+        if self.name == "index.html":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_open(self, mode, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", deny_index)
+        with pytest.raises(ConfigError) as unreadable:
+            attach_static_site(_sample_app(), web)
+    assert unreadable.value.__suppress_context__ is True
+    assert unreadable.value.__context__ is not None
+
+    def fail_resolve(self: Path, strict: bool = False) -> Path:
+        raise OSError(5, "I/O error", str(self))
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "resolve", fail_resolve)
+        with pytest.raises(ConfigError) as unresolvable:
+            attach_static_site(_sample_app(), web)
+    assert unresolvable.value.__suppress_context__ is True
+    assert unresolvable.value.__context__ is not None

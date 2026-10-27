@@ -596,3 +596,88 @@ def test_guard_module_imports_no_network_or_logging_library() -> None:
     }
     roots |= {node.module.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
     assert roots.isdisjoint({"socket", "http", "urllib", "httpx", "requests", "logging", "ssl"}), roots
+
+
+# --------------------------------------------------------------------------- #
+# Ca bổ sung sau mutation testing (biên cổng, giải mã byte, strip, token rỗng)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("header", ["localhost:008000", "localhost:" + "9" * 5000])
+def test_host_name_rejects_port_longer_than_five_digits(header: str) -> None:
+    assert host_name(header) is None
+
+
+@pytest.mark.usefixtures("real_hosts")
+def test_host_with_a_very_long_port_is_403() -> None:
+    assert _asgi([_host("localhost:" + "9" * 5000)]).status == 403
+
+
+@pytest.mark.parametrize(("header", "expected"), [("localhost:1", "localhost"), ("127.0.0.1:0", "127.0.0.1")])
+def test_host_name_accepts_single_digit_port(header: str, expected: str) -> None:
+    assert host_name(header) == expected
+
+
+@pytest.mark.usefixtures("real_hosts")
+def test_non_ascii_host_bytes_are_403_not_500() -> None:
+    assert _asgi([(b"host", b"evil\xe9.example")]).status == 403
+
+
+@pytest.mark.usefixtures("real_hosts")
+@pytest.mark.parametrize("forwarded", [b"localhost\xa0", b"localhost\x0b"])
+def test_forwarded_host_is_not_stripped_of_unicode_or_vertical_whitespace(forwarded: bytes) -> None:
+    result = _asgi([_host("127.0.0.1:8000"), (FORWARDED_HOST_HEADER.lower().encode("ascii"), forwarded)])
+    assert result.status == 403
+
+
+@pytest.mark.usefixtures("real_hosts")
+def test_forwarded_host_list_allows_a_tab_after_the_comma() -> None:
+    result = _asgi(
+        [_host("127.0.0.1:8000"), (FORWARDED_HOST_HEADER.lower().encode("ascii"), b"localhost:3000,\t127.0.0.1")]
+    )
+    assert result.status == 200
+
+
+def test_empty_string_is_not_a_valid_token() -> None:
+    assert is_valid_token("") is False
+
+
+def test_token_matches_compares_latin1_bytes_not_utf8() -> None:
+    assert token_matches(b"\xe9", "é") is True
+
+
+# --------------------------------------------------------------------------- #
+# Trang tĩnh (HOLOCRON_WEB_DIR) cũng bị kiểm Host
+# --------------------------------------------------------------------------- #
+
+
+def _static_probe_app(web_dir: Path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
+    """Nạp lại `routers/api.py` thành module riêng với `HOLOCRON_WEB_DIR`, như `tests/test_static_site.py`."""
+    import importlib.util
+
+    from holocron_core.routers import api
+
+    monkeypatch.setenv("HOLOCRON_WEB_DIR", str(web_dir))
+    spec = importlib.util.spec_from_file_location("holocron_core.routers._api_access_probe", Path(api.__file__))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    probe: FastAPI = module.app
+    return probe
+
+
+@pytest.mark.parametrize("path", ["/", "/index.html"])
+def test_static_pages_reject_an_unknown_host_and_serve_an_allowed_one(
+    path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    web = tmp_path / "web"
+    web.mkdir()
+    (web / "index.html").write_text("<html><head></head><body>Trang chủ</body></html>", encoding="utf-8")
+    probe = _static_probe_app(web, monkeypatch)
+    evil = TestClient(probe, base_url=f"http://{EVIL}").get(path)
+    assert evil.status_code == 403
+    assert evil.json() == {"detail": HOST_FORBIDDEN_DETAIL}
+    ok = TestClient(probe, base_url="http://127.0.0.1:8000").get(path)
+    assert ok.status_code == 200
+    assert "Trang chủ" in ok.text

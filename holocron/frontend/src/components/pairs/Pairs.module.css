@@ -1,0 +1,324 @@
+.page {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.intro {
+  color: var(--text-muted);
+  font-size: var(--text-md);
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.panel {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.panel h2 {
+  font-size: var(--text-lg);
+}
+
+.panelHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+/* ------------------------------------------------------------------------------------ form */
+
+.filters,
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.actions {
+  align-items: center;
+}
+
+/* Nút lọc thẳng hàng với ô nhập (dưới nhãn của ô). */
+.filters > .actions {
+  padding-top: calc(var(--text-md) * 1.5 + var(--space-1));
+}
+
+.form {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-sunken);
+}
+
+.form h3 {
+  font-size: var(--text-body);
+}
+
+.field {
+  display: grid;
+  align-content: start;
+  gap: var(--space-1);
+  min-width: 0;
+  font-size: var(--text-md);
+}
+
+.fieldLabel {
+  font-weight: 600;
+}
+
+.input,
+.select {
+  min-height: 36px;
+  max-width: 100%;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.input[aria-invalid="true"],
+.select[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.codeInput {
+  width: 140px;
+  font-family: var(--font-mono);
+}
+
+.textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+}
+
+.hint {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.fieldError {
+  color: var(--danger);
+  font-size: var(--text-sm);
+}
+
+.primary,
+.secondary {
+  min-height: 32px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.primary {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.secondary {
+  background: var(--surface);
+  color: var(--accent);
+}
+
+a.secondary {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
+.primary:disabled,
+.secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.note,
+.warningNote {
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--info);
+  border-radius: var(--radius);
+  background: var(--info-soft);
+  font-size: var(--text-md);
+}
+
+.warningNote {
+  border-left-color: var(--warning);
+  background: var(--warning-soft);
+}
+
+/* ------------------------------------------------------------------------------- danh sách cặp */
+
+.list {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.card {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.card[data-status="rejected"] {
+  border-style: dashed;
+  background: var(--surface-sunken);
+  color: var(--text-muted);
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.badge {
+  display: inline-block;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.badge[data-tone="success"] {
+  border-color: var(--success);
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.badge[data-tone="warning"] {
+  border-color: var(--warning);
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.badge[data-tone="neutral"] {
+  color: var(--text-muted);
+}
+
+.term {
+  font-size: var(--text-body);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.plainQuote {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  font-size: var(--text-body);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.code {
+  font-family: var(--font-mono);
+}
+
+/* ------------------------------------------------------------------------------- văn bản chunk */
+
+.chunkText {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--quote-rule);
+  border-radius: var(--radius);
+  background: var(--quote-bg);
+  font-family: var(--font-serif);
+  font-size: var(--text-body);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  cursor: text;
+}
+
+.chunkText::selection {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.pageLabel {
+  color: var(--quote-label);
+  font-weight: 600;
+}
+
+.preview {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.previewText {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px dashed var(--warning);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: var(--text-body);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.pickList {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pickItem {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.snippet {
+  font-family: var(--font-serif);
+  font-size: var(--text-md);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1099px) {
+  .columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .card {
+    transition: border-color var(--motion-fast) ease;
+  }
+}

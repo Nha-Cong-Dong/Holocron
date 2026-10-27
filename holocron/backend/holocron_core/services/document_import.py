@@ -86,7 +86,7 @@ WRITE_RETRY_DELAY_S = 0.2
 # Đặt tài liệu thành `confirmed` mà luồng đọc nền vừa ghi tài liệu (version lệch): đọc lại rồi thử tối đa chừng ấy lần.
 SETTLE_ATTEMPTS = 3
 IMPORT_UNAVAILABLE_DETAIL = "Bộ nhập tài liệu đang dừng (app đang tắt); hãy gửi lại sau khi khởi động lại"
-CHAPTER_MISSING_DETAIL = "Tài liệu được nhập trước khi có chapter_code; hãy xoá rồi nhập lại tài liệu"
+CHAPTER_MISSING_DETAIL = "Tài liệu được nhập trước khi có chapter_code; hãy xoá tài liệu rồi nhập lại"
 SETTLE_PENDING_DETAIL = (
     "Văn bản của tài liệu đã vào Knowledge Vault nhưng tài liệu chưa hoàn tất xác nhận; hãy gọi lại xác nhận tài "
     "liệu, không sửa thêm được"

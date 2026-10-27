@@ -12,8 +12,10 @@ Mọi lời gọi `python/python.exe` của zip đều có `-I` (như `Holocron.
 2. RapidOCR thật (bản `full`): import `rapidocr`, `onnxruntime`, `cv2`, `shapely`; một lần suy luận trên ảnh có chữ tự
    tạo bằng adapter của app (model đóng sẵn, không tải mạng).
 3. `Holocron.cmd --no-browser --data-dir <thư mục có dấu>`, đọc URL từ stdout. `GET /` có `__HOLOCRON_RUNTIME__`;
-   `/vault/` 200; `/v1/khong-co` JSON 404; `/v1/runtime` 200; `Host: evil.example` ⇒ 403. Tải lên một PDF có lớp chữ
-   (trang 1 có văn bản) và một PDF scan không có lớp chữ (bản `full`: `cross_check` khác `unavailable`).
+   `/vault/` 200; `/v1/khong-co` JSON 404; `/v1/runtime` 200; `Host: evil.example` ⇒ 403 (SKIP "chờ B4" trừ khi có
+   `--expect-host-check`). Tải lên một PDF có lớp chữ (trang 1 có văn bản) và một PDF scan không có lớp chữ (bản
+   `full`: `cross_check` là ok/mismatch với `secondary_engine = rapidocr`). Server và tiến trình con luôn được dừng
+   (`finally`) trước khi xoá thư mục tạm.
 4. Chạy `tests/test_sandbox_security.py` và `tests/test_pdf_input_limits.py` bằng `python -I` của zip (pytest ở
    overlay tạm ngoài zip), khẳng định `holocron_core` được nạp từ `app/` của zip.
 5. Gửi Ctrl+Break, tiến trình thoát trong 10 s, không còn tiến trình con, DB SQLite mở lại được.
@@ -167,15 +169,41 @@ class SmokeError(Exception):
 @dataclass
 class Report:
     results: list[tuple[str, bool, str]] = field(default_factory=list)
+    skipped: list[tuple[str, str]] = field(default_factory=list)
 
     def check(self, name: str, ok: bool, detail: str = "") -> bool:
         self.results.append((name, ok, detail))
         print(f"{'PASS' if ok else 'FAIL'}  {name}{f' — {detail}' if detail else ''}", flush=True)
         return ok
 
+    def skip(self, name: str, reason: str) -> None:
+        """Mục chưa kiểm được vì phụ thuộc việc chưa merge; KHÔNG tính PASS hay FAIL, luôn in kèm nhãn lý do."""
+        self.skipped.append((name, reason))
+        print(f"SKIP  {name} — {reason}", flush=True)
+
     @property
     def passed(self) -> bool:
         return all(ok for _, ok, _ in self.results)
+
+    def summary(self) -> str:
+        failed = sum(1 for _, ok, _ in self.results if not ok)
+        text = f"Kết quả: {len(self.results) - failed}/{len(self.results)} PASS"
+        return text + (f", {len(self.skipped)} SKIP" if self.skipped else "")
+
+
+def parse_json(text: str) -> object | None:
+    """JSON từ output tiến trình/HTTP; không phải JSON ⇒ None (bước gọi tự báo FAIL)."""
+    try:
+        value: object = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return value
+
+
+def last_json_line(output: str) -> dict[str, object] | None:
+    lines = output.strip().splitlines()
+    value = parse_json(lines[-1]) if lines else None
+    return {str(key): item for key, item in value.items()} if isinstance(value, dict) else None
 
 
 # ---------------------------------------------------------------- tiện ích
@@ -338,7 +366,10 @@ def parse_prefixed(output: str, prefix: str) -> dict[str, object] | None:
     """Dòng cuối có tiền tố `prefix` ⇒ dict JSON; không có ⇒ None."""
     for line in reversed(output.splitlines()):
         if line.startswith(prefix):
-            value = json.loads(line[len(prefix) :])
+            try:
+                value = json.loads(line[len(prefix) :])
+            except json.JSONDecodeError as exc:
+                raise SmokeError(f"dữ liệu sau {prefix} không phải JSON: {exc}") from exc
             if not isinstance(value, dict):
                 raise SmokeError(f"dữ liệu sau {prefix} không phải object JSON")
             return {str(key): item for key, item in value.items()}
@@ -444,9 +475,13 @@ def check_app_import(report: Report, root: Path) -> None:
     code, output = run_text([*zip_python(root), "-c", APP_IMPORT_CODE], timeout=120)
     if not report.check("python -I nạp được holocron_core", code == 0, output.strip()[-300:] if code else ""):
         return
-    data = json.loads(output.strip().splitlines()[-1])
-    print(f"  sys.path của python -I: {data['path']}", flush=True)
-    report.check("holocron_core nạp từ app/ của zip", is_inside(str(data["file"]), root / "app"), str(data["file"]))
+    data = last_json_line(output)
+    if not report.check("python -I in JSON hợp lệ", data is not None, output.strip()[-300:]):
+        return
+    assert data is not None
+    print(f"  sys.path của python -I: {data.get('path')}", flush=True)
+    location = str(data.get("file"))
+    report.check("holocron_core nạp từ app/ của zip", is_inside(location, root / "app"), location)
 
 
 def check_rapidocr(report: Report, root: Path, work: Path) -> Path | None:
@@ -455,12 +490,17 @@ def check_rapidocr(report: Report, root: Path, work: Path) -> Path | None:
     code, output = run_text([*zip_python(root), "-c", OCR_CODE, str(gray)], cwd=work, timeout=300)
     if not report.check("import rapidocr/onnxruntime/cv2/shapely", code == 0, output.strip()[-400:] if code else ""):
         return None
-    data = json.loads(output.strip().splitlines()[-1])
-    modules = data.get("modules", {})
-    outside = [name for name, path in modules.items() if not is_inside(str(path), root)]
-    report.check("module OCR nạp từ zip", not outside, ", ".join(outside))
+    data = last_json_line(output)
+    if not report.check("RapidOCR in JSON hợp lệ", data is not None, output.strip()[-300:]):
+        return None
+    assert data is not None
+    modules = data.get("modules")
+    modules = modules if isinstance(modules, dict) else {}
+    outside = [str(name) for name, path in modules.items() if not is_inside(str(path), root)]
+    report.check("module OCR nạp từ zip", bool(modules) and not outside, ", ".join(outside))
     print(f"  GEOS của shapely: {data.get('geos')}", flush=True)
-    tokens = [str(token) for token in data.get("tokens", [])]
+    raw_tokens = data.get("tokens")
+    tokens = [str(token) for token in raw_tokens] if isinstance(raw_tokens, list) else []
     report.check(
         "RapidOCR suy luận ảnh tự tạo (model đóng sẵn)",
         bool(data.get("loaded")) and any(token in tokens for token in ("2026", "31415")),
@@ -469,7 +509,10 @@ def check_rapidocr(report: Report, root: Path, work: Path) -> Path | None:
     return gray
 
 
-def check_http(report: Report, port: int) -> None:
+HOST_CHECK_PENDING = "chờ B4: kiểm Host chưa có ở develop (bật bằng --expect-host-check khi B4 đã merge)"
+
+
+def check_http(report: Report, port: int, *, expect_host_check: bool = False) -> None:
     status, kind, body = http_request(port, "GET", "/")
     report.check(
         "GET / trả HTML có __HOLOCRON_RUNTIME__", status == 200 and "__HOLOCRON_RUNTIME__" in body, f"{status}"
@@ -482,33 +525,48 @@ def check_http(report: Report, port: int) -> None:
     )
     status, kind, _ = http_request(port, "GET", "/v1/runtime")
     report.check("GET /v1/runtime 200", status == 200 and "json" in kind, f"{status}")
+    if not expect_host_check:
+        report.skip("Host: evil.example bị chặn 403", HOST_CHECK_PENDING)
+        return
     status, _, _ = http_request(port, "GET", "/v1/runtime", headers={"Host": "evil.example"})
-    report.check("Host: evil.example bị chặn 403 (kiểm Host thuộc B4, chưa ở develop)", status == 403, f"{status}")
+    report.check("Host: evil.example bị chặn 403", status == 403, f"{status}")
+
+
+def json_object(text: str) -> dict[str, object] | None:
+    value = parse_json(text)
+    return {str(key): item for key, item in value.items()} if isinstance(value, dict) else None
+
+
+def document_id_of(created: Mapping[str, object] | None) -> str | None:
+    meta = created.get("meta") if created is not None else None
+    doc_id = meta.get("doc_id") if isinstance(meta, dict) else None
+    return doc_id if isinstance(doc_id, str) else None
 
 
 def upload_and_read_page(report: Report, port: int, label: str, filename: str, content: bytes) -> dict[str, object]:
-    """Tải PDF lên, chờ đọc xong (≤ 300 s), trả JSON trang 1 (rỗng nếu bước nào FAIL)."""
+    """Tải PDF lên, chờ đọc xong (≤ 300 s), trả JSON trang 1 (rỗng nếu bước nào FAIL; JSON hỏng ⇒ FAIL)."""
     body, content_type = multipart(
         {"subject_code": "SMOKE101", "source_kind": "lecture_slides", "output_language": "vi"}, filename, content
     )
     status, _, text = http_request(port, "POST", "/v1/documents", body=body, headers={"Content-Type": content_type})
-    if not report.check(f"POST /v1/documents nhận {label}", status in (200, 202), f"{status} {text[:200]}"):
+    document_id = document_id_of(json_object(text)) if status in (200, 202) else None
+    if not report.check(f"POST /v1/documents nhận {label}", document_id is not None, f"{status} {text[:200]}"):
         return {}
-    document_id = str(json.loads(text)["meta"]["doc_id"])
     deadline = time.monotonic() + 300
     document_status = "processing"
     while document_status == "processing" and time.monotonic() < deadline:
         time.sleep(1)
         _, _, text = http_request(port, "GET", f"/v1/documents/{document_id}")
-        document_status = str(json.loads(text).get("status"))
+        document = json_object(text)
+        document_status = str(document.get("status")) if document is not None else "JSON hỏng: " + text[:100]
     if not report.check(f"{label}: đọc xong trong 300 s", document_status != "processing", document_status):
         return {}
     status, _, text = http_request(port, "GET", f"/v1/documents/{document_id}/pages/1")
-    page = json.loads(text) if status == 200 else None
-    if not report.check(f"{label}: GET trang 1", isinstance(page, dict), f"{status}"):
+    page = json_object(text) if status == 200 else None
+    if not report.check(f"{label}: GET trang 1", page is not None, f"{status} {text[:100]}"):
         return {}
-    assert isinstance(page, dict)
-    return {str(key): value for key, value in page.items()}
+    assert page is not None
+    return page
 
 
 def page_lines(page: Mapping[str, object]) -> list[str]:
@@ -639,7 +697,31 @@ def extract_root(zip_path: Path, work: Path) -> Path:
     return roots[0]
 
 
-def smoke(zip_path: Path, work: Path, only: str = "all") -> Report:
+def kill_tree(pid: int) -> None:
+    """Dừng cưỡng bức tiến trình và mọi tiến trình con của nó (Windows: `taskkill /T /F`)."""
+    if sys.platform == "win32":
+        run_text(["taskkill", "/PID", str(pid), "/T", "/F"], timeout=30)
+        return
+    raise SmokeError("smoke test chỉ chạy trên Windows")
+
+
+def stop_server(process: subprocess.Popen[bytes], root: Path) -> None:
+    """Dọn trước khi xoá thư mục tạm: dừng cây tiến trình của launcher (nếu còn) và mọi tiến trình chạy từ thư mục zip.
+
+    Gọi trong `finally`, nên không được ném lỗi che lỗi gốc; lỗi dọn dẹp chỉ in cảnh báo.
+    """
+    try:
+        if process.poll() is None:
+            kill_tree(process.pid)
+            process.wait(timeout=10)
+        for line in powershell_lines(PROCESS_QUERY, root):
+            if line.isdigit():
+                kill_tree(int(line))
+    except (OSError, SmokeError, subprocess.SubprocessError) as exc:
+        print(f"CẢNH BÁO  dọn tiến trình của smoke chưa xong: {exc}", file=sys.stderr, flush=True)
+
+
+def smoke(zip_path: Path, work: Path, only: str = "all", *, expect_host_check: bool = False) -> Report:
     report = Report()
     root = extract_root(zip_path, work)
     check_sandbox_probe(report, root, work)
@@ -654,20 +736,20 @@ def smoke(zip_path: Path, work: Path, only: str = "all") -> Report:
 
     data_dir = work / ACCENTED_DATA
     process = start_server(root, data_dir)
-    reader = OutputReader(process)
-    reader.ready.wait(timeout=60)
-    if report.check("Holocron.cmd in URL trong 60 s", reader.port is not None, " | ".join(reader.lines[-5:])):
-        assert reader.port is not None
-        for line in reader.lines:
-            print(f"  {line}", flush=True)
-        check_http(report, reader.port)
-        check_upload(report, reader.port)
-        if gray is not None:
-            check_scan_upload(report, reader.port, gray)
-        check_shutdown(report, process, root, data_dir)
-    elif process.poll() is None:
-        process.kill()
-        process.wait(timeout=10)
+    try:
+        reader = OutputReader(process)
+        reader.ready.wait(timeout=60)
+        if report.check("Holocron.cmd in URL trong 60 s", reader.port is not None, " | ".join(reader.lines[-5:])):
+            assert reader.port is not None
+            for line in reader.lines:
+                print(f"  {line}", flush=True)
+            check_http(report, reader.port, expect_host_check=expect_host_check)
+            check_upload(report, reader.port)
+            if gray is not None:
+                check_scan_upload(report, reader.port, gray)
+            check_shutdown(report, process, root, data_dir)
+    finally:
+        stop_server(process, root)
 
     check_pytest(report, root, work)
     return report
@@ -681,14 +763,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("zip", help="đường dẫn Holocron-<version>-win64.zip")
     parser.add_argument("--keep", action="store_true", help="giữ thư mục tạm để xem lại")
     parser.add_argument("--only", choices=STEPS, default="all", help="sandbox-probe: chỉ chạy probe sandbox (I1)")
+    parser.add_argument(
+        "--expect-host-check",
+        action="store_true",
+        help="kiểm Host: evil.example ⇒ 403 (bật khi B4 đã merge; mặc định SKIP có nhãn 'chờ B4')",
+    )
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     if sys.platform != "win32":
         print("Smoke test chỉ chạy trên Windows.", file=sys.stderr)
         return 2
     work = Path(tempfile.mkdtemp(prefix="holocron-smoke-"))
     try:
-        report = smoke(Path(args.zip).resolve(), work, args.only)
-    except (BuildError, SmokeError, OSError, subprocess.SubprocessError) as exc:
+        report = smoke(Path(args.zip).resolve(), work, args.only, expect_host_check=args.expect_host_check)
+    except (BuildError, SmokeError, OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
         print(f"LỖI smoke: {exc}", file=sys.stderr)
         return 1
     finally:
@@ -696,9 +783,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Giữ thư mục tạm: {work}")
         else:
             shutil.rmtree(work, ignore_errors=True)
-    failed = [name for name, ok, _ in report.results if not ok]
-    print(f"Kết quả: {len(report.results) - len(failed)}/{len(report.results)} PASS")
-    return 1 if failed else 0
+    print(report.summary())
+    return 0 if report.passed else 1
 
 
 if __name__ == "__main__":

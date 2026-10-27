@@ -1012,3 +1012,104 @@ def test_clean_windows_checklist_only_touches_the_probe_registry_subkey() -> Non
         assert command.split(" ", 2)[2].startswith(probe_key), command
     assert "/ve /d" in next(c for c in commands if c.startswith("reg add"))
     assert "HỎNG — báo orchestrator" in text
+
+
+def test_report_skip_is_neither_pass_nor_fail(capsys: pytest.CaptureFixture[str]) -> None:
+    report = sp.Report()
+    report.check("a", True)
+    report.skip("Host: evil.example bị chặn 403", sp.HOST_CHECK_PENDING)
+    assert report.passed
+    assert report.summary() == "Kết quả: 1/1 PASS, 1 SKIP"
+    assert "SKIP  Host: evil.example bị chặn 403 — chờ B4" in capsys.readouterr().out
+    report.check("b", False)
+    assert not report.passed and report.summary() == "Kết quả: 1/2 PASS, 1 SKIP"
+
+
+def _fake_http(responses: dict[tuple[str, str | None], tuple[int, str, str]], calls: list[str]) -> object:
+    def request(
+        port: int, method: str, path: str, *, body: bytes | None = None, headers: dict[str, str] | None = None
+    ) -> tuple[int, str, str]:
+        host = (headers or {}).get("Host")
+        calls.append(f"{method} {path} {host}")
+        return responses.get((path, host), (200, "application/json", '{"detail": "x"}'))
+
+    return request
+
+
+def test_host_check_is_skipped_until_b4(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(sp, "http_request", _fake_http({}, calls))
+    report = sp.Report()
+    sp.check_http(report, 1)
+    assert [name for name, _ in report.skipped] == ["Host: evil.example bị chặn 403"]
+    assert not any("evil.example" in call for call in calls)
+
+
+@pytest.mark.parametrize(("status", "expected"), [(403, True), (200, False)])
+def test_host_check_enforced_with_flag(monkeypatch: pytest.MonkeyPatch, status: int, expected: bool) -> None:
+    calls: list[str] = []
+    responses = {("/v1/runtime", "evil.example"): (status, "application/json", "{}")}
+    monkeypatch.setattr(sp, "http_request", _fake_http(responses, calls))
+    report = sp.Report()
+    sp.check_http(report, 1, expect_host_check=True)
+    host = [ok for name, ok, _ in report.results if name.startswith("Host")]
+    assert host == [expected] and not report.skipped
+
+
+def test_json_helpers_never_raise_on_bad_json() -> None:
+    assert sp.parse_json("{bad") is None
+    assert sp.last_json_line("noise\n{bad") is None
+    assert sp.last_json_line("") is None
+    assert sp.last_json_line('x\n{"a": 1}') == {"a": 1}
+    assert sp.json_object("[1]") is None
+    assert sp.document_id_of(sp.json_object('{"meta": {"doc_id": "doc_1"}}')) == "doc_1"
+    assert sp.document_id_of(sp.json_object('{"meta": []}')) is None
+    assert sp.document_id_of(None) is None
+    with pytest.raises(sp.SmokeError, match="không phải JSON"):
+        sp.parse_prefixed("HOLOCRON_PROBE:{bad", sp.PROBE_PREFIX)
+
+
+def test_upload_with_broken_json_reports_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    responses = {("/v1/documents", None): (202, "application/json", "<html>not json</html>")}
+    monkeypatch.setattr(sp, "http_request", _fake_http(responses, []))
+    report = sp.Report()
+    assert sp.upload_and_read_page(report, 1, "PDF", "a.pdf", b"%PDF") == {}
+    assert report.results[-1][:2] == ("POST /v1/documents nhận PDF", False)
+
+
+class _FakeProcess:
+    def __init__(self, running: bool) -> None:
+        self.pid = 4242
+        self.running = running
+        self.waited = False
+
+    def poll(self) -> int | None:
+        return None if self.running else 0
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.waited = True
+        return 0
+
+
+@pytest.mark.parametrize(("running", "leftover", "expected"), [(True, [], [4242]), (False, ["17", "x"], [17])])
+def test_stop_server_kills_launcher_tree_and_leftovers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, running: bool, leftover: list[str], expected: list[int]
+) -> None:
+    killed: list[int] = []
+    monkeypatch.setattr(sp, "kill_tree", killed.append)
+    monkeypatch.setattr(sp, "powershell_lines", lambda script, root: leftover)
+    process = _FakeProcess(running)
+    sp.stop_server(process, tmp_path)
+    assert killed == expected
+    assert process.waited is running
+
+
+def test_stop_server_never_masks_the_original_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def broken(script: str, root: Path) -> list[str]:
+        raise sp.SmokeError("powershell lỗi")
+
+    monkeypatch.setattr(sp, "powershell_lines", broken)
+    sp.stop_server(_FakeProcess(False), tmp_path)
+    assert "dọn tiến trình" in capsys.readouterr().err

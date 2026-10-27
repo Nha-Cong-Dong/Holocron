@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import type { StatusItem } from "@/lib/runtime";
+import { COPY_FEEDBACK_MS, COPY_LABEL_VI, type CopyState, copyText, type StatusItem } from "@/lib/runtime";
 
 import styles from "./StatusBar.module.css";
 
@@ -18,14 +18,24 @@ interface StatusBarProps {
 
 /** Thanh trạng thái dưới cùng: backend, LLM, OCR, chế độ offline, dữ liệu mẫu. Mỗi ô luôn có chữ đi kèm màu. */
 export function StatusBar({ items, buildLabel, logDir, canRetry, onRetry }: StatusBarProps) {
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const [copyState, setCopyState] = useState<CopyState>("idle");
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (timer.current !== null) clearTimeout(timer.current);
+    },
+    [],
+  );
 
   const copyLogDir = () => {
     if (logDir === null) return;
-    navigator.clipboard.writeText(logDir).then(
-      () => setCopyState("copied"),
-      () => setCopyState("failed"),
-    );
+    const clipboard = typeof navigator === "undefined" ? undefined : navigator.clipboard;
+    void copyText(clipboard, logDir).then((state) => {
+      setCopyState(state);
+      if (timer.current !== null) clearTimeout(timer.current);
+      timer.current = setTimeout(() => setCopyState("idle"), COPY_FEEDBACK_MS);
+    });
   };
 
   return (
@@ -45,9 +55,12 @@ export function StatusBar({ items, buildLabel, logDir, canRetry, onRetry }: Stat
           <code className={styles.path} title={logDir}>
             {logDir}
           </code>
-          <button type="button" className={styles.retry} onClick={copyLogDir}>
-            {copyState === "copied" ? "Đã sao chép" : copyState === "failed" ? "Không sao chép được" : "Sao chép"}
+          <button type="button" className={styles.retry} onClick={copyLogDir} aria-label="Sao chép thư mục log">
+            {COPY_LABEL_VI[copyState]}
           </button>
+          <span className={styles.srOnly} aria-live="polite">
+            {copyState === "idle" ? "" : COPY_LABEL_VI[copyState]}
+          </span>
         </span>
       )}
       {canRetry && (

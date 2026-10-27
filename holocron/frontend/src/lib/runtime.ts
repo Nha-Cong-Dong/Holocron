@@ -424,3 +424,29 @@ export function selectStatusItems(state: RuntimeState, useMocks: boolean): Statu
   }
   return items;
 }
+
+/** Thời gian (ms) giữ nhãn kết quả sao chép trước khi về "Sao chép". */
+export const COPY_FEEDBACK_MS = 2000;
+
+export type CopyState = "idle" | "copied" | "failed";
+
+export const COPY_LABEL_VI: Record<CopyState, string> = {
+  idle: "Sao chép",
+  copied: "Đã sao chép",
+  failed: "Không sao chép được",
+};
+
+interface ClipboardLike {
+  writeText: (text: string) => Promise<void>;
+}
+
+/** Sao chép `text`; không có clipboard, lỗi đồng bộ hoặc bị từ chối đều trả `"failed"`, không ném lỗi. */
+export async function copyText(clipboard: ClipboardLike | null | undefined, text: string): Promise<CopyState> {
+  if (!clipboard || typeof clipboard.writeText !== "function") return "failed";
+  try {
+    await clipboard.writeText(text);
+    return "copied";
+  } catch {
+    return "failed";
+  }
+}

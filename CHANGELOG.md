@@ -29,7 +29,7 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 
 ### 🛠️ Cải tiến & Tối ưu
 - Hook pre-commit `mypy-strict` cài thêm `uvicorn` (PR #70).
-- Spec: contract chế độ portable §6.0, §11.2 (PR #72); chốt tên Q8 và ghi Q1(a) (PR này).
+- Spec: contract chế độ portable §6.0, §11.2 (PR #72); chốt tên Q8 và ghi Q1(a) (PR #73).
 - Frontend (PR #48): đoạn nguồn của trích dẫn ở màn luyện tập tìm theo môn của blueprint (ADR-006 mục 6); dữ liệu mẫu tài liệu theo một kịch bản cố định; câu lỗi riêng cho xác nhận trang, xác nhận tài liệu và sửa nhãn. Route `/vault?subject=&doc=&page=&tab=` thay cho `/subjects` và `/documents` của ui-plan (chờ duyệt). Hoãn: ảnh trang ở màn xem lại (chưa có cách lấy file gốc).
 - Bộ nhập PDF (PR #49): worker đọc PDF làm nóng PDFium trước khi áp giới hạn OS, giảm chi phí khởi tạo PDFium ở trang đầu (Windows: trang đầu trung vị 10,4 ms → 6,0 ms; chưa đo trên Linux).
 - Vault nối vào app (ADR-006 mục 6; spec §5.8, §6.6; quyết định người dùng 2026-10-25): `routers/api.py` gắn `routers/vault.py` vào `app`, nên các endpoint Vault của §6.6 (trừ `propose`) chạy qua app chính; `tests/test_router_split.py` giờ chỉ kiểm `EXPECTED_PATHS` là tập con của OpenAPI. `CitationProvider.citation_for` đổi chữ ký thành `(subject_code, slot)` và `generate_twin_batch` truyền `blueprint.subject_code`, nên `VaultCitationProvider` thoả `Protocol`; test mới khoá việc chunk môn khác không bao giờ thành trích dẫn của twin và các endpoint Vault qua `app` (kể cả I3 khi tạo/xác nhận cặp). `get_citation_provider` vẫn trả `NoCitationProvider` (nối Vault vào twin là việc sau); model response không đổi nên không sửa `types/holocron.ts`.

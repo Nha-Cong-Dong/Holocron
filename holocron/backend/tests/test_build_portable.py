@@ -1151,6 +1151,14 @@ def test_clean_windows_checklist_only_touches_the_probe_registry_subkey() -> Non
         assert command.split(" ", 2)[2].startswith(probe_key), command
     assert "/ve /d" in next(c for c in commands if c.startswith("reg add"))
     assert "HỎNG — báo orchestrator" in text
+    # Khoá cha chỉ được xoá có điều kiện (bước 0 ghi KHÔNG), qua bảng — không nằm trong khối lệnh chạy thẳng.
+    parent_keys = ["HKCU\\Software\\Python" + suffix for suffix in ("", "\\PythonCore", "\\PythonCore\\3.14")]
+    parent_keys.append("HKCU\\Software\\Python\\PythonCore\\3.14\\PythonPath")
+    for key in parent_keys:
+        assert f'reg query "{key}"' in text
+        rows = [line for line in text.splitlines() if f'`reg delete "{key}" /f`' in line]
+        assert len(rows) == 1 and rows[0].startswith("|"), key
+    assert "Bước 0 ghi KHÔNG cho" in text
 
 
 def test_report_skip_is_neither_pass_nor_fail(capsys: pytest.CaptureFixture[str]) -> None:

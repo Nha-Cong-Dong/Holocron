@@ -14,8 +14,20 @@ Chạy đủ checklist trên **từng** môi trường dưới đây (mỗi môi
 | C | Máy có Python 3.14 cài chuẩn (bộ cài python.org, có khoá registry `PythonPath`) | Kiểm `reg query "HKCU\Software\Python\PythonCore\3.14\PythonPath"` hoặc `HKLM\...` có giá trị |
 | D | Như A, B hoặc C, thêm một subkey HKCU giả dưới `PythonPath` | Xem các lệnh ngay dưới bảng |
 
-Dựng môi trường D (chỉ tạo và chỉ xoá đúng subkey `HolocronProbe`; KHÔNG xoá `...\PythonCore\3.14` hay
-`...\PythonPath`, vì đó có thể là khoá của bản Python đã cài trên máy):
+Dựng môi trường D. Chỉ tạo subkey `HolocronProbe`; không sửa hay xoá khoá nào có sẵn trên máy (có thể là khoá của
+bản Python đã cài).
+
+Bước 0, TRƯỚC `reg add`: kiểm từng khoá cha có tồn tại không và ghi lại CÓ/KHÔNG (lệnh báo "ERROR: The system was
+unable to find" nghĩa là KHÔNG). `reg add` sẽ tự tạo các khoá cha còn thiếu; bước dọn dựa vào ghi chép này.
+
+```
+reg query "HKCU\Software\Python"
+reg query "HKCU\Software\Python\PythonCore"
+reg query "HKCU\Software\Python\PythonCore\3.14"
+reg query "HKCU\Software\Python\PythonCore\3.14\PythonPath"
+```
+
+Bước 1, tạo thư mục giả và subkey thử:
 
 ```
 mkdir C:\gia-mao
@@ -24,12 +36,24 @@ reg add "HKCU\Software\Python\PythonCore\3.14\PythonPath\HolocronProbe" /ve /d "
 reg query "HKCU\Software\Python\PythonCore\3.14\PythonPath\HolocronProbe"
 ```
 
-Dọn sau khi thử xong môi trường D (đúng subkey đã tạo):
+Dọn sau khi thử xong môi trường D. Luôn xoá đúng subkey đã tạo và thư mục giả:
 
 ```
 reg delete "HKCU\Software\Python\PythonCore\3.14\PythonPath\HolocronProbe" /f
 rmdir /s /q C:\gia-mao
 ```
+
+Sau đó xoá các khoá cha do `reg add` tạo ra, theo thứ tự từ dưới lên. Chỉ xoá một khoá khi bước 0 ghi **KHÔNG** cho
+đúng khoá đó; khoá ghi CÓ thì giữ nguyên, và dừng luôn ở đó (khoá cha của nó cũng đã có sẵn):
+
+| Bước 0 ghi KHÔNG cho | Lệnh dọn |
+|---|---|
+| `...\3.14\PythonPath` | `reg delete "HKCU\Software\Python\PythonCore\3.14\PythonPath" /f` |
+| `...\PythonCore\3.14` | `reg delete "HKCU\Software\Python\PythonCore\3.14" /f` |
+| `...\Python\PythonCore` | `reg delete "HKCU\Software\Python\PythonCore" /f` |
+| `HKCU\Software\Python` | `reg delete "HKCU\Software\Python" /f` |
+
+Cuối cùng chạy lại bốn lệnh `reg query` của bước 0: kết quả CÓ/KHÔNG phải giống hệt lúc đầu.
 
 Kỳ vọng ở môi trường D: thư mục `C:\gia-mao` KHÔNG được xuất hiện trong `sys.path` của tiến trình sandbox (mục 5) và
 của launcher. Thấy `C:\gia-mao` trong `sys.path` hoặc thấy chữ "gia mao" ⇒ ghi **HỎNG — báo orchestrator**.

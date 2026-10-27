@@ -1,11 +1,11 @@
 /**
  * Luồng mặc định của màn luyện tập với backend thật không rơi vào 409: tự luận chỉ được chọn khi backend báo rõ chấm
- * tự luận offline khả dụng.
+ * tự luận offline khả dụng; ticket của slot lý thuyết hiện nguyên lý do backend kèm một gợi ý cố định.
  */
 
 import { describe, expect, it } from "vitest";
 
-import { buildBlueprintCreate, essayChoiceAvailable, prefilledFormatChoice } from "./practice";
+import { buildBlueprintCreate, essayChoiceAvailable, prefilledFormatChoice, ticketLine } from "./practice";
 import { capabilityOf, normalizeRuntimeInfo, type RuntimeView } from "./runtime";
 
 const EXAM_FORMATS = ["mcq", "essay", "mixed"] as const;
@@ -74,5 +74,21 @@ describe("mặc định MCQ4 khi chưa biết chấm tự luận", () => {
     expect(prefilledFormatChoice("essay", essay)).toBe("ESSAY");
     expect(prefilledFormatChoice("mixed", essay)).toBe("mixed");
     expect(prefilledFormatChoice("mcq", essay)).toBe("MCQ4");
+  });
+});
+
+describe("ticketLine", () => {
+  const hint = "Kiểm tra chương đã có tài liệu xác nhận và cặp khái niệm đã xác nhận ở trang Cặp khái niệm.";
+
+  it("ticket lý thuyết: lý do nguyên văn của backend rồi gợi ý cố định, không phụ thuộc nội dung lý do", () => {
+    for (const reason of ["không đủ căn cứ trong Vault: chương ch3", "Lý do bất kỳ khác."]) {
+      const line = ticketLine({ reason, theory: true });
+      expect(line.startsWith(reason)).toBe(true);
+      expect(line.endsWith(hint)).toBe(true);
+    }
+  });
+
+  it("ticket câu tính toán chỉ có lý do của backend", () => {
+    expect(ticketLine({ reason: "hết lượt thử", theory: false })).toBe("hết lượt thử");
   });
 });

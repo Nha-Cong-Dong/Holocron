@@ -264,6 +264,18 @@ export const PAIR_SCREEN_MISSING_VI = "Giao diện chưa có màn tạo cặp kh
 export const VAULT_HINT_VI = `Chương này chưa có đủ cặp khái niệm đã xác nhận. ${PAIR_SCREEN_MISSING_VI}`;
 
 /**
+ * Gợi ý cố định kèm MỌI ticket của slot lý thuyết (`topic_key = null`), đặt sau lý do backend ghi. Không so chuỗi
+ * `reason` để đoán nguyên nhân: lý do cụ thể do backend ghi và được hiển thị nguyên văn.
+ */
+export const THEORY_TICKET_HINT_VI =
+  "Kiểm tra chương đã có tài liệu xác nhận và cặp khái niệm đã xác nhận ở trang Cặp khái niệm.";
+
+/** Dòng hiển thị của một ticket: lý do nguyên văn, cộng `THEORY_TICKET_HINT_VI` khi là slot lý thuyết. */
+export function ticketLine(ticket: { reason: string; theory: boolean }): string {
+  return ticket.theory ? appendSentence(ticket.reason, THEORY_TICKET_HINT_VI) : ticket.reason;
+}
+
+/**
  * Nối lý do backend ghi với một câu gợi ý: thêm dấu chấm khi lý do chưa kết thúc bằng dấu câu, để không ra "..".
  * Lý do giữ nguyên văn (chỉ bỏ khoảng trắng thừa ở cuối).
  */

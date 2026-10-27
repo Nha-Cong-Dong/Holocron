@@ -151,6 +151,17 @@ def test_file_logging_detaches_from_uvicorn_loggers_too(tmp_path: Path) -> None:
     assert not _file_handlers("holocron_core")
 
 
+def test_file_only_records_skip_console(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    with file_logging(tmp_path, {}, ()):
+        logger = logging.getLogger("holocron_core.launcher")
+        logger.error("chỉ vào file", extra=launcher_logging.FILE_ONLY)
+        logger.error("cả hai nơi")
+    err = capsys.readouterr().err
+    assert "chỉ vào file" not in err and "cả hai nơi" in err
+    text = _read_log(tmp_path)
+    assert "chỉ vào file" in text and "cả hai nơi" in text
+
+
 # --- che bí mật --------------------------------------------------------------------------------------------------
 
 
@@ -337,13 +348,15 @@ def test_main_unwritable_log_dir_warns_after_first_four_lines(tmp_path: Path) ->
     assert lines.lines[5].startswith("Cảnh báo: không ghi được log")
 
 
-def test_main_logs_serve_exception_then_reraises(tmp_path: Path) -> None:
+def test_main_logs_serve_exception_then_reraises(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     def serve(_: socket.socket) -> None:
         raise RuntimeError(f"hỏng với {API_KEY}")
 
     deps = _deps(tmp_path, Lines(), serve)
     with pytest.raises(RuntimeError):
         launcher.main(["--no-browser", "--data-dir", str(tmp_path / "data")], deps)
+    err = capsys.readouterr().err
+    assert "Holocron dừng vì lỗi" not in err and "Traceback" not in err, "traceback chỉ in một lần (khi ném lại)"
     text = (_log_dir(tmp_path) / LOG_FILENAME).read_text(encoding="utf-8")
     assert "ERROR holocron_core.launcher: Holocron dừng vì lỗi không mong đợi" in text
     assert "RuntimeError: hỏng với ***" in text

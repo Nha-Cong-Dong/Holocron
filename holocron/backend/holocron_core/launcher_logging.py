@@ -18,6 +18,7 @@ import json
 import logging
 import logging.handlers
 import sys
+import types
 import unicodedata
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -36,6 +37,9 @@ SECRET_NAME_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 MIN_SECRET_LENGTH = 8
 SECRET_MASK = "***"
 _WRITTEN_BY = "_holocron_file_handler_id"
+_FILE_ONLY_ATTR = "holocron_file_only"
+# `extra=FILE_ONLY`: record chỉ ghi vào file, handler console bỏ qua (ví dụ traceback sẽ được Python in lại).
+FILE_ONLY: Mapping[str, object] = types.MappingProxyType({_FILE_ONLY_ATTR: True})
 
 BUILD_INFO_FILENAME = "holocron_build.json"
 BUILD_INFO_MAX_BYTES = 4096
@@ -77,6 +81,11 @@ def secret_values(environ: Mapping[str, str]) -> tuple[str, ...]:
             if len(candidate.strip()) >= MIN_SECRET_LENGTH:
                 found.add(candidate)
     return tuple(sorted(found, key=lambda item: (-len(item), item)))
+
+
+def not_file_only(record: logging.LogRecord) -> bool:
+    """Filter của handler console: bỏ record gắn `extra=FILE_ONLY`."""
+    return not getattr(record, _FILE_ONLY_ATTR, False)
 
 
 class SecretFilter(logging.Filter):
@@ -162,6 +171,7 @@ def file_logging(log_dir: Path, secrets: Mapping[str, str], header: Sequence[str
     file_handler.addFilter(secret_filter)
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setLevel(logging.WARNING)
+    console_handler.addFilter(not_file_only)
     console_handler.addFilter(secret_filter)
     app_logger = logging.getLogger(APP_LOGGER)
     old_level = app_logger.level

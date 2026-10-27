@@ -43,6 +43,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from .infrastructure.document_readers.config import ENV_TESSDATA_DIR, ENV_TESSERACT_CMD
 from .infrastructure.storage import DATA_DIR_ENV
 from .launcher_logging import (
+    FILE_ONLY,
     LAUNCHER_LOGGER,
     LOG_FILENAME,
     default_build_info_path,
@@ -743,7 +744,8 @@ def _run_logged(args: argparse.Namespace, deps: LauncherDeps, sock: socket.socke
         try:
             deps.serve(sock)
         except Exception:
-            logging.getLogger(LAUNCHER_LOGGER).exception("Holocron dừng vì lỗi không mong đợi")
+            # Chỉ ghi file: ngoại lệ ném lại, Python tự in traceback ra console một lần.
+            logging.getLogger(LAUNCHER_LOGGER).exception("Holocron dừng vì lỗi không mong đợi", extra=FILE_ONLY)
             raise
         finally:
             stop.set()

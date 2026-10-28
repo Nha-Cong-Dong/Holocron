@@ -148,3 +148,37 @@ describe("lineToEdit", () => {
     expect(lineToEdit([])).toBeNull();
   });
 });
+
+describe("phím bổ trợ và lớp phủ chặn E, ←, →", () => {
+  const ACTIVE_KEYS = ["e", "E", "ArrowLeft", "ArrowRight"];
+  const BLOCKERS: readonly [string, Partial<ReviewKeyInput>][] = [
+    ["hộp thoại hay bảng lệnh đang mở", { overlayOpen: true }],
+    ["Alt", { altKey: true }],
+    ["Ctrl", { ctrlKey: true }],
+    ["Meta", { metaKey: true }],
+  ];
+
+  it("không có bổ trợ thì cả bốn phím đều có hành động (đối chứng)", () => {
+    for (const key of ACTIVE_KEYS) expect(action({ key })).not.toBeNull();
+  });
+
+  it.each(BLOCKERS)("%s ⇒ E, ←, → không làm gì", (_name, blocker) => {
+    for (const key of ACTIVE_KEYS) expect(action({ key, ...blocker })).toBeNull();
+  });
+
+  it("← có nháp chưa lưu ⇒ không sang trang", () => {
+    expect(action({ key: "ArrowLeft", hasDraft: true })).toBeNull();
+  });
+});
+
+describe("classifyReviewFocus chuẩn hoá role", () => {
+  const inside = { insideRegion: true, isRegion: false, isContentEditable: false, tagName: "DIV" };
+
+  it("role có khoảng trắng đầu/cuối hoặc viết hoa vẫn được nhận", () => {
+    expect(classifyReviewFocus({ ...inside, role: " Textbox " })).toBe("editable");
+    expect(classifyReviewFocus({ ...inside, role: " textbox " })).toBe("editable");
+    expect(classifyReviewFocus({ ...inside, role: "Textbox" })).toBe("editable");
+    expect(classifyReviewFocus({ ...inside, role: "BUTTON" })).toBe("control");
+    expect(classifyReviewFocus({ ...inside, role: " button " })).toBe("control");
+  });
+});

@@ -1,7 +1,7 @@
 /** Phiên xem một trang: mốc `CONFIRM_GUARD_MS` đếm lại khi trang mới hiện hay vẽ lại; khoá đang gửi (I5). */
 
 import { describe, expect, it } from "vitest";
-
+import { confirmClick } from "./review-confirm";
 import {
   beginSend,
   CONFIRM_GUARD_MS,
@@ -58,5 +58,30 @@ describe("khoá đang gửi", () => {
     const sending = beginSend(session);
     expect(sending).toEqual({ pageKey: "2:1", shownAt: 50, sending: true });
     expect(endSend(sending)).toEqual(session);
+  });
+});
+
+describe("ngưỡng CONFIRM_GUARD_MS tuyệt đối (quyết định 2026-10-29 câu 17 A: 0,6 s)", () => {
+  const PAGE = { pageBlock: null, hasSkippedLines: false, appendDraft: false, editing: false, busy: false };
+
+  function acceptedAt(shownAt: number, now: number): boolean {
+    return confirmClick(reviewSessionFor(null, "1:1", shownAt), PAGE, now).accepted;
+  }
+
+  it("hằng đúng 600 ms", () => {
+    expect(CONFIRM_GUARD_MS).toBe(600);
+  });
+
+  it("trang hiện lúc 1000: bấm lúc 1599 bị bỏ, lúc 1600 được nhận", () => {
+    const session = reviewSessionFor(null, "1:1", 1000);
+    expect(guardRemainingMs(session, 1599)).toBe(1);
+    expect(guardRemainingMs(session, 1600)).toBe(0);
+    expect(acceptedAt(1000, 1599)).toBe(false);
+    expect(acceptedAt(1000, 1600)).toBe(true);
+  });
+
+  it("trang hiện lúc 0: bấm lúc 100 bị bỏ", () => {
+    expect(guardRemainingMs(reviewSessionFor(null, "1:1", 0), 100)).toBe(500);
+    expect(acceptedAt(0, 100)).toBe(false);
   });
 });

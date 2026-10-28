@@ -269,3 +269,15 @@ describe("tô dòng theo dữ liệu backend", () => {
     for (const label of labels) expectNoRawCode(label);
   });
 });
+
+describe("thứ tự lý do khoá khi trang đã xác nhận mà trạng thái lạ hoặc lỗi", () => {
+  const lines = [line(0, "Dòng một")];
+
+  it("lý do theo trạng thái trang đứng trước 'đã xác nhận'", () => {
+    expect(lineEditBlock({ status: "unknown", confirmed: true })).toBe("unknown");
+    expect(lineEditBlock({ status: "failed", confirmed: true })).toBe("failed");
+    expect(lineEditBlock({ status: "pending", confirmed: true })).toBe("pending");
+    expect(confirmPageBlock({ status: "unknown", confirmed: true, lines })).toBe("unknown");
+    expect(confirmPageBlock({ status: "failed", confirmed: true, lines })).toBe("failed");
+  });
+});

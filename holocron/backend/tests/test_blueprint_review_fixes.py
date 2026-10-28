@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -13,10 +14,20 @@ from holocron_core.domain.repositories import AppStore, StorageBusyError, Storag
 from holocron_core.domain.schemas import BlueprintSlot, ExamBlueprint, QuestionFormat, TheorySlot
 from holocron_core.infrastructure.storage import sqlite_store
 from holocron_core.infrastructure.storage.sqlite_store import SQLiteStore
-from holocron_core.routers.api import app
-from tests.test_theory_blueprint_api import NEW_SUBJECT, _post, _slots, store  # noqa: F401  (fixture `store`)
+from holocron_core.routers.api import app, get_store
+from tests.test_theory_blueprint_api import NEW_SUBJECT, _post, _slots
+from tests.test_theory_twins import STORE_KINDS, close_kind, open_kind
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
+
+
+@pytest.fixture(params=STORE_KINDS)
+def store(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[AppStore]:
+    opened = open_kind(str(request.param), tmp_path)
+    app.dependency_overrides[get_store] = lambda: opened
+    yield opened
+    app.dependency_overrides.clear()
+    close_kind(opened)
 
 
 def test_computational_slot_rejects_essay(rr_slot: BlueprintSlot) -> None:
@@ -76,8 +87,6 @@ def test_get_blueprint_reads_legacy_json_on_sqlite(tmp_path: Path, rr_slot: Blue
         raw.execute("UPDATE blueprints SET blueprint_json = ?", (json.dumps(legacy),))
         raw.commit()
         raw.close()
-        from holocron_core.routers.api import get_store
-
         app.dependency_overrides[get_store] = lambda: opened
         try:
             response = TestClient(app).get(f"/v1/blueprints/{blueprint.blueprint_id}")
@@ -91,7 +100,7 @@ def test_get_blueprint_reads_legacy_json_on_sqlite(tmp_path: Path, rr_slot: Blue
 
 @pytest.mark.parametrize("error", [StorageBusyError("busy"), StorageError("hỏng")])
 def test_failed_save_leaves_no_implicit_subject(
-    store: AppStore,  # noqa: F811
+    store: AppStore,
     error: StorageError,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

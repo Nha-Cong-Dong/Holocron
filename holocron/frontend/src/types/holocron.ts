@@ -188,8 +188,9 @@ export interface BlueprintSlot {
   topic_key: string;
   cognitive_level: CognitiveLevel;
   /**
-   * Pydantic khai báo `bool`, nhưng phần tử `false` của `ExamBlueprint.slots` luôn được validate thành `TheorySlot`
-   * (discriminator `_slot_kind`), nên trong `ExamBlueprint.slots` giá trị này luôn là `true`.
+   * Pydantic khai báo `bool`. Phía TS khai literal `true` để thu hẹp `ExamBlueprintSlot`: slot tính toán do API hiện
+   * tại tạo luôn có `true`. Hạn chế: blueprint JSON cũ có slot tính toán `false` (không có `question_kind`) vẫn được
+   * backend đọc là `BlueprintSlot` và trả `false` ở đây; xem chú thích của `ExamBlueprintSlot`.
    */
   is_computational: true;
   non_cloneable: boolean;
@@ -219,7 +220,13 @@ export interface TheorySlot {
   review_status: ReviewStatus;
 }
 
-/** Phần tử của `ExamBlueprint.slots`: union phân biệt theo `is_computational`. */
+/**
+ * Phần tử của `ExamBlueprint.slots`. Backend phân biệt theo `question_kind`: `"theory"` ⇒ `TheorySlot`, còn lại ⇒
+ * `BlueprintSlot` (`_slot_kind` ở `domain/schemas.py`). Phía TS thu hẹp được nhờ `is_computational` literal: slot lý
+ * thuyết luôn `false`, slot tính toán do API hiện tại tạo luôn `true`. Hạn chế: slot tính toán cũ có
+ * `is_computational = false` mà không có `question_kind` vẫn là `BlueprintSlot` ở backend, nên thu hẹp theo
+ * `is_computational` sẽ xếp nhầm nó vào `TheorySlot`.
+ */
 export type ExamBlueprintSlot = BlueprintSlot | TheorySlot;
 
 /** `ExamBlueprint` (§5.9); bốn field cuối là `computed_field`, luôn có trong response và do backend tính. */

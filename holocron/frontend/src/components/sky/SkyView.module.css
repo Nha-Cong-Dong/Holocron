@@ -1,0 +1,160 @@
+/* Ô bầu trời: luôn tối ở cả hai theme (--sky), chữ dùng --sky-ink để đủ tương phản trên nền tối. */
+.frame {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--sky);
+  color: var(--sky-ink);
+  box-shadow: inset 0 0 0 1px var(--sky-edge);
+}
+
+.full {
+  min-height: 120px;
+  border-radius: var(--r-lg);
+}
+
+.mini {
+  border-radius: 10px;
+}
+
+/* Cùng tỉ lệ 790×200 với hệ toạ độ của lib/sky.ts; hẹp hơn 790 px thì co lại theo chiều ngang. */
+.sky {
+  position: relative;
+  width: 100%;
+  max-width: 790px;
+  aspect-ratio: 790 / 200;
+  background-image:
+    radial-gradient(1px 1px at 8% 20%, var(--sky-dust) 50%, transparent 51%),
+    radial-gradient(1px 1px at 46% 80%, var(--sky-dust) 50%, transparent 51%),
+    radial-gradient(1px 1px at 77% 30%, var(--sky-dust) 50%, transparent 51%),
+    radial-gradient(1px 1px at 93% 88%, var(--sky-dust) 50%, transparent 51%);
+}
+
+.mini .sky {
+  max-width: none;
+  background-image: none;
+}
+
+.canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.line {
+  stroke: var(--sky-line);
+  stroke-width: 1;
+}
+
+.confirmed {
+  fill: var(--star);
+  filter: drop-shadow(0 0 5px var(--star-glow));
+}
+
+.proposed {
+  fill: none;
+  stroke: var(--star-pending);
+  stroke-width: 1.5;
+}
+
+.empty {
+  fill: var(--star-empty);
+}
+
+.label {
+  position: absolute;
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  padding: 0 6px;
+  color: var(--sky-ink-2);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+  font-weight: var(--fw-medium);
+  text-align: center;
+}
+
+.labelName,
+.labelDetail {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.labelName {
+  color: var(--sky-ink);
+  font-weight: var(--fw-semibold);
+}
+
+.more {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  padding: 2px 10px;
+  border-radius: var(--r-pill);
+  background: var(--sky-chip);
+  color: var(--sky-ink);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+  font-weight: var(--fw-medium);
+}
+
+.mini .more {
+  top: 6px;
+  right: 8px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+.emptyText {
+  position: absolute;
+  inset: auto var(--sp-4) 50%;
+  transform: translateY(50%);
+  color: var(--sky-ink-2);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+  text-align: center;
+}
+
+/* Lần tải lại lỗi: một dòng nhỏ ở góc, bầu trời cũ vẫn giữ. */
+.stale {
+  position: absolute;
+  bottom: 8px;
+  left: 12px;
+  padding: 0 8px;
+  border-radius: var(--r-pill);
+  background: var(--sky-chip);
+  color: var(--sky-ink);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+}
+
+/* Đang tải, lỗi: một dòng chữ (và nút) giữa ô tối, giữ chiều cao như bầu trời. */
+.message {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  width: 100%;
+  min-height: 120px;
+  padding: var(--sp-4);
+  color: var(--sky-ink-2);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+  text-align: center;
+}
+
+.full .message {
+  max-width: 790px;
+  aspect-ratio: 790 / 200;
+}
+
+.mini .message {
+  min-height: 72px;
+  padding: var(--sp-2);
+}

@@ -5,6 +5,7 @@ import {
   breadcrumbForLocation,
   breadcrumbForPath,
   canShowPanes,
+  canShowSky,
   HOME_CRUMB,
   subjectBreadcrumb,
   subjectTitle,
@@ -148,5 +149,19 @@ describe("breadcrumbForLocation (môn lấy từ địa chỉ)", () => {
       HOME_CRUMB,
       { label: "Cài đặt", href: null },
     ]);
+  });
+});
+
+describe("canShowSky", () => {
+  it("chỉ hiện bầu trời khi môn có trong danh sách đã tải", () => {
+    expect(canShowSky(subjectViewOf("VXL01", READY))).toBe(true);
+  });
+
+  it("mã sai, môn không có, danh sách đang tải hoặc lỗi: không hiện bầu trời", () => {
+    expect(canShowSky(subjectViewOf(null, READY))).toBe(false);
+    expect(canShowSky(subjectViewOf("KHAC01", READY))).toBe(false);
+    expect(canShowSky(subjectViewOf("VXL01", { kind: "ready", subjects: [] }))).toBe(false);
+    expect(canShowSky(subjectViewOf("VXL01", { kind: "loading" }))).toBe(false);
+    expect(canShowSky(subjectViewOf("VXL01", { kind: "error", error: ERROR }))).toBe(false);
   });
 });

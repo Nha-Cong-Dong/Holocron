@@ -1,0 +1,204 @@
+/* Holocron — design tokens (hướng "Chòm sao", logo khối Holocron V3)
+ * Đặt trên <html>: data-theme="auto" | "light" | "dark", data-motion="reduce" (tuỳ chọn).
+ * Mọi cặp chữ/nền đã đo đạt WCAG AA (xem README, mục Tương phản).
+ */
+
+:root {
+  /* ---------- màu: sáng ---------- */
+  --bg: #f3f4fa;
+  --surface: #ffffff;
+  --surface-2: #e8eaf6;
+  --ink: #1a1d45;
+  --ink-2: #50557f;
+  --line: #d9dcee;
+  --line-strong: #8288b5;
+  --accent: #e9ae2a; /* nền nút chính */
+  --accent-hover: #f2bd45;
+  --on-accent: #2a1e00;
+  --accent-ink: #8a5a00; /* chữ/vạch màu vàng trên nền sáng */
+  --accent-soft: #fcefcf;
+  --on-accent-soft: #7a4f00;
+  --cite: #5b47c9; /* chỉ dùng cho trích dẫn / nguồn */
+  --cite-soft: #ece8ff;
+  --ok: #1e7a50;
+  --ok-soft: #e2f4ea;
+  --err: #b4262e;
+  --err-soft: #fdecec;
+  --warn: #7a4f00;
+  --warn-soft: #fcefcf;
+  --focus: #5b47c9;
+  --glow: rgba(233, 174, 42, 0.25);
+  --sky: #0b0d29; /* ô bầu trời: luôn tối ở cả hai theme */
+  --sky-ink: #eef0ff;
+  --sky-ink-2: #a9afd9;
+  --star: #f5c04e;
+  --star-pending: #c9bbff;
+  --star-empty: #5a62a8;
+  --scan: #f7f3ea;
+  --sh-1: 0 1px 0 #d9dcee, 0 4px 12px rgba(26, 29, 69, 0.05);
+  --sh-2: 0 1px 0 #d9dcee, 0 12px 28px rgba(26, 29, 69, 0.12);
+  --sh-3: 0 28px 70px rgba(26, 29, 69, 0.25);
+  --bg-image: none;
+
+  /* ---------- logo khối Holocron (V3 hai tầng) ---------- */
+  --cube-top: #f5c04e;
+  --cube-left: #8c7bff;
+  --cube-right: #5b47c9;
+  --cube-core: #1a1d45;
+
+  /* ---------- chữ ---------- */
+  --font-ui: "Lexend", "Segoe UI", system-ui, sans-serif;
+  --font-quote: "Newsreader", Cambria, Georgia, serif;
+  --font-mono: "Cascadia Mono", Consolas, monospace;
+  --fs-display: 40px;
+  --lh-display: 48px;
+  --fs-h1: 30px;
+  --lh-h1: 38px;
+  --fs-h2: 22px;
+  --lh-h2: 30px;
+  --fs-h3: 18px;
+  --lh-h3: 26px;
+  --fs-body: 16px;
+  --lh-body: 26px;
+  --fs-small: 14px;
+  --lh-small: 20px;
+  --fs-caption: 13px;
+  --lh-caption: 18px;
+  --fs-quote: 18px;
+  --lh-quote: 28px;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+
+  /* ---------- khoảng cách (bội số 4) ---------- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-12: 48px;
+  --sp-16: 64px;
+  --content-max: 1100px;
+  --tap-min: 44px;
+
+  /* ---------- bo góc ---------- */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 24px;
+  --r-pill: 999px;
+
+  /* ---------- motion ---------- */
+  --d-micro: 140ms;
+  --d-short: 200ms;
+  --d-screen: 320ms;
+  --d-celebrate: 760ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --ease-turn: cubic-bezier(0.65, 0, 0.35, 1);
+  --stagger: 40ms;
+}
+
+/* ---------- màu: tối ---------- */
+:root[data-theme="dark"] {
+  --bg: #0f1233;
+  --surface: #171b45;
+  --surface-2: #20255a;
+  --ink: #eef0ff;
+  --ink-2: #a9afd9;
+  --line: #2c3270;
+  --line-strong: #6a72b8;
+  --accent: #f5c04e;
+  --accent-hover: #f8d27a;
+  --on-accent: #2a1e00;
+  --accent-ink: #f5c04e;
+  --accent-soft: #3a3218;
+  --on-accent-soft: #f8d27a;
+  --cite: #c9bbff;
+  --cite-soft: #2a2560;
+  --ok: #5fd3a0;
+  --ok-soft: #12302a;
+  --err: #ff9a9a;
+  --err-soft: #3a1a2a;
+  --warn: #f8d27a;
+  --warn-soft: #3a3218;
+  --focus: #c9bbff;
+  --glow: rgba(245, 192, 78, 0.3);
+  --scan: #e9e4d8;
+  --sh-1: 0 0 0 1px #2c3270;
+  --sh-2: 0 0 0 1px #4a4f96, 0 0 28px rgba(245, 192, 78, 0.12);
+  --sh-3: 0 0 0 1px #2c3270, 0 28px 70px rgba(0, 0, 0, 0.55);
+  --bg-image:
+    radial-gradient(1px 1px at 12% 8%, rgba(255, 255, 255, 0.45) 50%, transparent 51%),
+    radial-gradient(1px 1px at 68% 4%, rgba(255, 255, 255, 0.35) 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 88% 14%, rgba(245, 192, 78, 0.5) 50%, transparent 51%),
+    radial-gradient(1px 1px at 35% 22%, rgba(201, 187, 255, 0.5) 50%, transparent 51%),
+    radial-gradient(1px 1px at 4% 60%, rgba(255, 255, 255, 0.3) 50%, transparent 51%),
+    radial-gradient(1px 1px at 96% 70%, rgba(255, 255, 255, 0.3) 50%, transparent 51%);
+}
+
+/* "Theo Windows": theme auto lấy màu tối khi hệ điều hành đang tối */
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="auto"] {
+    --bg: #0f1233;
+    --surface: #171b45;
+    --surface-2: #20255a;
+    --ink: #eef0ff;
+    --ink-2: #a9afd9;
+    --line: #2c3270;
+    --line-strong: #6a72b8;
+    --accent: #f5c04e;
+    --accent-hover: #f8d27a;
+    --on-accent: #2a1e00;
+    --accent-ink: #f5c04e;
+    --accent-soft: #3a3218;
+    --on-accent-soft: #f8d27a;
+    --cite: #c9bbff;
+    --cite-soft: #2a2560;
+    --ok: #5fd3a0;
+    --ok-soft: #12302a;
+    --err: #ff9a9a;
+    --err-soft: #3a1a2a;
+    --warn: #f8d27a;
+    --warn-soft: #3a3218;
+    --focus: #c9bbff;
+    --glow: rgba(245, 192, 78, 0.3);
+    --scan: #e9e4d8;
+    --sh-1: 0 0 0 1px #2c3270;
+    --sh-2: 0 0 0 1px #4a4f96, 0 0 28px rgba(245, 192, 78, 0.12);
+    --sh-3: 0 0 0 1px #2c3270, 0 28px 70px rgba(0, 0, 0, 0.55);
+    --bg-image:
+      radial-gradient(1px 1px at 12% 8%, rgba(255, 255, 255, 0.45) 50%, transparent 51%),
+      radial-gradient(1px 1px at 68% 4%, rgba(255, 255, 255, 0.35) 50%, transparent 51%),
+      radial-gradient(1.5px 1.5px at 88% 14%, rgba(245, 192, 78, 0.5) 50%, transparent 51%),
+      radial-gradient(1px 1px at 35% 22%, rgba(201, 187, 255, 0.5) 50%, transparent 51%),
+      radial-gradient(1px 1px at 4% 60%, rgba(255, 255, 255, 0.3) 50%, transparent 51%),
+      radial-gradient(1px 1px at 96% 70%, rgba(255, 255, 255, 0.3) 50%, transparent 51%);
+  }
+}
+
+/* ---------- nền tảng ---------- */
+html {
+  color-scheme: light dark;
+}
+body {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  color: var(--ink);
+  background-color: var(--bg);
+  background-image: var(--bg-image);
+}
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}

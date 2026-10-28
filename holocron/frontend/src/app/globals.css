@@ -1,41 +1,34 @@
 /*
- * Hệ thiết kế "kho lưu trữ học thuật" (kế hoạch UI mục 5): nền giấy ngà, chữ mực, một màu nhấn trầm, đường kẻ mảnh,
- * bo góc nhỏ, không đổ bóng dày, không gradient. Sáng/tối theo hệ điều hành, không có nút đổi tay.
- * Font chỉ lấy từ máy, đặt font đủ dấu tiếng Việt trước `system-ui`.
- * Chuyển động (chỉ `opacity`/`transform`, tối đa 150 ms) khai báo trong từng CSS Module, bọc trong
- * `@media (prefers-reduced-motion: no-preference)` hoặc tắt dưới `prefers-reduced-motion: reduce`.
+ * Thiết kế "Chòm sao" (design-handoff/README.md): token gốc ở `tokens.css`, animation ở `motion.css`, cả hai
+ * import trước file này trong `layout.tsx`. Theme sáng/tối/theo Windows đặt bằng `data-theme` trên <html>,
+ * giảm chuyển động bằng `data-motion="reduce"` hoặc `prefers-reduced-motion`.
+ *
+ * Khối dưới đây là lớp alias: tên biến cũ mà các component có sẵn còn dùng, trỏ về token mới. Xoá dần khi từng
+ * màn được dựng lại theo thiết kế mới.
  */
 
 :root {
-  color-scheme: light;
-
-  --bg: #f5f3ee;
-  --surface: #fffdf9;
-  --surface-sunken: #ece8df;
-  --border: #d8d2c4;
-  --text: #1f1d1a;
-  --text-muted: #5f5a50;
-  --accent: #1f4e5f;
-  --accent-contrast: #ffffff;
-  --accent-soft: #e1ecef;
-  --quote-rule: #8a6d3b;
-  --quote-bg: #faf6ec;
-  /* Chữ nhãn trang trên nền trích dẫn: 6.5:1 trên --quote-bg, 6.9:1 trên --surface. */
-  --quote-label: #6e5528;
-  --danger: #a4262c;
-  --danger-soft: #f8e6e6;
-  --warning: #8a5a00;
-  --warning-soft: #fbf0da;
-  --success: #2d6a3e;
-  --success-soft: #e5f2e8;
-  --info: #2c5d8a;
-  --info-soft: #e4edf6;
-
-  /* Tên cũ còn dùng trong các component có sẵn, trỏ về bộ token mới. */
-  --surface-raised: var(--surface-sunken);
-  --neutral: #8a8478;
-  --neutral-soft: var(--surface-sunken);
-  --danger-glow: rgba(164, 38, 44, 0.28);
+  --surface-sunken: var(--surface-2);
+  --surface-raised: var(--surface-2);
+  --border: var(--line);
+  --text: var(--ink);
+  --text-muted: var(--ink-2);
+  /* Nền nút cũ dùng `--accent` (vàng sao) nên chữ trên đó là `--on-accent`; chữ/viền màu nhấn dùng `--accent-ink`. */
+  --accent-contrast: var(--on-accent);
+  --quote-rule: var(--cite);
+  --quote-bg: var(--cite-soft);
+  --quote-label: var(--cite);
+  --danger: var(--err);
+  --danger-soft: var(--err-soft);
+  --danger-glow: rgba(180, 38, 46, 0.28);
+  --warning: var(--warn);
+  --warning-soft: var(--warn-soft);
+  --success: var(--ok);
+  --success-soft: var(--ok-soft);
+  --info: var(--cite);
+  --info-soft: var(--cite-soft);
+  --neutral: var(--line-strong);
+  --neutral-soft: var(--surface-2);
 
   /* Giữ cho tới khi ADR-005 bước 3 thay Gantt bằng `TimelineArtifact`. */
   --gantt-1: #2f5bd3;
@@ -46,9 +39,8 @@
   --gantt-6: #a3264f;
   --gantt-ink: #ffffff;
 
-  --font-sans: "Segoe UI", "Noto Sans", "DejaVu Sans", "Liberation Sans", system-ui, sans-serif;
-  --font-serif: "Cambria", "Noto Serif", "DejaVu Serif", "Times New Roman", serif;
-  --font-mono: "Cascadia Mono", "Consolas", "Noto Sans Mono", "DejaVu Sans Mono", monospace;
+  --font-sans: var(--font-ui);
+  --font-serif: var(--font-quote);
 
   --text-xs: 12px;
   --text-sm: 13px;
@@ -66,42 +58,32 @@
   --space-6: 32px;
   --space-7: 48px;
 
-  --radius: 3px;
-  --sidebar-width: 200px;
+  --radius: var(--r-sm);
   --statusbar-height: 28px;
-  --content-max: 880px;
-  --motion-fast: 150ms;
+  --motion-fast: var(--d-micro);
+}
+
+/* Cùng hai điều kiện tối như `tokens.css`: chọn "Tối", hoặc "Theo Windows" khi Windows đang tối. */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --danger-glow: rgba(255, 154, 154, 0.3);
+  --gantt-1: #7c9cff;
+  --gantt-2: #6fd39a;
+  --gantt-3: #f2b45a;
+  --gantt-4: #c79bff;
+  --gantt-5: #5fd0e8;
+  --gantt-6: #ff8fb0;
+  --gantt-ink: #0f1320;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root[data-theme="auto"] {
     color-scheme: dark;
-
-    --bg: #161513;
-    --surface: #1e1c19;
-    --surface-sunken: #121110;
-    --border: #3a362f;
-    --text: #ece7dd;
-    --text-muted: #a59e90;
-    --accent: #7fb3c4;
-    --accent-contrast: #0f1416;
-    --accent-soft: #1d2c31;
-    --quote-rule: #c8a76a;
-    --quote-bg: #221f1a;
-    /* 8.4:1 trên --quote-bg, 8.7:1 trên --surface. */
-    --quote-label: #d4b67c;
-    --danger: #f08080;
-    --danger-soft: #3a1d20;
-    --warning: #e0b25c;
-    --warning-soft: #3a2c16;
-    --success: #7cc492;
-    --success-soft: #17301f;
-    --info: #8db8e8;
-    --info-soft: #1a2633;
-
-    --neutral: #7d776b;
-    --danger-glow: rgba(240, 128, 128, 0.3);
-
+    --danger-glow: rgba(255, 154, 154, 0.3);
     --gantt-1: #7c9cff;
     --gantt-2: #6fd39a;
     --gantt-3: #f2b45a;
@@ -126,11 +108,6 @@ body {
 }
 
 body {
-  background: var(--bg);
-  color: var(--text);
-  font-family: var(--font-sans);
-  font-size: var(--text-body);
-  line-height: 1.5;
   -webkit-text-size-adjust: 100%;
 }
 
@@ -159,7 +136,7 @@ p {
 }
 
 a {
-  color: var(--accent);
+  color: var(--accent-ink);
   text-underline-offset: 2px;
 }
 
@@ -189,12 +166,6 @@ select,
 textarea {
   font: inherit;
   color: inherit;
-}
-
-/* Focus luôn thấy: viền 2 px màu nhấn thay cho outline mặc định. */
-:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 :focus:not(:focus-visible) {

@@ -171,7 +171,10 @@ export function MachineDiagnostics() {
   );
 }
 
-/** Máy đọc được ảnh scan chưa; thiếu Tesseract thì ba bước cài bằng lời thường (chi tiết biến môi trường ở dưới). */
+/**
+ * Máy đọc được ảnh scan chưa; thiếu Tesseract thì ba bước cài bằng lời thường (tên tệp, thư mục, biến môi trường nằm
+ * trong "Chi tiết kỹ thuật").
+ */
 function ScanReadiness({ runtime }: { runtime: RuntimeView }) {
   const ocr = capabilityOf(runtime, "ocr");
   if (ocr.state === "available") {
@@ -182,10 +185,8 @@ function ScanReadiness({ runtime }: { runtime: RuntimeView }) {
       <div className={styles.warn}>
         <p className={styles.warnTitle}>Chưa đọc được ảnh scan. File PDF có chữ sẵn vẫn đọc bình thường.</p>
         <ol className={styles.steps}>
-          <li>Cài chương trình Tesseract (đọc chữ trong ảnh scan) cho máy này.</li>
-          <li>
-            Chép gói tiếng Việt <code>vie.traineddata</code> vào thư mục <code>tessdata</code> của Tesseract.
-          </li>
+          <li>Cài chương trình Tesseract cho máy này (chương trình đọc chữ trong ảnh scan).</li>
+          <li>Cài thêm gói tiếng Việt cho Tesseract. Tên tệp và thư mục cần chép nằm trong “Chi tiết kỹ thuật”.</li>
           <li>Mở lại Holocron, rồi bấm “Kiểm tra lại” ở dưới.</li>
         </ol>
       </div>

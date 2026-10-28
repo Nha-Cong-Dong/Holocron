@@ -66,7 +66,7 @@ function CloseIcon() {
 
 /**
  * Trang dev: mọi thành phần dùng chung ở mọi trạng thái, để xem animation đã chọn ở sáng/tối và khi giảm chuyển động.
- * Chỉ nạp khi bật dữ liệu mẫu (`app/dev/ui/page.tsx`).
+ * Chỉ có route khi bật dữ liệu mẫu (`app/dev/ui/page.dev.tsx`, `pageExtensions` trong `next.config.ts`).
  */
 export function UiGallery() {
   const toast = useToast();

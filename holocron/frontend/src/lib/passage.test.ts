@@ -299,3 +299,21 @@ describe("resolveOpenPassage: kết quả tìm hiện thẳng đoạn backend tr
     expect(resolveOpenPassage("complete", new Map(), null, null)).toEqual({ chunk: null, note: null });
   });
 });
+
+describe("sentenceLabel: chỗ cắt rơi ngay sau dấu cách", () => {
+  it("bỏ khoảng trắng cuối trước dấu … (không ra ' …')", () => {
+    // 41 chữ rồi một dấu cách: 42 code point đầu kết thúc bằng dấu cách.
+    const sentence = `${"a".repeat(41)} ${"b".repeat(40)}.`;
+    const label = sentenceLabel(sentence);
+    expect(label).toBe(`${"a".repeat(41)}…`);
+    expect(label.endsWith(" …")).toBe(false);
+  });
+});
+
+describe("selectionOfQuote: lát xuất hiện hai lần", () => {
+  it("lấy vị trí xuất hiện đầu tiên", () => {
+    const quote = "Ngắt là tín hiệu";
+    expect(quote).toHaveLength(16);
+    expect(selectionOfQuote(`${quote} và ${quote}`, quote)).toEqual({ start: 0, end: 16 });
+  });
+});

@@ -80,3 +80,10 @@ describe("trackSkyLayout và trackedGains: sao mới tính ngay khi bố cục �
     expect(trackedGains(EMPTY_SKY_TRACK)).toBe(NO_SKY_GAINS);
   });
 });
+
+describe("trackedGains: chưa có bố cục đang vẽ", () => {
+  it("bố cục đang vẽ null mà còn bố cục trước ⇒ không có sao mới (không so với bố cục rỗng)", () => {
+    const track = { layout: null, previous: layout(pairs("ch1", 3)) };
+    expect(trackedGains(track)).toBe(NO_SKY_GAINS);
+  });
+});

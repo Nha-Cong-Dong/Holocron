@@ -413,3 +413,70 @@ describe("Nhận tất cả: trạng thái từng khái niệm", () => {
     ]);
   });
 });
+
+describe("conceptsScreen: danh sách chưa về thì luôn đang tải", () => {
+  it("danh sách đang tải ⇒ đang tải, dù đoạn văn đã tải đủ (có hay không có đoạn)", () => {
+    expect(conceptsScreen("loading", 3, "complete", 5)).toBe("loading");
+    expect(conceptsScreen("loading", 0, "complete", 0)).toBe("loading");
+  });
+});
+
+describe("Nhận tất cả: một thẻ đang tải đoạn là đủ để nói 'đang tải'", () => {
+  it("hai thẻ rảnh đều khoá, chỉ một thẻ đang tải đoạn ⇒ lý do đang tải", () => {
+    const missing = conceptView(pair("b", "proposed"), "complete", new Map());
+    const loading = conceptView(pair("c", "proposed"), "loading", new Map());
+    expect(
+      acceptAllGate([
+        { view: missing, busy: false },
+        { view: loading, busy: false },
+      ]),
+    ).toEqual({ enabled: false, reason: ACCEPT_ALL_LOADING_VI });
+  });
+});
+
+describe("mergeChange: thông báo theo thứ tự thao tác", () => {
+  it("thông báo của việc đang chờ đứng trước thông báo của thao tác mới", () => {
+    const first: ChangeNote = { accepted: 0, messages: ["a"], focus: null };
+    const second: ChangeNote = { accepted: 0, messages: ["b"], focus: null };
+    expect(mergeChange(first, second)?.messages).toEqual(["a", "b"]);
+  });
+});
+
+describe("Nhận tất cả: hàng gửi", () => {
+  it("nhận thành công xoá câu lỗi cũ của khái niệm", () => {
+    const state = {
+      running: true,
+      items: [{ pairId: "a", version: 3, status: "sending" as const, message: "Câu lỗi cũ." }],
+    };
+    const next = bulkReducer(state, { type: "accepted", pairId: "a" });
+    expect(next.items[0]).toEqual({ pairId: "a", version: 3, status: "accepted", message: null });
+    expect(bulkMessageOf(next, "a")).toBeNull();
+  });
+
+  it("chỉ gửi khái niệm đang chờ gửi (queued), bỏ qua mọi trạng thái khác", async () => {
+    const state = {
+      running: true,
+      items: (["queued", "skipped", "accepted", "conflict", "failed", "sending", "queued"] as const).map(
+        (status, index) => ({ pairId: `p${index}`, version: index, status, message: null }),
+      ),
+    };
+    const sent: [string, number][] = [];
+    const events: BulkEvent[] = [];
+    await sendQueued(
+      state,
+      (pairId, version) => {
+        sent.push([pairId, version]);
+        return Promise.resolve();
+      },
+      (event) => events.push(event),
+    );
+    expect(sent).toEqual([
+      ["p0", 0],
+      ["p6", 6],
+    ]);
+    expect(events.filter((event) => event.type === "sending")).toEqual([
+      { type: "sending", pairId: "p0" },
+      { type: "sending", pairId: "p6" },
+    ]);
+  });
+});

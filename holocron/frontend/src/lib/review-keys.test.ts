@@ -14,6 +14,7 @@ import {
 const BASE: ReviewKeyInput = {
   key: "Enter",
   repeat: false,
+  shiftKey: false,
   altKey: false,
   ctrlKey: false,
   metaKey: false,
@@ -56,6 +57,7 @@ describe("Enter xác nhận trang", () => {
     ["Ctrl+Enter", { ctrlKey: true }],
     ["Alt+Enter", { altKey: true }],
     ["Meta+Enter", { metaKey: true }],
+    ["Shift+Enter", { shiftKey: true }],
   ])("không xác nhận khi %s", (_name, change) => {
     expect(action(change)).toBeNull();
   });
@@ -87,17 +89,47 @@ describe("Enter sau khi trang mới hiện (I5: không xác nhận trang chưa �
 });
 
 describe("armsReview", () => {
-  it("bấm chuột, phím khác Enter và focus do người dùng chuyển vào thì mở khoá", () => {
+  const plain = {
+    type: "keydown" as const,
+    repeat: false,
+    shiftKey: false,
+    ctrlKey: false,
+    altKey: false,
+    metaKey: false,
+  };
+
+  it("bấm chuột và phím thật trong vùng thì mở khoá", () => {
     expect(armsReview({ type: "pointerdown" })).toBe(true);
-    expect(armsReview({ type: "keydown", key: "Tab", repeat: false })).toBe(true);
-    expect(armsReview({ type: "keydown", key: "ArrowDown", repeat: false })).toBe(true);
-    expect(armsReview({ type: "focusin", fromElement: true })).toBe(true);
+    expect(armsReview({ ...plain, key: "ArrowDown" })).toBe(true);
+    expect(armsReview({ ...plain, key: "PageDown" })).toBe(true);
+    expect(armsReview({ ...plain, key: "Tab" })).toBe(true);
+    expect(armsReview({ ...plain, key: "Tab", shiftKey: true })).toBe(true);
   });
 
-  it("Enter, phím giữ lặp lại và focus đặt bằng code không mở khoá", () => {
-    expect(armsReview({ type: "keydown", key: "Enter", repeat: false })).toBe(false);
-    expect(armsReview({ type: "keydown", key: "Tab", repeat: true })).toBe(false);
-    expect(armsReview({ type: "focusin", fromElement: false })).toBe(false);
+  it.each([
+    "Shift",
+    "Control",
+    "Alt",
+    "AltGraph",
+    "Meta",
+    "OS",
+    "CapsLock",
+    "NumLock",
+    "Process",
+    "Dead",
+    "Unidentified",
+    "Enter",
+    "Escape",
+    "?",
+  ])("phím %s không mở khoá", (key) => {
+    expect(armsReview({ ...plain, key })).toBe(false);
+  });
+
+  it("phím kèm Ctrl/Alt/Meta (Ctrl+K, Alt+mũi tên…) và phím giữ lặp lại không mở khoá", () => {
+    expect(armsReview({ ...plain, key: "k", ctrlKey: true })).toBe(false);
+    expect(armsReview({ ...plain, key: "k", metaKey: true })).toBe(false);
+    expect(armsReview({ ...plain, key: "ArrowLeft", altKey: true })).toBe(false);
+    expect(armsReview({ ...plain, key: "ArrowDown", repeat: true })).toBe(false);
   });
 });
 

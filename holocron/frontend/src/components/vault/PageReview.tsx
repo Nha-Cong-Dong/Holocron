@@ -36,7 +36,7 @@ import type { DocumentStatusView, DocumentView, LineView, PageStatusView, PageVi
 import type { UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
 import type { Poller } from "@/lib/poll";
-import { armsReview, classifyReviewFocus, lineToEdit, reviewKeyAction } from "@/lib/review-keys";
+import { classifyReviewFocus, lineToEdit, reviewKeyAction } from "@/lib/review-keys";
 import {
   awaitingSettle,
   nextAfterConfirm,
@@ -45,6 +45,13 @@ import {
   reviewProgress,
   reviewQueue,
 } from "@/lib/review-queue";
+import {
+  applyInteraction,
+  type ReviewSession,
+  reviewKeydown,
+  reviewPageKey,
+  reviewSessionFor,
+} from "@/lib/review-session";
 import { type VaultHrefFor, vaultHref } from "@/lib/vault";
 
 import { DeleteDialog } from "./DocumentList";
@@ -470,10 +477,13 @@ interface PagePanelProps {
 }
 
 /**
- * Vùng xem lại một trang. Phím tắt chỉ chạy khi focus ở trong vùng: Enter xác nhận trang, E sửa dòng nghi ngờ đầu tiên,
- * ←/→ sang trang cần xem trước/sau (`lib/review-keys.ts`). Trang mới hiện (tự chuyển sau khi xác nhận, mở từ danh sách,
- * vẽ lại sau khi lưu dòng) mà focus đang mất thì focus đặt vào tiêu đề trang, KHÔNG mở khoá Enter: người dùng phải bấm
- * chuột, dùng phím khác hay chuyển focus vào trang trước, và Enter chỉ có tác dụng sau `REVIEW_ENTER_GUARD_MS` (I5).
+ * Vùng xem lại một trang. `tabIndex=-1`: bấm chuột vào nội dung trang đưa focus vào vùng; Tab đi tới các nút, ô nhập
+ * trong vùng (`tabIndex=0` trên `section` bị rule a11y `noNoninteractiveTabindex` chặn). Phím tắt chỉ chạy khi focus ở
+ * trong vùng: Enter xác nhận trang, E sửa dòng nghi ngờ đầu tiên, ←/→ sang trang cần xem trước/sau
+ * (`lib/review-keys.ts`). Mỗi trang (theo `pageNumber:version`) là một phiên (`lib/review-session.ts`): trang mới hiện,
+ * kể cả vẽ lại sau khi lưu dòng, khoá Enter cho tới khi người dùng bấm chuột vào trang hoặc bấm một phím thật trong vùng
+ * (focus vào vùng không tính), và Enter chỉ có tác dụng sau `REVIEW_ENTER_GUARD_MS` (I5). Trang mới hiện mà focus đang
+ * mất thì focus đặt vào tiêu đề trang.
  */
 function PagePanel({
   page,
@@ -490,9 +500,9 @@ function PagePanel({
   const { overlayOpen } = useShell();
   const region = useRef<HTMLElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
-  // Mốc lúc trang hiện ra và việc người dùng đã chủ động tương tác với trang này chưa (không gây vẽ lại).
-  const shownAt = useRef(0);
-  const armed = useRef(false);
+  // Phiên xem trang: mốc lúc trang hiện ra và trang đã được mở khoá Enter chưa (không gây vẽ lại).
+  const pageKey = reviewPageKey(page.pageNumber, page.version);
+  const session = useRef<ReviewSession | null>(null);
   const editBlock = lineEditBlock(page);
   const confirmBlock = confirmPageBlock(page);
   const mismatches = mismatchesByLine(page.crossCheck.mismatches);
@@ -501,15 +511,29 @@ function PagePanel({
   const [appendDraft, setAppendDraft] = useState(false);
 
   useEffect(() => {
-    shownAt.current = performance.now();
-    armed.current = false;
+    session.current = reviewSessionFor(session.current, pageKey, performance.now());
+  }, [pageKey]);
+
+  useEffect(() => {
     const active = window.document.activeElement;
     if (active === null || active === window.document.body) heading.current?.focus();
   }, []);
 
   function onKeyDown(event: KeyboardEvent<HTMLElement>): void {
-    const wasArmed = armed.current;
-    if (armsReview({ type: "keydown", key: event.key, repeat: event.repeat })) armed.current = true;
+    const now = performance.now();
+    const { gate, next } = reviewKeydown(
+      reviewSessionFor(session.current, pageKey, now),
+      {
+        key: event.key,
+        repeat: event.repeat,
+        shiftKey: event.shiftKey,
+        ctrlKey: event.ctrlKey,
+        altKey: event.altKey,
+        metaKey: event.metaKey,
+      },
+      now,
+    );
+    session.current = next;
     const target = event.target instanceof HTMLElement ? event.target : null;
     const root = region.current;
     const focus = classifyReviewFocus({
@@ -522,6 +546,7 @@ function PagePanel({
     const action = reviewKeyAction({
       key: event.key,
       repeat: event.repeat,
+      shiftKey: event.shiftKey,
       altKey: event.altKey,
       ctrlKey: event.ctrlKey,
       metaKey: event.metaKey,
@@ -534,8 +559,8 @@ function PagePanel({
       canEdit: editBlock === null && page.lines.length > 0,
       hasPrevious,
       hasNext,
-      armed: wasArmed,
-      msSinceShown: performance.now() - shownAt.current,
+      armed: gate.armed,
+      msSinceShown: gate.msSinceShown,
     });
     if (action === null) return;
     event.preventDefault();
@@ -560,12 +585,12 @@ function PagePanel({
       className={styles.panel}
       aria-labelledby={`${ids}-title`}
       aria-describedby={`${ids}-keys`}
+      tabIndex={-1}
       onKeyDown={onKeyDown}
       onPointerDown={() => {
-        if (armsReview({ type: "pointerdown" })) armed.current = true;
-      }}
-      onFocus={(event) => {
-        if (armsReview({ type: "focusin", fromElement: event.relatedTarget instanceof Element })) armed.current = true;
+        session.current = applyInteraction(reviewSessionFor(session.current, pageKey, performance.now()), {
+          type: "pointerdown",
+        });
       }}
     >
       <div className={styles.panelHeader}>
@@ -577,8 +602,10 @@ function PagePanel({
         </span>
       </div>
       <p id={`${ids}-keys`} className={styles.hint}>
-        Phím tắt khi đang ở trang này: E sửa dòng nghi ngờ đầu tiên · ← → trang cần xem lại trước, sau · Enter xác nhận
-        trang, sau khi bạn đã bấm vào trang hoặc dùng một phím khác.
+        Phím tắt trong trang này: E sửa dòng nghi ngờ đầu tiên · ← → trang cần xem lại trước, sau · Enter xác nhận trang
+        khi focus ở nội dung trang (bấm chuột vào trang), không ở nút hay ô nhập. Trang vừa mở thì Enter chỉ có tác dụng
+        sau khi bạn bấm chuột vào trang hoặc bấm một phím khác (ví dụ ↓ để cuộn). Dùng Tab thì xác nhận bằng nút ở cuối
+        trang.
       </p>
 
       <dl className={styles.facts}>

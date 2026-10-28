@@ -9,7 +9,8 @@
  * - Enter chỉ xác nhận trang mà người dùng đã chủ động tương tác SAU khi trang hiện ra (`armed`, xem `armsReview`) và
  *   không sớm hơn `REVIEW_ENTER_GUARD_MS` kể từ lúc trang hiện ra. Tự chuyển sang trang kế sau khi xác nhận, mở trang từ
  *   danh sách hay vẽ lại trang sau khi lưu dòng đều là trang "mới hiện": Enter kế tiếp không xác nhận trang chưa đọc.
- * - Phím có Ctrl/Alt/Meta, phím giữ lặp lại, hoặc khi có hộp thoại/bảng lệnh đang mở thì không làm gì.
+ * - Phím có Ctrl/Alt/Meta, phím giữ lặp lại, hoặc khi có hộp thoại/bảng lệnh đang mở thì không làm gì; Enter kèm Shift
+ *   cũng không xác nhận.
  * - ←/→ và E chỉ chạy khi focus ở trong vùng xem lại (không ở hàng tab, không ở ô nhập).
  */
 
@@ -67,31 +68,62 @@ export function classifyReviewFocus(target: FocusTarget): ReviewFocus {
 /** Khoảng tối thiểu từ lúc trang hiện ra tới lúc Enter được xác nhận trang. */
 export const REVIEW_ENTER_GUARD_MS = 600;
 
+/** Một phím bấm trong vùng xem lại, đủ để quyết định phím đó có mở khoá Enter không. */
+export interface ReviewKeydown {
+  key: string;
+  repeat: boolean;
+  shiftKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+  metaKey: boolean;
+}
+
 /** Sự kiện trong vùng xem lại, dùng để biết người dùng đã chủ động tương tác với trang đang hiện. */
-export type ReviewInteraction =
-  | { type: "pointerdown" }
-  | { type: "keydown"; key: string; repeat: boolean }
-  /** `fromElement`: focus đi từ một phần tử khác vào vùng (người dùng bấm Tab, bấm chuột), không phải đặt bằng code. */
-  | { type: "focusin"; fromElement: boolean };
+export type ReviewInteraction = { type: "pointerdown" } | ({ type: "keydown" } & ReviewKeydown);
 
 /**
- * Sự kiện có "mở khoá" Enter cho trang đang hiện không: bấm chuột trong vùng, một phím khác Enter (không lặp), hoặc focus
- * do người dùng chuyển vào vùng. Enter và focus đặt bằng code (khi trang mới hiện) không mở khoá.
+ * Phím không tính là tương tác với trang: phím bổ trợ đứng riêng, phím của bộ gõ hay phím trình duyệt chưa nhận ra,
+ * Enter, Esc (đóng hộp thoại) và "?" (bảng phím tắt của khung app).
+ */
+const NON_ARMING_KEYS: ReadonlySet<string> = new Set([
+  "Shift",
+  "Control",
+  "Alt",
+  "AltGraph",
+  "Meta",
+  "OS",
+  "Fn",
+  "FnLock",
+  "Hyper",
+  "Super",
+  "Symbol",
+  "SymbolLock",
+  "CapsLock",
+  "NumLock",
+  "ScrollLock",
+  "Process",
+  "Dead",
+  "Unidentified",
+  "Enter",
+  "Escape",
+  "?",
+]);
+
+/**
+ * Sự kiện có "mở khoá" Enter cho trang đang hiện không: bấm chuột trong vùng, hoặc một phím thật (không lặp, không kèm
+ * Ctrl/Alt/Meta, không nằm trong `NON_ARMING_KEYS`). Focus vào vùng (kể cả bằng Tab) không mở khoá; phím tắt toàn cục
+ * như Ctrl+K hay "?" cũng không.
  */
 export function armsReview(event: ReviewInteraction): boolean {
-  switch (event.type) {
-    case "pointerdown":
-      return true;
-    case "keydown":
-      return event.key !== "Enter" && !event.repeat;
-    case "focusin":
-      return event.fromElement;
-  }
+  if (event.type === "pointerdown") return true;
+  if (event.repeat || event.ctrlKey || event.altKey || event.metaKey) return false;
+  return !NON_ARMING_KEYS.has(event.key);
 }
 
 export interface ReviewKeyInput {
   key: string;
   repeat: boolean;
+  shiftKey: boolean;
   altKey: boolean;
   ctrlKey: boolean;
   metaKey: boolean;
@@ -122,7 +154,7 @@ export function reviewKeyAction(input: ReviewKeyInput): ReviewKeyAction | null {
   if (input.focus === "outside" || input.focus === "editable") return null;
   switch (input.key) {
     case "Enter": {
-      if (input.focus !== "region") return null;
+      if (input.focus !== "region" || input.shiftKey) return null;
       const allowed =
         input.armed &&
         input.msSinceShown >= REVIEW_ENTER_GUARD_MS &&

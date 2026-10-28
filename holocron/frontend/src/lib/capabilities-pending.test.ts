@@ -50,7 +50,7 @@ function kebab(name: string): string {
  */
 function forbiddenSegment(segment: string): boolean {
   return (
-    ["proposal", "line-review", "review-queue", "auto-", "progress"].some((word) => segment.includes(word)) ||
+    ["proposal", "line-review", "review-queue"].some((word) => segment.includes(word)) ||
     segment === "eta" ||
     segment.endsWith("-eta")
   );
@@ -168,7 +168,12 @@ describe("ba khả năng đề xuất ở nhóm chưa có trong bản đang ch�
     for (const path of ["/v1/vault/concept-proposals", "/v1/documents/:/eta", "/v1/documents/:/line-review"]) {
       expect(path.split("/").some(forbiddenSegment), path).toBe(true);
     }
-    for (const path of ["/v1/documents/:/metadata", "/v1/vault/concept-pairs", "/v1/runtime"]) {
+    for (const path of [
+      "/v1/documents/:/metadata",
+      "/v1/documents/:/progress",
+      "/v1/vault/concept-pairs",
+      "/v1/runtime",
+    ]) {
       expect(path.split("/").some(forbiddenSegment), path).toBe(false);
     }
   });

@@ -513,3 +513,23 @@ describe("vùng thông báo cố định ở PageReview", () => {
     expect(nextAnnouncement(NO_ANNOUNCEMENT, { pageNumber: null, message: null })).toBe(NO_ANNOUNCEMENT);
   });
 });
+
+describe("đột biến còn sống vòng 6: thứ tự ưu tiên câu báo và giữ nguyên chữ", () => {
+  const editingDraft = draftFor(setLineEditText(startLineEdit(NO_DRAFTS, 1, 4, "gốc"), 1, "đang gõ"), 1);
+  const lockedMessage = "Trang 1 không sửa được nữa. Chữ bạn đã gõ chưa lưu.";
+
+  it("trang đã xác nhận mà dòng của ô sửa đã đổi hoặc biến mất ⇒ câu cấp trang, không phải câu xung đột dòng", () => {
+    expect(pageDraftStatusMessage(shownPage(1, "bản mới", true), editingDraft)).toBe(lockedMessage);
+    expect(pageDraftStatusMessage(shownPage(1, null, true), editingDraft)).toBe(lockedMessage);
+  });
+
+  it("lockedDraftNotice giữ nguyên chữ ô thêm dòng, không cắt khoảng trắng hay xuống dòng", () => {
+    expect(lockedDraftNotice({ appendText: "  abc \n", editing: null }, "confirmed")?.appendText).toBe("  abc \n");
+  });
+
+  it("không mở ô sửa nào mà dòng đã đổi hoặc trang không có dòng ⇒ chuỗi rỗng, không có 'Dòng undefined'", () => {
+    expect(pageDraftStatusMessage(shownPage(1, "bản mới"), EMPTY_PAGE_DRAFT)).toBe("");
+    expect(pageDraftStatusMessage(shownPage(1, null), EMPTY_PAGE_DRAFT)).toBe("");
+    expect(pageDraftStatusMessage(shownPage(1, null), draftFor(setAppendText(NO_DRAFTS, 1, "a"), 1))).toBe("");
+  });
+});

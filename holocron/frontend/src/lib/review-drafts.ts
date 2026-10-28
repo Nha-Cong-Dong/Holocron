@@ -190,31 +190,12 @@ export function lockedDraftNotice(draft: PageDraft, editBlock: EditBlock | null)
 }
 
 /**
- * Câu cho vùng thông báo cố định của trang (`role="status"`, luôn có trong trang, rỗng khi không có gì): báo xung đột
- * hay nháp trên trang bị khoá. Không đọc lại chữ đã gõ (chữ đó hiện ngay tại câu báo). Chuỗi rỗng khi không có gì cần
- * báo. `state` là `lineEditState` của ô sửa (`null` khi không mở ô nào). Câu cấp trang mang số trang, để hai trang cùng
- * bị khoá vẫn ra hai câu khác nhau (vùng đổi chữ nên trình đọc màn hình đọc).
+ * Câu cho vùng thông báo cố định của trang đang hiện (`role="status"`, luôn có trong trang, rỗng khi không có gì): tự
+ * đối chiếu ô sửa với các dòng và lý do khoá sửa của trang, báo xung đột hay nháp trên trang bị khoá. Không đọc lại chữ
+ * đã gõ (chữ đó hiện ngay tại câu báo). Chuỗi rỗng khi không có gì cần báo. Trang bị khoá thắng xung đột dòng
+ * (`lineEditState` trả `locked` trước). Câu cấp trang mang số trang, để hai trang cùng bị khoá vẫn ra hai câu khác nhau
+ * (vùng đổi chữ nên trình đọc màn hình đọc).
  */
-function draftStatusMessage(
-  pageNumber: number,
-  draft: PageDraft,
-  state: LineEditState | null,
-  editBlock: EditBlock | null,
-): string {
-  const lineIndex = draft.editing?.lineIndex;
-  if (lineIndex !== undefined && state?.kind === "changed") {
-    return `Dòng ${lineIndex} vừa được sửa ở nơi khác. Chữ bạn đang gõ chưa lưu.`;
-  }
-  if (lineIndex !== undefined && state?.kind === "removed") {
-    return `Dòng ${lineIndex} không còn trên trang này. Chữ bạn đang gõ chưa lưu.`;
-  }
-  if (lockedDraftNotice(draft, editBlock) !== null) {
-    return `Trang ${pageNumber} không sửa được nữa. Chữ bạn đã gõ chưa lưu.`;
-  }
-  return "";
-}
-
-/** `draftStatusMessage` cho trang đang hiện: tự đối chiếu ô sửa với các dòng và lý do khoá sửa của trang. */
 export function pageDraftStatusMessage(
   page: Pick<PageView, "pageNumber" | "status" | "confirmed"> & {
     lines: readonly Pick<LineView, "lineIndex" | "text">[];
@@ -222,8 +203,20 @@ export function pageDraftStatusMessage(
   draft: PageDraft,
 ): string {
   const editBlock = lineEditBlock(page);
-  const state = draft.editing === null ? null : lineEditState(draft.editing, page.lines, editBlock);
-  return draftStatusMessage(page.pageNumber, draft, state, editBlock);
+  const editing = draft.editing;
+  if (editing !== null) {
+    const kind = lineEditState(editing, page.lines, editBlock).kind;
+    if (kind === "changed") {
+      return `Dòng ${editing.lineIndex} vừa được sửa ở nơi khác. Chữ bạn đang gõ chưa lưu.`;
+    }
+    if (kind === "removed") {
+      return `Dòng ${editing.lineIndex} không còn trên trang này. Chữ bạn đang gõ chưa lưu.`;
+    }
+  }
+  if (lockedDraftNotice(draft, editBlock) !== null) {
+    return `Trang ${page.pageNumber} không sửa được nữa. Chữ bạn đã gõ chưa lưu.`;
+  }
+  return "";
 }
 
 /** Chữ đang có trong vùng thông báo cố định và trang mà chữ đó thuộc về. */

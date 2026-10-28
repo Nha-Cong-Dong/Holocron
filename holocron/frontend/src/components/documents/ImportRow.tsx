@@ -5,7 +5,7 @@ import { Icon } from "@/components/common/Icon";
 import { Button, Dropdown, type DropdownOption, Field } from "@/components/ui";
 import { importChapterOptions } from "@/lib/chapters";
 import { SOURCE_KIND_LABEL_VI, SOURCE_KINDS, sourceKindLabel } from "@/lib/documents";
-import { importFailureText } from "@/lib/errors";
+import { type ErrorKind, importFailureText } from "@/lib/errors";
 import {
   CHAPTER_MISSING_VI,
   chapterLabel,
@@ -17,6 +17,17 @@ import {
 import type { SourceKind } from "@/types/holocron";
 import type { FileImportRow } from "./ImportQueueProvider";
 import styles from "./ImportRow.module.css";
+
+/**
+ * Lỗi gửi do chính file (400 rỗng, 413 quá lớn, 415 không phải PDF, 422 không mở được): gửi lại vẫn lỗi y vậy nên không
+ * hiện "Thử lại"; người dùng sửa file rồi thêm lại, hoặc bỏ dòng.
+ */
+const FILE_ERROR_KINDS: ReadonlySet<ErrorKind> = new Set([
+  "bad_request",
+  "too_large",
+  "unsupported_media",
+  "validation",
+]);
 
 /** Giá trị của "Chưa rõ chương" trong bảng chọn chương. */
 const NO_CHAPTER = "";
@@ -121,7 +132,7 @@ export function ImportRow({ row, leaving = false, onEdit, onRemove, onRetry, onL
         )}
       </div>
       <div className={styles.actions}>
-        {row.status === "failed" && (
+        {row.status === "failed" && !(row.error !== null && FILE_ERROR_KINDS.has(row.error.kind)) && (
           <Button variant="secondary" onClick={onRetry} disabled={leaving}>
             Thử lại
           </Button>

@@ -24,6 +24,7 @@ interface ReadingListProps {
  * Màn 5 "Đang đọc" (design-handoff/README.md): tổng tiến độ (số tài liệu đã đọc xong) và từng tài liệu "x/y trang"
  * (số trang do backend đếm, qua `readingLines`). Thời gian còn lại chưa có dữ liệu ở backend nên chỉ có một câu báo.
  * Tài liệu đọc xong trong lúc màn mở hiện dấu tích; tài liệu không đọc được có nút "Xem lại" để xem lý do từng trang.
+ * Nút "Xem lại" chỉ hiện khi tài liệu còn việc xác nhận (khác `confirmed`, §5.7: mọi trang có văn bản đã xác nhận).
  */
 export function ReadingList({ rows, reviewHref }: ReadingListProps) {
   if (rows.length === 0) return null;
@@ -95,7 +96,7 @@ function ReadingItem({ row, reviewHref }: { row: ReadingRow; reviewHref: (docId:
           </p>
         )}
       </div>
-      {row.kind !== "reading" && (
+      {row.kind !== "reading" && row.status !== "confirmed" && (
         <Link className={`m-btn-secondary ${styles.link}`} href={reviewHref(row.docId)}>
           Xem lại
         </Link>

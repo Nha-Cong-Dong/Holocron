@@ -20,6 +20,7 @@ import {
   conceptErrorText,
   conceptsScreen,
   conceptView,
+  failedReloadEffects,
   focusAfterRemoval,
   groupPairs,
   IDLE_BULK,
@@ -28,6 +29,7 @@ import {
   screenErrorText,
   sendQueued,
   visibleConceptEntrances,
+  withoutIds,
 } from "@/lib/concept-board";
 import { toUiError, type UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
@@ -157,25 +159,52 @@ export function ConceptsTab({
   // Việc của các thao tác đã thành công mà chưa phát (toast, focus, tải lại bầu trời). Chỉ lượt tải lại mới nhất được
   // áp, nên việc của thao tác trước dồn vào đây và phát ở lượt mới nhất, không mất khi hai thao tác gần nhau.
   const pendingChange = useRef<ChangeNote | null>(null);
+  // Thẻ đề xuất đã cho rời đi mà danh sách mới chưa về: lượt tải lại lỗi thì các thẻ này hiện lại.
+  const pendingLeft = useRef<string[]>([]);
   const listCalls = useRef(createLatestCounter());
 
+  // -------------------------------------------------------------------- focus
+  const proposalsHeading = useRef<HTMLHeadingElement>(null);
+  const acceptedHeading = useRef<HTMLHeadingElement>(null);
+  const inviteRef = useRef<HTMLDivElement>(null);
+  const focusTarget = useCallback((target: ConceptFocus) => {
+    const fallback = proposalsHeading.current ?? inviteRef.current ?? acceptedHeading.current;
+    if (target.kind === "concept") {
+      const element = document.querySelector<HTMLElement>(`[data-concept-id="${CSS.escape(target.id)}"]`);
+      (element ?? fallback)?.focus();
+      return;
+    }
+    if (target.kind === "accepted") {
+      acceptedHeading.current?.focus();
+      return;
+    }
+    fallback?.focus();
+  }, []);
+
   const loadPairs = useCallback(
-    (keepCurrent: boolean, change: ChangeNote | null) => {
+    (keepCurrent: boolean, change: ChangeNote | null, leftIds: readonly string[] = []) => {
       if (!keepCurrent) setListState({ kind: "loading" });
       pendingChange.current = mergeChange(pendingChange.current, change);
+      pendingLeft.current = [...pendingLeft.current, ...leftIds];
       void runLatest(
         listCalls.current,
         () => api.listConceptPairs({ subjectCode, chapterCode: null, status: null }),
         (outcome) => {
           const pending = pendingChange.current;
+          const left = pendingLeft.current;
           pendingChange.current = null;
+          pendingLeft.current = [];
           if (!outcome.ok) {
             // Thao tác đã thành công dù chưa đọc lại được danh sách: vẫn báo, chỉ không nói số sao.
-            const effects = changeEffects(pending, 0);
+            const effects = failedReloadEffects(pending, left);
             for (const text of effects.toasts) toastRef.current.show(text);
             if (effects.reloadSky) changedRef.current();
-            if (keepCurrent && previousPairs.current !== null) setReloadNote(screenErrorText(outcome.error));
-            else setListState({ kind: "error", error: outcome.error });
+            if (keepCurrent && previousPairs.current !== null) {
+              // Danh sách cũ còn hiện: thẻ đã rời đi hiện lại, focus rời thẻ đang ẩn về tiêu đề khối.
+              setLeaving((previous) => withoutIds(previous, effects.reveal));
+              setReloadNote(screenErrorText(outcome.error));
+              if (effects.focus !== null) focusTarget(effects.focus);
+            } else setListState({ kind: "error", error: outcome.error });
             return;
           }
           const next = outcome.value.pairs;
@@ -193,7 +222,7 @@ export function ConceptsTab({
         },
       );
     },
-    [subjectCode],
+    [subjectCode, focusTarget],
   );
 
   const reloadAll = useCallback(() => {
@@ -211,25 +240,12 @@ export function ConceptsTab({
   }, [reloadAll]);
 
   // -------------------------------------------------------------------- focus sau khi tải lại
-  const proposalsHeading = useRef<HTMLHeadingElement>(null);
-  const acceptedHeading = useRef<HTMLHeadingElement>(null);
-  const inviteRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (listState.kind !== "ready" || focusRequest.current === null) return;
     const target = focusRequest.current;
     focusRequest.current = null;
-    const fallback = proposalsHeading.current ?? inviteRef.current ?? acceptedHeading.current;
-    if (target.kind === "concept") {
-      const element = document.querySelector<HTMLElement>(`[data-concept-id="${CSS.escape(target.id)}"]`);
-      (element ?? fallback)?.focus();
-      return;
-    }
-    if (target.kind === "accepted") {
-      acceptedHeading.current?.focus();
-      return;
-    }
-    fallback?.focus();
-  }, [listState]);
+    focusTarget(target);
+  }, [listState, focusTarget]);
 
   // -------------------------------------------------------------------- thẻ rời đi
   const leaveCallbacks = useRef(new Map<string, () => void>());
@@ -309,7 +325,7 @@ export function ConceptsTab({
       );
       const focus: ConceptFocus = nextId === null ? { kind: "proposals" } : { kind: "concept", id: nextId };
       leave(pair.pair_id, operation === "reject" ? "reject" : "accept", () =>
-        loadPairs(true, { accepted, messages: [], focus }),
+        loadPairs(true, { accepted, messages: [], focus }, [pair.pair_id]),
       );
       return;
     }
@@ -342,18 +358,18 @@ export function ConceptsTab({
     if (!started.running) return;
     bulkActive.current = true;
     setCardErrors(new Map());
-    let accepted = 0;
+    const acceptedIds: string[] = [];
     void sendQueued(
       started,
       async (pairId, version) => {
         await api.confirmConceptPair(pairId, version, {});
-        accepted += 1;
+        acceptedIds.push(pairId);
         if (!reduced) setLeaving((previous) => new Map(previous).set(pairId, "accept"));
       },
       dispatchBulk,
     ).then(() => {
       bulkActive.current = false;
-      loadPairs(true, { accepted, messages: [], focus: { kind: "proposals" } });
+      loadPairs(true, { accepted: acceptedIds.length, messages: [], focus: { kind: "proposals" } }, acceptedIds);
     });
   }
 
@@ -439,9 +455,14 @@ export function ConceptsTab({
         <p className={styles.note}>Có khái niệm Holocron không đọc được nên không hiện ở đây.</p>
       )}
       {reloadNote !== null && (
-        <p className={styles.note} role="alert">
-          Chưa cập nhật được danh sách khái niệm. {reloadNote}
-        </p>
+        <div className={`${styles.note} ${styles.actions}`}>
+          <p className={styles.inviteText} role="alert">
+            Chưa cập nhật được danh sách khái niệm. {reloadNote}
+          </p>
+          <Button variant="secondary" onClick={() => loadPairs(true, null)}>
+            Thử lại
+          </Button>
+        </div>
       )}
       <div className={styles.grid}>
         <div className={styles.main}>

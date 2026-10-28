@@ -260,6 +260,31 @@ export function changeEffects(pending: ChangeNote | null, starsLit: number): Cha
   return { toasts: [...toasts, ...pending.messages], focus: pending.focus, reloadSky: true };
 }
 
+/** Việc phát ra khi lượt tải lại mới nhất lỗi mà danh sách cũ vẫn đang hiện. */
+export interface FailedReloadEffects extends ChangeEffects {
+  /** Thẻ đã cho rời đi (đang chờ danh sách mới) nay hiện lại bình thường, không lặp. */
+  reveal: string[];
+}
+
+/**
+ * Thao tác đã thành công nhưng chưa đọc lại được danh sách: vẫn báo toast (không nói số sao) và tải lại bầu trời như
+ * `changeEffects`, nhưng danh sách cũ vẫn hiện nên các thẻ đã cho rời đi (`leftIds`) phải hiện lại, và focus không
+ * được ở lại trên thẻ đang ẩn: có thẻ rời đi ⇒ focus về tiêu đề khối "Đề xuất"; không có ⇒ không dời focus.
+ */
+export function failedReloadEffects(pending: ChangeNote | null, leftIds: readonly string[]): FailedReloadEffects {
+  const effects = changeEffects(pending, 0);
+  const reveal = [...new Set(leftIds)];
+  return { ...effects, focus: reveal.length > 0 ? { kind: "proposals" } : null, reveal };
+}
+
+/** Bản sao của `map` đã bỏ các khoá trong `ids` (trả đúng `map` khi không bỏ khoá nào, để React không vẽ lại). */
+export function withoutIds<V>(map: ReadonlyMap<string, V>, ids: readonly string[]): ReadonlyMap<string, V> {
+  if (!ids.some((id) => map.has(id))) return map;
+  const next = new Map(map);
+  for (const id of ids) next.delete(id);
+  return next;
+}
+
 // ------------------------------------------------------------------------------------ "Nhận tất cả"
 
 export type BulkItemStatus = "queued" | "sending" | "accepted" | "conflict" | "failed" | "skipped";

@@ -17,6 +17,7 @@ import {
   conceptErrorText,
   conceptsScreen,
   conceptView,
+  failedReloadEffects,
   focusAfterRemoval,
   groupPairs,
   IDLE_BULK,
@@ -28,6 +29,7 @@ import {
   screenErrorText,
   sendQueued,
   visibleConceptEntrances,
+  withoutIds,
 } from "./concept-board";
 import { ApiError, classifyHttpError, classifyNetworkError } from "./errors";
 import type { ChunkView } from "./vault";
@@ -478,5 +480,44 @@ describe("Nhận tất cả: hàng gửi", () => {
       { type: "sending", pairId: "p0" },
       { type: "sending", pairId: "p6" },
     ]);
+  });
+});
+
+describe("thao tác thành công mà lượt tải lại lỗi", () => {
+  const accept: ChangeNote = { accepted: 1, messages: [], focus: { kind: "concept", id: "b" } };
+
+  it("thẻ đã rời đi hiện lại (không lặp), focus về tiêu đề khối Đề xuất, vẫn báo toast không kèm số sao", () => {
+    expect(failedReloadEffects(accept, ["a", "a", "c"])).toEqual({
+      toasts: ["Đã nhận 1 khái niệm"],
+      focus: { kind: "proposals" },
+      reloadSky: true,
+      reveal: ["a", "c"],
+    });
+  });
+
+  it("không có thẻ nào rời đi (thao tác ở cột Đã nhận) ⇒ không dời focus", () => {
+    const rename: ChangeNote = { accepted: 0, messages: ["Đã đổi tên thành “X”"], focus: { kind: "accepted" } };
+    expect(failedReloadEffects(rename, [])).toEqual({
+      toasts: ["Đã đổi tên thành “X”"],
+      focus: null,
+      reloadSky: true,
+      reveal: [],
+    });
+  });
+
+  it("không có việc chờ (Thử lại, 409) ⇒ không phát gì", () => {
+    expect(failedReloadEffects(null, [])).toEqual({ toasts: [], focus: null, reloadSky: false, reveal: [] });
+  });
+
+  it("withoutIds bỏ đúng các thẻ liên quan, giữ thẻ khác đang rời đi", () => {
+    const leaving = new Map([
+      ["a", "accept"],
+      ["b", "reject"],
+      ["c", "accept"],
+    ]);
+    expect([...withoutIds(leaving, ["a", "c", "z"])]).toEqual([["b", "reject"]]);
+    expect(leaving.size).toBe(3);
+    expect(withoutIds(leaving, ["z"])).toBe(leaving);
+    expect(withoutIds(leaving, [])).toBe(leaving);
   });
 });

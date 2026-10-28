@@ -165,7 +165,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     [runtime, refreshRuntime, subjects, reloadSubjects, subjectCode, overlay],
   );
 
-  // Mỗi route có đúng một <h1>: trang tự có tiêu đề (trang chủ, trang môn, Cài đặt) thì khung không render thêm.
+  // Mỗi route có đúng một <h1>: trang tự có tiêu đề (trang môn, Cài đặt) thì khung không render thêm.
   const heading = shellHeadingForPath(pathname);
 
   return (
@@ -184,7 +184,9 @@ export function AppShell({ children }: { children: ReactNode }) {
             {selectOfflineMode(runtime) && <OfflineBanner />}
             <main id="main-content" className={styles.content} tabIndex={-1}>
               <div className={styles.contentInner}>
-                {heading !== null && <h1 className={styles.pageTitle}>{heading}</h1>}
+                {heading !== null && (
+                  <h1 className={heading.visuallyHidden ? "visually-hidden" : styles.pageTitle}>{heading.text}</h1>
+                )}
                 {children}
               </div>
             </main>

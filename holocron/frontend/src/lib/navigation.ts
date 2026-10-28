@@ -84,14 +84,20 @@ export function crumbTitleForPath(pathname: string): string {
  */
 const PAGES_WITH_OWN_HEADING: ReadonlySet<string> = new Set(["/", "/subject", "/settings"]);
 
+export interface ShellHeading {
+  text: string;
+  /** Chỉ cho trình đọc màn hình (trang đã có tiêu đề nhìn thấy khác). Hiện mọi route do khung render đều hiện rõ. */
+  visuallyHidden: boolean;
+}
+
 /**
- * Chữ của `<h1>` do khung render để mỗi route có đúng một `<h1>`: `null` khi trang tự có `<h1>` (kể cả trang chủ);
- * route cũ và đường dẫn khác dùng tiêu đề breadcrumb (`crumbTitleForPath`), hiện rõ.
+ * `<h1>` do khung render để mỗi route có đúng một `<h1>`: `null` khi trang tự có `<h1>` (kể cả trang chủ); route cũ và
+ * đường dẫn khác dùng tiêu đề breadcrumb (`crumbTitleForPath`), hiện rõ.
  */
-export function shellHeadingForPath(pathname: string): string | null {
+export function shellHeadingForPath(pathname: string): ShellHeading | null {
   const path = trimTrailingSlash(pathname);
   if (PAGES_WITH_OWN_HEADING.has(path)) return null;
-  return crumbTitleForPath(path);
+  return { text: crumbTitleForPath(path), visuallyHidden: false };
 }
 
 /** Chuẩn hoá để lọc: NFD, bỏ dấu, `đ` → `d`, chữ thường, gộp khoảng trắng. */

@@ -501,6 +501,21 @@ def test_evaluate_license(package: str, expression: str, allowed: bool) -> None:
     assert bp.evaluate_license(package, expression).allowed is allowed
 
 
+@pytest.mark.parametrize(
+    ("package", "expression", "allowed"),
+    [
+        ("@fontsource/lexend", "OFL-1.1", True),
+        ("@fontsource/newsreader", "OFL-1.1", True),
+        ("@fontsource/lexend", "OFL-1.0", False),
+        ("@fontsource/roboto", "OFL-1.1", False),
+        ("some-font", "OFL-1.1", False),
+        ("@fontsource/lexend", "OFL-1.1 AND GPL-3.0-only", False),
+    ],
+)
+def test_font_licenses_are_allowed_only_for_listed_packages(package: str, expression: str, allowed: bool) -> None:
+    assert bp.evaluate_license(package, expression).allowed is allowed
+
+
 def _metadata(headers: str) -> object:
     import email.parser
 

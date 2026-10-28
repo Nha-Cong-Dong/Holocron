@@ -93,3 +93,19 @@ Tệp: site-packages/shapely.libs/geos-*.dll và geos_c-*.dll. Các DLL này do 
 shapely) đổi tên (thêm hậu tố băm) và sửa bảng import; nội dung thư viện giữ nguyên bản dựng của shapely.
 Bản zip kèm toàn văn LGPL-2.1 và mã nguồn GEOS tương ứng trong `licenses/` (geos-3.14.1.tar.bz2, SHA-256 ghi trong
 THIRD_PARTY_NOTICES của zip).
+
+
+Lexend (@fontsource/lexend 5.3.0)
+---------------------------------
+Dùng cho: font giao diện của frontend (thêm ở PR #89), đóng vào bản build tĩnh dạng .woff2.
+Nguồn: https://github.com/googlefonts/lexend (gói npm: https://github.com/fontsource/font-files).
+Giấy phép: SIL Open Font License 1.1 (OFL-1.1). "Copyright 2019 The Lexend Project Authors".
+Bản zip kèm toàn văn OFL-1.1 (file LICENSE của gói) trong `licenses/`.
+
+
+Newsreader (@fontsource/newsreader 5.3.0)
+-----------------------------------------
+Dùng cho: font đoạn trích nguyên văn của frontend (thêm ở PR #89), đóng vào bản build tĩnh dạng .woff2.
+Nguồn: https://github.com/productiontype/Newsreader (gói npm: https://github.com/fontsource/font-files).
+Giấy phép: SIL Open Font License 1.1 (OFL-1.1). "Copyright 2020 The Newsreader Project Authors".
+Bản zip kèm toàn văn OFL-1.1 (file LICENSE của gói) trong `licenses/`.

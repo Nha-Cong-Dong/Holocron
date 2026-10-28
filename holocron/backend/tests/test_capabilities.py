@@ -218,3 +218,15 @@ def test_ocr_language_missing_names_the_file_and_the_variable() -> None:
 def test_secondary_ocr_disabled_names_the_variable() -> None:
     detail, _ = _local_failure("secondary_ocr_disabled")
     assert "HOLOCRON_PDF_OCR_SECONDARY" in detail
+
+
+def test_capability_rejects_unknown_field() -> None:
+    with pytest.raises(ValidationError):
+        Capability.model_validate({"name": "ocr", "available": True, "reason": None, "detail_vi": None, "extra": 1})
+
+
+def test_capability_strips_detail_whitespace() -> None:
+    capability = Capability.model_validate(
+        {"name": "vlm", "available": False, "reason": "vlm_not_configured", "detail_vi": " x "}
+    )
+    assert capability.detail_vi == "x"

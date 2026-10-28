@@ -176,7 +176,7 @@ export const CAPABILITY_LABEL_VI: Record<CapabilityName, string> = {
   essay_grading_llm: "Chấm tự luận bằng LLM",
   template_authoring_llm: "LLM học cách sinh câu cho dạng bài mới",
   vlm: "Đọc ảnh bằng mô hình thị giác (VLM)",
-  concept_auto_proposal: "Đề xuất khái niệm tự động, không cần LLM",
+  concept_auto_proposal: "Đề xuất khái niệm tự động",
   line_review_queue: "Hàng đợi duyệt theo dòng nghi ngờ",
   page_progress_eta: "Tiến độ theo trang và thời gian còn lại",
 };

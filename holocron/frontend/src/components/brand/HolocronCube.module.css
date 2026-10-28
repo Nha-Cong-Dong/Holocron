@@ -391,3 +391,9 @@
 .button span {
   display: block;
 }
+/* Sân khấu phải là flex để gốc 0×0 của khối (.scale) nằm giữa sân khấu. Quy tắc `.button span` ở trên có độ ưu tiên
+ * cao hơn `.stage` nên từng ghi đè `display: flex` thành `block`, đẩy tâm khối về góc trên trái (khối lệch lên trên,
+ * lệch ngang so với tiêu đề). Viết lại với độ ưu tiên cao hơn quy tắc đó. */
+.button .stage {
+  display: flex;
+}

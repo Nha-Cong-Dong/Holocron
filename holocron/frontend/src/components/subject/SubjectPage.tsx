@@ -24,7 +24,7 @@ import {
   subjectDocumentsHref,
   subjectHref,
 } from "@/lib/subject-route";
-import { canShowPanes, subjectTitle, subjectViewOf } from "@/lib/subject-view";
+import { canShowPanes, canShowSky, subjectTitle, subjectViewOf } from "@/lib/subject-view";
 import type { SubjectTab } from "@/lib/tabs";
 import { browserStorage } from "@/lib/theme";
 import type { VaultLocation } from "@/lib/vault";
@@ -98,12 +98,17 @@ export function SubjectPage() {
         </h1>
         <p className={styles.meta}>Mã môn {view.code}</p>
       </header>
-      {canShowPanes(view) && (
-        <SubjectSky key={view.code} code={view.code} title={subjectTitle(view) ?? view.code} tab={location.tab} />
+      {canShowSky(view) && (
+        <SubjectSky
+          key={`sky-${view.code}`}
+          code={view.code}
+          title={subjectTitle(view) ?? view.code}
+          tab={location.tab}
+        />
       )}
       {canShowPanes(view) && (
         <SubjectPanes
-          key={view.code}
+          key={`panes-${view.code}`}
           code={view.code}
           tab={location.tab}
           documentLocation={documentLocation}
@@ -114,6 +119,9 @@ export function SubjectPage() {
     </section>
   );
 }
+
+/** Thời gian chờ tối đa một lần tải bầu trời trước khi báo lỗi. */
+const SKY_LOAD_TIMEOUT_MS = 15_000;
 
 type SkyState =
   | { kind: "loading" }
@@ -148,17 +156,26 @@ function SubjectSky({ code, title, tab }: { code: string; title: string; tab: Su
 
   useEffect(() => {
     let alive = true;
+    function fail(): void {
+      if (!alive) return;
+      setState((previous) => (previous.kind === "ready" ? { ...previous, stale: true } : { kind: "error" }));
+    }
+    // Lời gọi treo (không trả lời, không lỗi) không được giữ ô trời ở "Đang tải" mãi: hết giờ thì báo lỗi; nếu sau đó
+    // backend vẫn trả lời thì bầu trời hiện như thường.
+    const timer = window.setTimeout(fail, SKY_LOAD_TIMEOUT_MS);
     api.listConceptPairs({ subjectCode: request.code, chapterCode: null, status: null }).then(
       (list) => {
+        window.clearTimeout(timer);
         if (alive) setState({ kind: "ready", pairs: list.pairs, stale: false });
       },
       () => {
-        if (alive)
-          setState((previous) => (previous.kind === "ready" ? { ...previous, stale: true } : { kind: "error" }));
+        window.clearTimeout(timer);
+        fail();
       },
     );
     return () => {
       alive = false;
+      window.clearTimeout(timer);
     };
   }, [request]);
 

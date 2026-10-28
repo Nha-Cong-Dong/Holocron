@@ -34,6 +34,14 @@ export function canShowPanes(view: SubjectView): view is Exclude<SubjectView, { 
   return view.kind === "loading" || view.kind === "list_unavailable" || view.kind === "ready";
 }
 
+/**
+ * Bầu trời kiến thức chỉ hiện khi môn chắc chắn có trong danh sách môn (`ready`): mã sai, môn không có, danh sách
+ * chưa tải xong hay không tải được thì không vẽ bầu trời và không gọi `GET /v1/vault/concept-pairs`.
+ */
+export function canShowSky(view: SubjectView): view is Extract<SubjectView, { kind: "ready" }> {
+  return view.kind === "ready";
+}
+
 /** Tên hiển thị của môn; chưa tải được tên ⇒ mã môn; không có mã ⇒ `null`. */
 export function subjectTitle(view: SubjectView): string | null {
   if (view.kind === "invalid_code") return null;

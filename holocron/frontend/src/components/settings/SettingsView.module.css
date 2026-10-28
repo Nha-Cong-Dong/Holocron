@@ -33,16 +33,7 @@
   line-height: var(--lh-caption);
 }
 
-.visuallyHidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-
-/* Chip chọn theme: radio thật nằm trong nhãn (mũi tên đổi lựa chọn sẵn có), nhãn vẽ thành chip. */
+/* Ba chip chọn theme (Chip dạng radio của bộ thành phần dùng chung). */
 .chips {
   display: flex;
   flex-wrap: wrap;
@@ -52,47 +43,7 @@
   border: 0;
 }
 
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  min-height: var(--tap-min);
-  padding: 0 18px;
-  border: 1.5px solid var(--line-strong);
-  border-radius: var(--r-pill);
-  background: var(--surface);
-  color: var(--ink);
-  font-size: var(--fs-body);
-  font-weight: var(--fw-medium);
-  cursor: pointer;
-}
-
-.chip:has(.radio:checked) {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--on-accent);
-}
-
-.chip:has(.radio:focus-visible) {
-  outline: 3px solid var(--focus);
-  outline-offset: 2px;
-}
-
-.radio {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: 0;
-  opacity: 0;
-  pointer-events: none;
-}
-
-/* Sao gắn lên chip đã chọn (cùng hiệu ứng `m-chip-star`, điều kiện theo radio thay cho `aria-checked`). */
-.chip:has(.radio:checked) .chipStar {
-  transform: none;
-}
-
-/* Dòng cài đặt và công tắc. */
+/* Dòng cài đặt (chữ bên trái, công tắc bên phải). */
 .row {
   display: flex;
   align-items: center;
@@ -104,77 +55,12 @@
   font-weight: var(--fw-semibold);
 }
 
-.switch {
-  position: relative;
-  flex: none;
-  width: 50px;
-  height: 28px;
-  padding: 0;
-  border: 0;
-  border-radius: 14px;
-  background: var(--line-strong);
-  cursor: pointer;
-}
-
-.switch[aria-checked="true"] {
-  background: var(--accent);
-}
-
-.knob {
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: var(--surface);
-  color: var(--accent-ink);
-}
-
-.knobStar {
-  width: 14px;
-  height: 14px;
-}
-
 /* Thử nghiệm (thu gọn). */
 .lab {
   padding: 4px var(--sp-6);
   border-radius: var(--r-lg);
   background: var(--surface);
   box-shadow: var(--sh-1);
-}
-
-.labSummary {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  min-height: var(--tap-min);
-  color: var(--ink);
-  font-weight: var(--fw-semibold);
-  cursor: pointer;
-  list-style: none;
-}
-
-.labSummary::-webkit-details-marker {
-  display: none;
-}
-
-.chevron {
-  width: 16px;
-  height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.6;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.labBody {
-  display: grid;
-  gap: var(--sp-3);
-  padding-bottom: var(--sp-5);
 }
 
 .labList {

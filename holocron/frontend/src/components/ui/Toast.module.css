@@ -1,0 +1,59 @@
+/* Vùng và hình dáng thông báo nhanh; chuyển động ở motion.css (.m-toast, .m-toast-star). */
+.region {
+  position: fixed;
+  top: var(--sp-4);
+  left: 50%;
+  z-index: 1000;
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-2);
+  width: max-content;
+  max-width: calc(100vw - var(--sp-8));
+  translate: -50% 0;
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--tap-min);
+  padding: 2px 4px 2px var(--sp-4);
+  border-radius: var(--r-pill);
+  background: var(--ink);
+  box-shadow: var(--sh-3);
+  color: var(--bg);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+  pointer-events: auto;
+}
+
+.star {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  color: var(--accent);
+}
+
+.message {
+  padding: var(--sp-2) 0;
+}
+
+.close {
+  color: var(--bg);
+}
+
+.closeIcon {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+
+/* Nền tròn của nút icon hiện khi rê chuột: đổi màu icon để vẫn đọc được trên nền đó. */
+.close:hover,
+.close:focus-visible {
+  color: var(--ink);
+}

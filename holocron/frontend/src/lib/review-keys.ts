@@ -6,6 +6,9 @@
  * - Enter chỉ xác nhận khi focus nằm ở chính vùng xem lại (không ở ô nhập, ô chọn hay một nút khác: Enter trên nút để
  *   trình duyệt bấm đúng nút đó), không phải phím giữ lặp lại, không có thao tác ghi đang chạy, không có nháp chưa lưu,
  *   trang xác nhận được (`confirmPageBlock === null`) và không có dòng sai dạng bị bỏ.
+ * - Enter chỉ xác nhận trang mà người dùng đã chủ động tương tác SAU khi trang hiện ra (`armed`, xem `armsReview`) và
+ *   không sớm hơn `REVIEW_ENTER_GUARD_MS` kể từ lúc trang hiện ra. Tự chuyển sang trang kế sau khi xác nhận, mở trang từ
+ *   danh sách hay vẽ lại trang sau khi lưu dòng đều là trang "mới hiện": Enter kế tiếp không xác nhận trang chưa đọc.
  * - Phím có Ctrl/Alt/Meta, phím giữ lặp lại, hoặc khi có hộp thoại/bảng lệnh đang mở thì không làm gì.
  * - ←/→ và E chỉ chạy khi focus ở trong vùng xem lại (không ở hàng tab, không ở ô nhập).
  */
@@ -61,6 +64,31 @@ export function classifyReviewFocus(target: FocusTarget): ReviewFocus {
   return "region";
 }
 
+/** Khoảng tối thiểu từ lúc trang hiện ra tới lúc Enter được xác nhận trang. */
+export const REVIEW_ENTER_GUARD_MS = 600;
+
+/** Sự kiện trong vùng xem lại, dùng để biết người dùng đã chủ động tương tác với trang đang hiện. */
+export type ReviewInteraction =
+  | { type: "pointerdown" }
+  | { type: "keydown"; key: string; repeat: boolean }
+  /** `fromElement`: focus đi từ một phần tử khác vào vùng (người dùng bấm Tab, bấm chuột), không phải đặt bằng code. */
+  | { type: "focusin"; fromElement: boolean };
+
+/**
+ * Sự kiện có "mở khoá" Enter cho trang đang hiện không: bấm chuột trong vùng, một phím khác Enter (không lặp), hoặc focus
+ * do người dùng chuyển vào vùng. Enter và focus đặt bằng code (khi trang mới hiện) không mở khoá.
+ */
+export function armsReview(event: ReviewInteraction): boolean {
+  switch (event.type) {
+    case "pointerdown":
+      return true;
+    case "keydown":
+      return event.key !== "Enter" && !event.repeat;
+    case "focusin":
+      return event.fromElement;
+  }
+}
+
 export interface ReviewKeyInput {
   key: string;
   repeat: boolean;
@@ -80,6 +108,10 @@ export interface ReviewKeyInput {
   canEdit: boolean;
   hasPrevious: boolean;
   hasNext: boolean;
+  /** Người dùng đã chủ động tương tác với trang này sau khi nó hiện ra (`armsReview`). */
+  armed: boolean;
+  /** Số mili giây từ lúc trang hiện ra (vùng xem lại mount) tới lúc bấm phím. */
+  msSinceShown: number;
 }
 
 export type ReviewKeyAction = { type: "confirm" } | { type: "edit" } | { type: "previous" } | { type: "next" };
@@ -91,7 +123,13 @@ export function reviewKeyAction(input: ReviewKeyInput): ReviewKeyAction | null {
   switch (input.key) {
     case "Enter": {
       if (input.focus !== "region") return null;
-      const allowed = !input.busy && !input.hasDraft && input.confirmBlock === null && !input.hasSkippedLines;
+      const allowed =
+        input.armed &&
+        input.msSinceShown >= REVIEW_ENTER_GUARD_MS &&
+        !input.busy &&
+        !input.hasDraft &&
+        input.confirmBlock === null &&
+        !input.hasSkippedLines;
       return allowed ? { type: "confirm" } : null;
     }
     case "e":

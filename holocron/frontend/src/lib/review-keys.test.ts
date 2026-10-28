@@ -2,7 +2,14 @@
 
 import { describe, expect, it } from "vitest";
 
-import { classifyReviewFocus, lineToEdit, type ReviewKeyInput, reviewKeyAction } from "./review-keys";
+import {
+  armsReview,
+  classifyReviewFocus,
+  lineToEdit,
+  REVIEW_ENTER_GUARD_MS,
+  type ReviewKeyInput,
+  reviewKeyAction,
+} from "./review-keys";
 
 const BASE: ReviewKeyInput = {
   key: "Enter",
@@ -19,6 +26,8 @@ const BASE: ReviewKeyInput = {
   canEdit: true,
   hasPrevious: true,
   hasNext: true,
+  armed: true,
+  msSinceShown: 5000,
 };
 
 function action(change: Partial<ReviewKeyInput>) {
@@ -49,6 +58,46 @@ describe("Enter xác nhận trang", () => {
     ["Meta+Enter", { metaKey: true }],
   ])("không xác nhận khi %s", (_name, change) => {
     expect(action(change)).toBeNull();
+  });
+});
+
+describe("Enter sau khi trang mới hiện (I5: không xác nhận trang chưa đọc)", () => {
+  it("Enter ngay sau khi tự chuyển sang trang kế ⇒ không xác nhận, kể cả khi đã tương tác", () => {
+    expect(action({ armed: true, msSinceShown: 0 })).toBeNull();
+    expect(action({ armed: true, msSinceShown: REVIEW_ENTER_GUARD_MS - 1 })).toBeNull();
+  });
+
+  it("trang mới hiện, người dùng chưa tương tác ⇒ Enter không xác nhận dù đã lâu", () => {
+    expect(action({ armed: false, msSinceShown: 60_000 })).toBeNull();
+  });
+
+  it("người dùng đã tương tác sau khi trang hiện và đủ thời gian ⇒ Enter xác nhận", () => {
+    expect(action({ armed: true, msSinceShown: REVIEW_ENTER_GUARD_MS })).toEqual({ type: "confirm" });
+  });
+
+  it("sau khi lưu dòng (trang vẽ lại, bắt đầu lại chưa tương tác) ⇒ Enter không tự xác nhận", () => {
+    expect(action({ armed: false, msSinceShown: 0 })).toBeNull();
+    expect(action({ armed: false, msSinceShown: REVIEW_ENTER_GUARD_MS * 10 })).toBeNull();
+  });
+
+  it("E và mũi tên không cần mở khoá (không ghi gì)", () => {
+    expect(action({ key: "e", armed: false, msSinceShown: 0 })).toEqual({ type: "edit" });
+    expect(action({ key: "ArrowRight", armed: false, msSinceShown: 0 })).toEqual({ type: "next" });
+  });
+});
+
+describe("armsReview", () => {
+  it("bấm chuột, phím khác Enter và focus do người dùng chuyển vào thì mở khoá", () => {
+    expect(armsReview({ type: "pointerdown" })).toBe(true);
+    expect(armsReview({ type: "keydown", key: "Tab", repeat: false })).toBe(true);
+    expect(armsReview({ type: "keydown", key: "ArrowDown", repeat: false })).toBe(true);
+    expect(armsReview({ type: "focusin", fromElement: true })).toBe(true);
+  });
+
+  it("Enter, phím giữ lặp lại và focus đặt bằng code không mở khoá", () => {
+    expect(armsReview({ type: "keydown", key: "Enter", repeat: false })).toBe(false);
+    expect(armsReview({ type: "keydown", key: "Tab", repeat: true })).toBe(false);
+    expect(armsReview({ type: "focusin", fromElement: false })).toBe(false);
   });
 });
 

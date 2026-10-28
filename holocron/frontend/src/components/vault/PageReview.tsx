@@ -36,7 +36,7 @@ import type { DocumentStatusView, DocumentView, LineView, PageStatusView, PageVi
 import type { UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
 import type { Poller } from "@/lib/poll";
-import { classifyReviewFocus, lineToEdit, reviewKeyAction } from "@/lib/review-keys";
+import { armsReview, classifyReviewFocus, lineToEdit, reviewKeyAction } from "@/lib/review-keys";
 import {
   awaitingSettle,
   nextAfterConfirm,
@@ -470,9 +470,10 @@ interface PagePanelProps {
 }
 
 /**
- * Vùng xem lại một trang. Vùng nhận focus (`tabIndex=-1`) để phím tắt chỉ chạy khi người dùng đang ở đây: Enter xác
- * nhận trang, E sửa dòng nghi ngờ đầu tiên, ←/→ sang trang cần xem trước/sau (`lib/review-keys.ts`). Mở trang mới mà
- * focus đang mất (phần tử cũ vừa bị gỡ) thì đặt focus vào vùng.
+ * Vùng xem lại một trang. Phím tắt chỉ chạy khi focus ở trong vùng: Enter xác nhận trang, E sửa dòng nghi ngờ đầu tiên,
+ * ←/→ sang trang cần xem trước/sau (`lib/review-keys.ts`). Trang mới hiện (tự chuyển sau khi xác nhận, mở từ danh sách,
+ * vẽ lại sau khi lưu dòng) mà focus đang mất thì focus đặt vào tiêu đề trang, KHÔNG mở khoá Enter: người dùng phải bấm
+ * chuột, dùng phím khác hay chuyển focus vào trang trước, và Enter chỉ có tác dụng sau `REVIEW_ENTER_GUARD_MS` (I5).
  */
 function PagePanel({
   page,
@@ -488,6 +489,10 @@ function PagePanel({
   const ids = useId();
   const { overlayOpen } = useShell();
   const region = useRef<HTMLElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  // Mốc lúc trang hiện ra và việc người dùng đã chủ động tương tác với trang này chưa (không gây vẽ lại).
+  const shownAt = useRef(0);
+  const armed = useRef(false);
   const editBlock = lineEditBlock(page);
   const confirmBlock = confirmPageBlock(page);
   const mismatches = mismatchesByLine(page.crossCheck.mismatches);
@@ -496,11 +501,15 @@ function PagePanel({
   const [appendDraft, setAppendDraft] = useState(false);
 
   useEffect(() => {
+    shownAt.current = performance.now();
+    armed.current = false;
     const active = window.document.activeElement;
-    if (active === null || active === window.document.body) region.current?.focus();
+    if (active === null || active === window.document.body) heading.current?.focus();
   }, []);
 
   function onKeyDown(event: KeyboardEvent<HTMLElement>): void {
+    const wasArmed = armed.current;
+    if (armsReview({ type: "keydown", key: event.key, repeat: event.repeat })) armed.current = true;
     const target = event.target instanceof HTMLElement ? event.target : null;
     const root = region.current;
     const focus = classifyReviewFocus({
@@ -525,6 +534,8 @@ function PagePanel({
       canEdit: editBlock === null && page.lines.length > 0,
       hasPrevious,
       hasNext,
+      armed: wasArmed,
+      msSinceShown: performance.now() - shownAt.current,
     });
     if (action === null) return;
     event.preventDefault();
@@ -549,18 +560,25 @@ function PagePanel({
       className={styles.panel}
       aria-labelledby={`${ids}-title`}
       aria-describedby={`${ids}-keys`}
-      tabIndex={-1}
       onKeyDown={onKeyDown}
+      onPointerDown={() => {
+        if (armsReview({ type: "pointerdown" })) armed.current = true;
+      }}
+      onFocus={(event) => {
+        if (armsReview({ type: "focusin", fromElement: event.relatedTarget instanceof Element })) armed.current = true;
+      }}
     >
       <div className={styles.panelHeader}>
-        <h2 id={`${ids}-title`}>Trang {page.pageNumber}</h2>
+        <h2 id={`${ids}-title`} ref={heading} tabIndex={-1}>
+          Trang {page.pageNumber}
+        </h2>
         <span className={styles.badge} data-tone={PAGE_TONE[page.status]}>
           {page.confirmed ? `${PAGE_STATUS_LABEL_VI[page.status]} · đã xác nhận` : PAGE_STATUS_LABEL_VI[page.status]}
         </span>
       </div>
       <p id={`${ids}-keys`} className={styles.hint}>
-        Phím tắt khi đang ở vùng này: Enter xác nhận trang · E sửa dòng nghi ngờ đầu tiên · ← → trang cần xem lại trước,
-        sau.
+        Phím tắt khi đang ở trang này: E sửa dòng nghi ngờ đầu tiên · ← → trang cần xem lại trước, sau · Enter xác nhận
+        trang, sau khi bạn đã bấm vào trang hoặc dùng một phím khác.
       </p>
 
       <dl className={styles.facts}>

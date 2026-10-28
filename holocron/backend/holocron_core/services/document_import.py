@@ -686,14 +686,33 @@ def _never() -> bool:
     return False
 
 
+def _within_vault_lines(page: PageExtraction) -> PageExtraction:
+    """Trang vừa đọc có nhiều hơn `MAX_PAGE_LINES` (giới hạn trang của Vault, `domain.vault`) dòng có văn bản thì
+    thành `failed` với `TOO_MANY_LINES` (duyệt 2026-10-28, câu 18 (a)); trang khác giữ nguyên.
+
+    Bộ đọc trả tới `MAX_PAGE_LINES` của `document_readers` (lớn hơn) dòng mỗi trang. Trang như vậy không bao giờ xác
+    nhận được (`_fits_vault`), nên nếu giữ lại nó sẽ chặn cả tài liệu (§5.7: mọi trang có văn bản phải xác nhận).
+    Thành `failed` thì trang không chặn, các trang còn lại xác nhận và vào Vault như thường. Dòng rỗng hoặc chỉ có
+    khoảng trắng không tính, cùng định nghĩa với văn bản xác nhận (`_confirmed_lines`).
+    """
+    if page.status == "failed" or len(_confirmed_lines(page)) <= MAX_PAGE_LINES:
+        return page
+    return failed_page(page.document_id, page.page_number, "TOO_MANY_LINES", score=page.text_score).model_copy(
+        update={"has_table": page.has_table, "has_formula": page.has_formula, "has_figure": page.has_figure}
+    )
+
+
 def _write_page(store: DocumentRepository, document_id: str, page: PageExtraction) -> None:
-    """Ghi một trang vừa đọc vào chỗ trang `pending` tương ứng; `version` của trang khớp version của dòng trong kho."""
+    """Ghi một trang vừa đọc vào chỗ trang `pending` tương ứng; `version` của trang khớp version của dòng trong kho.
+    Trang vượt giới hạn dòng của Vault được ghi thành `failed` (`_within_vault_lines`)."""
     if page.document_id != document_id:
         return
     stored = store.get_page(document_id, page.page_number, PageExtraction)
     if stored is None or stored.status != "pending":
         return
-    read = page.model_copy(update={"version": stored.version + 1, "confirmed": False, "confirmed_at": None})
+    read = _within_vault_lines(page).model_copy(
+        update={"version": stored.version + 1, "confirmed": False, "confirmed_at": None}
+    )
     store.update_page(
         document_id, page.page_number, read, status=read.status, confirmed=False, expected_version=stored.version
     )
@@ -910,6 +929,8 @@ def read_document(
       `pending` cho lần khởi động sau.
     - Bộ đọc kết thúc bình thường mà còn trang `pending` (trả thiếu trang, trái `PdfReader`) ⇒ các trang đó thành
       `failed` (`PAGE_ERROR`) trước khi tài liệu thành `review`.
+    - Trang có nhiều hơn `MAX_PAGE_LINES` dòng có văn bản (giới hạn trang của Vault) được ghi thành `failed`
+      (`TOO_MANY_LINES`, `_within_vault_lines`); các trang còn lại xác nhận được như thường.
     - Bước kết thúc chạy dưới khoá của tài liệu (`job.locks`) như các request sửa và xác nhận: đặt `review` rồi, nếu
       mọi trang có văn bản đã được xác nhận trong lúc đọc, nhập Vault và đặt `confirmed` (`_finish`).
     """

@@ -78,23 +78,25 @@ export function crumbTitleForPath(pathname: string): string {
   return CRUMB_TITLES[path] ?? titleForPath(path);
 }
 
-/** Trang tự render `<h1>` của mình (tiêu đề là tên môn hoặc tên trang): khung không render thêm. */
-const PAGES_WITH_OWN_HEADING: ReadonlySet<string> = new Set(["/subject", "/settings"]);
+/**
+ * Trang tự render `<h1>` của mình (trang chủ: "Bầu trời của bạn" hoặc lời chào; trang môn: tên môn; Cài đặt): khung
+ * không render thêm.
+ */
+const PAGES_WITH_OWN_HEADING: ReadonlySet<string> = new Set(["/", "/subject", "/settings"]);
 
 export interface ShellHeading {
   text: string;
-  /** Chỉ cho trình đọc màn hình (trang đã có tiêu đề nhìn thấy khác, ví dụ lời chào ở trang chủ). */
+  /** Chỉ cho trình đọc màn hình (trang đã có tiêu đề nhìn thấy khác). Hiện mọi route do khung render đều hiện rõ. */
   visuallyHidden: boolean;
 }
 
 /**
- * `<h1>` do khung render để mỗi route có đúng một `<h1>`: `null` khi trang tự có `<h1>`; trang chủ có `<h1>` ẩn;
- * route cũ và đường dẫn khác dùng tiêu đề breadcrumb (`crumbTitleForPath`), hiện rõ.
+ * `<h1>` do khung render để mỗi route có đúng một `<h1>`: `null` khi trang tự có `<h1>` (kể cả trang chủ); route cũ và
+ * đường dẫn khác dùng tiêu đề breadcrumb (`crumbTitleForPath`), hiện rõ.
  */
 export function shellHeadingForPath(pathname: string): ShellHeading | null {
   const path = trimTrailingSlash(pathname);
   if (PAGES_WITH_OWN_HEADING.has(path)) return null;
-  if (path === "/") return { text: "Holocron", visuallyHidden: true };
   return { text: crumbTitleForPath(path), visuallyHidden: false };
 }
 

@@ -98,8 +98,8 @@ describe("shellHeadingForPath", () => {
     expect(shellHeadingForPath("/settings")).toBeNull();
   });
 
-  it("trang chủ: h1 ẩn (lời chào là tiêu đề nhìn thấy)", () => {
-    expect(shellHeadingForPath("/")).toEqual({ text: "Holocron", visuallyHidden: true });
+  it("trang chủ tự có h1 (Bầu trời của bạn hoặc lời chào): khung không render", () => {
+    expect(shellHeadingForPath("/")).toBeNull();
   });
 
   it("route cũ: h1 hiện rõ theo chữ của luồng mới", () => {

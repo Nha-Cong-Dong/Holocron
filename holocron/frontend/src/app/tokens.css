@@ -39,6 +39,12 @@
   --star: #f5c04e;
   --star-pending: #c9bbff;
   --star-empty: #5a62a8;
+  /* Chi tiết của ô bầu trời. Ô luôn tối ở cả hai theme nên một bộ giá trị dùng chung cho sáng và tối. */
+  --sky-edge: rgba(201, 187, 255, 0.12); /* viền trong của ô */
+  --sky-line: rgba(201, 187, 255, 0.55); /* nét nối giữa các sao */
+  --sky-chip: rgba(201, 187, 255, 0.14); /* nền nhãn "+k chương" */
+  --sky-dust: rgba(255, 255, 255, 0.35); /* bụi sao trang trí */
+  --star-glow: rgba(245, 192, 78, 0.7); /* quầng sáng sao vàng */
   --scan: #f7f3ea;
   --sh-1: 0 1px 0 #d9dcee, 0 4px 12px rgba(26, 29, 69, 0.05);
   --sh-2: 0 1px 0 #d9dcee, 0 12px 28px rgba(26, 29, 69, 0.12);

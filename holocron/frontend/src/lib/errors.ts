@@ -269,7 +269,7 @@ const CONTEXT_CONFLICTS: Partial<Record<ErrorContext, { kind: ErrorKind; message
   },
   subject_create: {
     kind: "duplicate",
-    message: "Mã môn này đã có (có thể đã được tạo tự động khi nhập tài liệu). Chọn môn đó ở thanh bên.",
+    message: "Mã môn này đã có (có thể đã được tạo tự động khi nhập tài liệu). Mở môn đó từ trang chủ.",
   },
   pair_confirm: { kind: "version_conflict", message: PAIR_CONFLICT_VI },
   pair_reject: { kind: "version_conflict", message: PAIR_CONFLICT_VI },

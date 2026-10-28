@@ -188,6 +188,7 @@ def test_runtime_with_an_llm_key_containing_whitespace_is_200_and_llm_not_config
         response = _runtime().get("/v1/runtime")
     assert response.status_code == 200
     assert response.json()["llm_configured"] is False
+    assert response.json()["capabilities"] == CAPS_NO_LLM
     _assert_no_leak(response.text)
     assert "HOLOCRON_LLM_API_KEY" in caplog.text
     _assert_no_leak(caplog.text)
@@ -206,6 +207,7 @@ def test_runtime_with_other_invalid_llm_variables_is_200(monkeypatch: pytest.Mon
     _set_env(monkeypatch, {**VALID_LLM_ENV, **bad})
     response = _runtime().get("/v1/runtime")
     assert response.status_code == 200 and response.json()["llm_configured"] is False
+    assert response.json()["capabilities"] == CAPS_NO_LLM
     _assert_no_leak(response.text)
 
 

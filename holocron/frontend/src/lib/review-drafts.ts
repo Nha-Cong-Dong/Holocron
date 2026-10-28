@@ -9,7 +9,7 @@
  * Mọi hàm trả bản mới, không sửa bản cũ. Trang không còn nháp thì bị gỡ khỏi bảng.
  */
 
-import { type ConfirmDocumentBlock, confirmDocumentBlock, lineEditBlock } from "@/lib/documents";
+import { type ConfirmDocumentBlock, confirmDocumentBlock, type EditBlock } from "@/lib/documents";
 import type { DocumentView, LineView, PageSummaryView } from "@/lib/documents-data";
 import { unsavedDrafts } from "@/lib/review-confirm";
 
@@ -84,27 +84,37 @@ export function closeLineEdit(drafts: ReviewDrafts, pageNumber: number, lineInde
 }
 
 /**
- * Ô "Sửa" đối chiếu với các dòng của bản trang đang hiện:
- * - `open`: dòng còn nguyên chữ lúc mở (hoặc đã mang đúng chữ người dùng gõ, ví dụ bản trả về ngay sau khi chính ô này
- *   lưu xong): ô sửa mở như thường;
+ * Ô "Sửa" đối chiếu với bản trang đang hiện:
+ * - `locked`: trang không còn sửa được (`lineEditBlock` khác `null`, ví dụ vừa được xác nhận ở nơi khác): ô sửa đóng,
+ *   hiện câu báo kèm chữ đã gõ và nút "Bỏ chữ đã gõ" (`lockedDraftNotice`);
+ * - `open`: dòng còn nguyên chữ lúc mở: ô sửa mở như thường;
+ * - `matched`: dòng đã mang đúng chữ người dùng đang gõ (ví dụ bản trả về ngay sau khi chính ô này lưu xong): nháp đã
+ *   khớp server, ô sửa ĐÓNG (`PagePanel` gọi `closeLineEdit`). Không giữ ô mở với `baseText` cũ, vì gõ tiếp sẽ làm ô
+ *   chuyển `changed` giữa chừng;
  * - `changed`: dòng đã đổi ở nơi khác; ô sửa đóng, hiện chữ mới của dòng và chữ người dùng đang gõ;
  * - `removed`: dòng không còn trên trang.
- * Hai trạng thái xung đột vẫn là nháp chưa lưu (khoá nút xác nhận) cho tới khi người dùng sửa lại hoặc bỏ chữ đã gõ.
- * So sánh sau chuẩn hoá NFC, như `buildLineEdits`.
+ * Các trạng thái xung đột (`changed`, `removed`, `locked`) vẫn là nháp chưa lưu (khoá nút xác nhận) cho tới khi người
+ * dùng sửa lại hoặc bỏ chữ đã gõ. So sánh sau chuẩn hoá NFC, như `buildLineEdits`.
  */
-export type LineEditState = { kind: "open" } | { kind: "changed"; currentText: string } | { kind: "removed" };
+export type LineEditState =
+  | { kind: "open" }
+  | { kind: "matched" }
+  | { kind: "changed" }
+  | { kind: "removed" }
+  | { kind: "locked" };
 
 export function lineEditState(
   editing: LineEditDraft,
   lines: readonly Pick<LineView, "lineIndex" | "text">[],
+  editBlock: EditBlock | null,
 ): LineEditState {
+  if (editBlock !== null) return { kind: "locked" };
   const line = lines.find((item) => item.lineIndex === editing.lineIndex);
   if (line === undefined) return { kind: "removed" };
   const current = line.text.normalize("NFC");
-  if (current === editing.baseText.normalize("NFC") || current === editing.text.normalize("NFC")) {
-    return { kind: "open" };
-  }
-  return { kind: "changed", currentText: line.text };
+  if (current === editing.baseText.normalize("NFC")) return { kind: "open" };
+  if (current === editing.text.normalize("NFC")) return { kind: "matched" };
+  return { kind: "changed" };
 }
 
 /** Trang còn nháp chưa lưu: cùng điều kiện với nút xác nhận trang (`unsavedDrafts`). */
@@ -113,17 +123,52 @@ export function pageHasDraft(draft: PageDraft): boolean {
   return flags.appendDraft || flags.editing;
 }
 
+/** Nháp còn lại trên trang không sửa được nữa: hiện thành câu báo kèm chữ đã gõ và nút "Bỏ chữ đã gõ". */
+export interface LockedDraftNotice {
+  /** Ô "Sửa" đang mở lúc trang bị khoá (dòng nào, chữ đã gõ); `null` khi không có. */
+  editing: LineEditDraft | null;
+  /** Chữ của ô "Thêm dòng vào cuối trang"; `null` khi trống hoặc chỉ có khoảng trắng (không tính là nháp). */
+  appendText: string | null;
+}
+
 /**
- * Các trang còn nháp, theo thứ tự trang của tài liệu. Chỉ tính trang còn sửa được (`lineEditBlock` là `null`): trang đã
- * xác nhận ở nơi khác hay đọc lỗi thì nháp không lưu được nữa và không có ô nào hiện ra để xoá, nên không giữ nút khoá.
+ * Câu báo nháp trên trang không sửa được nữa (ô sửa và ô thêm dòng đều không hiện); `null` khi trang còn sửa được (nháp
+ * hiện ngay trong ô) hoặc trang không có nháp. Không tự lưu hộ, không tự bỏ chữ: người dùng bấm "Bỏ chữ đã gõ".
  */
-export function pagesWithDrafts(
-  drafts: ReviewDrafts,
-  pages: readonly Pick<PageSummaryView, "pageNumber" | "status" | "confirmed">[],
-): number[] {
-  return pages
-    .filter((page) => lineEditBlock(page) === null && pageHasDraft(draftFor(drafts, page.pageNumber)))
-    .map((page) => page.pageNumber);
+export function lockedDraftNotice(draft: PageDraft, editBlock: EditBlock | null): LockedDraftNotice | null {
+  if (editBlock === null || !pageHasDraft(draft)) return null;
+  return {
+    editing: draft.editing,
+    appendText: draft.appendText.trim() === "" ? null : draft.appendText,
+  };
+}
+
+/**
+ * Câu cho vùng thông báo cố định của trang (`role="status"`, luôn có trong trang, rỗng khi không có gì): báo xung đột
+ * hay nháp trên trang bị khoá. Không đọc lại chữ đã gõ (chữ đó hiện ngay tại câu báo). Chuỗi rỗng khi không có gì cần
+ * báo. `state` là `lineEditState` của ô sửa (`null` khi không mở ô nào).
+ */
+export function draftStatusMessage(draft: PageDraft, state: LineEditState | null, editBlock: EditBlock | null): string {
+  const lineIndex = draft.editing?.lineIndex;
+  if (lineIndex !== undefined && state?.kind === "changed") {
+    return `Dòng ${lineIndex} vừa được sửa ở nơi khác. Chữ bạn đang gõ chưa lưu.`;
+  }
+  if (lineIndex !== undefined && state?.kind === "removed") {
+    return `Dòng ${lineIndex} không còn trên trang này. Chữ bạn đang gõ chưa lưu.`;
+  }
+  if (lockedDraftNotice(draft, editBlock) !== null) {
+    return "Trang này không sửa được nữa. Chữ bạn đã gõ chưa lưu.";
+  }
+  return "";
+}
+
+/**
+ * Các trang còn nháp, theo thứ tự trang của tài liệu; trang không thuộc tài liệu thì không tính. Nhất quán với giao
+ * diện: trang còn sửa được hiện nháp ngay trong ô (thêm dòng, sửa, xung đột), trang không sửa được nữa hiện
+ * `lockedDraftNotice`, nên mọi trang có nháp đều còn thấy nháp và nút "Bỏ chữ đã gõ".
+ */
+export function pagesWithDrafts(drafts: ReviewDrafts, pages: readonly Pick<PageSummaryView, "pageNumber">[]): number[] {
+  return pages.filter((page) => pageHasDraft(draftFor(drafts, page.pageNumber))).map((page) => page.pageNumber);
 }
 
 /** Nhãn chữ cạnh trang còn nháp trong danh sách trang (không chỉ dựa vào màu; nằm trong tên truy cập của link). */
@@ -145,10 +190,7 @@ export function draftPagesNote(pages: readonly number[]): string | null {
 }
 
 /** Còn nháp ở bất kỳ trang nào của tài liệu. */
-export function anyPageHasDraft(
-  drafts: ReviewDrafts,
-  pages: readonly Pick<PageSummaryView, "pageNumber" | "status" | "confirmed">[],
-): boolean {
+export function anyPageHasDraft(drafts: ReviewDrafts, pages: readonly Pick<PageSummaryView, "pageNumber">[]): boolean {
   return pagesWithDrafts(drafts, pages).length > 0;
 }
 

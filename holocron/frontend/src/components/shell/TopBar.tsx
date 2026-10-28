@@ -50,8 +50,8 @@ export function TopBar({ settingsCurrent, onOpenPalette, onOpenHelp }: TopBarPro
             type="button"
             className={`m-btn-icon ${styles.iconButton}`}
             onClick={onOpenPalette}
-            aria-label="Mở hộp lệnh (Ctrl+K)"
-            title="Mở hộp lệnh (Ctrl+K)"
+            aria-label="Ctrl K: mở hộp lệnh"
+            title="Ctrl K: mở hộp lệnh"
           >
             <kbd className={styles.kbd}>Ctrl K</kbd>
           </button>

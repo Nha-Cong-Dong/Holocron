@@ -62,6 +62,8 @@ interface PageReviewProps {
    * truyền hàm giữ mọi liên kết trong phần Tài liệu của `/subject`.
    */
   hrefFor?: VaultHrefFor;
+  /** Môn của trang đang mở (`/subject?code=`): tài liệu thuộc môn khác thì không hiện dưới tiêu đề môn này. */
+  expectedSubjectCode?: string;
 }
 
 /**
@@ -70,7 +72,7 @@ interface PageReviewProps {
  * thì có nút tải lại bản mới nhất; xác nhận từng trang (`ok`, `needs_review`) và xác nhận cả tài liệu (chỉ trang `ok`).
  * Chưa có ảnh trang vì chưa có cách lấy file gốc (kế hoạch UI M12).
  */
-export function PageReview({ documentId, pageNumber, hrefFor = vaultHref }: PageReviewProps) {
+export function PageReview({ documentId, pageNumber, hrefFor = vaultHref, expectedSubjectCode }: PageReviewProps) {
   const router = useRouter();
   const [document, setDocument] = useState<Loadable<DocumentView>>({ kind: "loading" });
   const [page, setPage] = useState<Loadable<PageView>>({ kind: "loading" });
@@ -219,6 +221,19 @@ export function PageReview({ documentId, pageNumber, hrefFor = vaultHref }: Page
     );
   }
   const doc = document.value;
+  if (expectedSubjectCode !== undefined && doc.subjectCode !== expectedSubjectCode) {
+    return (
+      <div className={styles.page}>
+        <p role="alert">
+          Tài liệu này thuộc môn {doc.subjectCode}, không thuộc môn {expectedSubjectCode}. Mở lại từ danh sách tài liệu
+          của môn để xem đúng tài liệu.
+        </p>
+        <p>
+          <Link href={hrefFor({})}>Quay lại danh sách</Link>
+        </p>
+      </div>
+    );
+  }
   const docBlock = confirmDocumentBlock(doc);
   const subjectHref = hrefFor({ subject: doc.subjectCode });
 

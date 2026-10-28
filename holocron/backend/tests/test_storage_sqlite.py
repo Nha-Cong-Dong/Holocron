@@ -259,7 +259,7 @@ def test_migration_from_an_empty_database_creates_every_table_of_the_spec(
 ) -> None:
     assert SPEC_TABLES <= _tables(raw)
     rows = raw.execute("SELECT version FROM schema_version").fetchall()
-    assert [row[0] for row in rows] == [1]
+    assert sorted(row[0] for row in rows) == [m.version for m in load_migrations()]
     assert current_version(raw) == len(load_migrations())
     for table in ("documents", "pages", "chunks", "concept_pairs", "ingestion_items", "blueprints", "templates"):
         columns = {str(row[1]) for row in raw.execute(f"PRAGMA table_info({table})")}
@@ -271,7 +271,7 @@ def test_reopening_an_up_to_date_database_does_not_reapply_migrations(db_path: P
     SQLiteStore.open(db_path).close()
     conn = connect(db_path)
     try:
-        assert _count(conn, "SELECT COUNT(*) FROM schema_version") == 1
+        assert _count(conn, "SELECT COUNT(*) FROM schema_version") == len(load_migrations())
     finally:
         conn.close()
 

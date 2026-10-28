@@ -271,7 +271,7 @@ export type ReviewReason =
   | "HIGH_PAGE_CER"
   | "OCR_ENGINE_MISSING";
 
-export type FailureReason = "PAGE_TIMEOUT" | "PAGE_ERROR" | "OCR_ENGINE_MISSING";
+export type FailureReason = "PAGE_TIMEOUT" | "PAGE_ERROR" | "OCR_ENGINE_MISSING" | "TOO_MANY_LINES";
 
 export type PageStatus = "pending" | "ok" | "needs_review" | "failed";
 
@@ -335,12 +335,16 @@ export interface PageSummary {
   confirmed: boolean;
 }
 
-/** `POST /v1/documents` (202 hoặc 200) và `GET /v1/documents/{document_id}`; `pages` đủ `page_count` phần tử. */
+/**
+ * `POST /v1/documents` (202 hoặc 200), `GET /v1/documents/{document_id}` và `POST /v1/documents/{document_id}/confirm`;
+ * `pages` đủ `page_count` phần tử. `chapter_code` là field form bắt buộc khi nhập (một file = một chương).
+ */
 export interface DocumentImport {
   meta: DocumentMeta;
   filename: string;
   size_bytes: number;
   output_language: OutputLanguage;
+  chapter_code: string;
   status: DocumentStatus;
   pages: PageSummary[];
 }
@@ -353,6 +357,31 @@ export interface DocumentSummary {
   pages_needs_review: number;
   pages_failed: number;
   pages_confirmed: number;
+}
+
+/** Một dòng sửa; `text` rỗng nghĩa là dòng không vào văn bản xác nhận. */
+export interface LineEdit {
+  line_index: number;
+  text: string;
+}
+
+/** Body của `PATCH /v1/documents/{document_id}/pages/{page_number}/lines`; trả `PageExtraction`. */
+export interface PageLinesPatch {
+  editor_id: string;
+  expected_version: number;
+  edits?: LineEdit[];
+  appended_lines?: string[];
+}
+
+/** Body của `POST /v1/documents/{document_id}/pages/{page_number}/confirm`; trả `PageExtraction`. */
+export interface PageConfirmRequest {
+  editor_id: string;
+  expected_version: number;
+}
+
+/** Body của `POST /v1/documents/{document_id}/confirm`; trả `DocumentImport`. */
+export interface DocumentConfirmRequest {
+  editor_id: string;
 }
 
 // ------------------------------------------------------------------ domain/vault.py

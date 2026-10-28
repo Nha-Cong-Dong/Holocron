@@ -14,7 +14,7 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field
 
-from .documents import PageEditAudit
+from .documents import CHAPTER_CODE_PATTERN, PageEditAudit, PageSummary
 from .ingestion import IngestionItem, UploadedDocument
 from .schemas import DocumentMeta, ExamBlueprint, KnowledgeChunk
 from .twins import IdempotencyRecord
@@ -89,12 +89,17 @@ class VaultSearchUnavailableError(StorageError):
 
 
 class ImportedDocument(BaseModel):
-    """Một dòng `documents` của tài liệu nhập qua bộ nhập PDF (§6.5); upload đề (§6.1) chỉ có `UploadedDocument`."""
+    """Một dòng `documents` của tài liệu nhập qua bộ nhập PDF (§6.5); upload đề (§6.1) chỉ có `UploadedDocument`.
+
+    `chapter_code` là field form bắt buộc của `POST /v1/documents` (§6.5, duyệt 2026-10-26); bộ nhập luôn đặt nó.
+    `None` chỉ gặp ở bản ghi tạo trước khi có cột `documents.chapter_code` (migration 0002).
+    """
 
     meta: DocumentMeta
     filename: str = Field(min_length=1, max_length=255)
     size_bytes: int = Field(ge=1)
     output_language: OutputLanguage = "vi"
+    chapter_code: str | None = Field(default=None, pattern=CHAPTER_CODE_PATTERN)
     status: DocumentStatus
     version: int = Field(default=1, ge=1)
 
@@ -164,7 +169,12 @@ class TwinBatchRepository(Protocol):
 
 
 class DocumentRepository(Protocol):
-    """Tài liệu nhập qua §6.5 và trang của nó. Trang lưu dạng JSON của model trang do tầng gọi chọn (§5.7)."""
+    """Tài liệu nhập qua §6.5 và trang của nó. Trang lưu dạng JSON của model trang do tầng gọi chọn (§5.7); bộ nhập
+    dùng `PageExtraction`, và `list_page_summaries` đọc các field tóm tắt của model đó."""
+
+    def get_document(self, document_id: str) -> UploadedDocument | None:
+        """Dòng `documents` bất kể ai tạo (upload đề §6.1 hoặc bộ nhập §6.5); như `IngestionRepository`."""
+        ...
 
     def save_imported_document(self, document: ImportedDocument) -> ImportedDocument:
         """Tạo mới, hoặc bổ sung thông tin cho bản ghi đã có cùng `document_id` (version tăng 1)."""
@@ -201,6 +211,17 @@ class DocumentRepository(Protocol):
         """
         ...
 
+    def revert_imported_document(self, document_id: str, upload: UploadedDocument | None) -> bool:
+        """Gỡ đúng phần mà một lần nhập §6.5 vừa thêm, trong MỘT giao dịch; `False` khi không có tài liệu nhập.
+
+        `upload` là dòng `documents` do upload đề §6.1 tạo TRƯỚC lần nhập này (đọc bằng `get_document` trước khi
+        gọi `create_imported_document`), hoặc `None` khi lần nhập tạo dòng mới:
+        - `None` ⇒ xoá hẳn như `delete_document` (còn item tham chiếu ⇒ `RecordInUseError`, không xoá gì);
+        - có giá trị ⇒ giữ dòng (item của §6.1 vẫn trỏ được tới), trả các cột về đúng `upload`, bỏ mọi thông tin
+          của bộ nhập (môn, chương, tiêu đề, trạng thái…) cùng trang, lịch sử sửa trang và chunk; version tăng 1.
+        """
+        ...
+
     def add_page(
         self, document_id: str, page_number: int, page: BaseModel, *, status: PageStatus, confirmed: bool
     ) -> None:
@@ -233,6 +254,14 @@ class DocumentRepository(Protocol):
 
     def list_pages[M: BaseModel](self, document_id: str, model: type[M]) -> list[M]:
         """Theo `page_number` tăng dần."""
+        ...
+
+    def list_page_summaries(self, document_id: str) -> list[PageSummary]:
+        """Tóm tắt từng trang (`DocumentImport.pages`), theo `page_number` tăng dần, KHÔNG dựng lại các dòng.
+
+        Dùng cho các `GET` hỏi trạng thái (client hỏi 1–2 s một lần, §6.5): chỉ đọc cột `status`, `confirmed` và các
+        field `tier_used`, `review_reasons` của JSON trang, không validate danh sách dòng của mọi trang.
+        """
         ...
 
 
@@ -274,6 +303,11 @@ class VaultRepository(Protocol):
         ...
 
     def get_chunk(self, chunk_id: str) -> KnowledgeChunk | None: ...
+
+    def has_document_chunks(self, document_id: str) -> bool:
+        """Vault đã có ít nhất một chunk cắt từ tài liệu `document_id` (bộ nhập §6.5 dùng để biết văn bản đã vào
+        Vault hay chưa, kể cả khi tài liệu chưa kịp thành `confirmed`)."""
+        ...
 
     def list_chunks(self, subject_code: str, chapter_code: str | None = None) -> list[KnowledgeChunk]:
         """Sắp theo `(doc_id, page_number, chunk_id)` (§6.6)."""

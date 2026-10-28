@@ -55,6 +55,8 @@ export const FAILURE_REASON_LABEL_VI: Record<FailureReason, string> = {
   PAGE_TIMEOUT: "Đọc trang này quá thời gian cho phép",
   PAGE_ERROR: "Bộ đọc gặp lỗi ở trang này",
   OCR_ENGINE_MISSING: "Trang là ảnh scan nhưng máy chưa có Tesseract (hoặc thiếu dữ liệu tiếng Việt) để đọc",
+  TOO_MANY_LINES:
+    "Trang có quá nhiều dòng chữ (hơn 5000 dòng) nên chưa nhập được; các trang khác vẫn xác nhận bình thường",
 };
 
 export const UNKNOWN_FAILURE_REASON_VI = "Trang đọc lỗi vì một lý do giao diện này chưa nhận ra";

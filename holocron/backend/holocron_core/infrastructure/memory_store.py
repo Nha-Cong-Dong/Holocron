@@ -7,6 +7,7 @@ nên tìm kiếm Vault luôn dùng BM25 tự cài ở tầng service (ADR-006 m�
 
 from __future__ import annotations
 
+import json
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -14,7 +15,7 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
-from ..domain.documents import PageEditAudit
+from ..domain.documents import PageEditAudit, PageSummary
 from ..domain.ingestion import IngestionItem, MediaType, UploadedDocument
 from ..domain.repositories import (
     IDEMPOTENCY_TTL,
@@ -44,12 +45,40 @@ IMPORTED_MEDIA_TYPE: MediaType = "application/pdf"  # bộ nhập §6.5 chỉ nh
 
 @dataclass(frozen=True)
 class _StoredPage:
-    """Một dòng `pages`: JSON của model trang (validate lại khi đọc, như bản SQLite) và các cột lọc."""
+    """Một dòng `pages`: JSON của model trang (validate lại khi đọc, như bản SQLite), các cột lọc và tóm tắt trang
+    (`tier_used`, `review_reasons` đọc từ JSON lúc ghi, để `list_page_summaries` không phải dựng lại các dòng)."""
 
     extraction_json: str
     status: PageStatus
     confirmed: bool
     version: int
+    tier_used: str | None = None
+    review_reasons: tuple[str, ...] = ()
+
+    @classmethod
+    def of(cls, page: BaseModel, status: PageStatus, confirmed: bool, version: int) -> _StoredPage:
+        extraction_json = _dump(page)
+        data = json.loads(extraction_json)
+        tier_used = data.get("tier_used")
+        return cls(
+            extraction_json,
+            status,
+            confirmed,
+            version,
+            tier_used if isinstance(tier_used, str) else None,
+            tuple(str(reason) for reason in data.get("review_reasons", ())),
+        )
+
+    def summary(self, page_number: int) -> PageSummary:
+        return PageSummary.model_validate(
+            {
+                "page_number": page_number,
+                "status": self.status,
+                "tier_used": self.tier_used,
+                "review_reasons": list(self.review_reasons),
+                "confirmed": self.confirmed,
+            }
+        )
 
 
 def _dump(model: BaseModel) -> str:
@@ -184,7 +213,7 @@ class IngestionStore:
                 raise DocumentExistsError(document_id)
             self._check_sha256_unique(document)
             rows = {
-                (document_id, number): _StoredPage(_dump(page), "pending", False, 1)
+                (document_id, number): _StoredPage.of(page, "pending", False, 1)
                 for number, page in enumerate(pending_pages, start=1)
             }
             current = self._document_versions.get(document_id)
@@ -225,23 +254,40 @@ class IngestionStore:
                 return False
             if any(item.source_doc_id == document_id for item in self._items.values()):
                 raise RecordInUseError(f"tài liệu {document_id} còn được ingestion item tham chiếu")
-            chunk_ids = {chunk_id for chunk_id, chunk in self._chunks.items() if chunk.doc_id == document_id}
-            subjects = {self._chunks[chunk_id].subject_code for chunk_id in chunk_ids}
-            pair_ids = {pair_id for pair_id, pair in self._pairs.items() if pair.chunk_id in chunk_ids}
-            for chunk_id in chunk_ids:
-                del self._chunks[chunk_id]
-                self._edits.pop(("chunk", chunk_id), None)
-            for pair_id in pair_ids:
-                del self._pairs[pair_id]
-                self._edits.pop(("concept_pair", pair_id), None)
-            for key in [key for key in self._pages if key[0] == document_id]:
-                del self._pages[key]
-                self._page_audits.pop(key, None)
+            self._drop_import_data(document_id)
             del self._documents[document_id]
             self._imported.pop(document_id, None)
             self._document_versions.pop(document_id, None)
-            self._relink(subjects)
         return True
+
+    def revert_imported_document(self, document_id: str, upload: UploadedDocument | None) -> bool:
+        """Như bản SQLite: không có `upload` ⇒ xoá hẳn; có ⇒ giữ dòng `documents` của upload đề, bỏ phần của bộ nhập."""
+        with self._lock:
+            if document_id not in self._imported:
+                return False
+            if upload is None:
+                return self.delete_document(document_id)
+            self._drop_import_data(document_id)
+            self._documents[document_id] = upload.model_copy(deep=True)
+            del self._imported[document_id]
+            self._document_versions[document_id] = self._document_versions.get(document_id, 0) + 1
+        return True
+
+    def _drop_import_data(self, document_id: str) -> None:
+        """Bỏ trang, lịch sử sửa trang, chunk, cặp khái niệm và người sửa của tài liệu; tính lại liên kết chunk."""
+        chunk_ids = {chunk_id for chunk_id, chunk in self._chunks.items() if chunk.doc_id == document_id}
+        subjects = {self._chunks[chunk_id].subject_code for chunk_id in chunk_ids}
+        pair_ids = {pair_id for pair_id, pair in self._pairs.items() if pair.chunk_id in chunk_ids}
+        for chunk_id in chunk_ids:
+            del self._chunks[chunk_id]
+            self._edits.pop(("chunk", chunk_id), None)
+        for pair_id in pair_ids:
+            del self._pairs[pair_id]
+            self._edits.pop(("concept_pair", pair_id), None)
+        for key in [key for key in self._pages if key[0] == document_id]:
+            del self._pages[key]
+            self._page_audits.pop(key, None)
+        self._relink(subjects)
 
     def add_page(
         self, document_id: str, page_number: int, page: BaseModel, *, status: PageStatus, confirmed: bool
@@ -251,7 +297,7 @@ class IngestionStore:
                 raise MissingReferenceError(f"không tìm thấy tài liệu nguồn {document_id}")
             if (document_id, page_number) in self._pages:
                 raise StorageError(f"UNIQUE: trang {document_id}#{page_number} đã tồn tại")
-            self._pages[(document_id, page_number)] = _StoredPage(_dump(page), status, confirmed, 1)
+            self._pages[(document_id, page_number)] = _StoredPage.of(page, status, confirmed, 1)
 
     def update_page(
         self,
@@ -274,7 +320,7 @@ class IngestionStore:
                 raise RecordNotFoundError("trang", f"{document_id}#{page_number}")
             if current.version != expected_version:
                 raise VersionConflictError("trang", f"{document_id}#{page_number}", expected_version, current.version)
-            self._pages[key] = _StoredPage(_dump(page), status, confirmed, expected_version + 1)
+            self._pages[key] = _StoredPage.of(page, status, confirmed, expected_version + 1)
             if audit is not None:
                 self._page_audits.setdefault(key, []).append(audit.model_copy(deep=True))
         return expected_version + 1
@@ -287,6 +333,11 @@ class IngestionStore:
         with self._lock:
             stored = self._pages.get((document_id, page_number))
         return None if stored is None else model.model_validate_json(stored.extraction_json)
+
+    def list_page_summaries(self, document_id: str) -> list[PageSummary]:
+        with self._lock:
+            rows = sorted((number, page) for (doc, number), page in self._pages.items() if doc == document_id)
+        return [page.summary(number) for number, page in rows]
 
     def list_pages[M: BaseModel](self, document_id: str, model: type[M]) -> list[M]:
         with self._lock:
@@ -343,6 +394,10 @@ class IngestionStore:
     def get_chunk(self, chunk_id: str) -> KnowledgeChunk | None:
         chunk = self._chunks.get(chunk_id)
         return None if chunk is None else chunk.model_copy(deep=True)
+
+    def has_document_chunks(self, document_id: str) -> bool:
+        with self._lock:
+            return any(chunk.doc_id == document_id for chunk in self._chunks.values())
 
     def list_chunks(self, subject_code: str, chapter_code: str | None = None) -> list[KnowledgeChunk]:
         found = [

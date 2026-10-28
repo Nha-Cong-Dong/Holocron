@@ -14,8 +14,10 @@ import pytest
 from holocron_core.infrastructure.document_readers.config import PdfReaderConfig
 from holocron_core.infrastructure.storage import original_files
 from holocron_core.infrastructure.storage.original_files import (
+    ERROR_INVALID_PARAMETER,
     TEMP_DIR_PREFIX,
     OriginalFileStore,
+    open_process_error_means_dead,
     process_alive,
     remove_stale_temp_dirs,
 )
@@ -24,11 +26,17 @@ CONTENT = b"%PDF-1.4\n% mau tu tao cho test don dep\n"
 SHA = hashlib.sha256(CONTENT).hexdigest()
 
 
-def _dead_pid() -> int:
-    """Pid của một tiến trình con vừa chạy xong (không còn sống)."""
-    child = subprocess.Popen([sys.executable, "-c", "pass"])
-    child.wait(timeout=30)
-    return child.pid
+# Pid giả lập của một tiến trình đã chết, cho các test dọn thư mục: không dựa vào pid thật của tiến trình con đã
+# thoát, vì hệ điều hành có thể cấp lại pid đó cho tiến trình khác giữa lúc tạo thư mục và lúc kiểm.
+FAKE_DEAD_PID = 3_999_999_999
+
+
+@pytest.fixture
+def dead_pid(monkeypatch: pytest.MonkeyPatch) -> int:
+    """Thay bộ kiểm pid của module: `FAKE_DEAD_PID` đã chết, pid khác kiểm thật như bình thường."""
+    real_process_alive = original_files.process_alive
+    monkeypatch.setattr(original_files, "process_alive", lambda pid: pid != FAKE_DEAD_PID and real_process_alive(pid))
+    return FAKE_DEAD_PID
 
 
 def _temp_dir(base: Path, name: str) -> Path:
@@ -41,12 +49,21 @@ def _temp_dir(base: Path, name: str) -> Path:
 def test_process_alive_tells_live_and_dead_processes_apart() -> None:
     assert process_alive(os.getpid())
     assert process_alive(os.getppid()), "tiến trình cha của pytest còn chạy"
+    with subprocess.Popen([sys.executable, "-c", "pass"]) as child:
+        child.wait(timeout=30)
+        # `child` còn giữ handle của tiến trình con (Windows), nên pid chưa thể được cấp lại trong lúc kiểm.
+        assert not process_alive(child.pid)
     assert process_alive(os.getppid()), "lời gọi kiểm không kết thúc tiến trình được kiểm (Windows không dùng os.kill)"
-    assert not process_alive(_dead_pid())
 
 
-def test_opening_without_data_dir_removes_only_dirs_of_dead_processes(tmp_path: Path) -> None:
-    dead = _temp_dir(tmp_path, f"{TEMP_DIR_PREFIX}p{_dead_pid()}_abc")
+@pytest.mark.parametrize(("error_code", "dead"), [(ERROR_INVALID_PARAMETER, True), (5, False), (8, False), (0, False)])
+def test_only_invalid_parameter_from_open_process_means_dead(error_code: int, dead: bool) -> None:
+    """Windows: từ chối quyền (5), thiếu bộ nhớ (8) hay lỗi lạ không chứng minh được tiến trình đã chết."""
+    assert open_process_error_means_dead(error_code) is dead
+
+
+def test_opening_without_data_dir_removes_only_dirs_of_dead_processes(tmp_path: Path, dead_pid: int) -> None:
+    dead = _temp_dir(tmp_path, f"{TEMP_DIR_PREFIX}p{dead_pid}_abc")
     mine = _temp_dir(tmp_path, f"{TEMP_DIR_PREFIX}p{os.getpid()}_old")
     parent = _temp_dir(tmp_path, f"{TEMP_DIR_PREFIX}p{os.getppid()}_live")
     unknown = _temp_dir(tmp_path, f"{TEMP_DIR_PREFIX}abc123")
@@ -84,9 +101,10 @@ def test_failed_rmtree_on_close_is_logged_and_the_dir_is_kept(
 
 
 def test_failed_cleanup_of_a_stale_dir_is_logged(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, dead_pid: int
 ) -> None:
-    dead = _temp_dir(tmp_path, f"{TEMP_DIR_PREFIX}p{_dead_pid()}_x")
+    dead = _temp_dir(tmp_path, f"{TEMP_DIR_PREFIX}p{dead_pid}_x")
+    real_rmtree = original_files.shutil.rmtree
 
     def locked(path: Path) -> None:
         raise PermissionError(32, "file đang được tiến trình khác mở")
@@ -95,7 +113,7 @@ def test_failed_cleanup_of_a_stale_dir_is_logged(
     with caplog.at_level(logging.WARNING, logger=original_files.__name__):
         assert remove_stale_temp_dirs(tmp_path) == []
     assert dead.is_dir() and caplog.records
-    monkeypatch.undo()
+    monkeypatch.setattr(original_files.shutil, "rmtree", real_rmtree)
     assert remove_stale_temp_dirs(tmp_path) == [dead], "lần sau dọn được"
 
 

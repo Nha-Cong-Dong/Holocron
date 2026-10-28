@@ -1,20 +1,12 @@
-/** Phím Enter/E/←/→ của màn Xem lại: Enter chỉ xác nhận khi đủ điều kiện (I5: xác nhận phải có chủ ý). */
+/** Phím E/←/→ của màn Xem lại; không phím nào xác nhận trang (I5, quyết định 2026-10-29 câu 17 A: chỉ xác nhận bằng nút). */
 
 import { describe, expect, it } from "vitest";
 
-import {
-  armsReview,
-  classifyReviewFocus,
-  lineToEdit,
-  REVIEW_ENTER_GUARD_MS,
-  type ReviewKeyInput,
-  reviewKeyAction,
-} from "./review-keys";
+import { classifyReviewFocus, lineToEdit, type ReviewFocus, type ReviewKeyInput, reviewKeyAction } from "./review-keys";
 
 const BASE: ReviewKeyInput = {
   key: "Enter",
   repeat: false,
-  shiftKey: false,
   altKey: false,
   ctrlKey: false,
   metaKey: false,
@@ -22,114 +14,71 @@ const BASE: ReviewKeyInput = {
   overlayOpen: false,
   busy: false,
   hasDraft: false,
-  confirmBlock: null,
-  hasSkippedLines: false,
   canEdit: true,
   hasPrevious: true,
   hasNext: true,
-  armed: true,
-  msSinceShown: 5000,
 };
 
 function action(change: Partial<ReviewKeyInput>) {
   return reviewKeyAction({ ...BASE, ...change });
 }
 
-describe("Enter xác nhận trang", () => {
-  it("xác nhận khi focus ở vùng xem lại và đủ điều kiện", () => {
-    expect(action({})).toEqual({ type: "confirm" });
-  });
-
-  it.each<[string, Partial<ReviewKeyInput>]>([
-    ["focus ở nút khác (trình duyệt tự bấm nút đó)", { focus: "control" }],
-    ["focus ở ô nhập", { focus: "editable" }],
-    ["focus ngoài vùng (hàng tab)", { focus: "outside" }],
-    ["phím giữ lặp lại", { repeat: true }],
-    ["đang có thao tác ghi", { busy: true }],
-    ["còn nháp chưa lưu", { hasDraft: true }],
-    ["trang đang đọc", { confirmBlock: "pending" }],
-    ["trang đọc lỗi", { confirmBlock: "failed" }],
-    ["trang đã xác nhận", { confirmBlock: "confirmed" }],
-    ["trang không có chữ", { confirmBlock: "no_text" }],
-    ["trạng thái lạ", { confirmBlock: "unknown" }],
-    ["có dòng sai dạng bị bỏ", { hasSkippedLines: true }],
-    ["có hộp thoại đang mở", { overlayOpen: true }],
-    ["Ctrl+Enter", { ctrlKey: true }],
-    ["Alt+Enter", { altKey: true }],
-    ["Meta+Enter", { metaKey: true }],
-    ["Shift+Enter", { shiftKey: true }],
-  ])("không xác nhận khi %s", (_name, change) => {
-    expect(action(change)).toBeNull();
-  });
-});
-
-describe("Enter sau khi trang mới hiện (I5: không xác nhận trang chưa đọc)", () => {
-  it("Enter ngay sau khi tự chuyển sang trang kế ⇒ không xác nhận, kể cả khi đã tương tác", () => {
-    expect(action({ armed: true, msSinceShown: 0 })).toBeNull();
-    expect(action({ armed: true, msSinceShown: REVIEW_ENTER_GUARD_MS - 1 })).toBeNull();
-  });
-
-  it("trang mới hiện, người dùng chưa tương tác ⇒ Enter không xác nhận dù đã lâu", () => {
-    expect(action({ armed: false, msSinceShown: 60_000 })).toBeNull();
-  });
-
-  it("người dùng đã tương tác sau khi trang hiện và đủ thời gian ⇒ Enter xác nhận", () => {
-    expect(action({ armed: true, msSinceShown: REVIEW_ENTER_GUARD_MS })).toEqual({ type: "confirm" });
-  });
-
-  it("sau khi lưu dòng (trang vẽ lại, bắt đầu lại chưa tương tác) ⇒ Enter không tự xác nhận", () => {
-    expect(action({ armed: false, msSinceShown: 0 })).toBeNull();
-    expect(action({ armed: false, msSinceShown: REVIEW_ENTER_GUARD_MS * 10 })).toBeNull();
-  });
-
-  it("E và mũi tên không cần mở khoá (không ghi gì)", () => {
-    expect(action({ key: "e", armed: false, msSinceShown: 0 })).toEqual({ type: "edit" });
-    expect(action({ key: "ArrowRight", armed: false, msSinceShown: 0 })).toEqual({ type: "next" });
-  });
-});
-
-describe("armsReview", () => {
-  const plain = {
-    type: "keydown" as const,
-    repeat: false,
-    shiftKey: false,
-    ctrlKey: false,
-    altKey: false,
-    metaKey: false,
-  };
-
-  it("bấm chuột và phím thật trong vùng thì mở khoá", () => {
-    expect(armsReview({ type: "pointerdown" })).toBe(true);
-    expect(armsReview({ ...plain, key: "ArrowDown" })).toBe(true);
-    expect(armsReview({ ...plain, key: "PageDown" })).toBe(true);
-    expect(armsReview({ ...plain, key: "Tab" })).toBe(true);
-    expect(armsReview({ ...plain, key: "Tab", shiftKey: true })).toBe(true);
-  });
-
-  it.each([
+describe("không có phím nào xác nhận trang", () => {
+  const FOCUSES: readonly ReviewFocus[] = ["region", "control", "editable", "outside"];
+  const KEYS = [
+    "Enter",
+    " ",
+    "Spacebar",
+    "NumpadEnter",
+    "Tab",
     "Shift",
     "Control",
-    "Alt",
-    "AltGraph",
-    "Meta",
-    "OS",
-    "CapsLock",
-    "NumLock",
-    "Process",
-    "Dead",
-    "Unidentified",
-    "Enter",
-    "Escape",
+    "k",
+    "K",
+    "c",
+    "C",
+    "y",
+    "Y",
     "?",
-  ])("phím %s không mở khoá", (key) => {
-    expect(armsReview({ ...plain, key })).toBe(false);
+    "Escape",
+    "ArrowDown",
+    "ArrowUp",
+    "PageDown",
+    "e",
+    "E",
+    "ArrowLeft",
+    "ArrowRight",
+  ];
+  const MODIFIERS: readonly Partial<ReviewKeyInput>[] = [
+    {},
+    { ctrlKey: true },
+    { altKey: true },
+    { metaKey: true },
+    { repeat: true },
+  ];
+
+  it("mọi phím, mọi chỗ focus, mọi phím bổ trợ: chỉ có sửa dòng hoặc sang trang, không có xác nhận", () => {
+    const seen = new Set<string>();
+    for (const key of KEYS) {
+      for (const focus of FOCUSES) {
+        for (const modifier of MODIFIERS) {
+          const result = action({ key, focus, ...modifier });
+          if (result !== null) seen.add(result.type);
+        }
+      }
+    }
+    expect([...seen].sort()).toEqual(["edit", "next", "previous"]);
   });
 
-  it("phím kèm Ctrl/Alt/Meta (Ctrl+K, Alt+mũi tên…) và phím giữ lặp lại không mở khoá", () => {
-    expect(armsReview({ ...plain, key: "k", ctrlKey: true })).toBe(false);
-    expect(armsReview({ ...plain, key: "k", metaKey: true })).toBe(false);
-    expect(armsReview({ ...plain, key: "ArrowLeft", altKey: true })).toBe(false);
-    expect(armsReview({ ...plain, key: "ArrowDown", repeat: true })).toBe(false);
+  it("Enter không làm gì ở vùng xem lại hay trên nút (trình duyệt tự bấm nút đang focus)", () => {
+    for (const focus of FOCUSES) expect(action({ key: "Enter", focus })).toBeNull();
+    expect(action({ key: " ", focus: "control" })).toBeNull();
+  });
+
+  it("Shift hoặc Ctrl+K rồi Enter: không phím nào trong chuỗi xác nhận trang", () => {
+    expect(action({ key: "Shift" })).toBeNull();
+    expect(action({ key: "k", ctrlKey: true })).toBeNull();
+    expect(action({ key: "Enter" })).toBeNull();
   });
 });
 

@@ -192,6 +192,13 @@ describe("điều kiện sửa dòng và xác nhận (§6.5)", () => {
     for (const message of Object.values(CONFIRM_PAGE_BLOCK_MESSAGE_VI)) expect(message.length).toBeGreaterThan(0);
   });
 
+  it("lý do 'còn dòng chưa lưu' có câu nhắc đúng chữ và không suy từ dữ liệu trang", () => {
+    expect(CONFIRM_PAGE_BLOCK_MESSAGE_VI.unsaved_lines).toBe("Còn dòng chưa lưu. Lưu hoặc xoá trước khi xác nhận");
+    expect(confirmPageBlock({ status: "needs_review", confirmed: false, lines })).toBeNull();
+    expect(CONFIRM_PAGE_BLOCK_MESSAGE_VI.no_text).toContain("chưa có dòng nào có chữ");
+    expect(CONFIRM_PAGE_BLOCK_MESSAGE_VI.confirmed).toBe("Trang đã được xác nhận.");
+  });
+
   it("xác nhận tài liệu: còn trang đang đọc thì chặn; chỉ bật khi còn trang ok chưa xác nhận", () => {
     const page = (status: PageSummaryView["status"], confirmed = false): PageSummaryView => ({
       pageNumber: 1,

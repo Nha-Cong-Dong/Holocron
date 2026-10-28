@@ -36,25 +36,28 @@ import type { DocumentStatusView, DocumentView, LineView, PageStatusView, PageVi
 import type { UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
 import type { Poller } from "@/lib/poll";
+import {
+  type ActiveOnShow,
+  canConfirmNow,
+  confirmButtonBlock,
+  confirmClick,
+  focusOnShow,
+  nextReviewTarget,
+} from "@/lib/review-confirm";
 import { classifyReviewFocus, lineToEdit, reviewKeyAction } from "@/lib/review-keys";
+import { awaitingSettle, queueNeighbors, reviewOutcome, reviewProgress, reviewQueue } from "@/lib/review-queue";
 import {
-  awaitingSettle,
-  nextAfterConfirm,
-  queueNeighbors,
-  reviewOutcome,
-  reviewProgress,
-  reviewQueue,
-} from "@/lib/review-queue";
-import {
-  applyInteraction,
+  endSend,
+  guardRemainingMs,
+  msSinceShown,
   type ReviewSession,
-  reviewKeydown,
   reviewPageKey,
   reviewSessionFor,
 } from "@/lib/review-session";
 import { type VaultHrefFor, vaultHref } from "@/lib/vault";
 
 import { DeleteDialog } from "./DocumentList";
+import pageStyles from "./PageReview.module.css";
 import styles from "./Vault.module.css";
 
 type Loadable<T> = { kind: "loading" } | { kind: "error"; error: UiError } | { kind: "ready"; value: T };
@@ -93,8 +96,10 @@ interface PageReviewProps {
 /**
  * Xem lại một trang (`/vault?doc=…&page=…` hoặc phần Tài liệu của `/subject`; §5.7, §6.5; design-handoff màn 6):
  * banner "Có N trang cần xem lại" (hàng đợi tính từ `pages[]` của tài liệu), danh sách trang bên trái, văn bản theo dòng
- * bên phải; phím Enter/E/←/→ trong vùng xem lại (`lib/review-keys.ts`). Xác nhận xong một trang cần xem thì mở trang
- * cần xem kế tiếp; tài liệu chuyển sang `confirmed` thì chúc mừng rồi sang tab Khái niệm. Dòng có cờ conf thấp hoặc
+ * bên phải; phím E/←/→ trong vùng xem lại (`lib/review-keys.ts`). Trang chỉ được xác nhận bằng nút (I5,
+ * `lib/review-confirm.ts`); xác nhận xong thì trang ở lại, cạnh tiêu đề hiện nút "Sang trang cần xem kế tiếp" khi còn
+ * trang cần xem khác (tính từ tài liệu đọc lại sau khi xác nhận). Tài liệu chuyển sang `confirmed` thì chúc mừng rồi
+ * sang tab Khái niệm. Dòng có cờ conf thấp hoặc
  * token lệch được tô theo dữ liệu backend; sửa dòng gửi `expected_version`, 409 lệch phiên bản thì có nút tải lại bản
  * mới nhất; xác nhận từng trang (`ok`, `needs_review`) và xác nhận cả tài liệu (chỉ trang `ok`).
  * Chưa có ảnh trang vì chưa có cách lấy file gốc (kế hoạch UI M12).
@@ -119,22 +124,39 @@ export function PageReview({
   const pagePoller = useRef<Poller | null>(null);
   const docCalls = useRef(createLatestCounter());
   const pageCalls = useRef(createLatestCounter());
-  // Cờ đổi ngay (không chờ render) để Enter rồi bấm "Lưu" liền tay chỉ gửi một thao tác ghi.
+  // Cờ đổi ngay (không chờ render) để hai thao tác ghi bấm liền tay (Enter ở ô sửa dòng rồi "Lưu") chỉ gửi một lần.
   const writes = useRef(createSingleFlight());
+  // Trang vừa xác nhận thành công trên màn này, sau khi đã đọc lại tài liệu: hiện nút "Sang trang cần xem kế tiếp".
+  const [confirmedHere, setConfirmedHere] = useState<number | null>(null);
+  // Trang hiện lần trước, để biết trang mới hiện là đổi trang hay vẽ lại cùng trang (đặt focus, `focusOnShow`).
+  const lastShownPage = useRef<number | null>(null);
 
-  const loadDocument = useCallback(() => {
+  /** Đọc lại tài liệu; trả bản vừa áp, `null` khi lỗi hoặc đã có lần đọc mới hơn. */
+  const fetchDocument = useCallback((): Promise<DocumentView | null> => {
     const ticket = docCalls.current.begin();
-    api
+    return api
       .getDocument(documentId)
       .then((value) => {
-        if (!docCalls.current.isLatest(ticket)) return;
+        if (!docCalls.current.isLatest(ticket)) return null;
         setDocument({ kind: "ready", value });
         setFirstStatus((previous) => previous ?? value.status);
+        return value;
       })
       .catch((error: unknown) => {
         if (docCalls.current.isLatest(ticket)) setDocument({ kind: "error", error: toUiError(error) });
+        return null;
       });
   }, [documentId]);
+
+  const loadDocument = useCallback(() => {
+    void fetchDocument();
+  }, [fetchDocument]);
+
+  const markShown = useCallback((shown: number): number | null => {
+    const previous = lastShownPage.current;
+    lastShownPage.current = shown;
+    return previous;
+  }, []);
 
   const loadPage = useCallback(() => {
     if (pageNumber === null) return;
@@ -159,6 +181,7 @@ export function PageReview({
   useEffect(() => {
     setActionError(null);
     setNotice(null);
+    setConfirmedHere(null);
     loadPage();
     const counter = pageCalls.current;
     return () => counter.invalidate();
@@ -203,9 +226,12 @@ export function PageReview({
     loadPage();
   }, [loadDocument, loadPage]);
 
-  /** Chạy một thao tác ghi; thành công thì áp trang trả về và đọc lại tài liệu để cập nhật danh sách trang. */
+  /**
+   * Chạy một thao tác ghi; thành công thì áp trang trả về và đọc lại tài liệu để cập nhật danh sách trang.
+   * `onDocumentReloaded` chạy khi bản đọc lại đó đã áp (không chạy nếu đọc lỗi hoặc có lần đọc mới hơn).
+   */
   const runWrite = useCallback(
-    async (write: () => Promise<PageView>, done: string): Promise<boolean> => {
+    async (write: () => Promise<PageView>, done: string, onDocumentReloaded?: () => void): Promise<boolean> => {
       if (!writes.current.tryEnter()) return false;
       setBusy(true);
       setActionError(null);
@@ -215,7 +241,9 @@ export function PageReview({
         pageCalls.current.invalidate();
         setPage({ kind: "ready", value: updated });
         setNotice(done);
-        loadDocument();
+        void fetchDocument().then((fresh) => {
+          if (fresh !== null) onDocumentReloaded?.();
+        });
         return true;
       } catch (caught) {
         setActionError(toUiError(caught));
@@ -225,7 +253,7 @@ export function PageReview({
         setBusy(false);
       }
     },
-    [loadDocument],
+    [fetchDocument],
   );
 
   const confirmAll = useCallback(async () => {
@@ -291,6 +319,8 @@ export function PageReview({
   const celebrating = outcome.kind === "done" && firstStatus !== null && firstStatus !== "confirmed";
   const neighbors = pageNumber === null ? { previous: null, next: null } : queueNeighbors(queue, pageNumber);
   const pageHref = (target: number) => hrefFor({ subject: doc.subjectCode, doc: doc.docId, page: target });
+  // Đích tính từ `doc` hiện tại: `confirmedHere` chỉ được đặt sau khi bản đọc lại sau xác nhận đã áp.
+  const nextTarget = pageNumber !== null && confirmedHere === pageNumber ? nextReviewTarget(doc, pageNumber) : null;
 
   if (celebrating) {
     return (
@@ -396,6 +426,11 @@ export function PageReview({
               busy={busy}
               hasPrevious={neighbors.previous !== null}
               hasNext={neighbors.next !== null}
+              nextTarget={nextTarget}
+              onGoNext={() => {
+                if (nextTarget !== null) router.push(pageHref(nextTarget));
+              }}
+              onShown={markShown}
               onStep={(direction) => {
                 const target = direction === "previous" ? neighbors.previous : neighbors.next;
                 if (target !== null) router.push(pageHref(target));
@@ -408,16 +443,14 @@ export function PageReview({
                   "Đã lưu dòng vừa sửa.",
                 )
               }
-              onConfirm={async () => {
+              onConfirm={() => {
                 const current = page.value.pageNumber;
-                const ok = await runWrite(
+                // Không tự chuyển trang: trang ở lại; nút "Sang trang cần xem kế tiếp" hiện khi tài liệu đã đọc lại.
+                return runWrite(
                   () => api.confirmPage(documentId, current, page.value.version),
                   "Đã xác nhận trang.",
+                  () => setConfirmedHere(current),
                 );
-                // Xác nhận xong một trang cần xem: mở trang cần xem kế tiếp.
-                const target = ok && queue.includes(current) ? nextAfterConfirm(queue, current) : null;
-                if (target !== null) router.push(pageHref(target));
-                return ok;
               }}
             />
           )}
@@ -469,6 +502,11 @@ interface PagePanelProps {
   /** Có trang cần xem lại ở phía trước/sau (phím ←/→). */
   hasPrevious: boolean;
   hasNext: boolean;
+  /** Đích của nút "Sang trang cần xem kế tiếp"; `null` thì không hiện nút. */
+  nextTarget: number | null;
+  onGoNext: () => void;
+  /** Báo trang vừa hiện; trả trang hiện lần trước (để biết có phải đổi trang không). */
+  onShown: (pageNumber: number) => number | null;
   onStep: (direction: "previous" | "next") => void;
   onSaveLines: (edits: ReturnType<typeof buildLineEdits>, appended: string[]) => Promise<boolean>;
   onConfirm: () => Promise<boolean>;
@@ -479,17 +517,20 @@ interface PagePanelProps {
 /**
  * Vùng xem lại một trang. `tabIndex=-1`: bấm chuột vào nội dung trang đưa focus vào vùng; Tab đi tới các nút, ô nhập
  * trong vùng (`tabIndex=0` trên `section` bị rule a11y `noNoninteractiveTabindex` chặn). Phím tắt chỉ chạy khi focus ở
- * trong vùng: Enter xác nhận trang, E sửa dòng nghi ngờ đầu tiên, ←/→ sang trang cần xem trước/sau
- * (`lib/review-keys.ts`). Mỗi trang (theo `pageNumber:version`) là một phiên (`lib/review-session.ts`): trang mới hiện,
- * kể cả vẽ lại sau khi lưu dòng, khoá Enter cho tới khi người dùng bấm chuột vào trang hoặc bấm một phím thật trong vùng
- * (focus vào vùng không tính), và Enter chỉ có tác dụng sau `REVIEW_ENTER_GUARD_MS` (I5). Trang mới hiện mà focus đang
- * mất thì focus đặt vào tiêu đề trang.
+ * trong vùng: E sửa dòng nghi ngờ đầu tiên, ←/→ sang trang cần xem trước/sau (`lib/review-keys.ts`); không phím nào
+ * xác nhận trang. Trang chỉ được xác nhận bằng nút, theo `canConfirmNow` (`lib/review-confirm.ts`): mỗi trang (theo
+ * `pageNumber:version`) là một phiên (`lib/review-session.ts`), nút bỏ qua mọi kích hoạt (chuột, chạm, Enter/Space khi
+ * nút đang focus) trong `CONFIRM_GUARD_MS` đầu, khoá khi đang gửi hoặc còn dòng chưa lưu (I5). Trang mới hiện thì focus
+ * vào tiêu đề trang theo `focusOnShow`, không bao giờ vào nút xác nhận.
  */
 function PagePanel({
   page,
   busy,
   hasPrevious,
   hasNext,
+  nextTarget,
+  onGoNext,
+  onShown,
   onStep,
   onSaveLines,
   onConfirm,
@@ -500,7 +541,8 @@ function PagePanel({
   const { overlayOpen } = useShell();
   const region = useRef<HTMLElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
-  // Phiên xem trang: mốc lúc trang hiện ra và trang đã được mở khoá Enter chưa (không gây vẽ lại).
+  const confirmButton = useRef<HTMLButtonElement>(null);
+  // Phiên xem trang: mốc lúc trang hiện ra và khoá đang gửi, đổi ngay khi bấm (không chờ vẽ lại).
   const pageKey = reviewPageKey(page.pageNumber, page.version);
   const session = useRef<ReviewSession | null>(null);
   const editBlock = lineEditBlock(page);
@@ -509,31 +551,69 @@ function PagePanel({
   const warnings = pageWarnings({ ...page, failureReason: page.failureReason });
   const [editing, setEditing] = useState<number | null>(null);
   const [appendDraft, setAppendDraft] = useState(false);
+  const [sending, setSending] = useState(false);
+  // Số ms đã qua kể từ lúc trang hiện, đo khi hết `CONFIRM_GUARD_MS` để vẽ lại nút (chỉ cho `disabled`; `onClick` đo lại).
+  const [shownElapsed, setShownElapsed] = useState<{ pageKey: string; ms: number } | null>(null);
 
   useEffect(() => {
     session.current = reviewSessionFor(session.current, pageKey, performance.now());
+    let timer: number | undefined;
+    const check = () => {
+      const now = performance.now();
+      const current = reviewSessionFor(session.current, pageKey, now);
+      const remaining = guardRemainingMs(current, now);
+      if (remaining === 0) setShownElapsed({ pageKey, ms: msSinceShown(current, now) });
+      else timer = window.setTimeout(check, remaining);
+    };
+    check();
+    return () => window.clearTimeout(timer);
   }, [pageKey]);
 
   useEffect(() => {
+    const previous = onShown(page.pageNumber);
     const active = window.document.activeElement;
-    if (active === null || active === window.document.body) heading.current?.focus();
-  }, []);
+    const where: ActiveOnShow =
+      active === null || active === window.document.body
+        ? "none"
+        : active === confirmButton.current
+          ? "confirm"
+          : "other";
+    if (focusOnShow({ pageChanged: previous !== page.pageNumber, active: where }) === "heading") {
+      heading.current?.focus();
+    }
+  }, [onShown, page.pageNumber]);
 
-  function onKeyDown(event: KeyboardEvent<HTMLElement>): void {
+  const confirmInput = {
+    pageBlock: confirmBlock,
+    hasSkippedLines: page.hasSkippedLines,
+    appendDraft,
+    editing: editing !== null,
+  };
+  const buttonBlock = confirmButtonBlock(confirmInput);
+  const confirmEnabled = canConfirmNow({
+    ...confirmInput,
+    sending: sending || busy,
+    msSinceShown: shownElapsed?.pageKey === pageKey ? shownElapsed.ms : 0,
+  });
+
+  /** Mọi cách kích hoạt nút (chuột, chạm, Enter/Space khi nút đang focus) đều qua đây: đo lại điều kiện lúc bấm. */
+  function onConfirmClick(): void {
     const now = performance.now();
-    const { gate, next } = reviewKeydown(
+    const { accepted, session: next } = confirmClick(
       reviewSessionFor(session.current, pageKey, now),
-      {
-        key: event.key,
-        repeat: event.repeat,
-        shiftKey: event.shiftKey,
-        ctrlKey: event.ctrlKey,
-        altKey: event.altKey,
-        metaKey: event.metaKey,
-      },
+      { ...confirmInput, busy },
       now,
     );
     session.current = next;
+    if (!accepted) return;
+    setSending(true);
+    void onConfirm().finally(() => {
+      if (session.current !== null) session.current = endSend(session.current);
+      setSending(false);
+    });
+  }
+
+  function onKeyDown(event: KeyboardEvent<HTMLElement>): void {
     const target = event.target instanceof HTMLElement ? event.target : null;
     const root = region.current;
     const focus = classifyReviewFocus({
@@ -546,7 +626,6 @@ function PagePanel({
     const action = reviewKeyAction({
       key: event.key,
       repeat: event.repeat,
-      shiftKey: event.shiftKey,
       altKey: event.altKey,
       ctrlKey: event.ctrlKey,
       metaKey: event.metaKey,
@@ -554,19 +633,13 @@ function PagePanel({
       overlayOpen,
       busy,
       hasDraft: editing !== null || appendDraft,
-      confirmBlock,
-      hasSkippedLines: page.hasSkippedLines,
       canEdit: editBlock === null && page.lines.length > 0,
       hasPrevious,
       hasNext,
-      armed: gate.armed,
-      msSinceShown: gate.msSinceShown,
     });
     if (action === null) return;
     event.preventDefault();
-    if (action.type === "confirm") {
-      void onConfirm();
-    } else if (action.type === "edit") {
+    if (action.type === "edit") {
       const index = lineToEdit(
         page.lines.map((line) => {
           const highlight = lineHighlight(line, mismatches);
@@ -587,25 +660,28 @@ function PagePanel({
       aria-describedby={`${ids}-keys`}
       tabIndex={-1}
       onKeyDown={onKeyDown}
-      onPointerDown={() => {
-        session.current = applyInteraction(reviewSessionFor(session.current, pageKey, performance.now()), {
-          type: "pointerdown",
-        });
-      }}
     >
       <div className={styles.panelHeader}>
-        <h2 id={`${ids}-title`} ref={heading} tabIndex={-1}>
-          Trang {page.pageNumber}
-        </h2>
-        <span className={styles.badge} data-tone={PAGE_TONE[page.status]}>
-          {page.confirmed ? `${PAGE_STATUS_LABEL_VI[page.status]} · đã xác nhận` : PAGE_STATUS_LABEL_VI[page.status]}
-        </span>
+        <div className={pageStyles.titleGroup}>
+          <h2 id={`${ids}-title`} ref={heading} tabIndex={-1}>
+            Trang {page.pageNumber}
+          </h2>
+          <span className={styles.badge} data-tone={PAGE_TONE[page.status]}>
+            {page.confirmed ? `${PAGE_STATUS_LABEL_VI[page.status]} · đã xác nhận` : PAGE_STATUS_LABEL_VI[page.status]}
+          </span>
+        </div>
+        {nextTarget !== null && (
+          <div className={pageStyles.nextSlot}>
+            <button type="button" className={styles.secondary} onClick={onGoNext}>
+              Sang trang cần xem kế tiếp
+              <span className={pageStyles.nextTarget}>(trang {nextTarget})</span>
+            </button>
+          </div>
+        )}
       </div>
       <p id={`${ids}-keys`} className={styles.hint}>
-        Phím tắt trong trang này: E sửa dòng nghi ngờ đầu tiên · ← → trang cần xem lại trước, sau · Enter xác nhận trang
-        khi focus ở nội dung trang (bấm chuột vào trang), không ở nút hay ô nhập. Trang vừa mở thì Enter chỉ có tác dụng
-        sau khi bạn bấm chuột vào trang hoặc bấm một phím khác (ví dụ ↓ để cuộn). Dùng Tab thì xác nhận bằng nút ở cuối
-        trang.
+        Phím tắt trong trang này: E sửa dòng nghi ngờ đầu tiên · ← → trang cần xem lại trước, sau. Không có phím tắt xác
+        nhận trang: đọc hết trang rồi bấm nút xác nhận ở cuối trang (nút chỉ nhận sau khi trang hiện được một lúc).
       </p>
 
       <dl className={styles.facts}>
@@ -726,20 +802,26 @@ function PagePanel({
       {page.status !== "failed" && page.status !== "pending" && (
         <div className={styles.actions}>
           <button
+            ref={confirmButton}
             type="button"
             className={styles.primary}
-            onClick={() => void onConfirm()}
-            disabled={busy || confirmBlock !== null || editing !== null || page.hasSkippedLines}
+            onClick={onConfirmClick}
+            disabled={!confirmEnabled}
             aria-describedby={`${ids}-confirm-hint`}
           >
-            {page.status === "needs_review" ? "Tôi đã xem lại, xác nhận trang" : "Xác nhận trang"}
+            {sending
+              ? "Đang xác nhận…"
+              : page.status === "needs_review"
+                ? "Tôi đã xem lại, xác nhận trang"
+                : "Xác nhận trang"}
           </button>
-          <span id={`${ids}-confirm-hint`} className={styles.hint}>
-            {editing !== null
-              ? "Lưu hoặc huỷ dòng đang sửa trước khi xác nhận."
-              : confirmBlock === null
-                ? "Sau khi xác nhận, văn bản của trang không sửa được nữa."
-                : CONFIRM_PAGE_BLOCK_MESSAGE_VI[confirmBlock]}
+          <span
+            id={`${ids}-confirm-hint`}
+            className={buttonBlock === "unsaved_lines" ? pageStyles.unsavedNote : styles.hint}
+          >
+            {buttonBlock === null
+              ? "Sau khi xác nhận, văn bản của trang không sửa được nữa."
+              : CONFIRM_PAGE_BLOCK_MESSAGE_VI[buttonBlock]}
           </span>
         </div>
       )}
@@ -859,7 +941,7 @@ function LineRow({ line, highlight, editable, busy, editing, onStartEdit, onCanc
 interface AppendLineProps {
   busy: boolean;
   onAppend: (text: string) => Promise<boolean>;
-  /** Ô gõ thêm có chữ chưa lưu: Enter của vùng xem lại không xác nhận trang. */
+  /** Ô gõ thêm có chữ chưa lưu: nút xác nhận trang khoá cho tới khi lưu hoặc xoá chữ. */
   onDraftChange: (hasDraft: boolean) => void;
 }
 

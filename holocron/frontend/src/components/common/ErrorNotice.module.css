@@ -33,3 +33,30 @@
 .action:hover {
   border-color: var(--accent);
 }
+
+.diagnostic {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+  font-size: var(--text-sm);
+}
+
+.diagnosticLabel {
+  color: var(--text-muted);
+}
+
+.diagnosticCode {
+  padding: 0 var(--space-1);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.diagnosticStatus {
+  color: var(--text-muted);
+}

@@ -65,6 +65,12 @@ export interface UiError {
   issues: string[];
   /** Chỉ có với `kind = "capability"`; `name`/`reason` là `null` khi backend trả mã frontend chưa biết. */
   capability: { name: CapabilityName | null; reason: CapabilityReason | null } | null;
+  /**
+   * Mã lỗi để người dùng chép khi báo lỗi (ví dụ `HTTP 409 · CapabilityError · essay_grading_offline ·
+   * not_implemented`): mã HTTP, dạng `detail` và mã con. Hiển thị trong khối riêng, KHÔNG trộn vào `message`. Không
+   * chứa nội dung người dùng nhập. Không có với lỗi dựng ở giao diện.
+   */
+  diagnostic?: string;
 }
 
 /** Luồng gọi API, để chọn câu riêng cho 400/404/409/413/415/422 thay vì câu chung. */
@@ -298,6 +304,11 @@ function build(kind: ErrorKind, message: string, extra: Partial<Pick<UiError, "i
   return { kind, message, action: ACTIONS[kind], issues: extra.issues ?? [], capability: extra.capability ?? null };
 }
 
+/** Gắn mã lỗi để báo vào lỗi đã phân loại; `message` giữ nguyên. */
+function withDiagnostic(error: UiError, diagnostic: string): UiError {
+  return { ...error, diagnostic };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -340,8 +351,70 @@ export function extractDetail(body: unknown): unknown {
   return isRecord(body) && "detail" in body ? body.detail : undefined;
 }
 
-/** Phân loại lỗi HTTP từ mã trạng thái và thân lỗi đã parse (hoặc `null` khi thân không phải JSON). */
+/** Độ dài tối đa của chuỗi `detail` chép vào mã lỗi để báo. */
+const DIAGNOSTIC_DETAIL_MAX_CHARS = 160;
+
+/** Số lỗi validate (422) tối đa liệt kê trong mã lỗi để báo. */
+const DIAGNOSTIC_MAX_VALIDATION_ITEMS = 3;
+
+/** Mã con lấy từ thân lỗi (`capability`, `reason`, `type`): chỉ nhận dạng chữ-số-gạch dưới, còn lại thành `?`. */
+function diagnosticToken(value: unknown): string {
+  return typeof value === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(value) ? value : "?";
+}
+
+/** Một lỗi validate `{loc, type}` (§6.0) thành `body.theory_slots.0.chapter_code:string_pattern_mismatch`. */
+function validationToken(error: unknown): string {
+  if (!isRecord(error)) return "?";
+  const loc = Array.isArray(error.loc)
+    ? error.loc.map((part) => (typeof part === "string" || typeof part === "number" ? String(part) : "?")).join(".")
+    : "?";
+  return `${loc}:${diagnosticToken(error.type)}`;
+}
+
+/**
+ * Mã lỗi để báo của một phản hồi HTTP lỗi: `HTTP <mã>`, dạng `detail` (§6.0) và mã con, nối bằng ` · `; cuối cùng là
+ * luồng gọi nếu có. Lỗi validate chỉ lấy `loc` và `type` (không lấy `input`/`msg`, vốn có thể chứa nội dung người dùng
+ * nhập); `detail` dạng chuỗi do code backend viết được chép nguyên văn, cắt ở `DIAGNOSTIC_DETAIL_MAX_CHARS` ký tự.
+ */
+export function httpDiagnostic(status: number, body: unknown, options: ClassifyOptions = {}): string {
+  const parts = [`HTTP ${status}`];
+  const detail = extractDetail(body);
+  const issues = blockingIssues(detail);
+  if (detail === undefined) {
+    parts.push("non-JSON");
+  } else if (hasCapabilityCode(detail)) {
+    parts.push("CapabilityError", diagnosticToken(detail.capability), diagnosticToken(detail.reason));
+  } else if (isLlmUpstreamError(detail)) {
+    parts.push("LLM_UPSTREAM_ERROR");
+  } else if (issues !== null) {
+    parts.push(`BlockingIssues(${issues.length})`);
+  } else if (Array.isArray(detail)) {
+    parts.push("ValidationError", ...detail.slice(0, DIAGNOSTIC_MAX_VALIDATION_ITEMS).map(validationToken));
+    if (detail.length > DIAGNOSTIC_MAX_VALIDATION_ITEMS)
+      parts.push(`+${detail.length - DIAGNOSTIC_MAX_VALIDATION_ITEMS}`);
+  } else if (typeof detail === "string") {
+    const chars = [...detail.replace(/\s+/g, " ").trim()];
+    parts.push(
+      chars.length > DIAGNOSTIC_DETAIL_MAX_CHARS
+        ? `${chars.slice(0, DIAGNOSTIC_DETAIL_MAX_CHARS).join("")}…`
+        : chars.join(""),
+    );
+  } else {
+    parts.push("detail?");
+  }
+  if (options.context !== undefined) parts.push(options.context);
+  return parts.join(" · ");
+}
+
+/**
+ * Phân loại lỗi HTTP từ mã trạng thái và thân lỗi đã parse (hoặc `null` khi thân không phải JSON). Kết quả mang
+ * `diagnostic` (mã lỗi để báo); `message` là câu cố định, không chứa mã đó.
+ */
 export function classifyHttpError(status: number, body: unknown, options: ClassifyOptions = {}): UiError {
+  return withDiagnostic(classifyHttpStatus(status, body, options), httpDiagnostic(status, body, options));
+}
+
+function classifyHttpStatus(status: number, body: unknown, options: ClassifyOptions): UiError {
   const detail = extractDetail(body);
 
   if (hasCapabilityCode(detail)) {
@@ -438,12 +511,15 @@ export function displayBase(base: string): string {
 /** Lỗi khi `fetch` không tới được backend (backend chưa chạy, sai địa chỉ). */
 export function classifyNetworkError(base: string): UiError {
   const where = base === "" ? "cùng địa chỉ với giao diện" : displayBase(base);
-  return build("network", `Không kết nối được backend ở ${where}. Kiểm tra backend đã chạy chưa rồi thử lại.`);
+  return withDiagnostic(
+    build("network", `Không kết nối được backend ở ${where}. Kiểm tra backend đã chạy chưa rồi thử lại.`),
+    "NETWORK · fetch_failed",
+  );
 }
 
 /** Backend trả mã thành công nhưng thân không phải JSON (thường do base URL trỏ nhầm chỗ). */
 export function invalidResponseError(): UiError {
-  return build("server", MESSAGES.server);
+  return withDiagnostic(build("server", MESSAGES.server), "RESPONSE · invalid_body");
 }
 
 /** Lỗi gọi backend đã phân loại; `status` chỉ dùng cho logic, không hiển thị. */

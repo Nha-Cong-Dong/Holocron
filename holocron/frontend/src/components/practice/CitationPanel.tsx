@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ErrorNotice } from "@/components/common/ErrorNotice";
 import { Loading } from "@/components/common/LoadState";
@@ -11,12 +11,6 @@ import type { PracticeCitation, VaultChunkView } from "@/lib/practice-data";
 import { CHUNK_PAGE_LIMIT, chunkScanTruncated, locateQuote, nextChunkOffset } from "@/lib/source";
 
 import styles from "./Practice.module.css";
-
-/**
- * Mã blueprint sinh ra các câu đang luyện (màn luyện tập cấp qua Provider). Chỉ dùng để chọn nguồn chunk khi bật dữ
- * liệu mẫu (`ChunkQuery.blueprintId`); không gửi lên backend. `null` khi không có Provider.
- */
-export const CitationBlueprintContext = createContext<string | null>(null);
 
 interface CitationPanelProps {
   citation: PracticeCitation;
@@ -63,7 +57,6 @@ interface SourceExcerptProps {
 /** Tìm chunk của trích dẫn qua `GET /v1/vault/chunks` (§6.6, đọc theo trang) rồi hiện văn bản với đoạn trích tô đậm. */
 function SourceExcerpt({ citation, subjectCode, chapterCode }: SourceExcerptProps) {
   const chunkId = citation.chunk_id;
-  const blueprintId = useContext(CitationBlueprintContext);
   const [state, setState] = useState<SourceState>({ kind: "loading" });
   const textRef = useRef<HTMLPreElement>(null);
 
@@ -81,7 +74,6 @@ function SourceExcerpt({ citation, subjectCode, chapterCode }: SourceExcerptProp
           chapterCode,
           offset,
           limit: CHUNK_PAGE_LIMIT,
-          ...(blueprintId === null ? {} : { blueprintId }),
         });
         pagesRead += 1;
         const found = page.chunks.find((chunk) => chunk.chunkId === id);
@@ -101,7 +93,7 @@ function SourceExcerpt({ citation, subjectCode, chapterCode }: SourceExcerptProp
     return () => {
       cancelled = true;
     };
-  }, [chunkId, subjectCode, chapterCode, blueprintId]);
+  }, [chunkId, subjectCode, chapterCode]);
 
   useEffect(() => load(), [load]);
 

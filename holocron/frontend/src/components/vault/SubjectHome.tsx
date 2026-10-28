@@ -12,7 +12,7 @@ import type { UiError } from "@/lib/errors";
 import { SUBJECT_CODE_PATTERN } from "@/lib/limits";
 import { checkSubjectForm, EXAM_FORMAT_OPTION_VI, EXAM_FORMATS } from "@/lib/subjects";
 import { vaultHref } from "@/lib/vault";
-import type { ExamFormat } from "@/types/contract-pending";
+import type { ExamFormat } from "@/types/holocron";
 
 import styles from "./Vault.module.css";
 

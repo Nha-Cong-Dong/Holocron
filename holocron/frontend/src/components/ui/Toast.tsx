@@ -80,6 +80,10 @@ function raiseRegion(region: HTMLElement | null, force: boolean): void {
  * `<dialog>` modal che; khi đang có hộp thoại modal, vùng được đưa lên lại trước khi thêm thông báo. Mỗi thông báo tự
  * rời đi sau `TOAST_DURATION_MS`; rê chuột hoặc focus vào vùng thì tạm dừng đếm (WCAG 2.2.1). Giảm chuyển động thì gỡ
  * ngay, không chờ animation.
+ *
+ * Giới hạn: khi đang có `<dialog>` modal, trình duyệt coi mọi thứ ngoài hộp thoại (kể cả vùng thông báo trong top
+ * layer) là inert: thông báo vẫn nhìn thấy nhưng không bấm được nút đóng, không focus được và trình đọc màn hình có thể
+ * không đọc. Vì người dùng không tương tác được, lúc đó vùng không tạm dừng: thông báo vẫn tự ẩn.
  */
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [queue, dispatch] = useReducer(toastReducer, EMPTY_TOAST_QUEUE);
@@ -87,6 +91,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const regionRef = useRef<HTMLDivElement>(null);
   // Một hẹn giờ cho mỗi (thông báo, giai đoạn): "in:<lúc bắt đầu>" = đang hiện, chờ tự rời; "out" = đang rời, chờ gỡ.
   const timers = useRef(new Map<string, number>());
+  // Con trỏ đang ở trong vùng / focus đang ở trong vùng: quyết định tạm dừng đếm giờ.
+  const presence = useRef({ hovered: false, focused: false });
+
+  const syncPause = useCallback(() => {
+    const { hovered, focused } = presence.current;
+    const modalOpen = document.querySelector("dialog:modal") !== null;
+    dispatch({ type: (hovered || focused) && !modalOpen ? "pause" : "resume", now: Date.now() });
+  }, []);
 
   useEffect(() => {
     raiseRegion(regionRef.current, false);
@@ -96,27 +108,23 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const region = regionRef.current;
     if (region === null) return;
-    let hovered = false;
-    let focused = false;
-    function sync(): void {
-      dispatch({ type: hovered || focused ? "pause" : "resume", now: Date.now() });
-    }
+    const state = presence.current;
     function onPointerEnter(): void {
-      hovered = true;
-      sync();
+      state.hovered = true;
+      syncPause();
     }
     function onPointerLeave(): void {
-      hovered = false;
-      sync();
+      state.hovered = false;
+      syncPause();
     }
     function onFocusIn(): void {
-      focused = true;
-      sync();
+      state.focused = true;
+      syncPause();
     }
     function onFocusOut(event: FocusEvent): void {
       const next = event.relatedTarget;
-      focused = next instanceof Node && region !== null && region.contains(next);
-      sync();
+      state.focused = next instanceof Node && region !== null && region.contains(next);
+      syncPause();
     }
     region.addEventListener("pointerenter", onPointerEnter);
     region.addEventListener("pointerleave", onPointerLeave);
@@ -128,7 +136,24 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       region.removeEventListener("focusin", onFocusIn);
       region.removeEventListener("focusout", onFocusOut);
     };
-  }, []);
+  }, [syncPause]);
+
+  // Thông báo đang giữ focus bị gỡ khỏi DOM thì không có `focusout`; vùng trống thì con trỏ không còn ở trên thông báo
+  // nào. Đặt lại trạng thái để thông báo sau không bị tạm dừng mãi.
+  useEffect(() => {
+    const region = regionRef.current;
+    const state = presence.current;
+    let changed = false;
+    if (state.focused && !(region?.contains(document.activeElement) ?? false)) {
+      state.focused = false;
+      changed = true;
+    }
+    if (state.hovered && queue.items.length === 0) {
+      state.hovered = false;
+      changed = true;
+    }
+    if (changed) syncPause();
+  }, [queue.items, syncPause]);
 
   useEffect(() => {
     const live = new Set<string>();
@@ -160,11 +185,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const show = useCallback((message: string) => {
-    // Hộp thoại modal mở sau vùng thông báo nằm trên nó trong top layer: đưa vùng lên lại trước khi thêm chữ mới.
-    if (document.querySelector("dialog:modal") !== null) raiseRegion(regionRef.current, true);
-    dispatch({ type: "push", message, now: Date.now() });
-  }, []);
+  const show = useCallback(
+    (message: string) => {
+      // Hộp thoại modal mở sau vùng thông báo nằm trên nó trong top layer: đưa vùng lên lại trước khi thêm chữ mới, và
+      // bỏ tạm dừng (vùng đang inert nên người dùng không tương tác được).
+      if (document.querySelector("dialog:modal") !== null) {
+        raiseRegion(regionRef.current, true);
+        syncPause();
+      }
+      dispatch({ type: "push", message, now: Date.now() });
+    },
+    [syncPause],
+  );
   const api = useMemo<ToastApi>(() => ({ show }), [show]);
 
   return (

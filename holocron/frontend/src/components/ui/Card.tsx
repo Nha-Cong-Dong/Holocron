@@ -19,7 +19,7 @@ export interface CardProps {
 }
 
 /**
- * Thẻ: nghiêng nhẹ theo con trỏ chuột (tối đa 8°), viền vàng tím chạy vòng quanh khi rê chuột hoặc khi focus bàn phím
+ * Thẻ: nghiêng nhẹ theo con trỏ chuột (tối đa 8°), viền vàng chạy vòng quanh khi rê chuột hoặc khi focus bàn phím
  * ở trong thẻ (viền chạy trong lớp `.m-card-ring` riêng; thẻ không cắt overflow nên bảng thả xuống, gợi ý nổi bên trong
  * vẫn tràn ra được). Giảm chuyển động: không nghiêng, viền không chạy. Hành động của thẻ là nút hoặc link bên trong.
  */
@@ -31,25 +31,45 @@ export function Card({ children, className, tilt = true, as: Tag = "div" }: Card
   useEffect(() => {
     const element = ref.current;
     if (element === null || !tilt || reduced) return;
-    function reset(): void {
+    // Hộp của thẻ đo lúc con trỏ vào (thẻ chưa nghiêng), không đo lại hộp đang nghiêng mỗi lần di chuột.
+    let box: DOMRect | null = null;
+    function clearTilt(): void {
       element?.style.removeProperty("--m-tilt-x");
       element?.style.removeProperty("--m-tilt-y");
     }
+    function onPointerEnter(): void {
+      box = element?.getBoundingClientRect() ?? null;
+    }
     function onPointerMove(event: PointerEvent): void {
       if (element === null || event.pointerType !== "mouse") return;
-      const box = element.getBoundingClientRect();
+      // Vào trước khi effect gắn sự kiện, hoặc vừa cuộn trang: đo lại.
+      box ??= element.getBoundingClientRect();
       if (box.width === 0 || box.height === 0) return;
-      const x = (event.clientX - box.left) / box.width - 0.5;
-      const y = (event.clientY - box.top) / box.height - 0.5;
+      const x = Math.min(Math.max((event.clientX - box.left) / box.width, 0), 1) - 0.5;
+      const y = Math.min(Math.max((event.clientY - box.top) / box.height, 0), 1) - 0.5;
       element.style.setProperty("--m-tilt-x", `${(-y * 2 * MAX_TILT_DEG).toFixed(1)}deg`);
       element.style.setProperty("--m-tilt-y", `${(x * 2 * MAX_TILT_DEG).toFixed(1)}deg`);
     }
+    function onPointerLeave(): void {
+      box = null;
+      clearTilt();
+    }
+    // Cuộn trang khi đang rê: hộp đã đo không còn đúng chỗ, bỏ nghiêng và đo lại ở lần di chuột kế tiếp.
+    function onScroll(): void {
+      if (box === null) return;
+      box = null;
+      clearTilt();
+    }
+    element.addEventListener("pointerenter", onPointerEnter);
     element.addEventListener("pointermove", onPointerMove);
-    element.addEventListener("pointerleave", reset);
+    element.addEventListener("pointerleave", onPointerLeave);
+    window.addEventListener("scroll", onScroll, { capture: true, passive: true });
     return () => {
+      element.removeEventListener("pointerenter", onPointerEnter);
       element.removeEventListener("pointermove", onPointerMove);
-      element.removeEventListener("pointerleave", reset);
-      reset();
+      element.removeEventListener("pointerleave", onPointerLeave);
+      window.removeEventListener("scroll", onScroll, { capture: true });
+      clearTilt();
     };
   }, [tilt, reduced]);
 

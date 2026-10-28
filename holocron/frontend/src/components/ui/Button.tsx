@@ -57,6 +57,11 @@ function Arrow() {
   );
 }
 
+/** `aria-disabled="true"` (nút vẫn nhận focus, ví dụ "Sắp có"): bấm không có tác dụng, giống `busy`. */
+function isAriaDisabled(value: boolean | "true" | "false" | undefined): boolean {
+  return value === true || value === "true";
+}
+
 function joinClasses(...names: readonly (string | false | undefined)[]): string {
   return names.filter((name) => typeof name === "string" && name !== "").join(" ");
 }
@@ -70,9 +75,20 @@ export function Button(props: ButtonProps) {
   const [burst, setBurst] = useState(0);
 
   if (props.variant === "icon") {
-    const { variant: _variant, className, children, type = "button", ...rest } = props;
+    const { variant: _variant, className, children, onClick: onIconClick, type = "button", ...rest } = props;
     return (
-      <button {...rest} type={type} className={joinClasses("m-btn-icon", styles.icon, className)}>
+      <button
+        {...rest}
+        type={type}
+        className={joinClasses("m-btn-icon", styles.icon, className)}
+        onClick={(event) => {
+          if (isAriaDisabled(rest["aria-disabled"])) {
+            event.preventDefault();
+            return;
+          }
+          onIconClick?.(event);
+        }}
+      >
         {children}
       </button>
     );
@@ -91,8 +107,10 @@ export function Button(props: ButtonProps) {
   } = props;
   const isPrimary = variant === "primary";
 
+  const blocked = busy || isAriaDisabled(native["aria-disabled"]);
+
   function handleClick(event: MouseEvent<HTMLButtonElement>): void {
-    if (busy) {
+    if (blocked) {
       event.preventDefault();
       return;
     }
@@ -110,7 +128,7 @@ export function Button(props: ButtonProps) {
         className,
       )}
       aria-busy={busy || undefined}
-      aria-disabled={busy || native["aria-disabled"] || undefined}
+      aria-disabled={blocked || undefined}
       onClick={handleClick}
     >
       {isPrimary && <span className="m-btn-sheen" aria-hidden="true" />}

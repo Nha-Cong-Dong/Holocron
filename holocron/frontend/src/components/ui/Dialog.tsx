@@ -70,8 +70,11 @@ export function Dialog({ open, onClose, title, description, children, footer, cl
       dialog.removeEventListener("animationend", onAnimationEnd);
       window.clearTimeout(timer);
       dialog.classList.remove("is-closing");
-      closingRef.current = true;
-      dialog.close();
+      // Trình duyệt có thể đã tự đóng trong lúc chạy animation: không đặt cờ nữa, kẻo lần đóng sau bị bỏ qua.
+      if (dialog.open) {
+        closingRef.current = true;
+        dialog.close();
+      }
       setRendered(false);
     }
     function onAnimationEnd(event: AnimationEvent): void {

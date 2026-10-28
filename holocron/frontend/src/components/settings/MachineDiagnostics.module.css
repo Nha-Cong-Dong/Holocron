@@ -1,0 +1,153 @@
+.panel {
+  display: grid;
+  gap: var(--sp-4);
+  padding: var(--sp-5) var(--sp-6);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--sh-1);
+  /* Thanh trên dính ở đầu trang: chừa chỗ khi nhảy tới #may-cua-ban. */
+  scroll-margin-top: 96px;
+}
+
+.heading {
+  font-size: var(--fs-h3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-h3);
+}
+
+.caption {
+  margin-top: 4px;
+  color: var(--ink-2);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+}
+
+.checking {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+}
+
+.ready {
+  color: var(--ok);
+  font-weight: var(--fw-medium);
+}
+
+.warn {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--warn-soft);
+  color: var(--ink);
+}
+
+.warnTitle {
+  color: var(--warn);
+  font-weight: var(--fw-semibold);
+}
+
+.steps {
+  display: grid;
+  gap: var(--sp-1);
+  margin: 0;
+  padding-left: var(--sp-5);
+}
+
+.egress {
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.actions {
+  display: flex;
+}
+
+.technical {
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.technicalBody {
+  display: grid;
+  gap: var(--sp-4);
+  padding-top: var(--sp-2);
+}
+
+.group {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.subheading {
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+}
+
+.groupTitle {
+  font-size: var(--fs-small);
+  font-weight: var(--fw-semibold);
+}
+
+.facts,
+.readyList {
+  display: grid;
+  gap: var(--sp-1);
+  margin: 0;
+  padding-left: var(--sp-5);
+}
+
+.readyList {
+  padding-left: 0;
+  list-style: none;
+}
+
+.badge {
+  display: inline-block;
+  min-width: 72px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-pill);
+  background: var(--ok-soft);
+  color: var(--ok);
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-semibold);
+  text-align: center;
+}
+
+.badge[data-tone="info"] {
+  background: var(--accent-soft);
+  color: var(--on-accent-soft);
+}
+
+.notices {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.help {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.command {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  overflow-x: auto;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+}
+
+.code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  overflow-wrap: anywhere;
+}
+
+.muted {
+  color: var(--ink-2);
+}

@@ -9,8 +9,8 @@
  * Mọi hàm trả bản mới, không sửa bản cũ. Trang không còn nháp thì bị gỡ khỏi bảng.
  */
 
-import { type ConfirmDocumentBlock, confirmDocumentBlock, type EditBlock } from "@/lib/documents";
-import type { DocumentView, LineView, PageSummaryView } from "@/lib/documents-data";
+import { type ConfirmDocumentBlock, confirmDocumentBlock, type EditBlock, lineEditBlock } from "@/lib/documents";
+import type { DocumentView, LineView, PageSummaryView, PageView } from "@/lib/documents-data";
 import { unsavedDrafts } from "@/lib/review-confirm";
 
 /** Ô "Sửa" đang mở: dòng nào và chữ đang gõ (mở mà chưa đổi chữ vẫn tính là nháp). */
@@ -160,6 +160,26 @@ export function draftStatusMessage(draft: PageDraft, state: LineEditState | null
     return "Trang này không sửa được nữa. Chữ bạn đã gõ chưa lưu.";
   }
   return "";
+}
+
+/** `draftStatusMessage` cho trang đang hiện: tự đối chiếu ô sửa với các dòng và lý do khoá sửa của trang. */
+export function pageDraftStatusMessage(
+  page: Pick<PageView, "status" | "confirmed"> & { lines: readonly Pick<LineView, "lineIndex" | "text">[] },
+  draft: PageDraft,
+): string {
+  const editBlock = lineEditBlock(page);
+  const state = draft.editing === null ? null : lineEditState(draft.editing, page.lines, editBlock);
+  return draftStatusMessage(draft, state, editBlock);
+}
+
+/**
+ * Chữ mới của vùng thông báo cố định (`role="status"` ở `PageReview`, không mount lại khi vùng trang vẽ lại). `current`
+ * là câu của trang đang hiện, `null` khi chưa có trang nào hiện (đang tải, lỗi): giữ chữ cũ, để tải lại xong không đọc
+ * lại xung đột đã báo. Câu không đổi (ví dụ sau một lần ghi không liên quan) thì trả đúng `previous`: chữ trong vùng
+ * không đổi nên trình đọc màn hình không đọc lại.
+ */
+export function nextAnnouncement(previous: string, current: string | null): string {
+  return current ?? previous;
 }
 
 /**

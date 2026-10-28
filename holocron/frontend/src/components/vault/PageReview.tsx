@@ -50,11 +50,12 @@ import {
   DRAFT_PAGE_LABEL_VI,
   draftFor,
   draftPagesNote,
-  draftStatusMessage,
   lineEditState,
   lockedDraftNotice,
   NO_DRAFTS,
+  nextAnnouncement,
   type PageDraft,
+  pageDraftStatusMessage,
   pagesWithDrafts,
   type ReviewDrafts,
   setAppendText,
@@ -150,6 +151,20 @@ export function PageReview({
   // Nháp chưa lưu theo số trang (`lib/review-drafts.ts`): giữ ở đây, không ở `PagePanel`, để vùng trang vẽ lại (lưu dòng
   // khác làm `version` tăng) hay đổi trang rồi quay lại không làm mất nháp (I5).
   const [drafts, setDrafts] = useState<ReviewDrafts>(NO_DRAFTS);
+  // Vùng thông báo cố định của màn (`role="status"`): đặt ở đây, không ở `PagePanel`, vì vùng trang mount lại theo
+  // `pageNumber:version` sau mỗi lần ghi hay tải lại. Chữ chỉ đổi khi câu báo của trang đang hiện đổi
+  // (`nextAnnouncement`), nên xung đột cũ không bị đọc lại sau một lần ghi không liên quan. Không di chuyển focus.
+  const shownMessage =
+    page.kind === "ready" ? pageDraftStatusMessage(page.value, draftFor(drafts, page.value.pageNumber)) : null;
+  const [announced, setAnnounced] = useState("");
+  useEffect(() => {
+    setAnnounced((previous) => nextAnnouncement(previous, shownMessage));
+  }, [shownMessage]);
+
+  /** Đóng ô "Sửa" của đúng dòng trên đúng trang; ổn định giữa các lần vẽ (dùng trong effect của `PagePanel`). */
+  const closeEdit = useCallback((target: number, lineIndex: number) => {
+    setDrafts((previous) => closeLineEdit(previous, target, lineIndex));
+  }, []);
 
   /** Đọc lại tài liệu; trả bản vừa áp, `null` khi lỗi hoặc đã có lần đọc mới hơn. */
   const fetchDocument = useCallback((): Promise<DocumentView | null> => {
@@ -439,6 +454,9 @@ export function PageReview({
         </nav>
 
         <div className={styles.reviewMain}>
+          <div className="visually-hidden" role="status">
+            {announced}
+          </div>
           {notice !== null && <output className={styles.successNote}>{notice}</output>}
           {actionError !== null && <ErrorNotice error={actionError} onRetry={reloadAll} onReload={reloadAll} />}
           {page.kind === "loading" && (
@@ -474,9 +492,7 @@ export function PageReview({
               onEditTextChange={(text) =>
                 setDrafts((previous) => setLineEditText(previous, page.value.pageNumber, text))
               }
-              onCloseEdit={(lineIndex) =>
-                setDrafts((previous) => closeLineEdit(previous, page.value.pageNumber, lineIndex))
-              }
+              onCloseEdit={closeEdit}
               busy={busy}
               hasPrevious={neighbors.previous !== null}
               hasNext={neighbors.next !== null}
@@ -558,8 +574,8 @@ interface PagePanelProps {
   /** Mở ô "Sửa" cho dòng `lineIndex`, chữ ban đầu là chữ hiện tại của dòng. */
   onStartEdit: (lineIndex: number, text: string) => void;
   onEditTextChange: (text: string) => void;
-  /** Đóng ô "Sửa" của đúng dòng `lineIndex`. */
-  onCloseEdit: (lineIndex: number) => void;
+  /** Đóng ô "Sửa" của đúng dòng `lineIndex` trên trang `pageNumber`; hàm ổn định giữa các lần vẽ. */
+  onCloseEdit: (pageNumber: number, lineIndex: number) => void;
   busy: boolean;
   /** Có trang cần xem lại ở phía trước/sau (phím ←/→). */
   hasPrevious: boolean;
@@ -624,18 +640,18 @@ function PagePanel({
   const matchedLine = editState?.kind === "matched" ? (draft.editing?.lineIndex ?? null) : null;
   const lockedNotice = lockedDraftNotice(draft, editBlock);
   const drafts = unsavedDrafts({ appendText: draft.appendText, editingLine: draft.editing?.lineIndex ?? null });
-  // Vùng thông báo cố định (luôn có, rỗng khi không có gì): nội dung đổ vào SAU khi vùng đã có trong trang, kể cả lúc
-  // vùng trang mount lại sau 409, để trình đọc màn hình đọc được. Không di chuyển focus khi báo xung đột.
-  const statusMessage = draftStatusMessage(draft, editState, editBlock);
-  const [announced, setAnnounced] = useState("");
-  useEffect(() => {
-    setAnnounced(statusMessage);
-  }, [statusMessage]);
+  // Câu báo xung đột/khoá cho trình đọc màn hình nằm ở vùng thông báo cố định của `PageReview` (không mount lại cùng
+  // vùng này).
 
-  // Nháp đã khớp server: đóng ô sửa của đúng dòng đó.
+  // Nháp đã khớp server: đóng ô sửa của đúng dòng đó. Mọi phụ thuộc là giá trị ổn định (số, hàm `useCallback`).
   useEffect(() => {
-    if (matchedLine !== null) onCloseEdit(matchedLine);
-  }, [matchedLine, onCloseEdit]);
+    if (matchedLine !== null) onCloseEdit(page.pageNumber, matchedLine);
+  }, [matchedLine, onCloseEdit, page.pageNumber]);
+
+  /** Đóng ô "Sửa" của dòng `lineIndex` trên trang này. */
+  function closeEdit(lineIndex: number): void {
+    onCloseEdit(page.pageNumber, lineIndex);
+  }
 
   /** "Bỏ chữ đã gõ" ở câu báo cấp trang: nút biến mất, focus về tiêu đề trang (cùng đích của `focusOnShow`). */
   function discardAndFocusHeading(discard: () => void): void {
@@ -873,14 +889,14 @@ function PagePanel({
               draft={editing === line.lineIndex && draft.editing !== null ? draft.editing.text : line.text}
               onDraftChange={onEditTextChange}
               onStartEdit={() => onStartEdit(line.lineIndex, line.text)}
-              onCancel={() => onCloseEdit(line.lineIndex)}
+              onCancel={() => closeEdit(line.lineIndex)}
               onSave={async (text) => {
                 const edits = buildLineEdits(page.lines, new Map([[line.lineIndex, text]]));
                 if (edits.length === 0) {
-                  onCloseEdit(line.lineIndex);
+                  closeEdit(line.lineIndex);
                   return;
                 }
-                if (await onSaveLines(edits, [])) onCloseEdit(line.lineIndex);
+                if (await onSaveLines(edits, [])) closeEdit(line.lineIndex);
               }}
             />
           ))}
@@ -898,7 +914,7 @@ function PagePanel({
               className={`${styles.secondary} ${styles.small}`}
               onClick={() => {
                 const lineIndex = draft.editing?.lineIndex;
-                if (lineIndex !== undefined) discardAndFocusHeading(() => onCloseEdit(lineIndex));
+                if (lineIndex !== undefined) discardAndFocusHeading(() => closeEdit(lineIndex));
               }}
             >
               Bỏ chữ đã gõ
@@ -921,7 +937,7 @@ function PagePanel({
                 aria-label={`Bỏ chữ đã gõ ở dòng ${lockedNotice.editing.lineIndex}`}
                 onClick={() => {
                   const lineIndex = lockedNotice.editing?.lineIndex;
-                  if (lineIndex !== undefined) discardAndFocusHeading(() => onCloseEdit(lineIndex));
+                  if (lineIndex !== undefined) discardAndFocusHeading(() => closeEdit(lineIndex));
                 }}
               >
                 Bỏ chữ đã gõ
@@ -943,9 +959,6 @@ function PagePanel({
           )}
         </div>
       )}
-      <div className="visually-hidden" role="status">
-        {announced}
-      </div>
       {page.lines.length === 0 && page.status !== "failed" && page.status !== "pending" && (
         <p className={styles.muted}>Trang không có dòng chữ nào.</p>
       )}
@@ -1035,18 +1048,19 @@ function LineRow({
   // Bắt đầu bằng giá trị lúc mount: dòng vẽ lại khi ô sửa vẫn mở (nháp giữ ở `PageReview`) thì không giành focus.
   const wasEditing = useRef(editing);
 
-  // Ô sửa đóng vì xung đột (dòng vừa đổi ở nơi khác) thì không đưa focus vào nút nào, chỉ báo qua vùng thông báo của
-  // trang; đóng vì Huỷ hay lưu xong thì focus về nút "Sửa" của dòng.
-  const conflict = conflictText !== null;
+  // Ô sửa đóng ngay trên dòng này (Huỷ, Esc, hoặc "Lưu" mà chữ không đổi nên không gửi gì) thì focus về nút "Sửa" của
+  // dòng. Lưu thật xong, hay dữ liệu trang đổi ở nơi khác (xung đột), thì trang có `version` mới: `PagePanel` mount lại
+  // theo `pageNumber:version`, dòng này mount lại với ô đóng nên nhánh dưới không chạy; focus về tiêu đề trang theo
+  // `focusOnShow` (nút vừa bấm đã bị gỡ), xung đột báo qua vùng thông báo cố định của `PageReview`.
   useEffect(() => {
     if (editing && !wasEditing.current) {
       setError(null);
       input.current?.focus();
-    } else if (!editing && wasEditing.current && !conflict) {
+    } else if (!editing && wasEditing.current) {
       editButton.current?.focus();
     }
     wasEditing.current = editing;
-  }, [editing, conflict]);
+  }, [editing]);
 
   // "Bỏ chữ đã gõ" khi xung đột: nút vừa bấm biến mất, đưa focus về nút "Sửa" của dòng thay vì để rơi ra ngoài trang.
   const hadConflict = useRef(conflictText !== null);

@@ -651,7 +651,7 @@ export type CapabilityName =
   | "line_review_queue"
   | "page_progress_eta";
 
-/** Tên khả năng đúng thứ tự khai báo `CapabilityName` (§5.12; ba tên cuối duyệt 2026-10-29). */
+/** Tên khả năng đúng thứ tự khai báo `CapabilityName` (§5.12; ba tên cuối: đề xuất, chờ duyệt (2026-10-29)). */
 export const CAPABILITY_NAMES = [
   "ocr",
   "ocr_cross_check",

@@ -512,6 +512,9 @@ export interface RuntimeInfo {
   demo_mode: boolean;
   llm_configured: boolean;
   vlm_configured: boolean;
+  app_version: string;
+  commit: string;
+  log_dir: string | null;
 }
 
 /** Body của `POST /v1/blueprints/{id}/twins`; mọi field đều tuỳ chọn khi gửi. */

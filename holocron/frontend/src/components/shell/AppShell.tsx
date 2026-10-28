@@ -7,7 +7,14 @@ import { api, toUiError } from "@/lib/api";
 import { USE_MOCKS } from "@/lib/config";
 import { createLatestCounter } from "@/lib/latest";
 import { NAV_ITEMS, titleForPath } from "@/lib/navigation";
-import { INITIAL_RUNTIME_STATE, runtimeReducer, selectOfflineMode, selectStatusItems } from "@/lib/runtime";
+import {
+  buildLabel,
+  INITIAL_RUNTIME_STATE,
+  logDirOf,
+  runtimeReducer,
+  selectOfflineMode,
+  selectStatusItems,
+} from "@/lib/runtime";
 import { GLOBAL_SCOPE, resolveShortcut, targetKindOf } from "@/lib/shortcuts";
 import type { SubjectsState } from "@/lib/subjects";
 
@@ -176,6 +183,8 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
         <StatusBar
           items={selectStatusItems(runtime, USE_MOCKS)}
+          buildLabel={buildLabel(runtime.runtime)}
+          logDir={logDirOf(runtime.runtime)}
           canRetry={runtime.backend === "unreachable" || runtime.backend === "error"}
           onRetry={refreshRuntime}
         />

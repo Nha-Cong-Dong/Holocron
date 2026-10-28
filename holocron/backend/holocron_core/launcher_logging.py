@@ -41,6 +41,7 @@ _FILE_ONLY_ATTR = "holocron_file_only"
 # `extra=FILE_ONLY`: record chỉ ghi vào file, handler console bỏ qua (ví dụ traceback sẽ được Python in lại).
 FILE_ONLY: Mapping[str, object] = types.MappingProxyType({_FILE_ONLY_ATTR: True})
 
+LOG_DIR_ENV = "HOLOCRON_LOG_DIR"
 BUILD_INFO_FILENAME = "holocron_build.json"
 BUILD_INFO_MAX_BYTES = 4096
 BUILD_FIELD_MAX_CHARS = 64

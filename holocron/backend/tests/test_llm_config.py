@@ -15,6 +15,7 @@ from holocron_core.infrastructure.llm_config import (
     load_runtime_config,
 )
 from holocron_core.routers.api import app, get_extractor, get_runtime_config
+from holocron_core.routers.deps import get_build_info, get_log_dir
 from holocron_core.services.extraction import (
     DocumentExtractor,
     DualPassExtraction,
@@ -39,6 +40,12 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
     for name in [n for n in os.environ if n.startswith(("HOLOCRON_LLM_", "HOLOCRON_VLM_"))]:
         monkeypatch.delenv(name)
+
+
+def _build_fields() -> dict[str, str | None]:
+    """Ba field build/log của `RuntimeInfo` (câu 7, duyệt 2026-10-28); giá trị kiểm riêng ở `test_runtime_build_info.py`."""
+    info = get_build_info()
+    return {"app_version": info.version, "commit": info.commit, "log_dir": get_log_dir()}
 
 
 def test_defaults_when_nothing_is_configured() -> None:
@@ -124,7 +131,7 @@ def test_runtime_endpoint_reports_demo_mode_without_leaking_anything(monkeypatch
     monkeypatch.setenv("HOLOCRON_LLM_MODEL_AUTHOR", "secret-model-name")
     response = TestClient(app).get("/v1/runtime")
     assert response.status_code == 200
-    assert response.json() == {"demo_mode": True, "llm_configured": True, "vlm_configured": False}
+    assert response.json() == {"demo_mode": True, "llm_configured": True, "vlm_configured": False, **_build_fields()}
     assert SECRET not in response.text and "secret-model-name" not in response.text
 
 
@@ -143,7 +150,7 @@ def test_runtime_endpoint_reflects_the_extractor_in_use_not_only_the_environment
         assert isinstance(get_extractor(), MockDualPassExtractor)
         app.dependency_overrides[get_extractor] = lambda: real
         body = TestClient(app).get("/v1/runtime").json()
-        assert body == {"demo_mode": False, "llm_configured": False, "vlm_configured": True}
+        assert body == {"demo_mode": False, "llm_configured": False, "vlm_configured": True, **_build_fields()}
     finally:
         app.dependency_overrides.clear()
 

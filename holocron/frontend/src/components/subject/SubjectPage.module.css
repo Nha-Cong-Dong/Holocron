@@ -1,0 +1,23 @@
+.page {
+  display: grid;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.head {
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.title {
+  font-size: var(--fs-h1);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-h1);
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+}
+
+.meta {
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+}

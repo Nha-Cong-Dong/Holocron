@@ -48,40 +48,45 @@ function pairElement(attribute: string, pairId: string): HTMLElement | null {
  * từ chối (kế hoạch UI mục F3; spec §6.6). Tham số đi qua query string để build được ở chế độ static export: `?chapter=`,
  * `?status=`, `?chunk=` (chunk đang mở). Phải nằm trong `<Suspense>` vì đọc `useSearchParams()`.
  *
- * Môn chỉ đọc từ thanh bên; `?subject=` chỉ dùng khi vào trang lần đầu để chọn môn đó một lần. Sau mỗi thao tác với
- * cặp, danh sách được đọc lại từ backend (không vá tại chỗ); map chunk chỉ tải lại khi đổi môn hoặc bấm "Tải lại".
+ * Route cũ `/pairs`: môn lấy từ khung (môn mở gần nhất); `?subject=` chỉ dùng khi vào trang lần đầu để chọn môn đó một
+ * lần. Trong trang môn (`/subject?tab=concepts`): môn truyền qua prop `subjectCode`, địa chỉ nội bộ dựng bằng `hrefFor`.
+ * Sau mỗi thao tác với cặp, danh sách được đọc lại từ backend (không vá tại chỗ); map chunk chỉ tải lại khi đổi môn
+ * hoặc bấm "Tải lại".
  */
-export function PairsView() {
+export function PairsView({ subjectCode: fixedSubject, hrefFor = pairsHref }: PairsViewProps) {
   const location = parsePairsLocation(useSearchParams());
   const router = useRouter();
   const { subjectCode, selectSubject } = useShell();
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  // `?subject=` chỉ đọc một lần khi vào trang; sau đó đổi môn ở thanh bên thì bỏ chương và chunk của môn cũ. Bước
-  // đồng bộ idempotent (`subjectEntryStep`) nên effect chạy lại (React StrictMode) không làm mất `?chapter=`/`?chunk=`.
+  // Route cũ: `?subject=` chỉ đọc một lần khi vào trang; sau đó môn của khung đổi thì bỏ chương và chunk của môn cũ.
+  // Bước đồng bộ idempotent (`subjectEntryStep`) nên effect chạy lại (React StrictMode) không làm mất
+  // `?chapter=`/`?chunk=`. Môn truyền qua prop thì không đồng bộ gì.
   const entry = useRef<SubjectEntryState>(INITIAL_SUBJECT_ENTRY);
   const [entryDone, setEntryDone] = useState(false);
   const locationSubject = location.subject;
   const locationStatus = location.status;
   useEffect(() => {
+    if (fixedSubject !== undefined) return;
     const step = subjectEntryStep(entry.current, locationSubject, subjectCode);
     entry.current = step.state;
     if (step.action.kind === "select") selectSubject(step.action.subject);
     if (step.action.kind === "reset") {
       setEditingId(null);
-      router.replace(pairsHref({ subject: subjectCode, status: locationStatus }));
+      router.replace(hrefFor({ subject: subjectCode, status: locationStatus }));
     }
     setEntryDone(step.ready);
-  }, [subjectCode, selectSubject, router, locationSubject, locationStatus]);
+  }, [fixedSubject, hrefFor, subjectCode, selectSubject, router, locationSubject, locationStatus]);
 
-  const subject = entryDone ? subjectCode : null;
+  const subject = fixedSubject ?? (entryDone ? subjectCode : null);
 
-  if (!entryDone) return <Loading />;
+  if (fixedSubject === undefined && !entryDone) return <Loading />;
   if (subject === null) {
     return (
       <div className={styles.page}>
         <EmptyState title="Chưa chọn môn.">
-          Chọn môn ở thanh bên, hoặc <Link href={vaultHref({})}>mở Vault</Link> để tạo môn và nhập tài liệu.
+          Mở một môn ở <Link href="/">trang chủ</Link>, hoặc <Link href={vaultHref({})}>mở Vault</Link> để tạo môn và
+          nhập tài liệu.
         </EmptyState>
       </div>
     );
@@ -91,21 +96,30 @@ export function PairsView() {
       key={subject}
       subject={subject}
       location={location}
+      hrefFor={hrefFor}
       editingId={editingId}
       setEditingId={setEditingId}
     />
   );
 }
 
+export interface PairsViewProps {
+  /** Môn cố định (trang môn); bỏ trống ⇒ môn của khung (route cũ `/pairs`). */
+  subjectCode?: string;
+  /** Dựng địa chỉ cho bộ lọc và đoạn đang mở; mặc định `pairsHref` (`/pairs?…`). */
+  hrefFor?: (location: Partial<PairsLocation>) => string;
+}
+
 interface PairsWorkspaceProps {
   subject: string;
   location: PairsLocation;
+  hrefFor: (location: Partial<PairsLocation>) => string;
   editingId: string | null;
   setEditingId: (pairId: string | null) => void;
 }
 
 /** Màn của một môn: tải map chunk và danh sách cặp; đổi môn thì dựng lại từ đầu (khoá theo môn). */
-function PairsWorkspace({ subject, location, editingId, setEditingId }: PairsWorkspaceProps) {
+function PairsWorkspace({ subject, location, hrefFor, editingId, setEditingId }: PairsWorkspaceProps) {
   const router = useRouter();
   const chapter = location.chapter;
   const status = location.status;
@@ -203,7 +217,7 @@ function PairsWorkspace({ subject, location, editingId, setEditingId }: PairsWor
   }, [editingId, editingPair, openChunk, listState.kind, setEditingId]);
 
   function href(next: Partial<PairsLocation>): string {
-    return pairsHref({ subject, chapter, status, chunk: openChunk, ...next });
+    return hrefFor({ subject, chapter, status, chunk: openChunk, ...next });
   }
 
   const onEdit = (pair: ConceptPair) => {
@@ -296,6 +310,7 @@ function PairsWorkspace({ subject, location, editingId, setEditingId }: PairsWor
             <ChunkPicker
               location={location}
               subjectCode={subject}
+              hrefFor={hrefFor}
               map={mapState.map}
               partial={mapState.status === "partial"}
             />

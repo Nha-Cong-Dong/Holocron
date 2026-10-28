@@ -9,6 +9,7 @@ import { useShell } from "@/components/shell/ShellContext";
 import { api, toUiError } from "@/lib/api";
 import type { UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
+import { type PairsLocation, pairsHref } from "@/lib/pairs";
 import { ticketLine } from "@/lib/practice";
 import type { PracticeBatch, PracticeBlueprint, PracticeTicket } from "@/lib/practice-data";
 import { freshRuntime } from "@/lib/runtime";
@@ -30,19 +31,28 @@ type Stage =
   | { kind: "generate_failed"; error: UiError; blueprint: PracticeBlueprint }
   | { kind: "ready"; blueprint: PracticeBlueprint; batch: PracticeBatch };
 
+export interface PracticeViewProps {
+  /** Môn cố định (trang môn); ưu tiên hơn môn của khung. Bỏ trống ⇒ môn của khung (route cũ `/practice`). */
+  subjectCode?: string;
+  /** Dựng địa chỉ phần khái niệm (liên kết khi câu lý thuyết không sinh được); mặc định `pairsHref` (`/pairs?…`). */
+  hrefFor?: (location: Partial<PairsLocation>) => string;
+}
+
 /**
- * `/practice`: màn luyện tập (F4, lát cắt dọc §4). Chọn môn ở thanh bên → tạo đề (`POST /v1/blueprints`) → sinh câu
- * (`POST /v1/blueprints/{id}/twins`) → làm từng câu. Mọi con số và đáp án do backend trả; giao diện chỉ so khoá.
+ * Màn luyện tập (F4, lát cắt dọc §4): chọn môn (trang môn truyền qua prop; route cũ `/practice` dùng môn của khung) →
+ * tạo đề (`POST /v1/blueprints`) → sinh câu (`POST /v1/blueprints/{id}/twins`) → làm từng câu. Mọi con số và đáp án do
+ * backend trả; giao diện chỉ so khoá.
  */
-export function PracticeView() {
-  const { runtime, subjects, reloadSubjects, subjectCode } = useShell();
+export function PracticeView({ subjectCode: fixedSubject, hrefFor = pairsHref }: PracticeViewProps) {
+  const { runtime, subjects, reloadSubjects, subjectCode: shellSubject } = useShell();
+  const subjectCode = fixedSubject ?? shellSubject;
   const subject = selectedSubject(subjects, subjectCode);
   const [stage, setStage] = useState<Stage>({ kind: "setup" });
   const calls = useRef(createLatestCounter());
   // Một khoá cho mỗi bộ đề: "Thử lại" sau lỗi mạng gửi lại cùng body và nhận đúng lượt sinh cũ nếu backend đã sinh xong.
   const idempotencyKeys = useRef(new Map<string, string>());
 
-  // Đổi môn ở thanh bên: bỏ đề đang làm của môn cũ và mọi lời gọi còn chờ.
+  // Đổi môn: bỏ đề đang làm của môn cũ và mọi lời gọi còn chờ.
   useEffect(() => {
     if (subjectCode === null) return;
     calls.current.invalidate();
@@ -97,7 +107,9 @@ export function PracticeView() {
   }
   if (subject === null) {
     return (
-      <EmptyState title="Chưa chọn môn.">Chọn một môn ở thanh bên trái để tạo đề luyện tập cho môn đó.</EmptyState>
+      <EmptyState title="Chưa chọn môn.">
+        Mở một môn ở <Link href="/">trang chủ</Link> để tạo đề luyện tập cho môn đó.
+      </EmptyState>
     );
   }
 
@@ -133,6 +145,7 @@ export function PracticeView() {
           batch={stage.batch}
           blueprint={stage.blueprint}
           onNewExam={restart}
+          conceptsHref={hrefFor({})}
         />
       )}
     </div>
@@ -155,9 +168,11 @@ interface ReadyBatchProps {
   batch: PracticeBatch;
   blueprint: PracticeBlueprint;
   onNewExam: () => void;
+  /** Địa chỉ phần khái niệm của môn sinh ra đề. */
+  conceptsHref: string;
 }
 
-function ReadyBatch({ batch, blueprint, onNewExam }: ReadyBatchProps) {
+function ReadyBatch({ batch, blueprint, onNewExam, conceptsHref }: ReadyBatchProps) {
   const hasSkipped = batch.skipped.malformed > 0 || batch.skipped.unsupported > 0;
   if (batch.questions.length === 0) {
     return (
@@ -167,7 +182,7 @@ function ReadyBatch({ batch, blueprint, onNewExam }: ReadyBatchProps) {
             ? "Lý do của từng câu do backend ghi ở bên dưới. Sửa theo gợi ý rồi tạo lại đề, hoặc tạo đề với chương khác."
             : "Thử tạo đề với chương khác."}
         </EmptyState>
-        <TicketNotice tickets={batch.tickets} />
+        <TicketNotice tickets={batch.tickets} conceptsHref={conceptsHref} />
         {hasSkipped && <SkippedNotice />}
         <div className={styles.actions}>
           <button type="button" className={styles.primary} onClick={onNewExam}>
@@ -179,7 +194,7 @@ function ReadyBatch({ batch, blueprint, onNewExam }: ReadyBatchProps) {
   }
   return (
     <div className={styles.page}>
-      <TicketNotice tickets={batch.tickets} />
+      <TicketNotice tickets={batch.tickets} conceptsHref={conceptsHref} />
       {hasSkipped && <SkippedNotice />}
       {/* Đoạn nguồn của trích dẫn tìm theo môn của blueprint sinh ra câu, không theo môn đang chọn (ADR-006). */}
       <PracticeSession
@@ -196,7 +211,7 @@ function ReadyBatch({ batch, blueprint, onNewExam }: ReadyBatchProps) {
  * Slot không sinh được (`review_tickets`): hiện nguyên lý do backend ghi, kèm gợi ý cố định với slot lý thuyết
  * (`ticketLine`); không hiện câu hỏng.
  */
-function TicketNotice({ tickets }: { tickets: PracticeTicket[] }) {
+function TicketNotice({ tickets, conceptsHref }: { tickets: PracticeTicket[]; conceptsHref: string }) {
   if (tickets.length === 0) return null;
   return (
     <section className={styles.tickets} aria-labelledby="practice-tickets-title">
@@ -212,7 +227,7 @@ function TicketNotice({ tickets }: { tickets: PracticeTicket[] }) {
       </ul>
       {tickets.some((ticket) => ticket.theory) && (
         <p>
-          <Link href="/pairs">Mở trang Cặp khái niệm</Link>
+          <Link href={conceptsHref}>Mở trang Cặp khái niệm</Link>
         </p>
       )}
     </section>

@@ -23,13 +23,15 @@ interface ChunkPickerProps {
   map: ReadonlyMap<string, ChunkView>;
   /** Map chưa đủ (chạm trần số request). */
   partial: boolean;
+  /** Dựng địa chỉ mở một chunk (giữ bộ lọc); mặc định `pairsHref` (`/pairs?…`). */
+  hrefFor?: (location: Partial<PairsLocation>) => string;
 }
 
 /**
  * Danh sách chunk để chọn khi chưa mở chunk nào: đủ chunk của chương đang lọc, hoặc vài chunk đầu của môn khi chưa
  * chọn chương. Mỗi chunk là một liên kết `?chunk=` (giữ bộ lọc hiện tại).
  */
-export function ChunkPicker({ location, subjectCode, map, partial }: ChunkPickerProps) {
+export function ChunkPicker({ location, subjectCode, map, partial, hrefFor = pairsHref }: ChunkPickerProps) {
   const { chunks, truncated } = chunksToPick(map, location.chapter, PAIRS_CHUNK_PREVIEW_COUNT);
   return (
     <>
@@ -63,7 +65,7 @@ export function ChunkPicker({ location, subjectCode, map, partial }: ChunkPicker
                 <div className={styles.actions}>
                   <Link
                     className={styles.secondary}
-                    href={pairsHref({ ...location, subject: subjectCode, chunk: chunk.chunkId })}
+                    href={hrefFor({ ...location, subject: subjectCode, chunk: chunk.chunkId })}
                   >
                     Mở chunk này
                   </Link>

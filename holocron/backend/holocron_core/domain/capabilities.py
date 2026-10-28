@@ -23,7 +23,7 @@ CapabilityName = Literal[
     "essay_grading_llm",
     "template_authoring_llm",
     "vlm",
-    # Ba tên cho UI mới (duyệt 2026-10-29): luôn `not_implemented` cho tới khi có code.
+    # Ba tên cho UI mới (đề xuất, chờ duyệt (2026-10-29)): luôn `not_implemented` cho tới khi có code.
     "concept_auto_proposal",
     "line_review_queue",
     "page_progress_eta",

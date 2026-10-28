@@ -42,7 +42,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name)
 
 
-# Giá trị mong đợi viết cứng, đủ 12 phần tử đúng thứ tự §5.12 (duyệt 2026-10-29, câu 15); không tính từ code.
+# Giá trị mong đợi viết cứng, đủ 12 phần tử đúng thứ tự §5.12 (câu 15 duyệt sửa test, ngày 2026-10-29; tên khả năng: đề xuất, chờ duyệt); không tính từ code.
 _NOT_IMPL_DETAIL = "Bản đang chạy chưa có khả năng này."
 _LLM_DETAIL = (
     "Chưa cấu hình LLM: đặt đủ ba biến môi trường HOLOCRON_LLM_BASE_URL, HOLOCRON_LLM_API_KEY và "

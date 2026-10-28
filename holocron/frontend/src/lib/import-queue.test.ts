@@ -7,6 +7,7 @@ import type { DocumentStatusView, DocumentSummaryView } from "./documents-data";
 import { classifyHttpError, classifyNetworkError, importFailureText } from "./errors";
 import {
   CHAPTER_MISSING_VI,
+  canRetry,
   chapterLabel,
   DEFAULT_SOURCE_KIND,
   defaultTitle,
@@ -243,6 +244,47 @@ describe("gửi lần lượt", () => {
       queued,
     );
     expect(importQueueReducer(state, { type: "retry", id: "import-1" })).toBe(state);
+  });
+
+  it("lỗi do chính file (400, 413, 415, 422) ⇒ canRetry false và reducer không nhận retry", () => {
+    for (const status of [400, 413, 415, 422]) {
+      const error = classifyHttpError(status, { detail: "x" }, { context: "document_upload" });
+      const state = run(
+        [
+          { type: "send_started", id: "import-1" },
+          { type: "send_failed", id: "import-1", error },
+        ],
+        queued,
+      );
+      expect(row(state, "import-1").status).toBe("failed");
+      expect(canRetry(row(state, "import-1"))).toBe(false);
+      expect(importQueueReducer(state, { type: "retry", id: "import-1" })).toBe(state);
+    }
+  });
+
+  it("lỗi không do file (mạng, 500) ⇒ canRetry true, khớp với reducer", () => {
+    for (const error of [
+      classifyNetworkError(""),
+      classifyHttpError(500, { detail: "x" }, { context: "document_upload" }),
+    ]) {
+      const state = run(
+        [
+          { type: "send_started", id: "import-1" },
+          { type: "send_failed", id: "import-1", error },
+        ],
+        queued,
+      );
+      expect(canRetry(row(state, "import-1"))).toBe(true);
+      expect(row(importQueueReducer(state, { type: "retry", id: "import-1" }), "import-1").status).toBe("ready");
+    }
+  });
+
+  it("canRetry chỉ nhận dòng failed", () => {
+    expect(canRetry({ status: "failed", error: null })).toBe(true);
+    expect(canRetry({ status: "conflict", error: conflict })).toBe(false);
+    for (const status of ["ready", "invalid", "sending", "created", "existing"] as const) {
+      expect(canRetry({ status, error: null })).toBe(false);
+    }
   });
 
   it("kết quả của dòng không ở trạng thái đang gửi bị bỏ qua", () => {

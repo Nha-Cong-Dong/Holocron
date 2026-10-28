@@ -11,7 +11,7 @@
 import { guessChapterCode } from "@/lib/chapters";
 import { charLength, checkDocumentFile, type FileLike } from "@/lib/documents";
 import type { DocumentStatusView, DocumentSummaryView } from "@/lib/documents-data";
-import { importFailureText, type UiError } from "@/lib/errors";
+import { type ErrorKind, importFailureText, type UiError } from "@/lib/errors";
 import { type ReadingLine, readingLines } from "@/lib/home-cards";
 import { CHAPTER_CODE_PATTERN, DOCUMENT_TITLE_MAX_CHARS } from "@/lib/limits";
 import type { SourceKind } from "@/types/holocron";
@@ -102,6 +102,25 @@ export function isPending(row: Pick<ImportRow, "status" | "queued">): boolean {
 /** Dòng đã có kết quả từ backend. */
 export function isSettled(row: Pick<ImportRow, "status">): boolean {
   return row.status === "created" || row.status === "existing" || row.status === "conflict" || row.status === "failed";
+}
+
+/**
+ * Lỗi gửi do chính file (400 rỗng, 413 quá lớn, 415 không phải PDF, 422 không mở được): gửi lại vẫn lỗi y vậy nên không
+ * thử lại được; người dùng sửa file rồi thêm lại, hoặc bỏ dòng.
+ */
+const FILE_ERROR_KINDS: ReadonlySet<ErrorKind> = new Set([
+  "bad_request",
+  "too_large",
+  "unsupported_media",
+  "validation",
+]);
+
+/**
+ * Dòng thử lại được không: chỉ dòng `failed` mà lỗi không do chính file. Nút "Thử lại" và action `retry` của reducer
+ * cùng dùng hàm này.
+ */
+export function canRetry(row: Pick<ImportRow, "status" | "error">): boolean {
+  return row.status === "failed" && !(row.error !== null && FILE_ERROR_KINDS.has(row.error.kind));
 }
 
 function validated<F extends FileLike>(row: ImportRow<F>): ImportRow<F> {
@@ -235,7 +254,7 @@ export function importQueueReducer<F extends FileLike>(
       );
     case "retry":
       return updateRow(state, action.id, (row) => {
-        if (row.status !== "failed") return null;
+        if (!canRetry(row)) return null;
         const next = validated({ ...row, error: null });
         return { ...next, queued: next.status === "ready" };
       });

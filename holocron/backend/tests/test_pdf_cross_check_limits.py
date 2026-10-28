@@ -39,11 +39,9 @@ DOC_ID = "doc_00000000000000cc"
 GARBLED = "HÖ ®iÒu hµnh cÊp ph¸t CPU cho c¸c tiÕn tr×nh theo l−ît vµ ®−îc ch¹y tèi ®a mét l−îng tö."
 SAME_BOX: UnitBBox = (0.1, 0.1, 0.9, 0.12)
 TIME_LIMIT_S = 1.0
-HANG_GUARD_S = 10.0
-RATIO_SMALL = 500
-RATIO_LARGE = 5000
+ABSOLUTE_LIMIT_S = 3.0
 RATIO_RUNS = 5
-RATIO_LIMIT = 30.0
+RATIO_LIMIT = 5.0
 
 
 def _page(primary: list[RawOcrLine], secondary: list[RawSecondaryLine]) -> RawPdfPage:
@@ -83,46 +81,54 @@ def _assert_cut(page: PageExtraction) -> None:
 
 
 def _median_elapsed(lines: int, config: PdfReaderConfig, runs: int = RATIO_RUNS) -> tuple[PageExtraction, float]:
-    """Trung vị thời gian đối chiếu qua `runs` lần trên trang đối kháng `lines` × `lines`, kèm trang của lần cuối."""
+    """Trang của lần chạy đầu và trung vị thời gian đối chiếu qua `runs` lần trên trang đối kháng `lines` × `lines`."""
     raw = _same_box_page(lines, lines)
-    samples: list[float] = []
-    page: PageExtraction | None = None
-    for _ in range(runs):
-        page, elapsed = _timed_assemble(raw, config)
-        samples.append(elapsed)
-    assert page is not None
+    page, first = _timed_assemble(raw, config)
+    samples = [first] + [_timed_assemble(raw, config)[1] for _ in range(runs - 1)]
     return page, statistics.median(samples)
 
 
-def test_adversarial_overlapping_lines_scale_linearly_and_are_cut() -> None:
-    """Mọi dòng của hai lượt trùng một hộp toạ độ: đối chiếu không bậc hai và bị cắt ở cả hai kích thước.
+def _assert_scales_linearly(small: float, large: float, small_lines: int, large_lines: int) -> None:
+    """Thời gian ở cỡ lớn không quá `RATIO_LIMIT` lần thời gian ở cỡ nhỏ."""
+    ratio = large / small
+    assert ratio < RATIO_LIMIT, f"tỉ lệ thời gian ×{ratio:.1f} (n {small_lines} → {large_lines}) ≥ ×{RATIO_LIMIT:.0f}"
 
-    Đo tỉ lệ thời gian giữa n₂ = 10·n₁ dòng thay vì ngưỡng giây tuyệt đối (CI chậm làm ngưỡng chập chờn). Công việc
-    bị chặn bởi trần số cặp nên tăng tuyến tính theo n (chủ yếu dựng và sắp dữ liệu): kỳ vọng ≈ ×10 hoặc thấp hơn;
-    bản bậc hai không trần cho ≈ ×100. Ngưỡng 30 nằm giữa hai mức theo thang log, chịu được nhiễu của máy chậm.
+
+def test_adversarial_overlapping_lines_scale_linearly_and_are_cut() -> None:
+    """Mọi dòng của hai lượt trùng một hộp toạ độ: thời gian không tăng theo bậc hai và trang bị cắt ở cả hai cỡ.
+
+    Đo tỉ lệ thời gian giữa n₂ = 10·n₁ dòng thay vì chỉ ngưỡng giây tuyệt đối (CI chậm làm ngưỡng chập chờn).
+    Cả hai cỡ đều vượt trần số cặp (n₁² > `cross_check_max_line_pairs`) nên đối chiếu bị cắt ở ≈ trần đó: thời gian
+    gần như không tăng theo n, chỉ còn phần dựng và sắp xếp dữ liệu. Bản đúng đo được ×0.9–2.4 (n 500 → 5000);
+    nới trần cặp lên 5 000 000 cho ×19–20 (n=500 không còn bị cắt); đối chiếu bậc hai thuần cho ≈ ×100.
+    Ngưỡng ×5 cách bản đúng ≥ 2 lần và bắt được cả ca nới trần. Lưới tuyệt đối 3 s ở n₂ (CI đo bản đúng ≈ 1.05 s)
+    chặn thêm các hồi quy làm chậm đều.
     """
     config = PdfReaderConfig()
-    small_page, small = _median_elapsed(RATIO_SMALL, config)
-    large_page, large = _median_elapsed(RATIO_LARGE, config)
+    large_lines = config.cross_check_max_lines
+    small_lines = large_lines // 10
+    assert small_lines**2 > config.cross_check_max_line_pairs, "cỡ nhỏ phải vượt trần số cặp để cũng bị cắt"
+    small_page, small = _median_elapsed(small_lines, config)
+    large_page, large = _median_elapsed(large_lines, config)
     _assert_cut(small_page)
     _assert_cut(large_page)
-    assert large < HANG_GUARD_S, f"đối chiếu mất {large:.2f} s"
-    assert large / small < RATIO_LIMIT, f"tỉ lệ thời gian ×{large / small:.1f} (n {RATIO_SMALL} → {RATIO_LARGE})"
+    assert large < ABSOLUTE_LIMIT_S, f"đối chiếu mất {large:.2f} s"
+    _assert_scales_linearly(small, large, small_lines, large_lines)
 
 
 def test_ratio_check_detects_quadratic_cross_check() -> None:
-    """Khi bỏ trần số cặp (đối chiếu bậc hai cố ý) tỉ lệ thời gian vượt ngưỡng ⇒ phép đo ở trên sẽ đỏ."""
+    """Bỏ trần số cặp (đối chiếu bậc hai cố ý) ⇒ chính phép kiểm tỉ lệ ở test trên phải đỏ."""
     config = PdfReaderConfig(cross_check_max_line_pairs=10**9)
-    _, small = _median_elapsed(200, config, runs=3)
-    _, large = _median_elapsed(2000, config, runs=3)
-    assert large / small >= RATIO_LIMIT, f"tỉ lệ ×{large / small:.1f} không phân biệt được bản bậc hai"
+    _, small = _median_elapsed(100, config, runs=3)
+    _, large = _median_elapsed(1000, config, runs=1)
+    with pytest.raises(AssertionError, match="tỉ lệ thời gian"):
+        _assert_scales_linearly(small, large, 100, 1000)
 
 
-@pytest.mark.parametrize("lines", [PdfReaderConfig().cross_check_max_lines, MAX_PAGE_LINES])
-def test_adversarial_overlapping_lines_hang_guard(lines: int) -> None:
-    """Ở đúng trần số dòng và ở trần giao thức (10 000 × 10 000): bị cắt và không treo (lưới an toàn rộng)."""
-    page, elapsed = _timed_assemble(_same_box_page(lines, lines), PdfReaderConfig())
-    assert elapsed < HANG_GUARD_S, f"đối chiếu mất {elapsed:.2f} s"
+def test_adversarial_overlapping_lines_at_protocol_cap_are_cut_fast() -> None:
+    """Ở trần của giao thức (10 000 × 10 000) trang bị cắt ngay ở kiểm số dòng, O(1)."""
+    page, elapsed = _timed_assemble(_same_box_page(MAX_PAGE_LINES, MAX_PAGE_LINES), PdfReaderConfig())
+    assert elapsed < TIME_LIMIT_S, f"đối chiếu mất {elapsed:.2f} s"
     _assert_cut(page)
 
 

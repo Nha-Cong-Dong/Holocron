@@ -13,7 +13,7 @@ import {
 } from "react";
 
 import { useReducedMotion } from "@/hooks/motion-hooks";
-import { EMPTY_TOAST_QUEUE, TOAST_DURATION_MS, toastReducer } from "@/lib/toast-queue";
+import { EMPTY_TOAST_QUEUE, toastDeadline, toastReducer } from "@/lib/toast-queue";
 
 import { Button } from "./Button";
 import styles from "./Toast.module.css";
@@ -65,27 +65,84 @@ export function Toast({ message, leaving, onClose, onLeft }: ToastProps) {
   );
 }
 
+/** Đưa vùng thông báo lên đỉnh top layer (trên `<dialog>` modal mở sau nó). Trình duyệt chưa có popover thì bỏ qua. */
+function raiseRegion(region: HTMLElement | null, force: boolean): void {
+  if (region === null || typeof region.showPopover !== "function") return;
+  const open = region.matches(":popover-open");
+  if (open && !force) return;
+  if (open) region.hidePopover();
+  region.showPopover();
+}
+
 /**
  * Hàng đợi thông báo nhanh cho toàn app (hàng đợi thuần ở `lib/toast-queue.ts`). Vùng hiển thị luôn có trong DOM với
- * `aria-live="polite"` để trình đọc màn hình đọc thông báo mới. Mỗi thông báo tự rời đi sau `TOAST_DURATION_MS`;
- * giảm chuyển động thì gỡ ngay, không chờ animation.
+ * `aria-live="polite"` để trình đọc màn hình đọc thông báo mới, và là popover thủ công trong top layer để không bị
+ * `<dialog>` modal che; khi đang có hộp thoại modal, vùng được đưa lên lại trước khi thêm thông báo. Mỗi thông báo tự
+ * rời đi sau `TOAST_DURATION_MS`; rê chuột hoặc focus vào vùng thì tạm dừng đếm (WCAG 2.2.1). Giảm chuyển động thì gỡ
+ * ngay, không chờ animation.
  */
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [queue, dispatch] = useReducer(toastReducer, EMPTY_TOAST_QUEUE);
   const reduced = useReducedMotion();
-  // Một hẹn giờ cho mỗi (thông báo, giai đoạn): "in" = đang hiện, chờ tự rời; "out" = đang rời, chờ gỡ.
+  const regionRef = useRef<HTMLDivElement>(null);
+  // Một hẹn giờ cho mỗi (thông báo, giai đoạn): "in:<lúc bắt đầu>" = đang hiện, chờ tự rời; "out" = đang rời, chờ gỡ.
   const timers = useRef(new Map<string, number>());
+
+  useEffect(() => {
+    raiseRegion(regionRef.current, false);
+  }, []);
+
+  // Tạm dừng khi rê chuột hoặc focus trong vùng thông báo (nghe trực tiếp trên vùng, không phải thao tác của vùng).
+  useEffect(() => {
+    const region = regionRef.current;
+    if (region === null) return;
+    let hovered = false;
+    let focused = false;
+    function sync(): void {
+      dispatch({ type: hovered || focused ? "pause" : "resume", now: Date.now() });
+    }
+    function onPointerEnter(): void {
+      hovered = true;
+      sync();
+    }
+    function onPointerLeave(): void {
+      hovered = false;
+      sync();
+    }
+    function onFocusIn(): void {
+      focused = true;
+      sync();
+    }
+    function onFocusOut(event: FocusEvent): void {
+      const next = event.relatedTarget;
+      focused = next instanceof Node && region !== null && region.contains(next);
+      sync();
+    }
+    region.addEventListener("pointerenter", onPointerEnter);
+    region.addEventListener("pointerleave", onPointerLeave);
+    region.addEventListener("focusin", onFocusIn);
+    region.addEventListener("focusout", onFocusOut);
+    return () => {
+      region.removeEventListener("pointerenter", onPointerEnter);
+      region.removeEventListener("pointerleave", onPointerLeave);
+      region.removeEventListener("focusin", onFocusIn);
+      region.removeEventListener("focusout", onFocusOut);
+    };
+  }, []);
 
   useEffect(() => {
     const live = new Set<string>();
     for (const item of queue.items) {
-      const key = `${item.id}:${item.leaving ? "out" : "in"}`;
+      const deadline = toastDeadline(item);
+      if (!item.leaving && deadline === null) continue;
+      const key = item.leaving ? `${item.id}:out` : `${item.id}:in:${item.startedAt}`;
       live.add(key);
       if (timers.current.has(key)) continue;
       const id = item.id;
-      const timer = item.leaving
-        ? window.setTimeout(() => dispatch({ type: "remove", id }), reduced ? 0 : LEAVE_FALLBACK_MS)
-        : window.setTimeout(() => dispatch({ type: "leave", id }), TOAST_DURATION_MS);
+      const timer =
+        deadline === null
+          ? window.setTimeout(() => dispatch({ type: "remove", id }), reduced ? 0 : LEAVE_FALLBACK_MS)
+          : window.setTimeout(() => dispatch({ type: "leave", id }), Math.max(deadline - Date.now(), 0));
       timers.current.set(key, timer);
     }
     for (const [key, timer] of timers.current) {
@@ -103,13 +160,17 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const show = useCallback((message: string) => dispatch({ type: "push", message }), []);
+  const show = useCallback((message: string) => {
+    // Hộp thoại modal mở sau vùng thông báo nằm trên nó trong top layer: đưa vùng lên lại trước khi thêm chữ mới.
+    if (document.querySelector("dialog:modal") !== null) raiseRegion(regionRef.current, true);
+    dispatch({ type: "push", message, now: Date.now() });
+  }, []);
   const api = useMemo<ToastApi>(() => ({ show }), [show]);
 
   return (
     <ToastContext.Provider value={api}>
       {children}
-      <div className={styles.region} aria-live="polite">
+      <div ref={regionRef} className={styles.region} popover="manual" aria-live="polite">
         {queue.items.map((item) => (
           <Toast
             key={item.id}

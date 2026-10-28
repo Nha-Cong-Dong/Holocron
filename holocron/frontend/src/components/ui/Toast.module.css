@@ -1,14 +1,21 @@
-/* Vùng và hình dáng thông báo nhanh; chuyển động ở motion.css (.m-toast, .m-toast-star). */
+/* Vùng và hình dáng thông báo nhanh; chuyển động ở motion.css (.m-toast, .m-toast-star). Vùng là popover thủ công
+   (top layer, trên cả <dialog> modal): bỏ khung, nền, lề mặc định của popover. */
 .region {
   position: fixed;
-  top: var(--sp-4);
-  left: 50%;
+  inset: var(--sp-4) auto auto 50%;
   z-index: 1000;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+  color: inherit;
   display: grid;
   justify-items: center;
   gap: var(--sp-2);
   width: max-content;
   max-width: calc(100vw - var(--sp-8));
+  height: auto;
   translate: -50% 0;
   pointer-events: none;
 }

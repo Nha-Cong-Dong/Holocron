@@ -6,6 +6,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useReducer, useRef, us
 import { api, toUiError } from "@/lib/api";
 import { USE_MOCKS } from "@/lib/config";
 import { createLatestCounter } from "@/lib/latest";
+import { shellHeadingForPath } from "@/lib/navigation";
 import {
   buildLabel,
   INITIAL_RUNTIME_STATE,
@@ -17,6 +18,7 @@ import {
 import { GLOBAL_SCOPE, resolveShortcut, targetKindOf } from "@/lib/shortcuts";
 import { subjectHref } from "@/lib/subject-route";
 import type { SubjectsState } from "@/lib/subjects";
+import { announceThemeChange, applyMotion, browserStorage, MOTION_STORAGE_KEY, readMotion } from "@/lib/theme";
 
 import styles from "./AppShell.module.css";
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
@@ -81,6 +83,18 @@ export function AppShell({ children }: { children: ReactNode }) {
       subjectCounter.invalidate();
     };
   }, [refreshRuntime, reloadSubjects]);
+
+  // Tab khác bật/tắt "Giảm chuyển động": áp ngay cho mọi trang của tab này (không chỉ khi đang mở Cài đặt), rồi báo
+  // cho các nơi đang hiển thị lựa chọn đọc lại. Theme đổi ở tab khác do nút theme trên thanh trên xử lý.
+  useEffect(() => {
+    function onStorage(event: StorageEvent): void {
+      if (event.key !== MOTION_STORAGE_KEY) return;
+      applyMotion(document.documentElement, readMotion(browserStorage()));
+      announceThemeChange();
+    }
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
@@ -151,6 +165,9 @@ export function AppShell({ children }: { children: ReactNode }) {
     [runtime, refreshRuntime, subjects, reloadSubjects, subjectCode, overlay],
   );
 
+  // Mỗi route có đúng một <h1>: trang tự có tiêu đề (trang môn, Cài đặt) thì khung không render thêm.
+  const heading = shellHeadingForPath(pathname);
+
   return (
     <ShellContext.Provider value={context}>
       <a className={styles.skipLink} href="#main-content">
@@ -165,7 +182,12 @@ export function AppShell({ children }: { children: ReactNode }) {
         <div className={styles.body}>
           {selectOfflineMode(runtime) && <OfflineBanner />}
           <main id="main-content" className={styles.content} tabIndex={-1}>
-            <div className={styles.contentInner}>{children}</div>
+            <div className={styles.contentInner}>
+              {heading !== null && (
+                <h1 className={heading.visuallyHidden ? "visually-hidden" : styles.pageTitle}>{heading.text}</h1>
+              )}
+              {children}
+            </div>
           </main>
         </div>
         <StatusBar

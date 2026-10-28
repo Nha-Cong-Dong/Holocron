@@ -9,9 +9,7 @@ import {
   applyMotion,
   applyTheme,
   browserStorage,
-  MOTION_STORAGE_KEY,
   parseTheme,
-  readMotion,
   THEME_CHANGE_EVENT,
   type ThemeChoice,
   themeLabel,
@@ -54,19 +52,10 @@ export function SettingsView() {
       setTheme(applied.theme);
       setReduce(applied.reduce);
     }
-    // Tab khác đổi giảm chuyển động: áp theo kho. (Theme đổi ở tab khác do nút trên thanh trên áp rồi phát sự kiện.)
-    function onStorage(event: StorageEvent): void {
-      if (event.key !== MOTION_STORAGE_KEY) return;
-      applyMotion(document.documentElement, readMotion(browserStorage()));
-      sync();
-    }
+    // Tab khác đổi theme hay giảm chuyển động: khung và nút theme áp lên <html> rồi phát `THEME_CHANGE_EVENT`.
     sync();
     window.addEventListener(THEME_CHANGE_EVENT, sync);
-    window.addEventListener("storage", onStorage);
-    return () => {
-      window.removeEventListener(THEME_CHANGE_EVENT, sync);
-      window.removeEventListener("storage", onStorage);
-    };
+    return () => window.removeEventListener(THEME_CHANGE_EVENT, sync);
   }, []);
 
   function pickTheme(choice: ThemeChoice): void {

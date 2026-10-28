@@ -6,6 +6,7 @@ import {
   foldForSearch,
   NAV_ITEMS,
   navItemForPath,
+  shellHeadingForPath,
   titleForPath,
 } from "./navigation";
 
@@ -87,5 +88,26 @@ describe("crumbTitleForPath", () => {
   it("trang mới và đường dẫn lạ dùng titleForPath", () => {
     expect(crumbTitleForPath("/settings")).toBe("Cài đặt");
     expect(crumbTitleForPath("/khong-co")).toBe("Holocron");
+  });
+});
+
+describe("shellHeadingForPath", () => {
+  it("trang tự có h1 (trang môn, Cài đặt): khung không render, kể cả có / cuối", () => {
+    expect(shellHeadingForPath("/subject")).toBeNull();
+    expect(shellHeadingForPath("/subject/")).toBeNull();
+    expect(shellHeadingForPath("/settings")).toBeNull();
+  });
+
+  it("trang chủ: h1 ẩn (lời chào là tiêu đề nhìn thấy)", () => {
+    expect(shellHeadingForPath("/")).toEqual({ text: "Holocron", visuallyHidden: true });
+  });
+
+  it("route cũ: h1 hiện rõ theo chữ của luồng mới", () => {
+    expect(shellHeadingForPath("/vault/")).toEqual({ text: "Tài liệu", visuallyHidden: false });
+    expect(shellHeadingForPath("/pairs")).toEqual({ text: "Khái niệm", visuallyHidden: false });
+    expect(shellHeadingForPath("/practice")).toEqual({ text: "Ôn tập", visuallyHidden: false });
+    expect(shellHeadingForPath("/ingestion")).toEqual({ text: "Nhập đề thi cũ", visuallyHidden: false });
+    expect(shellHeadingForPath("/twins")).toEqual({ text: "Câu hỏi song sinh", visuallyHidden: false });
+    expect(shellHeadingForPath("/khong-co")).toEqual({ text: "Holocron", visuallyHidden: false });
   });
 });

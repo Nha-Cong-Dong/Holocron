@@ -30,6 +30,13 @@
   padding: var(--sp-8) var(--sp-6) var(--sp-12);
 }
 
+.pageTitle {
+  font-size: var(--fs-h1);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-h1);
+  letter-spacing: -0.02em;
+}
+
 .skipLink {
   position: absolute;
   top: var(--space-2);

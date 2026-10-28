@@ -137,6 +137,7 @@ function SubjectPanes({ code, tab, documentLocation, listError, onReloadSubjects
             documentId={documentLocation.doc}
             pageNumber={documentLocation.page ?? 1}
             hrefFor={documentsHref}
+            expectedSubjectCode={code}
           />
         ))}
       {tab === "concepts" && <PairsView subjectCode={code} hrefFor={conceptsHref} documentsHrefFor={documentsHref} />}

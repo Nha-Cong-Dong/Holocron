@@ -79,7 +79,7 @@ Ghi chú: `tests/test_input_limits.py:36-53` khoá hành vi "bảng > 10 tiến 
 
 ### Khả năng chờ backend (UI mới)
 
-Trạng thái: đề xuất, chờ duyệt (2026-10-29; người dùng yêu cầu ghi như vậy ở `.claude/state/decisions-answers-2026-10-29.md`, câu 16). Phương án A lấy từ `.claude/state/decisions-2026-10-28.md`, mục "Đổi kế hoạch lần cuối"; nguồn yêu cầu `design-handoff/README.md` mục 9). Phương án A: UI không đặt TODO trong code; mỗi chỗ chờ backend kiểm một khả năng có tên trong `GET /v1/runtime` (spec §5.12, §11.4), mặc định `available = false`, `reason = "not_implemented"`. Chỗ nào chưa có khả năng thì UI dùng chức năng hiện có kèm một câu giải thích ngắn, không hiển thị dữ liệu giả. "Nhập nhiều file" không cần khả năng mới (UI gửi lần lượt qua `POST /v1/documents`).
+Trạng thái: đề xuất, chờ duyệt (2026-10-29; người dùng yêu cầu ghi như vậy ở `.claude/state/decisions-answers-2026-10-29.md`, câu 16). Phương án A lấy từ `.claude/state/decisions-2026-10-28.md`, mục "Đổi kế hoạch lần cuối"; nguồn yêu cầu `design-handoff/README.md` mục 9. Phương án A: UI không đặt TODO trong code; mỗi chỗ chờ backend kiểm một khả năng có tên trong `GET /v1/runtime` (spec §5.12, §11.4), mặc định `available = false`, `reason = "not_implemented"`. Chỗ nào chưa có khả năng thì UI dùng chức năng hiện có kèm một câu giải thích ngắn, không hiển thị dữ liệu giả. "Nhập nhiều file" không cần khả năng mới (UI gửi lần lượt qua `POST /v1/documents`).
 
 | Mã | Tên khả năng | Lý do | Điều kiện xoá |
 |---|---|---|---|

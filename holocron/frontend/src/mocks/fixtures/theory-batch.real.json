@@ -1,0 +1,157 @@
+{
+  "batch_id": "tb_aa834a7b83d143e6",
+  "blueprint_id": "bp_94105a969f4f4b7c",
+  "base_seed": 20261028,
+  "twins": [
+    {
+      "question_kind": "theory",
+      "twin_id": "twin_f6070780370b4cc8",
+      "blueprint_id": "bp_94105a969f4f4b7c",
+      "slot_index": 1,
+      "format": "MCQ4",
+      "question": {
+        "question_kind": "theory",
+        "form": "definition_choice",
+        "subject_code": "SSH1110",
+        "chapter_code": "ch1",
+        "seed": 20261028,
+        "generator_version": "theory_mcq4_v2",
+        "pool_sha256": "1a236e96701336f55520b6bb7f91d13339213aa5c29df75ab028bb72cb899dc3",
+        "stem": "Phát biểu nào là định nghĩa của «Không gian»?",
+        "options": {
+          "A": "____ là sự phản ánh năng động, sáng tạo thế giới khách quan vào bộ óc con người.",
+          "B": "____ là phạm trù triết học dùng để chỉ thực tại khách quan.",
+          "C": "____ là hình thức tồn tại của vật chất xét về quảng tính.",
+          "D": "____ là phương thức tồn tại của vật chất."
+        },
+        "correct_key": "C",
+        "distractor_to_misconception_map": {
+          "A": {
+            "misconception_code": "THEORY_SAME_CHAPTER_CONCEPT",
+            "label_vi": "Khái niệm khác cùng chương",
+            "rationale_vi": "«Ý thức»: Ý thức là sự phản ánh năng động, sáng tạo thế giới khách quan vào bộ óc con người."
+          },
+          "B": {
+            "misconception_code": "THEORY_SAME_CHAPTER_CONCEPT",
+            "label_vi": "Khái niệm khác cùng chương",
+            "rationale_vi": "«Vật chất»: Vật chất là phạm trù triết học dùng để chỉ thực tại khách quan."
+          },
+          "D": {
+            "misconception_code": "THEORY_SAME_CHAPTER_CONCEPT",
+            "label_vi": "Khái niệm khác cùng chương",
+            "rationale_vi": "«Vận động»: Vận động là phương thức tồn tại của vật chất."
+          }
+        },
+        "distractor_citations": {
+          "A": {
+            "doc_id": "doc_aaaaaaaaaaaaaaaa",
+            "page_number": 1,
+            "verbatim_quote": "Ý thức là sự phản ánh năng động, sáng tạo thế giới khách quan vào bộ óc con người.",
+            "chunk_id": "chk_f479920743382ad1"
+          },
+          "B": {
+            "doc_id": "doc_aaaaaaaaaaaaaaaa",
+            "page_number": 1,
+            "verbatim_quote": "Vật chất là phạm trù triết học dùng để chỉ thực tại khách quan.",
+            "chunk_id": "chk_f479920743382ad1"
+          },
+          "D": {
+            "doc_id": "doc_aaaaaaaaaaaaaaaa",
+            "page_number": 1,
+            "verbatim_quote": "Vận động là phương thức tồn tại của vật chất.",
+            "chunk_id": "chk_f479920743382ad1"
+          }
+        },
+        "solution_explanation_vi": "Định nghĩa của «Không gian» trong tài liệu: “Không gian là hình thức tồn tại của vật chất xét về quảng tính.”",
+        "citation": {
+          "doc_id": "doc_aaaaaaaaaaaaaaaa",
+          "page_number": 1,
+          "verbatim_quote": "Không gian là hình thức tồn tại của vật chất xét về quảng tính.",
+          "chunk_id": "chk_f479920743382ad1"
+        }
+      },
+      "review_status": "AUTO_PASS",
+      "generated_at": "2026-10-27T21:36:55.980990Z"
+    },
+    {
+      "question_kind": "theory",
+      "twin_id": "twin_3ad442885f78449f",
+      "blueprint_id": "bp_94105a969f4f4b7c",
+      "slot_index": 2,
+      "format": "MCQ4",
+      "question": {
+        "question_kind": "theory",
+        "form": "concept_match",
+        "subject_code": "SSH1110",
+        "chapter_code": "ch2",
+        "seed": 20261028,
+        "generator_version": "theory_mcq4_v2",
+        "pool_sha256": "1a236e96701336f55520b6bb7f91d13339213aa5c29df75ab028bb72cb899dc3",
+        "stem": "Khái niệm nào ứng với đoạn trích sau?\n\n> ____ là tri thức phù hợp với hiện thực khách quan.",
+        "options": {
+          "A": "Ý thức",
+          "B": "Nhận thức",
+          "C": "Chân lý",
+          "D": "Thực tiễn"
+        },
+        "correct_key": "C",
+        "distractor_to_misconception_map": {
+          "A": {
+            "misconception_code": "THEORY_SAME_SUBJECT_CONCEPT",
+            "label_vi": "Khái niệm khác cùng môn",
+            "rationale_vi": "«Ý thức»: Ý thức là sự phản ánh năng động, sáng tạo thế giới khách quan vào bộ óc con người."
+          },
+          "B": {
+            "misconception_code": "THEORY_SAME_CHAPTER_CONCEPT",
+            "label_vi": "Khái niệm khác cùng chương",
+            "rationale_vi": "«Nhận thức»: Nhận thức là quá trình phản ánh hiện thực khách quan vào bộ óc con người."
+          },
+          "D": {
+            "misconception_code": "THEORY_SAME_CHAPTER_CONCEPT",
+            "label_vi": "Khái niệm khác cùng chương",
+            "rationale_vi": "«Thực tiễn»: Thực tiễn là toàn bộ hoạt động vật chất có mục đích của con người."
+          }
+        },
+        "distractor_citations": {
+          "A": {
+            "doc_id": "doc_aaaaaaaaaaaaaaaa",
+            "page_number": 1,
+            "verbatim_quote": "Ý thức là sự phản ánh năng động, sáng tạo thế giới khách quan vào bộ óc con người.",
+            "chunk_id": "chk_f479920743382ad1"
+          },
+          "B": {
+            "doc_id": "doc_bbbbbbbbbbbbbbbb",
+            "page_number": 1,
+            "verbatim_quote": "Nhận thức là quá trình phản ánh hiện thực khách quan vào bộ óc con người.",
+            "chunk_id": "chk_1653c5407c72e3bc"
+          },
+          "D": {
+            "doc_id": "doc_bbbbbbbbbbbbbbbb",
+            "page_number": 1,
+            "verbatim_quote": "Thực tiễn là toàn bộ hoạt động vật chất có mục đích của con người.",
+            "chunk_id": "chk_1653c5407c72e3bc"
+          }
+        },
+        "solution_explanation_vi": "Định nghĩa của «Chân lý» trong tài liệu: “Chân lý là tri thức phù hợp với hiện thực khách quan.”",
+        "citation": {
+          "doc_id": "doc_bbbbbbbbbbbbbbbb",
+          "page_number": 1,
+          "verbatim_quote": "Chân lý là tri thức phù hợp với hiện thực khách quan.",
+          "chunk_id": "chk_1653c5407c72e3bc"
+        }
+      },
+      "review_status": "AUTO_PASS",
+      "generated_at": "2026-10-27T21:36:55.988744Z"
+    }
+  ],
+  "review_tickets": [
+    {
+      "blueprint_id": "bp_94105a969f4f4b7c",
+      "slot_index": 3,
+      "topic_key": null,
+      "reason": "không đủ căn cứ trong Vault: không có cặp khái niệm đã xác nhận nào thuộc chương ch3 của môn SSH1110",
+      "attempts": []
+    }
+  ],
+  "created_at": "2026-10-28T08:00:00Z"
+}

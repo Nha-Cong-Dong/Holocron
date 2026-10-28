@@ -8,15 +8,17 @@ import { MAX_THEORY_SLOTS } from "@/lib/limits";
 import {
   buildBlueprintCreate,
   DEFAULT_QUESTION_COUNT,
-  defaultFormatChoice,
+  ESSAY_NOT_AVAILABLE_VI,
   EXAM_FORMAT_LABEL_VI,
+  essayChoiceAvailable,
   FORMAT_CHOICE_LABEL_VI,
   type FormatChoice,
   formatChoices,
   MIN_QUESTION_COUNT,
+  prefilledFormatChoice,
 } from "@/lib/practice";
-import { isCapabilityBlocked, type RuntimeView } from "@/lib/runtime";
-import type { BlueprintCreate, Subject } from "@/types/contract-pending";
+import { capabilityOf, isCapabilityBlocked, type RuntimeView } from "@/lib/runtime";
+import type { BlueprintCreate, Subject } from "@/types/holocron";
 
 import styles from "./Practice.module.css";
 
@@ -28,19 +30,23 @@ interface BlueprintBuilderProps {
 }
 
 /**
- * Form tạo đề luyện tập lý thuyết: chương, số câu và hình thức (điền sẵn theo `exam_format` của môn). Chấm tự luận
- * không khả dụng thì lựa chọn có tự luận bị ẩn kèm lý do của backend, và giao diện không tự đổi sang trắc nghiệm.
+ * Form tạo đề luyện tập lý thuyết: chương, số câu và hình thức. Lựa chọn có tự luận chỉ hiện khi backend báo rõ chấm
+ * tự luận offline khả dụng (khi đó điền sẵn theo `exam_format` của môn); backend chưa báo hoặc báo không khả dụng thì
+ * chỉ có và điền sẵn trắc nghiệm, kèm dòng giải thích với môn thi tự luận hay kết hợp, để luồng mặc định không gặp 409.
  */
 export function BlueprintBuilder({ subject, runtime, busy, onCreate }: BlueprintBuilderProps) {
-  const essayAvailable = !isCapabilityBlocked(runtime, "essay_grading_offline");
+  const essayAvailable = essayChoiceAvailable(capabilityOf(runtime, "essay_grading_offline"));
   const generationBlocked = isCapabilityBlocked(runtime, "theory_generation");
   const allowed = formatChoices(essayAvailable);
   const [chapterCode, setChapterCode] = useState("");
   const [count, setCount] = useState(String(DEFAULT_QUESTION_COUNT));
-  const [choice, setChoice] = useState<FormatChoice | null>(() => defaultFormatChoice(subject.exam_format, allowed));
+  const [choice, setChoice] = useState<FormatChoice | null>(() =>
+    prefilledFormatChoice(subject.exam_format, essayAvailable),
+  );
   const [formError, setFormError] = useState<string | null>(null);
-  // Lựa chọn đã lưu có thể không còn được phép (khả năng vừa đổi sau khi kiểm tra lại backend): coi như chưa chọn.
-  const effectiveChoice = choice !== null && allowed.includes(choice) ? choice : null;
+  // Lựa chọn đã lưu có thể không còn được phép (khả năng vừa đổi sau khi kiểm tra lại backend): về trắc nghiệm.
+  const effectiveChoice =
+    choice !== null && allowed.includes(choice) ? choice : prefilledFormatChoice(subject.exam_format, essayAvailable);
 
   function handleSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
@@ -67,17 +73,19 @@ export function BlueprintBuilder({ subject, runtime, busy, onCreate }: Blueprint
         từ tài liệu.
       </p>
       <CapabilityNotice runtime={runtime} name="theory_generation" />
-      {!essayAvailable && <CapabilityNotice runtime={runtime} name="essay_grading_offline" />}
+      {isCapabilityBlocked(runtime, "essay_grading_offline") && (
+        <CapabilityNotice runtime={runtime} name="essay_grading_offline" />
+      )}
       {!essayAvailable && subject.exam_format !== "mcq" && (
         <p className={styles.note}>
-          Môn này {EXAM_FORMAT_LABEL_VI[subject.exam_format]} nhưng chấm tự luận chưa dùng được, nên chỉ còn trắc
-          nghiệm. Giao diện không tự đổi hình thức thay bạn: chọn trắc nghiệm nếu vẫn muốn luyện.
+          {ESSAY_NOT_AVAILABLE_VI}. Môn này {EXAM_FORMAT_LABEL_VI[subject.exam_format]}, nhưng đề luyện tập ở đây chỉ
+          gồm câu trắc nghiệm.
         </p>
       )}
       {USE_MOCKS && (
         <p className={styles.note}>
-          Dữ liệu mẫu: đề tạo ra luôn là cùng một bộ câu mẫu, không theo chương, số câu hay hình thức chọn ở đây. Kết
-          quả chấm tự luận cũng là kết quả cố định dựng sẵn cho từng câu, không dựa trên câu trả lời bạn viết.
+          Dữ liệu mẫu đang bật, nhưng môn học, bộ đề và câu hỏi ở màn này luôn lấy từ backend đang chạy, không lấy từ dữ
+          liệu mẫu.
         </p>
       )}
       <form className={styles.form} onSubmit={handleSubmit} noValidate>

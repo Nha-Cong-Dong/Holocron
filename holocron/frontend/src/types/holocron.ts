@@ -8,7 +8,16 @@
 
 export type OptionKey = "A" | "B" | "C" | "D";
 
-export type QuestionFormat = "MCQ4" | "NUMERICAL";
+/** Hình thức câu (§5.14): `ESSAY` chỉ slot lý thuyết mang được; chưa có câu ESSAY nào được sinh. */
+export type QuestionFormat = "MCQ4" | "NUMERICAL" | "ESSAY";
+
+/** `COMPUTATIONAL_FORMATS`: hình thức của câu tính toán và của `TwinBatchRequest.format` (§6.3: `ESSAY` ⇒ 422). */
+export type ComputationalFormat = "MCQ4" | "NUMERICAL";
+
+/** Hình thức thi của môn (§5.14); mặc định cho `TheorySlotSpec.format` khi null. */
+export type ExamFormat = "mcq" | "essay" | "mixed";
+
+export type CognitiveLevel = "remember" | "understand" | "apply" | "analyze";
 
 export type ReviewStatus = "AUTO_PASS" | "AUTO_FALLBACK" | "NEEDS_REVIEW" | "APPROVED" | "REJECTED";
 
@@ -133,11 +142,13 @@ export interface AttemptLog {
 export interface ReviewTicket {
   blueprint_id: string;
   slot_index: number;
-  topic_key: string;
+  /** `null` với slot lý thuyết (§5.9). */
+  topic_key: string | null;
   reason: string;
   attempts: AttemptLog[];
 }
 
+/** Câu tính toán; JSON KHÔNG có `question_kind` (khoá phân biệt với `TheoryTwin` trong `TwinBatch.twins`). */
 export interface TwinQuestion {
   twin_id: string;
   blueprint_id: string;
@@ -145,7 +156,7 @@ export interface TwinQuestion {
   template_id: string;
   topic_key: string;
   seed: number;
-  format: QuestionFormat;
+  format: ComputationalFormat;
   stem: string;
   options: Record<OptionKey, string> | null;
   correct_key: OptionKey | null;
@@ -159,6 +170,161 @@ export interface TwinQuestion {
   /** Sắp theo `start`, không chồng lấn; khoảng CPU rảnh không có đoạn; không rỗng với topic CPU Scheduling. */
   gantt: GanttSegment[];
 }
+
+export interface DistractorArchetype {
+  misconception_code: string;
+  description: string;
+  observed_option_key: OptionKey | null;
+  observed_option_text: string | null;
+  reproduction_confidence: number;
+}
+
+/** Slot câu tính toán của blueprint (dựng từ đề đã duyệt). */
+export interface BlueprintSlot {
+  slot_index: number;
+  source_page_number: number;
+  format: QuestionFormat;
+  chapter_code: string;
+  topic_key: string;
+  cognitive_level: CognitiveLevel;
+  /**
+   * Pydantic khai báo `bool`. Phía TS khai literal `true` để thu hẹp `ExamBlueprintSlot`: slot tính toán do API hiện
+   * tại tạo luôn có `true`. Hạn chế: blueprint JSON cũ có slot tính toán `false` (không có `question_kind`) vẫn được
+   * backend đọc là `BlueprintSlot` và trả `false` ở đây; xem chú thích của `ExamBlueprintSlot`.
+   */
+  is_computational: true;
+  non_cloneable: boolean;
+  non_cloneable_reason: string | null;
+  distractor_archetypes: DistractorArchetype[];
+  self_solve: SelfSolveResult;
+  mapping_confidence: number;
+  review_status: ReviewStatus;
+}
+
+/**
+ * Slot lý thuyết của blueprint, dựng từ `TheorySlotSpec` (§5.9; quyết định 14(b), nợ ADR-004: model riêng thay cho
+ * `BlueprintSlot.question_kind = "theory"` của spec). `format` là MCQ4 hoặc ESSAY; `cognitive_level` là remember
+ * hoặc understand.
+ */
+export interface TheorySlot {
+  slot_index: number;
+  is_computational: false;
+  question_kind: "theory";
+  chapter_code: string;
+  source_chunk_id: string | null;
+  format: QuestionFormat;
+  topic_key: string | null;
+  cognitive_level: CognitiveLevel;
+  non_cloneable: false;
+  mapping_confidence: number;
+  review_status: ReviewStatus;
+}
+
+/**
+ * Phần tử của `ExamBlueprint.slots`. Backend phân biệt theo `question_kind`: `"theory"` ⇒ `TheorySlot`, còn lại ⇒
+ * `BlueprintSlot` (`_slot_kind` ở `domain/schemas.py`). Phía TS thu hẹp được nhờ `is_computational` literal: slot lý
+ * thuyết luôn `false`, slot tính toán do API hiện tại tạo luôn `true`. Hạn chế: slot tính toán cũ có
+ * `is_computational = false` mà không có `question_kind` vẫn là `BlueprintSlot` ở backend, nên thu hẹp theo
+ * `is_computational` sẽ xếp nhầm nó vào `TheorySlot`.
+ */
+export type ExamBlueprintSlot = BlueprintSlot | TheorySlot;
+
+/** `ExamBlueprint` (§5.9); bốn field cuối là `computed_field`, luôn có trong response và do backend tính. */
+export interface ExamBlueprint {
+  blueprint_id: string;
+  /** `null` chỉ khi blueprint không có slot tính toán. */
+  source_exam_doc_id: string | null;
+  subject_code: string;
+  total_questions: number;
+  duration_minutes: number | null;
+  slots: ExamBlueprintSlot[];
+  created_at: string;
+  chapter_distribution: Record<string, number>;
+  format_distribution: Partial<Record<QuestionFormat, number>>;
+  cloneable_ratio: number;
+  mean_mapping_confidence: number;
+}
+
+/** Một slot lý thuyết người dùng yêu cầu ở `POST /v1/blueprints` (§5.9); field bỏ trống thì backend lấy mặc định. */
+export interface TheorySlotSpec {
+  chapter_code: string;
+  cognitive_level?: "remember" | "understand";
+  source_chunk_id?: string | null;
+  /** `null` hoặc bỏ trống ⇒ mặc định theo `Subject.exam_format` (§5.14). */
+  format?: "MCQ4" | "ESSAY" | null;
+}
+
+/**
+ * Body của `POST /v1/blueprints` (§5.9, §6.7): ≤ 50 item, ≤ 50 slot lý thuyết, không cùng rỗng. Backend của bản này
+ * trả 422 khi `item_ids` khác rỗng (câu tính toán chưa hỗ trợ, quyết định 15).
+ */
+export interface BlueprintCreate {
+  subject_code: string;
+  item_ids?: string[];
+  theory_slots?: TheorySlotSpec[];
+  duration_minutes?: number | null;
+}
+
+/** Một dòng của `GET /v1/blueprints` (§6.7). */
+export interface BlueprintSummary {
+  blueprint_id: string;
+  subject_code: string;
+  total_questions: number;
+  created_at: string;
+  batch_count: number;
+}
+
+/** Môn học (§5.14); `version` cho optimistic locking (§6.8). */
+export interface Subject {
+  subject_code: string;
+  display_name: string;
+  exam_format: ExamFormat;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// ------------------------------------------------------------------ domain/theory.py
+
+export type TheoryQuestionForm = "concept_match" | "fill_blank" | "definition_choice";
+
+/**
+ * Câu lý thuyết MCQ4 do code ghép từ cặp khái niệm đã xác nhận (ADR-007). `distractor_to_misconception_map` và
+ * `distractor_citations` phủ đúng ba phương án sai; mọi trích dẫn là nguyên văn tài liệu (I3).
+ */
+export interface TheoryQuestion {
+  question_kind: "theory";
+  form: TheoryQuestionForm;
+  subject_code: string;
+  chapter_code: string;
+  seed: number;
+  generator_version: string;
+  pool_sha256: string;
+  stem: string;
+  options: Record<OptionKey, string>;
+  correct_key: OptionKey;
+  distractor_to_misconception_map: Partial<Record<OptionKey, MisconceptionRef>>;
+  distractor_citations: Partial<Record<OptionKey, Citation>>;
+  solution_explanation_vi: string;
+  citation: Citation;
+}
+
+// ------------------------------------------------------------------- domain/twins.py
+
+/** Một câu lý thuyết MCQ4 trong `TwinBatch` (quyết định 14(b), nợ ADR-004); bộ ba I4 nằm trong `question`. */
+export interface TheoryTwin {
+  question_kind: "theory";
+  twin_id: string;
+  blueprint_id: string;
+  slot_index: number;
+  format: "MCQ4";
+  question: TheoryQuestion;
+  review_status: ReviewStatus;
+  generated_at: string;
+}
+
+/** Phần tử của `TwinBatch.twins`: `question_kind === "theory"` ⇒ `TheoryTwin`, không có `question_kind` ⇒ `TwinQuestion`. */
+export type BatchTwin = TwinQuestion | TheoryTwin;
 
 // ---------------------------------------------------------- services/ingestion_gate.py
 
@@ -546,18 +712,20 @@ export interface RuntimeInfo {
   log_dir: string | null;
 }
 
-/** Body của `POST /v1/blueprints/{id}/twins`; mọi field đều tuỳ chọn khi gửi. */
+/** Body của `POST /v1/blueprints/{id}/twins`; mọi field đều tuỳ chọn khi gửi. `format` chỉ ghi đè slot tính toán. */
 export interface TwinBatchRequest {
   count?: number;
-  format?: QuestionFormat;
+  format?: ComputationalFormat;
   base_seed?: number | null;
 }
 
 export interface TwinBatch {
+  batch_id: string;
   blueprint_id: string;
   base_seed: number;
-  twins: TwinQuestion[];
+  twins: BatchTwin[];
   review_tickets: ReviewTicket[];
+  created_at: string;
 }
 
 export interface UploadResponse {
@@ -579,6 +747,15 @@ export interface StemPatchRequest {
 export interface NonCloneableRequest {
   editor_id: string;
   reason: string;
+}
+
+// -------------------------------------------------------------- routers/subjects.py
+
+/** Body của `POST /v1/subjects` (§6.8). Thiếu `display_name` ⇒ dùng `subject_code`; thiếu `exam_format` ⇒ `mixed`. */
+export interface SubjectCreate {
+  subject_code: string;
+  display_name?: string | null;
+  exam_format?: ExamFormat;
 }
 
 /** Một phần tử lỗi validate (HTTP 422) do FastAPI sinh. */

@@ -30,34 +30,17 @@ function kebab(name: string): string {
   return name.replaceAll("_", "-");
 }
 
-/** Endpoint đang có trong api.ts (tham số động ghi `:`). Thêm endpoint mới phải sửa danh sách này có chủ đích. */
-const EXISTING_ENDPOINTS: readonly string[] = [
-  "/v1/runtime",
-  "/v1/subjects",
-  "/v1/ingestion/upload",
-  "/v1/ingestion/items/:",
-  "/v1/ingestion/items/:/table",
-  "/v1/ingestion/items/:/non-cloneable",
-  "/v1/ingestion/items/:/approve",
-  "/v1/blueprints",
-  "/v1/blueprints/:/twins",
-  "/v1/twins/:/essay-grade",
-  "/v1/vault/chunks",
-  "/v1/vault/chunks/:/labels",
-  "/v1/vault/search",
-  "/v1/vault/concept-pairs",
-  "/v1/vault/concept-pairs/:/confirm",
-  "/v1/vault/concept-pairs/:/reject",
-  "/v1/documents",
-  "/v1/documents/:",
-  "/v1/documents/:/pages/:",
-  "/v1/documents/:/pages/:/lines",
-  "/v1/documents/:/pages/:/confirm",
-  "/v1/documents/:/confirm",
-];
-
-/** Từ không được xuất hiện trong đoạn nào của đường dẫn endpoint ("proposal" đã có sẵn ở endpoint ghép khái niệm thì không). */
-const FORBIDDEN_SEGMENT_WORDS: readonly string[] = ["proposal", "eta", "line-review", "review-queue", "auto-"];
+/**
+ * Đoạn đường dẫn endpoint gợi tới ba khả năng chưa có. Dùng danh sách chặn (không allowlist) để PR sau thêm endpoint
+ * khác không phải sửa test này; "eta" chỉ khớp nguyên đoạn hoặc hậu tố `-eta` để không bắt nhầm "metadata", "beta".
+ */
+function forbiddenSegment(segment: string): boolean {
+  return (
+    ["proposal", "line-review", "review-queue", "auto-", "progress"].some((word) => segment.includes(word)) ||
+    segment === "eta" ||
+    segment.endsWith("-eta")
+  );
+}
 
 /** Mọi đường dẫn `/v1/...` trong mã, bỏ query, `${...}` thành `:`. */
 function endpointPaths(source: string): string[] {
@@ -119,7 +102,7 @@ describe("ba khả năng đề xuất ở nhóm chưa có trong bản đang ch�
     }
   });
 
-  it("api.ts không chứa tên khả năng và mọi endpoint nằm trong danh sách đã có", () => {
+  it("api.ts không chứa tên khả năng và không có endpoint gợi tới chúng", () => {
     const source = readFileSync(join(SRC_DIR, "lib", "api.ts"), "utf-8");
     for (const name of PENDING) {
       expect(source).not.toContain(name);
@@ -128,14 +111,7 @@ describe("ba khả năng đề xuất ở nhóm chưa có trong bản đang ch�
     const endpoints = new Set(endpointPaths(source));
     expect(endpoints.size).toBeGreaterThan(0);
     for (const endpoint of endpoints) {
-      expect(EXISTING_ENDPOINTS, endpoint).toContain(endpoint);
-      const segments = endpoint.split("/");
-      for (const word of FORBIDDEN_SEGMENT_WORDS) {
-        expect(
-          segments.some((s) => s === word || s.includes(word)),
-          `${endpoint} ~ ${word}`,
-        ).toBe(false);
-      }
+      expect(endpoint.split("/").some(forbiddenSegment), endpoint).toBe(false);
     }
   });
 
@@ -172,5 +148,11 @@ describe("ba khả năng đề xuất ở nhóm chưa có trong bản đang ch�
   it("tự kiểm: endpoint lạ bị bắt", () => {
     expect(endpointPaths('request("/v1/vault/concept-proposals")')).toEqual(["/v1/vault/concept-proposals"]);
     expect(endpointPaths("request(`/v1/documents/$" + "{segment(id)}/eta?x=1`)")).toEqual(["/v1/documents/:/eta"]);
+    for (const path of ["/v1/vault/concept-proposals", "/v1/documents/:/eta", "/v1/documents/:/line-review"]) {
+      expect(path.split("/").some(forbiddenSegment), path).toBe(true);
+    }
+    for (const path of ["/v1/documents/:/metadata", "/v1/vault/concept-pairs", "/v1/runtime"]) {
+      expect(path.split("/").some(forbiddenSegment), path).toBe(false);
+    }
   });
 });

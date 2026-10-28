@@ -45,13 +45,17 @@ import {
   unsavedDrafts,
 } from "@/lib/review-confirm";
 import {
+  type Announcement,
   bulkConfirmBlock,
   closeLineEdit,
   DRAFT_PAGE_LABEL_VI,
   draftFor,
   draftPagesNote,
+  lineEditDenial,
+  lineEditLock,
   lineEditState,
   lockedDraftNotice,
+  NO_ANNOUNCEMENT,
   NO_DRAFTS,
   nextAnnouncement,
   type PageDraft,
@@ -153,13 +157,15 @@ export function PageReview({
   const [drafts, setDrafts] = useState<ReviewDrafts>(NO_DRAFTS);
   // Vùng thông báo cố định của màn (`role="status"`): đặt ở đây, không ở `PagePanel`, vì vùng trang mount lại theo
   // `pageNumber:version` sau mỗi lần ghi hay tải lại. Chữ chỉ đổi khi câu báo của trang đang hiện đổi
-  // (`nextAnnouncement`), nên xung đột cũ không bị đọc lại sau một lần ghi không liên quan. Không di chuyển focus.
+  // (`nextAnnouncement`), nên xung đột cũ không bị đọc lại sau một lần ghi không liên quan; sang trang khác thì chữ của
+  // trang cũ bị bỏ ngay cả khi trang mới còn đang tải. Không di chuyển focus.
+  const shownPage = page.kind === "ready" ? page.value.pageNumber : pageNumber;
   const shownMessage =
     page.kind === "ready" ? pageDraftStatusMessage(page.value, draftFor(drafts, page.value.pageNumber)) : null;
-  const [announced, setAnnounced] = useState("");
+  const [announced, setAnnounced] = useState<Announcement>(NO_ANNOUNCEMENT);
   useEffect(() => {
-    setAnnounced((previous) => nextAnnouncement(previous, shownMessage));
-  }, [shownMessage]);
+    setAnnounced((previous) => nextAnnouncement(previous, { pageNumber: shownPage, message: shownMessage }));
+  }, [shownPage, shownMessage]);
 
   /** Đóng ô "Sửa" của đúng dòng trên đúng trang; ổn định giữa các lần vẽ (dùng trong effect của `PagePanel`). */
   const closeEdit = useCallback((target: number, lineIndex: number) => {
@@ -455,7 +461,7 @@ export function PageReview({
 
         <div className={styles.reviewMain}>
           <div className="visually-hidden" role="status">
-            {announced}
+            {announced.text}
           </div>
           {notice !== null && <output className={styles.successNote}>{notice}</output>}
           {actionError !== null && <ErrorNotice error={actionError} onRetry={reloadAll} onReload={reloadAll} />}
@@ -639,6 +645,9 @@ function PagePanel({
   const editing = editState?.kind === "open" ? (draft.editing?.lineIndex ?? null) : null;
   const matchedLine = editState?.kind === "matched" ? (draft.editing?.lineIndex ?? null) : null;
   const lockedNotice = lockedDraftNotice(draft, editBlock);
+  // Một trang chỉ có một ô sửa: ô đang mở hay còn chữ chưa lưu sau xung đột thì nút "Sửa" của mọi dòng khác khoá kèm lý
+  // do, để mở ô mới không làm mất nháp im lặng (và chỉ một dòng đổi trạng thái sửa, không có hai dòng giành focus).
+  const editLock = lineEditLock(draft, page.lines, editBlock);
   const drafts = unsavedDrafts({ appendText: draft.appendText, editingLine: draft.editing?.lineIndex ?? null });
   // Câu báo xung đột/khoá cho trình đọc màn hình nằm ở vùng thông báo cố định của `PageReview` (không mount lại cùng
   // vùng này).
@@ -873,6 +882,11 @@ function PagePanel({
         </table>
       )}
 
+      {editLock !== null && editBlock === null && (
+        <p id={`${ids}-edit-lock`} className={pageStyles.unsavedNote}>
+          {editLock.reason}
+        </p>
+      )}
       {page.lines.length > 0 && (
         <ol className={styles.lines} aria-label="Các dòng của trang">
           {page.lines.map((line) => (
@@ -883,12 +897,16 @@ function PagePanel({
               editable={editBlock === null && !busy}
               busy={busy}
               editing={editing === line.lineIndex}
+              editDenied={lineEditDenial(editLock, line.lineIndex) !== null}
+              editDenialId={`${ids}-edit-lock`}
               conflictText={
                 editState?.kind === "changed" && draft.editing?.lineIndex === line.lineIndex ? draft.editing.text : null
               }
               draft={editing === line.lineIndex && draft.editing !== null ? draft.editing.text : line.text}
               onDraftChange={onEditTextChange}
-              onStartEdit={() => onStartEdit(line.lineIndex, line.text)}
+              onStartEdit={() => {
+                if (lineEditDenial(editLock, line.lineIndex) === null) onStartEdit(line.lineIndex, line.text);
+              }}
               onCancel={() => closeEdit(line.lineIndex)}
               onSave={async (text) => {
                 const edits = buildLineEdits(page.lines, new Map([[line.lineIndex, text]]));
@@ -1016,6 +1034,12 @@ interface LineRowProps {
   busy: boolean;
   editing: boolean;
   /**
+   * Nút "Sửa" khoá vì dòng khác đang giữ ô sửa (`lineEditDenial`); lý do bằng chữ nằm ở phần tử `editDenialId` của
+   * `PagePanel`, nút trỏ tới qua `aria-describedby`.
+   */
+  editDenied: boolean;
+  editDenialId: string;
+  /**
    * Dòng vừa đổi ở nơi khác trong lúc ô sửa của nó đang mở (`lineEditState` là `changed`): chữ người dùng đã gõ, hiện
    * kèm nút "Sửa lại từ bản mới" và "Bỏ chữ đã gõ"; `null` khi không xung đột.
    */
@@ -1035,6 +1059,8 @@ function LineRow({
   editable,
   busy,
   editing,
+  editDenied,
+  editDenialId,
   conflictText,
   draft,
   onDraftChange,
@@ -1051,7 +1077,9 @@ function LineRow({
   // Ô sửa đóng ngay trên dòng này (Huỷ, Esc, hoặc "Lưu" mà chữ không đổi nên không gửi gì) thì focus về nút "Sửa" của
   // dòng. Lưu thật xong, hay dữ liệu trang đổi ở nơi khác (xung đột), thì trang có `version` mới: `PagePanel` mount lại
   // theo `pageNumber:version`, dòng này mount lại với ô đóng nên nhánh dưới không chạy; focus về tiêu đề trang theo
-  // `focusOnShow` (nút vừa bấm đã bị gỡ), xung đột báo qua vùng thông báo cố định của `PageReview`.
+  // `focusOnShow` (nút vừa bấm đã bị gỡ), xung đột báo qua vùng thông báo cố định của `PageReview`. Dòng khác không thể
+  // mở ô sửa khi ô này còn mở hay còn xung đột (`lineEditDenial`), nên mỗi lần chỉ một dòng chạy nhánh dưới: không có
+  // hai dòng giành focus.
   useEffect(() => {
     if (editing && !wasEditing.current) {
       setError(null);
@@ -1163,6 +1191,8 @@ function LineRow({
               type="button"
               className={`${styles.secondary} ${styles.small}`}
               onClick={onStartEdit}
+              disabled={editDenied}
+              aria-describedby={editDenied ? editDenialId : undefined}
               aria-label={`Sửa dòng ${line.lineIndex}`}
             >
               Sửa

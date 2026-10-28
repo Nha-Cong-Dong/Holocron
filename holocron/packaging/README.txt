@@ -11,5 +11,5 @@ Log: %LOCALAPPDATA%\Holocron\logs\holocron.log (mở nhanh: Mo-thu-muc-log.cmd),
 Chạy hai cửa sổ Holocron cùng lúc (hai --data-dir khác nhau): khi log vượt 5 MB, bước xoay vòng có thể lỗi, mất
 dòng log và cửa sổ đen in "Logging error". Log có thể chứa đoạn văn bản tài liệu: xem trước khi gửi cho người khác.
 Chế độ app: có Chrome hoặc Brave thì mở cửa sổ riêng (hồ sơ ở %LOCALAPPDATA%\Holocron\browser-profile), không thì
-trình duyệt mặc định. Chọn: Holocron.cmd --browser chrome | brave | default (mặc định: tự tìm Chrome, rồi Brave).
+trình duyệt mặc định. Chọn: Holocron.cmd --browser auto | chrome | brave | default (mặc định: tự tìm Chrome, rồi Brave).
 Giấy phép: LICENSE (Holocron, MIT) và THIRD_PARTY_NOTICES.txt (thành phần bên thứ ba).

@@ -6,6 +6,8 @@ Không khởi chạy trình duyệt thật, không đọc registry thật: `read
 from __future__ import annotations
 
 import socket
+import subprocess
+import sys
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -21,6 +23,7 @@ from holocron_core.launcher import (
     app_url,
     find_browser,
     make_browser_opener,
+    read_app_path,
 )
 
 HOME = Path("/home/nguoi-dung")
@@ -170,6 +173,37 @@ def test_command_line_has_app_and_profile_and_no_token(env: Env) -> None:
     assert profile.is_dir()
     assert "token" not in " ".join(args).lower()
     assert kwargs["shell"] is False
+    assert kwargs["stdin"] is subprocess.DEVNULL
+    assert kwargs["stdout"] is subprocess.DEVNULL
+    assert kwargs["stderr"] is subprocess.DEVNULL
+    assert kwargs["close_fds"] is True
+
+
+def test_registry_relative_path_is_ignored(env: Env) -> None:
+    env.files.add(Path("chrome.exe"))
+    env.registry[("HKCU", CHROME_KEY)] = "chrome.exe"
+    assert env.find("chrome") is None
+
+
+def test_exists_raising_oserror_counts_as_missing(env: Env) -> None:
+    env.files.add(env.brave_pf())
+    chrome = env.chrome_pf()
+
+    def exists(path: Path) -> bool:
+        if path == chrome:
+            raise PermissionError("không có quyền")
+        return path in env.files
+
+    found = find_browser("chrome", env.environ, home=HOME, read_registry=env.read_registry, exists=exists)
+    assert found is None
+    brave = find_browser("brave", env.environ, home=HOME, read_registry=env.read_registry, exists=exists)
+    assert brave == str(env.brave_pf())
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="registry chỉ có trên Windows")
+def test_read_app_path_missing_key_is_none() -> None:
+    assert read_app_path("HKCU", r"SOFTWARE\Holocron-khong-ton-tai\x.exe") is None
+    assert read_app_path("HKLM", r"SOFTWARE\Holocron-khong-ton-tai\x.exe") is None
 
 
 def test_never_uses_msedge(env: Env) -> None:

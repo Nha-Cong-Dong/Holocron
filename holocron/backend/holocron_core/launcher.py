@@ -667,7 +667,9 @@ def find_browser(
 ) -> str | None:
     """Tìm `chrome`/`brave` trên Windows: App Paths (HKCU rồi HKLM), ProgramFiles, ProgramFiles(x86), LOCALAPPDATA.
 
-    Chỉ nhận file tồn tại; thiếu biến môi trường thì bỏ nhánh đó. Hàm thuần (giống `find_tesseract`).
+    Chỉ nhận file tồn tại; thiếu biến môi trường thì bỏ nhánh đó. Giá trị App Paths không phải đường dẫn tuyệt đối
+    bị loại; `exists` ném `OSError` (vd PermissionError) thì coi như không có. Thiếu LOCALAPPDATA thì dùng
+    `~/AppData/Local` qua `_local_app_data`. Hàm thuần (giống `find_tesseract`).
     """
     spec = BROWSER_SPECS.get(name)
     if spec is None:
@@ -677,14 +679,21 @@ def find_browser(
     for hive in ("HKCU", "HKLM"):
         raw = read_registry(hive, f"{APP_PATHS_KEY}\\{exe_name}")
         expanded = _expand_env(raw.strip().strip('"'), environ) if raw else None
-        if expanded:
+        if expanded and Path(expanded).is_absolute():
             candidates.append(Path(expanded))
     for env_name in BROWSER_ROOT_ENVS:
         root = _env_value(environ, env_name)
         if root is not None:
             candidates.append(Path(root).joinpath(*relative))
     candidates.append(_local_app_data(environ, home).joinpath(*relative))
-    return next((str(path) for path in candidates if exists(path)), None)
+
+    def present(path: Path) -> bool:
+        try:
+            return exists(path)
+        except OSError:
+            return False
+
+    return next((str(path) for path in candidates if present(path)), None)
 
 
 def make_browser_opener(

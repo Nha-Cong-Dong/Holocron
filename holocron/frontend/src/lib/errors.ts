@@ -580,3 +580,57 @@ export function actionLabel(action: ErrorAction): string | null {
   if (action === "retry") return "Thử lại";
   return null;
 }
+
+/** Câu lỗi của một file trong hàng đợi nhập tài liệu (màn Thêm hàng loạt): việc gì xảy ra, vì sao, cách sửa. */
+export interface ImportFailureText {
+  /** Việc gì xảy ra, kèm tên file. */
+  title: string;
+  /** Vì sao và cách sửa. */
+  fix: string;
+}
+
+/**
+ * Câu lỗi khi gửi một file qua `POST /v1/documents` (§6.5) thất bại, theo loại lỗi đã phân loại (`classifyHttpError`
+ * với `context = "document_upload"`). Không lộ mã HTTP hay thuật ngữ nội bộ; mã lỗi vẫn nằm trong `UiError.diagnostic`.
+ */
+export function importFailureText(fileName: string, error: UiError): ImportFailureText {
+  const title = `Không nhập được “${fileName}”.`;
+  switch (error.kind) {
+    case "duplicate":
+      return {
+        title,
+        fix: "File cùng nội dung đã được nhập cho một môn khác, hoặc cho chương khác của môn này. Mở tài liệu đó, hoặc xoá nó rồi thêm lại file vào đây.",
+      };
+    case "too_large":
+      return {
+        title,
+        fix: `File vượt ${DOCUMENT_UPLOAD_MAX_MIB} MiB. Tách tài liệu thành nhiều file nhỏ hơn rồi thêm lại, hoặc bỏ file này khỏi danh sách.`,
+      };
+    case "unsupported_media":
+      return {
+        title,
+        fix: "Nội dung file không phải PDF. Chọn đúng file PDF rồi thêm lại, hoặc bỏ file này khỏi danh sách.",
+      };
+    case "validation":
+      return {
+        title,
+        fix: `File đang đặt mật khẩu, dài quá ${DOCUMENT_MAX_PAGES} trang hoặc bị hỏng nên chưa mở được. Bỏ mật khẩu hoặc tách nhỏ file rồi thêm lại, hoặc bỏ file này khỏi danh sách.`,
+      };
+    case "bad_request":
+      return { title, fix: "File rỗng. Chọn lại file có nội dung, hoặc bỏ file này khỏi danh sách." };
+    case "network":
+      return { title, fix: "Holocron chưa chạy hoặc vừa tắt nên file chưa được gửi. Mở lại Holocron rồi bấm Thử lại." };
+    case "busy":
+      return { title, fix: "Thư mục dữ liệu của Holocron đang bận. Đợi vài giây rồi bấm Thử lại." };
+    case "server":
+      return {
+        title,
+        fix: "Bộ đọc tài liệu chưa sẵn sàng hoặc vừa gặp lỗi nên file chưa được nhận. Đợi vài giây rồi bấm Thử lại.",
+      };
+    default:
+      return {
+        title,
+        fix: "Holocron trả lời không như mong đợi nên file chưa được nhận. Bấm Thử lại; nếu vẫn lỗi, mở lại Holocron.",
+      };
+  }
+}

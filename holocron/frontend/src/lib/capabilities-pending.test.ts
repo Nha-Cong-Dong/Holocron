@@ -26,6 +26,20 @@ function listFiles(dir: string, extension: string): string[] {
   return out;
 }
 
+/** Nguồn giao diện cần quét: app, components (.ts/.tsx) và lib (.ts, không đệ quy); bỏ test, runtime.ts, types, mocks. */
+function scannedFiles(): string[] {
+  const runtimeFile = join(SRC_DIR, "lib", "runtime.ts");
+  const typesDir = join(SRC_DIR, "types");
+  const mocksDir = join(SRC_DIR, "mocks");
+  const isSource = (file: string): boolean => /\.tsx?$/.test(file) && !/\.test\.tsx?$/.test(file);
+  const lib = readdirSync(join(SRC_DIR, "lib"))
+    .map((entry) => join(SRC_DIR, "lib", entry))
+    .filter((file) => statSync(file).isFile());
+  return [...listFiles(join(SRC_DIR, "app"), ""), ...listFiles(join(SRC_DIR, "components"), ""), ...lib].filter(
+    (file) => isSource(file) && file !== runtimeFile && !file.startsWith(typesDir) && !file.startsWith(mocksDir),
+  );
+}
+
 function kebab(name: string): string {
   return name.replaceAll("_", "-");
 }
@@ -115,8 +129,11 @@ describe("ba khả năng đề xuất ở nhóm chưa có trong bản đang ch�
     }
   });
 
-  it("components chỉ nhắc ba tên dưới dạng capabilityOf(...) hoặc CapabilityNotice name=...", () => {
-    for (const file of listFiles(join(SRC_DIR, "components"), ".tsx")) {
+  // Phần render nhóm khả năng trên StartScreen do PR E2E phủ (vitest ở đây không có DOM); test này chỉ quét nguồn.
+  it("mã giao diện chỉ nhắc ba tên dưới dạng capabilityOf(...) hoặc CapabilityNotice name=...", () => {
+    const files = scannedFiles();
+    expect(files.length).toBeGreaterThan(0);
+    for (const file of files) {
       expect(disallowedMentions(readFileSync(file, "utf-8")), file).toEqual([]);
     }
   });

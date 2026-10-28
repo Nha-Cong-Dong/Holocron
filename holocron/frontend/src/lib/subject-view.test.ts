@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { Subject } from "@/types/holocron";
 import { localError } from "./errors";
-import { canShowPanes, HOME_CRUMB, subjectBreadcrumb, subjectTitle, subjectViewOf } from "./subject-view";
+import {
+  breadcrumbForPath,
+  canShowPanes,
+  HOME_CRUMB,
+  subjectBreadcrumb,
+  subjectTitle,
+  subjectViewOf,
+} from "./subject-view";
 import type { SubjectsState } from "./subjects";
 
 function subject(code: string, name: string): Subject {
@@ -71,5 +78,26 @@ describe("subjectBreadcrumb", () => {
       { label: "Môn học", href: "/" },
       { label: "Chưa rõ môn", href: null },
     ]);
+  });
+});
+
+describe("breadcrumbForPath", () => {
+  it("trang chủ không có breadcrumb, kể cả có / cuối", () => {
+    expect(breadcrumbForPath("/", "VXL01", READY)).toEqual([]);
+    expect(breadcrumbForPath("", "VXL01", READY)).toEqual([]);
+  });
+
+  it("trang môn: Môn học › tên môn đang mở; chưa tải danh sách ⇒ mã môn", () => {
+    expect(breadcrumbForPath("/subject/", "VXL01", READY)).toEqual([HOME_CRUMB, { label: "Vi xử lý", href: null }]);
+    expect(breadcrumbForPath("/subject", "VXL01", { kind: "loading" })).toEqual([
+      HOME_CRUMB,
+      { label: "VXL01", href: null },
+    ]);
+    expect(breadcrumbForPath("/subject", null, READY)).toEqual([HOME_CRUMB, { label: "Chưa rõ môn", href: null }]);
+  });
+
+  it("trang khác: Môn học › tiêu đề trang; mục cuối không phải liên kết", () => {
+    expect(breadcrumbForPath("/settings", "VXL01", READY)).toEqual([HOME_CRUMB, { label: "Cài đặt", href: null }]);
+    expect(breadcrumbForPath("/ingestion/", null, READY)).toEqual([HOME_CRUMB, { label: "Nhập đề thi", href: null }]);
   });
 });

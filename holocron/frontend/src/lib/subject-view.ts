@@ -4,6 +4,7 @@
  */
 
 import type { UiError } from "@/lib/errors";
+import { titleForPath } from "@/lib/navigation";
 import { type SubjectsState, selectedSubject } from "@/lib/subjects";
 import type { Subject } from "@/types/holocron";
 
@@ -53,4 +54,19 @@ export const UNKNOWN_SUBJECT_LABEL = "Chưa rõ môn";
 /** Breadcrumb của trang môn: "Môn học" (về trang chủ) › tên môn (trang đang mở). */
 export function subjectBreadcrumb(view: SubjectView): BreadcrumbItem[] {
   return [HOME_CRUMB, { label: subjectTitle(view) ?? UNKNOWN_SUBJECT_LABEL, href: null }];
+}
+
+/**
+ * Breadcrumb của thanh trên theo đường dẫn: trang chủ không có breadcrumb; trang môn dùng `subjectBreadcrumb` với môn
+ * đang mở (`subjectCode` của khung, do trang môn đặt); trang khác là "Môn học" › tiêu đề trang.
+ */
+export function breadcrumbForPath(
+  pathname: string,
+  subjectCode: string | null,
+  subjects: SubjectsState,
+): BreadcrumbItem[] {
+  const path = pathname.replace(/\/+$/, "") || "/";
+  if (path === "/") return [];
+  if (path === "/subject") return subjectBreadcrumb(subjectViewOf(subjectCode, subjects));
+  return [HOME_CRUMB, { label: titleForPath(path), href: null }];
 }

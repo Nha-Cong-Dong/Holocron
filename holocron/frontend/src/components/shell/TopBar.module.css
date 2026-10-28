@@ -1,0 +1,156 @@
+/* Thanh trên (design-handoff/README.md màn 3): logo, breadcrumb, nút icon, theme và "Cài đặt". Vùng chạm tối thiểu
+   theo `--tap-min`; nội dung thẳng hàng với vùng nội dung (`--content-max`). */
+.top {
+  position: relative;
+  z-index: 5;
+  background: var(--bg);
+  box-shadow: 0 1px 0 var(--line);
+}
+
+.inner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  min-height: 64px;
+  padding: 0 var(--sp-6);
+}
+
+.brand {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--tap-min);
+  padding: 6px var(--sp-2);
+  border: 0;
+  border-radius: var(--r-pill);
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 18px;
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.02em;
+  cursor: pointer;
+}
+
+.brand:hover {
+  background: var(--surface-2);
+}
+
+.crumb {
+  min-width: 0;
+}
+
+.crumbList {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ink-2);
+  font-size: var(--fs-body);
+}
+
+.crumbItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.crumbSep {
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.6;
+}
+
+.crumbLink {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap-min);
+  padding: 6px 10px;
+  border-radius: var(--r-pill);
+  color: var(--ink-2);
+  text-decoration: none;
+}
+
+.crumbLink:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.crumbCurrent {
+  overflow: hidden;
+  max-width: 40ch;
+  padding: 6px 4px;
+  color: var(--ink);
+  font-weight: var(--fw-semibold);
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.iconButton,
+.themeToggle {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  min-width: var(--tap-min);
+  height: var(--tap-min);
+  padding: 0 var(--sp-2);
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+
+/* Nút có chữ phím rộng hơn một ô vuông: giữ dạng viên thuốc thay vì hình tròn méo. */
+.iconButton {
+  border-radius: var(--r-pill);
+}
+
+.iconButton::before {
+  border-radius: var(--r-pill);
+}
+
+.kbd {
+  font-family: var(--font-ui);
+  font-size: var(--fs-small);
+  font-weight: var(--fw-medium);
+  color: var(--ink-2);
+}
+
+.settings {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--tap-min);
+  padding: 0 22px;
+  border-radius: var(--r-pill);
+  color: var(--ink);
+  font-weight: var(--fw-medium);
+  text-decoration: none;
+}
+
+.settings:hover {
+  background: var(--surface-2);
+}
+
+.settings[aria-current="page"] {
+  background: var(--accent-soft);
+  color: var(--on-accent-soft);
+}

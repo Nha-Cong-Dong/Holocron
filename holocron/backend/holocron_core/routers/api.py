@@ -135,7 +135,7 @@ async def _store_busy(_: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=503, content={"detail": STORE_BUSY_DETAIL})
 
 
-app = FastAPI(title="Holocron Ingestion Gate", version="0.1.0a0", lifespan=_lifespan)
+app = FastAPI(title="Holocron Ingestion Gate", version="0.2.0a0", lifespan=_lifespan)
 # Kiểm `Host` và token (nếu bật) cho MỌI request, trước routing và trước khi đọc body (SPECIFICATION §6.0, §13.1):
 # gồm cả `/openapi.json`, `/docs`, `/redoc`, 404 và 405. Provider tra qua `app.dependency_overrides` để test override.
 app.add_middleware(LocalAccessMiddleware, overrides=lambda: app.dependency_overrides)

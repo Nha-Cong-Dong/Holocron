@@ -2,17 +2,21 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { EmptyState } from "@/components/common/LoadState";
 import { type TabItem, Tabs } from "@/components/common/Tabs";
 import { PairsView } from "@/components/pairs/PairsView";
 import { PracticeView } from "@/components/practice/PracticeView";
 import { useShell } from "@/components/shell/ShellContext";
+import { SkyView } from "@/components/sky/SkyView";
 import { DocumentsPanel } from "@/components/vault/DocumentsPanel";
 import { PageReview } from "@/components/vault/PageReview";
+import { api } from "@/lib/api";
 import type { UiError } from "@/lib/errors";
 import type { PairsLocation } from "@/lib/pairs";
+import { writeRecentSubject } from "@/lib/recent-subject";
+import { buildSkyLayout, type SkyPair } from "@/lib/sky";
 import {
   parseSubjectDocumentLocation,
   parseSubjectLocation,
@@ -23,6 +27,7 @@ import {
 } from "@/lib/subject-route";
 import { canShowPanes, subjectTitle, subjectViewOf } from "@/lib/subject-view";
 import type { SubjectTab } from "@/lib/tabs";
+import { browserStorage } from "@/lib/theme";
 import type { VaultLocation } from "@/lib/vault";
 
 import styles from "./SubjectPage.module.css";
@@ -34,10 +39,11 @@ const TAB_ITEMS: readonly TabItem<SubjectTab>[] = [
 ];
 
 /**
- * Trang môn `/subject?code=&tab=` (design-handoff/README.md màn 3): tiêu đề là tên môn (chưa tải ⇒ mã môn), rồi ba
- * phần Tài liệu · Khái niệm · Ôn tập. Mã môn đọc từ địa chỉ và truyền làm prop cho từng phần; khung được báo qua
- * `selectSubject` để hộp lệnh và các route cũ biết môn mở gần nhất. Phần Tài liệu đọc thêm `?doc=&page=` để xem lại
- * một trang ngay trong tab. Phải nằm trong `<Suspense>` vì đọc `useSearchParams()`.
+ * Trang môn `/subject?code=&tab=` (design-handoff/README.md màn 3): tiêu đề là tên môn (chưa tải ⇒ mã môn), bầu trời
+ * kiến thức của môn, rồi ba phần Tài liệu · Khái niệm · Ôn tập. Mã môn đọc từ địa chỉ và truyền làm prop cho từng
+ * phần; khung được báo qua `selectSubject` (và mã được lưu làm môn gần nhất cho trang chủ) để hộp lệnh và các route cũ
+ * biết môn mở gần nhất. Phần Tài liệu đọc thêm `?doc=&page=` để xem lại một trang ngay trong tab. Phải nằm trong
+ * `<Suspense>` vì đọc `useSearchParams()`.
  */
 export function SubjectPage() {
   const params = useSearchParams();
@@ -47,7 +53,10 @@ export function SubjectPage() {
   const code = location.code;
 
   useEffect(() => {
-    if (code !== null) selectSubject(code);
+    if (code === null) return;
+    selectSubject(code);
+    // Trang chủ đặt nút chính ở thẻ của môn mở gần nhất.
+    writeRecentSubject(browserStorage(), code);
   }, [code, selectSubject]);
 
   const view = subjectViewOf(code, subjects);
@@ -87,6 +96,9 @@ export function SubjectPage() {
         <p className={styles.meta}>Mã môn {view.code}</p>
       </header>
       {canShowPanes(view) && (
+        <SubjectSky key={view.code} code={view.code} title={subjectTitle(view) ?? view.code} tab={location.tab} />
+      )}
+      {canShowPanes(view) && (
         <SubjectPanes
           key={view.code}
           code={view.code}
@@ -98,6 +110,67 @@ export function SubjectPage() {
       )}
     </section>
   );
+}
+
+type SkyState = { kind: "loading" } | { kind: "error" } | { kind: "ready"; pairs: readonly SkyPair[] };
+
+interface SkyRequest {
+  code: string;
+  tab: SubjectTab;
+  /** Tăng mỗi lần cần tải lại (bấm "Thử lại", cửa sổ lấy lại focus). */
+  attempt: number;
+}
+
+/**
+ * Bầu trời 790×200 dưới tiêu đề trang môn, từ cặp khái niệm của môn (`GET /v1/vault/concept-pairs`). Tải lại khi đổi
+ * tab và khi cửa sổ lấy lại focus. Đang tải hay lỗi không chặn các tab ở dưới; lỗi khi đã có bầu trời thì giữ bầu
+ * trời cũ, chưa có thì hiện ô tối với một câu và nút "Thử lại".
+ */
+function SubjectSky({ code, title, tab }: { code: string; title: string; tab: SubjectTab }) {
+  const [state, setState] = useState<SkyState>({ kind: "loading" });
+  const [request, setRequest] = useState<SkyRequest>({ code, tab, attempt: 0 });
+  if (request.code !== code || request.tab !== tab) setRequest({ code, tab, attempt: request.attempt + 1 });
+
+  useEffect(() => {
+    function reload(): void {
+      setRequest((previous) => ({ ...previous, attempt: previous.attempt + 1 }));
+    }
+    window.addEventListener("focus", reload);
+    return () => window.removeEventListener("focus", reload);
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    api.listConceptPairs({ subjectCode: request.code, chapterCode: null, status: null }).then(
+      (list) => {
+        if (alive) setState({ kind: "ready", pairs: list.pairs });
+      },
+      () => {
+        if (alive) setState((previous) => (previous.kind === "ready" ? previous : { kind: "error" }));
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [request]);
+
+  const pairs = state.kind === "ready" ? state.pairs : null;
+  const layout = useMemo(() => (pairs === null ? null : buildSkyLayout(title, pairs)), [title, pairs]);
+
+  if (layout !== null) return <SkyView size="full" status="ready" layout={layout} />;
+  if (state.kind === "error") {
+    return (
+      <SkyView
+        size="full"
+        status="error"
+        onRetry={() => {
+          setState({ kind: "loading" });
+          setRequest((previous) => ({ ...previous, attempt: previous.attempt + 1 }));
+        }}
+      />
+    );
+  }
+  return <SkyView size="full" status="loading" />;
 }
 
 interface SubjectPanesProps {

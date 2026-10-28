@@ -878,10 +878,10 @@ def _serve_with_lock(args: argparse.Namespace, deps: LauncherDeps, launch: Launc
             deps.emit(f"Thư mục dữ liệu: {launch.data_dir}")
             deps.emit(ocr_status_line(launch))
             deps.emit("Đóng cửa sổ này hoặc nhấn Ctrl+C để tắt Holocron.")
-            _run_logged(args, deps, sock, port)
+            started = _run_logged(args, deps, sock, port)
         finally:
             remove_instance_info(launch.data_dir)
-    return EXIT_OK
+    return EXIT_OK if started else EXIT_ERROR
 
 
 def token_config_ok(deps: LauncherDeps) -> bool:
@@ -921,11 +921,13 @@ def _browser_opener(args: argparse.Namespace, deps: LauncherDeps) -> Callable[[s
     )
 
 
-def _run_logged(args: argparse.Namespace, deps: LauncherDeps, sock: socket.socket, port: int) -> None:
+def _run_logged(args: argparse.Namespace, deps: LauncherDeps, sock: socket.socket, port: int) -> bool:
     """Mở log file (sau khi đã giữ khoá) → in dòng version và vị trí log → luồng thăm → serve.
 
     Thư mục log suy từ `deps.environ`/platform/home; bí mật cần che lấy từ env đã đặt cho backend. Không mở được file
     log thì in cảnh báo thay cho dòng `Log:` và chạy tiếp. Ngoại lệ từ `deps.serve` ghi vào log rồi ném lại.
+    Trả `False` khi server chưa từng khởi động xong (`deps.serve` trả `False`): khi đó in `Lỗi: …` ra stderr như lỗi
+    cấu hình token và ghi một dòng ERROR chỉ vào file log.
     """
     opener = _browser_opener(args, deps)
     log_dir = default_log_dir(deps.environ, deps.platform, deps.home)
@@ -965,8 +967,11 @@ def _run_logged(args: argparse.Namespace, deps: LauncherDeps, sock: socket.socke
         finally:
             stop.set()
         if started is False:
-            logging.getLogger(LAUNCHER_LOGGER).error("%s", SERVER_NOT_STARTED_MESSAGE, extra=FILE_ONLY)
-            raise LauncherError(SERVER_NOT_STARTED_MESSAGE)
+            message = f"Lỗi: {SERVER_NOT_STARTED_MESSAGE}"
+            deps.emit_error(message)
+            logging.getLogger(LAUNCHER_LOGGER).error("%s", message, extra=FILE_ONLY)
+            return False
+    return True
 
 
 def main(argv: Sequence[str] | None = None, deps: LauncherDeps | None = None) -> int:

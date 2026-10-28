@@ -113,11 +113,34 @@ def test_server_that_never_started_exits_with_error(tmp_path: Path) -> None:
     recorder = ErrorRecorder()
     deps = _token_deps(tmp_path, recorder, "", lambda _: False)
     assert launcher.main(["--no-browser", "--data-dir", str(data_dir)], deps) == EXIT_ERROR
-    assert recorder.lines[-1] == f"Lỗi: {launcher.SERVER_NOT_STARTED_MESSAGE}"
-    assert f"ERROR holocron_core.launcher: {launcher.SERVER_NOT_STARTED_MESSAGE}" in _log_text(deps)
+    message = f"Lỗi: {launcher.SERVER_NOT_STARTED_MESSAGE}"
+    assert recorder.errors == [message], "lỗi ra stderr như lỗi token"
+    assert all(not line.startswith("Lỗi:") for line in recorder.lines), "không in lỗi ra stdout"
+    assert f"ERROR holocron_core.launcher: {message}" in _log_text(deps)
     assert not (data_dir / INSTANCE_FILENAME).exists()
     lock = launcher.try_acquire_instance_lock(data_dir)
     assert lock is not None
+    lock.release()
+
+
+def test_uvicorn_startup_exit_code_passes_through_and_cleans_up(tmp_path: Path) -> None:
+    """uvicorn tự `sys.exit(3)` khi `lifespan` lỗi: mã 3 đi thẳng ra, `instance.json` bị xoá, khoá được nhả."""
+    data_dir = tmp_path / "data"
+    recorder = ErrorRecorder()
+    seen_instance: list[bool] = []
+
+    def serve(_: socket.socket) -> bool:
+        seen_instance.append((data_dir / INSTANCE_FILENAME).exists())
+        raise SystemExit(3)
+
+    deps = _token_deps(tmp_path, recorder, "", serve)
+    with pytest.raises(SystemExit) as caught:
+        launcher.main(["--no-browser", "--data-dir", str(data_dir)], deps)
+    assert caught.value.code == 3
+    assert seen_instance == [True], "đang serve thì instance.json phải có"
+    assert not (data_dir / INSTANCE_FILENAME).exists()
+    lock = launcher.try_acquire_instance_lock(data_dir)
+    assert lock is not None, "thoát xong phải nhả khoá"
     lock.release()
 
 

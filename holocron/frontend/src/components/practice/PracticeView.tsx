@@ -1,24 +1,26 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { ErrorNotice } from "@/components/common/ErrorNotice";
-import { EmptyState, Loading } from "@/components/common/LoadState";
+import { HolocronMark } from "@/components/brand/HolocronMark";
 import { useShell } from "@/components/shell/ShellContext";
+import { Accordion, Button, EmptyState, ErrorState, Skeleton } from "@/components/ui";
 import { api, toUiError } from "@/lib/api";
+import { screenErrorText } from "@/lib/concept-board";
 import type { UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
 import { type PairsLocation, pairsHref } from "@/lib/pairs";
-import { ticketLine } from "@/lib/practice";
 import type { PracticeBatch, PracticeBlueprint, PracticeTicket } from "@/lib/practice-data";
+import { ticketTechnical, ticketText } from "@/lib/practice-setup";
 import { freshRuntime } from "@/lib/runtime";
 import { selectedSubject } from "@/lib/subjects";
 import type { BlueprintCreate } from "@/types/holocron";
 
-import { BlueprintBuilder } from "./BlueprintBuilder";
 import styles from "./Practice.module.css";
 import { PracticeSession } from "./PracticeSession";
+import { PracticeSetup } from "./PracticeSetup";
 
 /** Mỗi slot của đề luyện tập sinh một câu (một lượt làm bài đi qua từng slot một lần). */
 const TWINS_PER_SLOT = 1;
@@ -34,16 +36,20 @@ type Stage =
 export interface PracticeViewProps {
   /** Môn cố định (trang môn); ưu tiên hơn môn của khung. Bỏ trống ⇒ môn của khung (route cũ `/practice`). */
   subjectCode?: string;
-  /** Dựng địa chỉ phần khái niệm (liên kết khi câu lý thuyết không sinh được); mặc định `pairsHref` (`/pairs?…`). */
+  /**
+   * Dựng địa chỉ phần khái niệm (nút "Duyệt khái niệm", liên kết khi câu lý thuyết không soạn được); trang môn truyền
+   * địa chỉ tab Khái niệm của môn, mặc định `pairsHref` (`/pairs?…`, route cũ).
+   */
   hrefFor?: (location: Partial<PairsLocation>) => string;
 }
 
 /**
- * Màn luyện tập (F4, lát cắt dọc §4): chọn môn (trang môn truyền qua prop; route cũ `/practice` dùng môn của khung) →
- * tạo đề (`POST /v1/blueprints`) → sinh câu (`POST /v1/blueprints/{id}/twins`) → làm từng câu. Mọi con số và đáp án do
- * backend trả; giao diện chỉ so khoá.
+ * Tab Ôn tập (design-handoff/README.md màn 8; F4, lát cắt dọc §4): thiết lập đề (`PracticeSetup`; trang môn truyền môn
+ * qua prop, route cũ `/practice` dùng môn của khung) → tạo đề (`POST /v1/blueprints`) → soạn câu
+ * (`POST /v1/blueprints/{id}/twins`) → làm từng câu. Mọi con số và đáp án do backend trả; giao diện chỉ so khoá.
  */
 export function PracticeView({ subjectCode: fixedSubject, hrefFor = pairsHref }: PracticeViewProps) {
+  const router = useRouter();
   const { runtime, subjects, reloadSubjects, subjectCode: shellSubject } = useShell();
   const subjectCode = fixedSubject ?? shellSubject;
   const subject = selectedSubject(subjects, subjectCode);
@@ -95,51 +101,60 @@ export function PracticeView({ subjectCode: fixedSubject, hrefFor = pairsHref }:
     setStage({ kind: "setup" });
   }, []);
 
-  if (subjects.kind === "loading") return <Loading label="Đang tải danh sách môn…" />;
+  if (subjects.kind === "loading") {
+    return (
+      <div className={styles.page} aria-busy="true">
+        <Skeleton width="30%" height={22} />
+        <Skeleton height={120} />
+        <p className={styles.muted}>Đang tải danh sách môn…</p>
+      </div>
+    );
+  }
   if (subjects.kind === "error") {
     // Trong trang môn, trang tự báo việc thiếu danh sách môn (mọi loại lỗi, kèm "Thử lại" khi hợp lý); không lặp lại.
     if (fixedSubject !== undefined) return null;
-    return <SubjectsUnavailable error={subjects.error} onRetry={reloadSubjects} />;
+    return <SubjectsUnavailable error={subjects.error} onRetry={reloadSubjects} onHome={() => router.push("/")} />;
   }
-  if (subjects.subjects.length === 0) {
+  if (subjects.subjects.length === 0 || subject === null) {
     return (
-      <EmptyState title="Chưa có môn học nào.">
-        Tạo môn và nhập tài liệu ở mục <Link href="/vault">Vault</Link>. Sau khi xác nhận cặp khái niệm trong Vault,
-        quay lại đây để luyện tập.
-      </EmptyState>
-    );
-  }
-  if (subject === null) {
-    return (
-      <EmptyState title="Chưa chọn môn.">
-        Mở một môn ở <Link href="/">trang chủ</Link> để tạo đề luyện tập cho môn đó.
-      </EmptyState>
+      <EmptyState
+        title={subjects.subjects.length === 0 ? "Chưa có môn học nào" : "Chưa chọn môn"}
+        description="Mở hoặc tạo một môn ở trang chủ, nhận khái niệm ở tab Khái niệm, rồi ôn tập ở tab Ôn tập của môn."
+        action={{ label: "Về trang chủ", onClick: () => router.push("/") }}
+      />
     );
   }
 
   return (
     <div className={styles.page}>
-      {(stage.kind === "setup" || stage.kind === "creating" || stage.kind === "create_failed") && (
-        <>
-          <BlueprintBuilder
-            key={subject.subject_code}
-            subject={subject}
-            runtime={freshRuntime(runtime)}
-            busy={stage.kind === "creating"}
-            onCreate={create}
-          />
-          {stage.kind === "create_failed" && <ErrorNotice error={stage.error} onRetry={() => create(stage.payload)} />}
-        </>
+      {stage.kind === "setup" && (
+        <PracticeSetup
+          key={subject.subject_code}
+          subject={subject}
+          runtime={freshRuntime(runtime)}
+          onStart={create}
+          onBrowseConcepts={() => router.push(hrefFor({}))}
+        />
       )}
-      {stage.kind === "generating" && <Loading label="Đang sinh câu hỏi từ các cặp khái niệm đã xác nhận…" />}
-      {stage.kind === "generate_failed" && (
+      {(stage.kind === "creating" || stage.kind === "generating") && (
+        <output className={styles.busy}>
+          <HolocronMark size={28} spinning />
+          Đang soạn đề…
+        </output>
+      )}
+      {(stage.kind === "create_failed" || stage.kind === "generate_failed") && (
         <div className={styles.page}>
-          {/* Lỗi sinh câu (kể cả 409 khi đề nguồn chưa duyệt): chỉ hiện lý do, không hiện câu nào. */}
-          <ErrorNotice error={stage.error} onRetry={() => generate(stage.blueprint)} />
+          {/* Lỗi tạo đề hay soạn câu (kể cả 409 khi đề nguồn chưa duyệt): chỉ hiện lý do, không hiện câu nào. */}
+          <ErrorState
+            title="Chưa soạn được đề"
+            fix={failureText(stage.error)}
+            onRetry={() => (stage.kind === "create_failed" ? create(stage.payload) : generate(stage.blueprint))}
+            technical={stage.error.diagnostic}
+          />
           <div className={styles.actions}>
-            <button type="button" className={styles.secondary} onClick={restart}>
+            <Button variant="secondary" onClick={restart}>
               Tạo đề khác
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -156,16 +171,31 @@ export function PracticeView({ subjectCode: fixedSubject, hrefFor = pairsHref }:
   );
 }
 
-function SubjectsUnavailable({ error, onRetry }: { error: UiError; onRetry: () => void }) {
+/** Vì sao và cách sửa khi chưa soạn được đề; lỗi chặn ở bước kiểm duyệt đề kèm danh sách lỗi do Gate viết. */
+function failureText(error: UiError): string {
+  const base = screenErrorText(error);
+  return error.issues.length > 0 ? `${base} ${error.issues.join("; ")}` : base;
+}
+
+/** Route cũ `/practice` khi chưa có danh sách môn. */
+function SubjectsUnavailable({ error, onRetry, onHome }: { error: UiError; onRetry: () => void; onHome: () => void }) {
   if (error.kind === "not_found") {
     return (
-      <EmptyState title="Backend đang chạy chưa có danh sách môn học.">
-        Màn luyện tập cần biết môn và hình thức thi của môn. Cập nhật backend lên bản có danh sách môn, hoặc trong lúc
-        chờ hãy <Link href="/ingestion">nhập đề thi</Link>.
-      </EmptyState>
+      <EmptyState
+        title="Bản Holocron đang chạy chưa có danh sách môn học"
+        description="Màn ôn tập cần biết môn và hình thức thi của môn. Cập nhật Holocron lên bản mới hơn rồi mở lại."
+        action={{ label: "Về trang chủ", onClick: onHome }}
+      />
     );
   }
-  return <ErrorNotice error={error} onRetry={onRetry} onReload={onRetry} />;
+  return (
+    <ErrorState
+      title="Không tải được danh sách môn"
+      fix={screenErrorText(error)}
+      onRetry={onRetry}
+      technical={error.diagnostic}
+    />
+  );
 }
 
 interface ReadyBatchProps {
@@ -181,24 +211,23 @@ function ReadyBatch({ batch, blueprint, onNewExam, conceptsHref }: ReadyBatchPro
   if (batch.questions.length === 0) {
     return (
       <div className={styles.page}>
-        <EmptyState title="Lượt sinh này không có câu nào để luyện.">
-          {batch.tickets.length > 0
-            ? "Lý do của từng câu do backend ghi ở bên dưới. Sửa theo gợi ý rồi tạo lại đề, hoặc tạo đề với chương khác."
-            : "Thử tạo đề với chương khác."}
-        </EmptyState>
-        <TicketNotice tickets={batch.tickets} conceptsHref={conceptsHref} />
+        <EmptyState
+          title="Lượt này chưa soạn được câu nào"
+          description={
+            batch.tickets.length > 0
+              ? "Xem từng câu bên dưới, nhận thêm khái niệm ở chương đó rồi tạo đề lại, hoặc tạo đề với chương khác."
+              : "Tạo đề với chương khác, hoặc nhận thêm khái niệm rồi tạo đề lại."
+          }
+          action={{ label: "Tạo đề khác", onClick: onNewExam }}
+        />
+        <TicketNotice tickets={batch.tickets} blueprint={blueprint} conceptsHref={conceptsHref} />
         {hasSkipped && <SkippedNotice />}
-        <div className={styles.actions}>
-          <button type="button" className={styles.primary} onClick={onNewExam}>
-            Tạo đề khác
-          </button>
-        </div>
       </div>
     );
   }
   return (
     <div className={styles.page}>
-      <TicketNotice tickets={batch.tickets} conceptsHref={conceptsHref} />
+      <TicketNotice tickets={batch.tickets} blueprint={blueprint} conceptsHref={conceptsHref} />
       {hasSkipped && <SkippedNotice />}
       {/* Đoạn nguồn của trích dẫn tìm theo môn của blueprint sinh ra câu, không theo môn đang chọn (ADR-006). */}
       <PracticeSession
@@ -211,29 +240,36 @@ function ReadyBatch({ batch, blueprint, onNewExam, conceptsHref }: ReadyBatchPro
   );
 }
 
+interface TicketNoticeProps {
+  tickets: PracticeTicket[];
+  blueprint: PracticeBlueprint;
+  conceptsHref: string;
+}
+
 /**
- * Slot không sinh được (`review_tickets`): hiện nguyên lý do backend ghi, kèm gợi ý cố định với slot lý thuyết
- * (`ticketLine`); không hiện câu hỏng.
+ * Câu chưa soạn được (`review_tickets`): mỗi câu một câu chung kèm việc nên làm (`ticketText`, không so chuỗi lý do);
+ * lý do nguyên văn chỉ nằm trong "Chi tiết kỹ thuật". Không hiện câu hỏng.
  */
-function TicketNotice({ tickets, conceptsHref }: { tickets: PracticeTicket[]; conceptsHref: string }) {
+function TicketNotice({ tickets, blueprint, conceptsHref }: TicketNoticeProps) {
   if (tickets.length === 0) return null;
   return (
     <section className={styles.tickets} aria-labelledby="practice-tickets-title">
       <h2 id="practice-tickets-title" className={styles.sectionTitle}>
-        Một số câu trong đề không sinh được
+        Một số câu chưa soạn được
       </h2>
       <ul>
         {tickets.map((ticket) => (
-          <li key={ticket.slotIndex}>
-            Câu thứ {ticket.slotIndex} trong đề: {ticketLine(ticket)}
-          </li>
+          <li key={ticket.slotIndex}>{ticketText(ticket, blueprint.slots)}</li>
         ))}
       </ul>
       {tickets.some((ticket) => ticket.theory) && (
         <p>
-          <Link href={conceptsHref}>Mở phần Khái niệm</Link>
+          <Link href={conceptsHref}>Mở tab Khái niệm</Link>
         </p>
       )}
+      <Accordion summary="Chi tiết kỹ thuật">
+        <pre className={styles.technical}>{ticketTechnical(tickets)}</pre>
+      </Accordion>
     </section>
   );
 }
@@ -241,8 +277,8 @@ function TicketNotice({ tickets, conceptsHref }: { tickets: PracticeTicket[]; co
 function SkippedNotice() {
   return (
     <p className={styles.note}>
-      Có câu bị bỏ qua vì dữ liệu backend trả về không đúng dạng giao diện này hiểu, hoặc là dạng câu màn luyện tập chưa
-      hỗ trợ (ví dụ câu điền số). Các câu còn lại vẫn làm được bình thường.
+      Có câu bị bỏ qua vì Holocron trả về dữ liệu mà giao diện này chưa đọc được, hoặc là dạng câu màn ôn tập chưa hỗ
+      trợ (ví dụ câu điền số). Các câu còn lại vẫn làm được bình thường.
     </p>
   );
 }

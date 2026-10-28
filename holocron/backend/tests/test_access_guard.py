@@ -431,13 +431,42 @@ def test_token_variable_value_is_the_token() -> None:
     assert read_required_token({}) is None
 
 
+@pytest.mark.parametrize("value", [" ", "\t", " \t ", "   ", "\t\t"])
+def test_space_or_tab_only_token_variable_counts_as_unset(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    """Biến token chỉ gồm dấu cách/tab coi như chưa đặt (spec §11.2, câu 21 duyệt 2026-10-28)."""
+    assert read_required_token({TOKEN_ENV: value}) is None
+    monkeypatch.setenv(TOKEN_ENV, value)
+    assert get_required_token() is None
+    assert TestClient(app).get("/v1/runtime").status_code == 200
+
+
+# Khoảng trắng ngoài đúng tập dấu cách/tab KHÔNG làm biến thành "chưa đặt": cấu hình hỏng, fail-closed (câu 22).
+OTHER_BLANK_TOKENS = [" ", "　", "\x1f", "\n", "\r", "  ", "\t\n"]
+
+
+@pytest.mark.parametrize("value", OTHER_BLANK_TOKENS)
+def test_other_blank_only_token_variable_is_invalid(value: str) -> None:
+    assert not is_valid_token(value)
+    with pytest.raises(InvalidTokenConfigError):
+        read_required_token({TOKEN_ENV: value})
+
+
+@pytest.mark.parametrize("value", OTHER_BLANK_TOKENS)
+def test_other_blank_only_token_variable_fails_closed_over_http(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv(TOKEN_ENV, value)
+    client = TestClient(app)
+    for response in (client.get("/v1/runtime"), client.get("/v1/runtime", headers={TOKEN_HEADER: TOKEN})):
+        assert response.status_code == 403
+        assert response.json() == {"detail": TOKEN_CONFIG_INVALID_DETAIL}
+
+
 @pytest.mark.parametrize("value", [TOKEN, "a", "a b", "!~", "tok with inner spaces"])
 def test_printable_ascii_tokens_are_valid(value: str) -> None:
     assert is_valid_token(value)
     assert read_required_token({TOKEN_ENV: value}) == value
 
 
-INVALID_TOKENS = ["   ", "\t", " tok", "tok ", "tok\t", "\ttok", "mật-khẩu", "tok\x7f", "tok\x1b", "tök", "tok "]
+INVALID_TOKENS = [" tok", "tok ", "tok\t", "\ttok", "mật-khẩu", "tok\x7f", "tok\x1b", "tök", "tok "]
 
 
 @pytest.mark.parametrize("value", INVALID_TOKENS)

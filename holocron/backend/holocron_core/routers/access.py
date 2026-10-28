@@ -55,6 +55,8 @@ _FORWARDED_HOST_KEY = FORWARDED_HOST_HEADER.lower().encode("ascii")
 _TOKEN_KEY = TOKEN_HEADER.lower().encode("ascii")
 _PRINTABLE_ASCII_MIN = 0x20
 _PRINTABLE_ASCII_MAX = 0x7E
+# Biến token chỉ gồm các ký tự này (hoặc rỗng) coi như chưa đặt (spec §11.2); KHÔNG dùng `str.strip()` không tham số.
+_UNSET_TOKEN_BLANKS = " \t"
 
 ProviderOverrides = Mapping[Callable[..., Any], Callable[..., Any]]
 
@@ -125,13 +127,14 @@ def is_valid_token(value: str) -> bool:
 
 
 def read_required_token(env: Mapping[str, str] | None = None) -> str | None:
-    """Token bắt buộc từ `env` (mặc định `os.environ`); `None` khi không đặt hoặc rỗng.
+    """Token bắt buộc từ `env` (mặc định `os.environ`); `None` khi không đặt, rỗng hoặc chỉ gồm dấu cách/tab.
 
-    Giá trị khác rỗng nhưng không hợp lệ (xem `is_valid_token`) ném `InvalidTokenConfigError`.
+    Giá trị còn lại mà không hợp lệ (xem `is_valid_token`) ném `InvalidTokenConfigError`, kể cả giá trị chỉ gồm
+    khoảng trắng khác (NBSP, U+3000, xuống dòng, ký tự điều khiển): app fail-closed thay vì âm thầm bỏ token.
     """
     source = os.environ if env is None else env
     value = source.get(TOKEN_ENV)
-    if not value:
+    if value is None or value.strip(_UNSET_TOKEN_BLANKS) == "":
         return None
     if not is_valid_token(value):
         raise InvalidTokenConfigError

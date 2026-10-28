@@ -563,7 +563,9 @@ ReviewReason = Literal[
     "HIGH_PAGE_CER",            # CER văn bản giữa hai lượt ≥ 0.15; ngưỡng chưa xác minh (mục 11)
     "OCR_ENGINE_MISSING",       # thiếu Tesseract/vie.traineddata, trang đã được đọc bằng VLM (mục 8)
 ]
-FailureReason = Literal["PAGE_TIMEOUT", "PAGE_ERROR", "OCR_ENGINE_MISSING"]
+FailureReason = Literal["PAGE_TIMEOUT", "PAGE_ERROR", "OCR_ENGINE_MISSING", "TOO_MANY_LINES"]
+# TOO_MANY_LINES (duyệt 2026-10-28, câu 18 (a)): trang có số dòng có chữ vượt giới hạn trang của Vault (5000, §5.13)
+# được ghi `failed` ngay lúc đọc, lines rỗng (code: `_within_vault_lines`); các trang khác xác nhận bình thường.
 
 class ExtractedLine(StrictModel):
     line_index: int = Field(ge=0)                 # code: thứ tự đọc trong trang, 0-based như ExtractedCell.row
@@ -1478,11 +1480,11 @@ Tên và đường dẫn endpoint ở mục này đã duyệt 2026-10-25. MVP ch
 **Xử lý (PHẢI theo đúng thứ tự):**
 1. Đọc tối đa 50 MiB + 1 byte; vượt → 413. Rỗng → 400. Tên file quá 255 ký tự → 422.
 2. Magic bytes khác `%PDF-` → 415 (ảnh đề đi qua §6.1). `Content-Type` khai báo khác `application/pdf` (trừ rỗng hoặc `application/octet-stream`) → 415.
-3. `document_id = "doc_" + sha256(content)[:16]`. Nếu tài liệu cùng nội dung đã được nhập qua §6.5: cùng `subject_code` → `200 DocumentImport` hiện có, không đọc lại; khác `subject_code` → 409 (đề xuất). Bản ghi chỉ do §6.1 tạo (chưa có `subject_code`) được bổ sung thông tin và đọc như tài liệu mới. Cùng nội dung, cùng `subject_code` nhưng khác `chapter_code` → 409 (duyệt 2026-10-26 chiều); muốn đổi chương thì sửa nhãn chunk (§6.6) hoặc xoá rồi nhập lại. Bản ghi cùng nội dung nhập trước khi có `chapter_code` (`chapter_code` null) → 409 (duyệt 2026-10-26 chiều, §5.7).
+3. `document_id = "doc_" + sha256(content)[:16]`. Nếu tài liệu cùng nội dung đã được nhập qua §6.5: cùng `subject_code` → `200 DocumentImport` hiện có, không đọc lại; khác `subject_code` → 409 (đề xuất). Bản ghi chỉ do §6.1 tạo (chưa có `subject_code`) được bổ sung thông tin và đọc như tài liệu mới. Cùng nội dung, cùng `subject_code` nhưng khác `chapter_code` → 409 (duyệt 2026-10-26 chiều); muốn đổi chương thì sửa nhãn chunk (§6.6) hoặc xoá rồi nhập lại. `detail` của 409 này (`CHAPTER_CONFLICT`, duyệt 2026-10-28): "Tài liệu này đã được nhập cho một chương khác của môn này; muốn đổi chương thì sửa nhãn chunk hoặc xoá tài liệu rồi nhập lại". Bản ghi cùng nội dung nhập trước khi có `chapter_code` (`chapter_code` null) → 409 (duyệt 2026-10-26 chiều, §5.7).
 4. Thử mở trong worker (timeout 5 s, như tầng 1): cần mật khẩu để mở → 422 "PDF có mật khẩu" (không thử phá); không mở được hoặc quá hạn → 422 "không mở được tài liệu"; quá 300 trang → 422. PDF chỉ có mật khẩu chủ vẫn được nhận (ADR-008 mục 4).
 5. Tạo ngầm môn `subject_code` nếu chưa có (§5.14, đề xuất). Lưu file gốc (§5.13), tạo `page_count` trang `pending`, xếp hàng đợi, trả `202 DocumentImport` (`status = "processing"`) kèm header `Location: /v1/documents/{document_id}`. App đang tắt hoặc hàng đợi đã đóng → 503, không tạo bản ghi (duyệt 2026-10-26 chiều, §6.0).
 
-**Đọc từng trang (ADR-008 mục 3, 6, 8, 9):** tầng 1 (timeout 5 s); tầng 2 khi `text_score < TEXT_LAYER_MIN` (timeout 30 s); cờ trang chọn tầng 3 hoặc 4. Trang quá hạn hoặc lỗi thành `failed` (`PAGE_TIMEOUT`, `PAGE_ERROR`); các trang khác vẫn đọc tiếp. Render tối đa 300 DPI và 25 megapixel mỗi trang.
+**Đọc từng trang (ADR-008 mục 3, 6, 8, 9):** tầng 1 (timeout 5 s); tầng 2 khi `text_score < TEXT_LAYER_MIN` (timeout 30 s); cờ trang chọn tầng 3 hoặc 4. Trang quá hạn hoặc lỗi thành `failed` (`PAGE_TIMEOUT`, `PAGE_ERROR`); trang có số dòng có chữ vượt giới hạn trang của Vault (5000) thành `failed` (`TOO_MANY_LINES`, `lines` rỗng; duyệt 2026-10-28); các trang khác vẫn đọc tiếp. Render tối đa 300 DPI và 25 megapixel mỗi trang.
 
 **Bất biến:** file là đầu vào không tin cậy, chỉ được mở trong worker có giới hạn (CLAUDE.md §2.2, ADR-008 mục 3). Không văn bản nào vào Vault hay Gate trước khi người dùng xác nhận (ADR-008 mục 7); I3 và I5 được kiểm sau bước này.
 
@@ -1525,14 +1527,14 @@ Sửa văn bản của một trang trước khi xác nhận.
 - Các lý do cấp trang khác (`LOW_TEXT_SCORE`, `LOW_OCR_SCORE`, `LOW_LINE_COVERAGE`, `HIGH_INK_OUTSIDE_TEXT`, `FIGURE_ON_SCAN`, `FORMULA_ON_SCAN`, `TIER3_UNAVAILABLE`, `CROSS_CHECK_UNAVAILABLE`, `HIGH_PAGE_CER`, `OCR_ENGINE_MISSING`) giữ nguyên.
 - `status` tính lại từ `review_reasons` theo validator ở §5.7: rỗng ⇒ `ok`, không rỗng ⇒ `needs_review`.
 
-**Response:** `200 PageExtraction`. **Lỗi:** 404; 409 khi `expected_version` lệch, trang còn `pending`, trang `failed` (không sửa được trong MVP, người dùng nhập lại file theo §5.7; duyệt 2026-10-26) hoặc đã xác nhận; 422 khi body sai.
+**Response:** `200 PageExtraction`. **Lỗi:** 404; 409 khi `expected_version` lệch, trang còn `pending`, trang `failed` (không sửa được trong MVP, người dùng nhập lại file theo §5.7; duyệt 2026-10-26) hoặc đã xác nhận; 409 `SETTLE_PENDING_DETAIL` ("Văn bản của tài liệu đã vào Knowledge Vault nhưng tài liệu chưa hoàn tất xác nhận; hãy gọi lại xác nhận tài liệu, không sửa thêm được") khi Vault đã có chunk của tài liệu mà tài liệu chưa `confirmed` (duyệt 2026-10-28); 422 khi body sai.
 
 #### Xác nhận
 
 | Method | Path | Body | Ngữ nghĩa | Lỗi |
 |---|---|---|---|---|
-| POST | `/v1/documents/{document_id}/pages/{page_number}/confirm` | `{editor_id, expected_version}` | Nhận trang `ok` và `needs_review`; với trang `needs_review`, xác nhận nghĩa là người dùng đã xem lại (duyệt 2026-10-26). `confirmed = true`, ghi `confirmed_at`; trả `200 PageExtraction`. Gọi lại trên trang đã xác nhận trả 200, không đổi gì | 404; 409 khi trang `pending`, trang `failed` (duyệt 2026-10-26), version lệch, trang không có dòng nào có văn bản, hoặc tài liệu nhập trước khi có `chapter_code` (duyệt 2026-10-26 chiều, §5.7) |
-| POST | `/v1/documents/{document_id}/confirm` | `{editor_id}` | Xác nhận mọi trang `ok` chưa xác nhận; trả `200 DocumentImport`. Xác nhận theo lô chỉ nhận trang `ok` (duyệt 2026-10-26, theo ADR-008 mục 7): trang `needs_review` phải được xác nhận từng trang; trang `failed` không xác nhận được | 404; 409 khi còn trang `pending`, hoặc tài liệu nhập trước khi có `chapter_code` (duyệt 2026-10-26 chiều, §5.7) |
+| POST | `/v1/documents/{document_id}/pages/{page_number}/confirm` | `{editor_id, expected_version}` | Nhận trang `ok` và `needs_review`; với trang `needs_review`, xác nhận nghĩa là người dùng đã xem lại (duyệt 2026-10-26). `confirmed = true`, ghi `confirmed_at`; trả `200 PageExtraction`. Gọi lại trên trang đã xác nhận trả 200, không đổi gì | 404; 409 khi trang `pending`, trang `failed` (duyệt 2026-10-26), version lệch, trang không có dòng nào có văn bản, hoặc tài liệu nhập trước khi có `chapter_code` (duyệt 2026-10-26 chiều, §5.7); 409 `SETTLE_PENDING_DETAIL` khi Vault đã có chunk của tài liệu mà tài liệu chưa `confirmed` (duyệt 2026-10-28); 422 khi trang vượt giới hạn trang của Vault (tối đa 5000 dòng có văn bản, mỗi dòng tối đa 2000 ký tự; nay chỉ là kiểm tra phòng thủ vì trang quá nhiều dòng đã thành `failed` lúc đọc, `TOO_MANY_LINES`; duyệt 2026-10-28) |
+| POST | `/v1/documents/{document_id}/confirm` | `{editor_id}` | Xác nhận mọi trang `ok` chưa xác nhận; trả `200 DocumentImport`. Xác nhận theo lô chỉ nhận trang `ok` (duyệt 2026-10-26, theo ADR-008 mục 7): trang `needs_review` phải được xác nhận từng trang; trang `failed` không xác nhận được | 404; 409 khi còn trang `pending`, hoặc tài liệu nhập trước khi có `chapter_code` (duyệt 2026-10-26 chiều, §5.7); 409 `SETTLE_PENDING_DETAIL` khi còn trang cần xác nhận mà Vault đã có chunk của tài liệu và tài liệu chưa `confirmed` (nếu không còn trang nào cần xác nhận thì chỉ chạy lại bước chốt, §5.7); trang vượt giới hạn trang của Vault bị bỏ qua (không 422; code ghi cảnh báo vào log), trang `failed` do `TOO_MANY_LINES` không chặn việc chốt và các trang còn lại xác nhận như thường (duyệt 2026-10-28) |
 
 - MVP không có bỏ xác nhận (đề xuất); muốn đọc lại thì xoá tài liệu và nhập lại. Đọc lại riêng một trang `failed` là việc sau MVP (duyệt 2026-10-26 chiều, §1.6).
 - Khi mọi trang có văn bản đều đã xác nhận, `DocumentImport.status = "confirmed"`, kể cả khi tài liệu đang `failed`; bước chốt trạng thái chạy cả ở đường `failed` (duyệt 2026-10-26 chiều, quy tắc ở §5.7 "Chốt trạng thái tài liệu"). Tài liệu có `source_kind` khác `past_exam` khi đó được cắt chunk vào Vault (§12.1), rồi LLM đề xuất nhãn và cặp khái niệm nếu đã có key (§6.6). Đề xuất: tài liệu `past_exam` không cắt chunk; trang đã xác nhận được dùng để tạo item (dưới đây).

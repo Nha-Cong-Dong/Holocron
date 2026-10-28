@@ -74,6 +74,14 @@ def test_get_log_dir_strips_control_chars_and_keeps_long_paths(monkeypatch: pyte
 def test_existing_fields_unchanged_and_no_secrets(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOLOCRON_LLM_API_KEY", "sk-secret-0123456789")
     body = client.get("/v1/runtime").json()
-    assert set(body) == {"demo_mode", "llm_configured", "vlm_configured", "app_version", "commit", "log_dir"}
+    assert set(body) == {
+        "demo_mode",
+        "llm_configured",
+        "vlm_configured",
+        "app_version",
+        "commit",
+        "log_dir",
+        "capabilities",
+    }
     assert isinstance(body["demo_mode"], bool)
     assert "sk-secret" not in json.dumps(body)

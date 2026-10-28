@@ -117,6 +117,44 @@ def _runtime() -> TestClient:
 # --------------------------------------------------------------------------- #
 
 
+# Giá trị mong đợi viết cứng, đủ 12 phần tử đúng thứ tự §5.12 (duyệt 2026-10-29, câu 15); không tính từ code.
+_NOT_IMPL_DETAIL = "Bản đang chạy chưa có khả năng này."
+_LLM_DETAIL = (
+    "Chưa cấu hình LLM: đặt đủ ba biến môi trường HOLOCRON_LLM_BASE_URL, HOLOCRON_LLM_API_KEY và "
+    "HOLOCRON_LLM_MODEL_EXTRACT cho backend rồi khởi động lại."
+)
+
+CAPS_LLM_ONLY: list[dict[str, str | bool | None]] = [
+    {"name": "ocr", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "ocr_cross_check", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "vault_search", "available": True, "reason": None, "detail_vi": None},
+    {"name": "theory_generation", "available": True, "reason": None, "detail_vi": None},
+    {"name": "concept_pair_llm_proposal", "available": True, "reason": None, "detail_vi": None},
+    {"name": "essay_grading_offline", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "essay_grading_llm", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "template_authoring_llm", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "vlm", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "concept_auto_proposal", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "line_review_queue", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "page_progress_eta", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+]
+
+CAPS_NO_LLM: list[dict[str, str | bool | None]] = [
+    {"name": "ocr", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "ocr_cross_check", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "vault_search", "available": True, "reason": None, "detail_vi": None},
+    {"name": "theory_generation", "available": True, "reason": None, "detail_vi": None},
+    {"name": "concept_pair_llm_proposal", "available": False, "reason": "llm_not_configured", "detail_vi": _LLM_DETAIL},
+    {"name": "essay_grading_offline", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "essay_grading_llm", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "template_authoring_llm", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "vlm", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "concept_auto_proposal", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "line_review_queue", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "page_progress_eta", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+]
+
+
 def _build_fields() -> dict[str, str | None]:
     """Ba field build/log của `RuntimeInfo` (câu 7, duyệt 2026-10-28); giá trị kiểm riêng ở `test_runtime_build_info.py`."""
     info = get_build_info()
@@ -130,7 +168,13 @@ def test_runtime_with_a_vlm_key_containing_a_space_is_200_and_vlm_not_configured
     with caplog.at_level(logging.WARNING):
         response = _runtime().get("/v1/runtime")
     assert response.status_code == 200
-    assert response.json() == {"demo_mode": True, "llm_configured": False, "vlm_configured": False, **_build_fields()}
+    assert response.json() == {
+        "demo_mode": True,
+        "llm_configured": False,
+        "vlm_configured": False,
+        **_build_fields(),
+        "capabilities": CAPS_NO_LLM,
+    }
     _assert_no_leak(response.text)
     assert "HOLOCRON_VLM_API_KEY" in caplog.text
     _assert_no_leak(caplog.text)
@@ -169,7 +213,13 @@ def test_runtime_keeps_a_valid_llm_when_only_the_vlm_is_broken(monkeypatch: pyte
     _set_env(monkeypatch, {**VALID_LLM_ENV, **VLM_ENV_WITH_BAD_KEY})
     response = _runtime().get("/v1/runtime")
     assert response.status_code == 200
-    assert response.json() == {"demo_mode": True, "llm_configured": True, "vlm_configured": False, **_build_fields()}
+    assert response.json() == {
+        "demo_mode": True,
+        "llm_configured": True,
+        "vlm_configured": False,
+        **_build_fields(),
+        "capabilities": CAPS_LLM_ONLY,
+    }
     _assert_no_leak(response.text)
 
 

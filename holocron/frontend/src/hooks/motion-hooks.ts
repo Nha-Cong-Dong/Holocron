@@ -2,12 +2,17 @@
 // Ba helper motion nhỏ, không phụ thuộc thư viện.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
-/** true khi Windows bật giảm chuyển động HOẶC người dùng bật công tắc trong Cài đặt (<html data-motion="reduce">). */
+import { resolveReducedMotion } from "@/lib/motion-preference";
+
+/**
+ * true khi cần giảm chuyển động, khớp motion.css (`lib/motion-preference.ts`): `<html data-motion="reduce">` ⇒ giảm;
+ * `data-motion="full"` ⇒ đầy đủ, thắng cài đặt của Windows; không có thuộc tính ⇒ theo Windows.
+ */
 export function useReducedMotion(): boolean {
   const [reduced, setReduced] = useState(false);
   useEffect(() => {
     const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const read = () => setReduced(mq.matches || document.documentElement.dataset.motion === "reduce");
+    const read = () => setReduced(resolveReducedMotion(document.documentElement.dataset.motion, mq.matches));
     read();
     mq.addEventListener("change", read);
     const obs = new MutationObserver(read);

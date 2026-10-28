@@ -155,6 +155,8 @@ function SubjectList() {
           {subjects.subjects.map((subject) => (
             <li key={subject.subject_code}>
               <Link className={`m-card ${styles.subjectCard}`} href={subjectHref(subject.subject_code, "documents")}>
+                {/* Lớp viền sao chạy của .m-card (motion.css): hiện khi rê chuột hoặc focus vào thẻ. */}
+                <span className="m-card-ring" aria-hidden="true" />
                 <span className={styles.subjectName}>{subject.display_name.trim() || subject.subject_code}</span>
                 <span className={styles.subjectCode}>{subject.subject_code}</span>
               </Link>

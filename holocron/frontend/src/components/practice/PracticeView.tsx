@@ -97,8 +97,8 @@ export function PracticeView({ subjectCode: fixedSubject, hrefFor = pairsHref }:
 
   if (subjects.kind === "loading") return <Loading label="Đang tải danh sách môn…" />;
   if (subjects.kind === "error") {
-    // Trong trang môn, trang đã báo lỗi tải danh sách môn (kèm "Thử lại"); không lặp lại thông báo thứ hai ở đây.
-    if (fixedSubject !== undefined && subjects.error.kind !== "not_found") return null;
+    // Trong trang môn, trang tự báo việc thiếu danh sách môn (mọi loại lỗi, kèm "Thử lại" khi hợp lý); không lặp lại.
+    if (fixedSubject !== undefined) return null;
     return <SubjectsUnavailable error={subjects.error} onRetry={reloadSubjects} />;
   }
   if (subjects.subjects.length === 0) {
@@ -231,7 +231,7 @@ function TicketNotice({ tickets, conceptsHref }: { tickets: PracticeTicket[]; co
       </ul>
       {tickets.some((ticket) => ticket.theory) && (
         <p>
-          <Link href={conceptsHref}>Mở trang Cặp khái niệm</Link>
+          <Link href={conceptsHref}>Mở phần Khái niệm</Link>
         </p>
       )}
     </section>

@@ -3,6 +3,7 @@
 import { HolocronMark } from "@/components/brand/HolocronMark";
 import { Button } from "@/components/ui";
 import type { SkyLayout } from "@/lib/sky";
+import { newStarFlags, type SkyGains } from "@/lib/sky-gains";
 
 import styles from "./SkyView.module.css";
 
@@ -19,6 +20,8 @@ export type SkyViewProps = {
       layout: SkyLayout;
       /** Lần tải lại gần nhất lỗi: vẫn vẽ bầu trời cũ, kèm một dòng nhỏ "Chưa cập nhật được". */
       stale?: boolean;
+      /** Sao vàng vừa sáng thêm so với lần vẽ trước (gắn `m-star-new`); bỏ trống ⇒ không có sao mới. */
+      gains?: SkyGains;
     }
   | { status: "loading" }
   | { status: "error"; onRetry: () => void; retrying?: boolean }
@@ -60,7 +63,7 @@ export function SkyView(props: SkyViewProps) {
     );
   }
 
-  const { layout } = props;
+  const { layout, gains } = props;
   return (
     <div className={frame}>
       <div className={styles.sky} role="img" aria-label={layout.ariaLabel}>
@@ -71,29 +74,36 @@ export function SkyView(props: SkyViewProps) {
           aria-hidden="true"
           focusable="false"
         >
-          {layout.constellations.map((constellation) => (
-            <g key={constellation.chapter.code}>
-              {constellation.lines.map((line) => (
-                <line
-                  key={`${line.x1}-${line.y1}-${line.x2}-${line.y2}`}
-                  className={styles.line}
-                  x1={line.x1}
-                  y1={line.y1}
-                  x2={line.x2}
-                  y2={line.y2}
-                />
-              ))}
-              {constellation.stars.map((star) => (
-                <circle
-                  key={`${star.x}-${star.y}`}
-                  className={joinClasses(styles[star.kind], star.kind === "proposed" ? "m-star-pending" : undefined)}
-                  cx={star.x}
-                  cy={star.y}
-                  r={STAR_RADIUS[star.kind]}
-                />
-              ))}
-            </g>
-          ))}
+          {layout.constellations.map((constellation) => {
+            const fresh = newStarFlags(constellation, gains?.byChapter.get(constellation.chapter.code) ?? 0);
+            return (
+              <g key={constellation.chapter.code}>
+                {constellation.lines.map((line) => (
+                  <line
+                    key={`${line.x1}-${line.y1}-${line.x2}-${line.y2}`}
+                    className={styles.line}
+                    x1={line.x1}
+                    y1={line.y1}
+                    x2={line.x2}
+                    y2={line.y2}
+                  />
+                ))}
+                {constellation.stars.map((star, index) => (
+                  <circle
+                    key={`${star.x}-${star.y}`}
+                    className={joinClasses(
+                      styles[star.kind],
+                      star.kind === "proposed" ? "m-star-pending" : undefined,
+                      fresh[index] === true ? "m-star-new" : undefined,
+                    )}
+                    cx={star.x}
+                    cy={star.y}
+                    r={STAR_RADIUS[star.kind]}
+                  />
+                ))}
+              </g>
+            );
+          })}
         </svg>
         {layout.withLabels &&
           layout.constellations.map((constellation) => (

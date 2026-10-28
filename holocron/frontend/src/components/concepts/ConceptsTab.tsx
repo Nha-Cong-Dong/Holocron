@@ -1,0 +1,516 @@
+"use client";
+
+import { useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+
+import { HolocronMark } from "@/components/brand/HolocronMark";
+import { useShell } from "@/components/shell/ShellContext";
+import { Button, EmptyState, ErrorState, Skeleton, useToast } from "@/components/ui";
+import { useReducedMotion } from "@/hooks/motion-hooks";
+import { api } from "@/lib/api";
+import {
+  acceptToast,
+  type BulkCandidate,
+  bulkMessageOf,
+  bulkReducer,
+  type ConceptView,
+  conceptErrorText,
+  conceptsScreen,
+  conceptView,
+  focusAfterRemoval,
+  groupPairs,
+  IDLE_BULK,
+  newlyConfirmed,
+  screenErrorText,
+  sendQueued,
+  visibleConceptEntrances,
+} from "@/lib/concept-board";
+import { toUiError, type UiError } from "@/lib/errors";
+import { createLatestCounter } from "@/lib/latest";
+import { PAIRS_CHUNK_MAX_REQUESTS, PAIRS_CHUNK_PAGE_SIZE } from "@/lib/limits";
+import { type ChunkMapResult, loadChunkMap, type PairsLocation, parsePairsLocation, runLatest } from "@/lib/pairs";
+import { freshRuntime, isCapabilityBlocked } from "@/lib/runtime";
+import { buildSkyLayout } from "@/lib/sky";
+import { skyGains } from "@/lib/sky-gains";
+import type { ChunkView } from "@/lib/vault";
+import type { ConceptPair } from "@/types/holocron";
+
+import { type AcceptedEntry, AcceptedList } from "./AcceptedList";
+import styles from "./ConceptsTab.module.css";
+import { PassagePanel } from "./PassagePanel";
+import type { CardLeaving } from "./ProposalCard";
+import { type ProposalEntry, ProposalList } from "./ProposalList";
+
+/**
+ * Đề xuất khái niệm tự động chưa có trong bản này: lối vào bị ẩn hẳn. Khi contract khả năng tương ứng được duyệt và
+ * merge, thay hằng này bằng đúng một lời gọi `capabilityOf(runtime, …)`.
+ */
+const AUTO_PROPOSAL_AVAILABLE = false;
+
+/** Hết giờ dự phòng chờ animation rời đi của thẻ (animation thật dài 200–220 ms). */
+const LEAVE_FALLBACK_MS = 320;
+
+const EMPTY_MAP: ReadonlyMap<string, ChunkView> = new Map();
+const SKELETON_CARDS = ["a", "b"] as const;
+
+type MapState = { status: "loading" } | ChunkMapResult;
+type ListState =
+  | { kind: "loading" }
+  | { kind: "error"; error: UiError }
+  | { kind: "ready"; pairs: ConceptPair[]; hasSkipped: boolean };
+
+type FocusTarget = { kind: "concept"; id: string } | { kind: "proposals" } | { kind: "accepted" };
+
+/** Việc cần làm khi danh sách tải lại xong sau một thao tác. */
+interface ChangeNote {
+  /** Số khái niệm backend đã nhận trong thao tác (toast "Đã nhận N khái niệm…"). */
+  accepted: number;
+  /** Thông báo khác (ví dụ đổi tên); `null` khi không có. */
+  message: string | null;
+  focus: FocusTarget | null;
+}
+
+type Operation = "accept" | "reject" | "rename" | "restore";
+
+interface CardError {
+  operation: Operation;
+  term: string | null;
+  text: string;
+}
+
+export interface ConceptsTabProps {
+  subjectCode: string;
+  /** Địa chỉ tab Khái niệm của môn kèm `?chunk=` (đoạn đang mở ở khung tự tạo). */
+  hrefFor: (location: Partial<PairsLocation>) => string;
+  /** Sang tab Tài liệu (trạng thái rỗng). */
+  onOpenDocuments: () => void;
+  /** Sang tab Ôn tập (thẻ mời sau khi duyệt hết đề xuất). */
+  onOpenPractice: () => void;
+  /** Danh sách khái niệm vừa đổi do thao tác ở đây: trang môn tải lại bầu trời. */
+  onConceptsChanged: () => void;
+}
+
+/**
+ * Tab Khái niệm của trang môn (design-handoff/README.md màn 7): khối "Đề xuất" (thẻ có trích dẫn nguyên văn, Bỏ / Sửa /
+ * Nhận, "Nhận tất cả"), thẻ mời sang Ôn tập khi đã duyệt hết, khung "Tự tạo khái niệm" (bôi đoạn hoặc chọn câu) và cột
+ * "Đã nhận". Sau mỗi thao tác, danh sách được đọc lại từ backend (không vá tại chỗ).
+ */
+export function ConceptsTab({
+  subjectCode,
+  hrefFor,
+  onOpenDocuments,
+  onOpenPractice,
+  onConceptsChanged,
+}: ConceptsTabProps) {
+  const router = useRouter();
+  const location = parsePairsLocation(useSearchParams());
+  const { runtime } = useShell();
+  const toast = useToast();
+  const reduced = useReducedMotion();
+  // Đọc qua ref để lượt tải không phụ thuộc vào việc cha có giữ nguyên hàm hay không (tránh tải lại vô hạn).
+  const toastRef = useRef(toast);
+  const changedRef = useRef(onConceptsChanged);
+  useEffect(() => {
+    toastRef.current = toast;
+    changedRef.current = onConceptsChanged;
+  }, [toast, onConceptsChanged]);
+
+  // -------------------------------------------------------------------- đoạn văn của môn
+  const [mapState, setMapState] = useState<MapState>({ status: "loading" });
+  const mapCalls = useRef(createLatestCounter());
+  const loadMap = useCallback(() => {
+    setMapState({ status: "loading" });
+    void runLatest(
+      mapCalls.current,
+      () =>
+        loadChunkMap(
+          (offset, limit) =>
+            api.browseVaultChunks({
+              subjectCode,
+              chapterCode: null,
+              labelStatus: null,
+              topicKeys: [],
+              offset,
+              limit,
+            }),
+          PAIRS_CHUNK_PAGE_SIZE,
+          PAIRS_CHUNK_MAX_REQUESTS,
+        ),
+      (outcome) => setMapState(outcome.ok ? outcome.value : { status: "error", map: new Map(), error: outcome.error }),
+    );
+  }, [subjectCode]);
+
+  // -------------------------------------------------------------------- tên tài liệu
+  const [docTitles, setDocTitles] = useState<ReadonlyMap<string, string>>(new Map());
+  const docCalls = useRef(createLatestCounter());
+  const loadDocs = useCallback(() => {
+    void runLatest(
+      docCalls.current,
+      () => api.listDocuments(subjectCode),
+      (outcome) => {
+        // Không có tên tài liệu thì trích dẫn chỉ hiện mã tài liệu; không chặn màn.
+        if (outcome.ok) setDocTitles(new Map(outcome.value.map((doc) => [doc.docId, doc.title])));
+      },
+    );
+  }, [subjectCode]);
+
+  // -------------------------------------------------------------------- danh sách khái niệm
+  const [listState, setListState] = useState<ListState>({ kind: "loading" });
+  const [reloadNote, setReloadNote] = useState<string | null>(null);
+  const [fresh, setFresh] = useState<ReadonlySet<string>>(new Set());
+  const [leaving, setLeaving] = useState<ReadonlyMap<string, CardLeaving>>(new Map());
+  const previousPairs = useRef<ConceptPair[] | null>(null);
+  const focusRequest = useRef<FocusTarget | null>(null);
+  const listCalls = useRef(createLatestCounter());
+
+  const loadPairs = useCallback(
+    (keepCurrent: boolean, change: ChangeNote | null) => {
+      if (!keepCurrent) setListState({ kind: "loading" });
+      void runLatest(
+        listCalls.current,
+        () => api.listConceptPairs({ subjectCode, chapterCode: null, status: null }),
+        (outcome) => {
+          if (!outcome.ok) {
+            if (keepCurrent && previousPairs.current !== null) setReloadNote(screenErrorText(outcome.error));
+            else setListState({ kind: "error", error: outcome.error });
+            return;
+          }
+          const next = outcome.value.pairs;
+          const previous = previousPairs.current;
+          if (change !== null) {
+            const gains = skyGains(previous === null ? null : buildSkyLayout("", previous), buildSkyLayout("", next));
+            if (change.accepted > 0) toastRef.current.show(acceptToast(change.accepted, gains.total));
+            else if (change.message !== null) toastRef.current.show(change.message);
+            focusRequest.current = change.focus;
+            changedRef.current();
+          }
+          previousPairs.current = next;
+          setFresh(newlyConfirmed(previous, next));
+          setLeaving(new Map());
+          setReloadNote(null);
+          setListState({ kind: "ready", pairs: next, hasSkipped: outcome.value.hasSkipped });
+        },
+      );
+    },
+    [subjectCode],
+  );
+
+  const reloadAll = useCallback(() => {
+    loadMap();
+    loadDocs();
+    loadPairs(false, null);
+  }, [loadMap, loadDocs, loadPairs]);
+
+  useEffect(() => {
+    reloadAll();
+    const counters = [mapCalls.current, docCalls.current, listCalls.current];
+    return () => {
+      for (const counter of counters) counter.invalidate();
+    };
+  }, [reloadAll]);
+
+  // -------------------------------------------------------------------- focus sau khi tải lại
+  const proposalsHeading = useRef<HTMLHeadingElement>(null);
+  const acceptedHeading = useRef<HTMLHeadingElement>(null);
+  const inviteRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (listState.kind !== "ready" || focusRequest.current === null) return;
+    const target = focusRequest.current;
+    focusRequest.current = null;
+    const fallback = proposalsHeading.current ?? inviteRef.current ?? acceptedHeading.current;
+    if (target.kind === "concept") {
+      const element = document.querySelector<HTMLElement>(`[data-concept-id="${CSS.escape(target.id)}"]`);
+      (element ?? fallback)?.focus();
+      return;
+    }
+    if (target.kind === "accepted") {
+      acceptedHeading.current?.focus();
+      return;
+    }
+    fallback?.focus();
+  }, [listState]);
+
+  // -------------------------------------------------------------------- thẻ rời đi
+  const leaveCallbacks = useRef(new Map<string, () => void>());
+  const finishLeave = useCallback((pairId: string) => {
+    const callback = leaveCallbacks.current.get(pairId);
+    if (callback === undefined) return;
+    leaveCallbacks.current.delete(pairId);
+    callback();
+  }, []);
+  const leave = useCallback(
+    (pairId: string, kind: Exclude<CardLeaving, null>, then: () => void) => {
+      // Giảm chuyển động: không chờ animation.
+      if (reduced) {
+        then();
+        return;
+      }
+      leaveCallbacks.current.set(pairId, then);
+      setLeaving((previous) => new Map(previous).set(pairId, kind));
+      window.setTimeout(() => finishLeave(pairId), LEAVE_FALLBACK_MS);
+    },
+    [reduced, finishLeave],
+  );
+
+  // -------------------------------------------------------------------- thao tác với một khái niệm
+  const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set());
+  const [cardErrors, setCardErrors] = useState<ReadonlyMap<string, CardError>>(new Map());
+  const [bulk, dispatchBulk] = useReducer(bulkReducer, IDLE_BULK);
+  const bulkActive = useRef(false);
+
+  function setBusy(pairId: string, on: boolean): void {
+    setBusyIds((previous) => {
+      const next = new Set(previous);
+      if (on) next.add(pairId);
+      else next.delete(pairId);
+      return next;
+    });
+  }
+
+  function setCardError(pairId: string, error: CardError | null): void {
+    setCardErrors((previous) => {
+      const next = new Map(previous);
+      if (error === null) next.delete(pairId);
+      else next.set(pairId, error);
+      return next;
+    });
+  }
+
+  const pairs = listState.kind === "ready" ? listState.pairs : [];
+  const groups = useMemo(() => groupPairs(pairs), [pairs]);
+  const mapStatus = mapState.status;
+  const map = mapState.status === "loading" ? EMPTY_MAP : mapState.map;
+
+  async function run(pair: ConceptPair, operation: Operation, term: string | null): Promise<void> {
+    if (busyIds.has(pair.pair_id) || bulkActive.current) return;
+    setBusy(pair.pair_id, true);
+    setCardError(pair.pair_id, null);
+    dispatchBulk({ type: "dismiss", pairId: pair.pair_id });
+    try {
+      if (operation === "reject") await api.rejectConceptPair(pair.pair_id, pair.version);
+      else await api.confirmConceptPair(pair.pair_id, pair.version, term === null ? {} : { term });
+    } catch (caught) {
+      const error = toUiError(caught);
+      setBusy(pair.pair_id, false);
+      setCardError(pair.pair_id, { operation, term, text: conceptErrorText(error) });
+      // Bản trên máy đã cũ (409) hay khái niệm không còn (404): đọc lại để thẻ mang phiên bản mới.
+      if (error.kind === "version_conflict" || error.kind === "state_conflict" || error.kind === "not_found") {
+        loadPairs(true, null);
+      }
+      return;
+    }
+    setBusy(pair.pair_id, false);
+    const accepted = operation === "accept" || operation === "restore" ? 1 : 0;
+    if (pair.status === "proposed") {
+      const nextId = focusAfterRemoval(
+        groups.proposed.map((item) => item.pair_id),
+        pair.pair_id,
+      );
+      const focus: FocusTarget = nextId === null ? { kind: "proposals" } : { kind: "concept", id: nextId };
+      leave(pair.pair_id, operation === "reject" ? "reject" : "accept", () =>
+        loadPairs(true, { accepted, message: null, focus }),
+      );
+      return;
+    }
+    const message = operation === "rename" && term !== null ? `Đã đổi tên thành “${term}”` : null;
+    const focus: FocusTarget = operation === "reject" ? { kind: "accepted" } : { kind: "concept", id: pair.pair_id };
+    loadPairs(true, { accepted, message, focus });
+  }
+
+  function retry(pair: ConceptPair): void {
+    const error = cardErrors.get(pair.pair_id);
+    void run(pair, error?.operation ?? "accept", error?.term ?? null);
+  }
+
+  function acceptAll(): void {
+    if (bulkActive.current || bulk.running) return;
+    const candidates: BulkCandidate[] = groups.proposed
+      .filter((pair) => !busyIds.has(pair.pair_id))
+      .map((pair) => {
+        const gate = conceptView(pair, mapStatus, map).actions.confirm;
+        const allowed = gate.shown && gate.enabled;
+        return {
+          pairId: pair.pair_id,
+          version: pair.version,
+          allowed,
+          reason: gate.shown && !gate.enabled ? gate.reason : null,
+        };
+      });
+    const started = bulkReducer(bulk, { type: "start", candidates });
+    dispatchBulk({ type: "start", candidates });
+    if (!started.running) return;
+    bulkActive.current = true;
+    setCardErrors(new Map());
+    let accepted = 0;
+    void sendQueued(
+      started,
+      async (pairId, version) => {
+        await api.confirmConceptPair(pairId, version, {});
+        accepted += 1;
+        if (!reduced) setLeaving((previous) => new Map(previous).set(pairId, "accept"));
+      },
+      dispatchBulk,
+    ).then(() => {
+      bulkActive.current = false;
+      loadPairs(true, { accepted, message: null, focus: { kind: "proposals" } });
+    });
+  }
+
+  const onCreated = useCallback(() => loadPairs(true, { accepted: 0, message: null, focus: null }), [loadPairs]);
+  const onOpenChunk = useCallback(
+    (chunkId: string) => router.replace(hrefFor({ chunk: chunkId }), { scroll: false }),
+    [router, hrefFor],
+  );
+
+  // -------------------------------------------------------------------- hiển thị
+  const screen = conceptsScreen(listState.kind, pairs.length, mapStatus, map.size);
+  if (screen === "loading") return <ConceptsLoading />;
+  if (listState.kind === "error") {
+    return (
+      <ErrorState
+        title="Không tải được khái niệm"
+        fix={screenErrorText(listState.error)}
+        onRetry={reloadAll}
+        technical={listState.error.diagnostic}
+      />
+    );
+  }
+  if (screen === "empty") {
+    return (
+      <EmptyState
+        title="Chưa có khái niệm nào"
+        description="Khái niệm được rút ra sau khi đọc xong tài liệu."
+        action={{ label: "Thêm tài liệu", onClick: onOpenDocuments }}
+      />
+    );
+  }
+
+  function cardBusy(pairId: string): boolean {
+    if (busyIds.has(pairId)) return true;
+    const item = bulk.items.find((entry) => entry.pairId === pairId);
+    return bulk.running && (item?.status === "queued" || item?.status === "sending");
+  }
+
+  function cardError(pairId: string): string | null {
+    const own = cardErrors.get(pairId);
+    if (own !== undefined) return own.text;
+    const item = bulk.items.find((entry) => entry.pairId === pairId);
+    return item?.status === "conflict" || item?.status === "failed" ? bulkMessageOf(bulk, pairId) : null;
+  }
+
+  const titleOf = (view: ConceptView): string | null =>
+    view.chunk === null ? null : (docTitles.get(view.chunk.docId) ?? null);
+  const proposalEntries: ProposalEntry[] = groups.proposed.map((pair) => {
+    const view = conceptView(pair, mapStatus, map);
+    return {
+      pair,
+      view,
+      docTitle: titleOf(view),
+      busy: cardBusy(pair.pair_id),
+      leaving: leaving.get(pair.pair_id) ?? null,
+      error: cardError(pair.pair_id),
+    };
+  });
+  const toAccepted = (pair: ConceptPair): AcceptedEntry => {
+    const view = conceptView(pair, mapStatus, map);
+    return {
+      pair,
+      view,
+      docTitle: titleOf(view),
+      busy: busyIds.has(pair.pair_id),
+      fresh: fresh.has(pair.pair_id),
+      error: cardErrors.get(pair.pair_id)?.text ?? null,
+    };
+  };
+  const entrances = visibleConceptEntrances({ autoProposalAvailable: AUTO_PROPOSAL_AVAILABLE });
+  const searchAvailable = !isCapabilityBlocked(freshRuntime(runtime), "vault_search");
+
+  return (
+    <div className={styles.root}>
+      {mapState.status === "partial" && (
+        <p className={styles.note}>
+          Môn này có nhiều đoạn văn hơn số Holocron tải được một lần. Khái niệm có đoạn chưa tải sẽ chưa kiểm chứng được
+          trang và chưa sửa, nhận được.
+        </p>
+      )}
+      {listState.kind === "ready" && listState.hasSkipped && (
+        <p className={styles.note}>Có khái niệm Holocron không đọc được nên không hiện ở đây.</p>
+      )}
+      {reloadNote !== null && (
+        <p className={styles.note} role="alert">
+          Chưa cập nhật được danh sách khái niệm. {reloadNote}
+        </p>
+      )}
+      <div className={styles.grid}>
+        <div className={styles.main}>
+          {proposalEntries.length > 0 && (
+            <ProposalList
+              entries={proposalEntries}
+              headingRef={proposalsHeading}
+              bulkRunning={bulk.running}
+              onAcceptAll={acceptAll}
+              onAccept={(pair, term) => void run(pair, "accept", term)}
+              onReject={(pair) => void run(pair, "reject", null)}
+              onRetry={retry}
+              onLeft={(pair) => finishLeave(pair.pair_id)}
+            />
+          )}
+          {proposalEntries.length === 0 && groups.confirmed.length > 0 && (
+            <div ref={inviteRef} className={styles.invite} tabIndex={-1}>
+              <p className={styles.inviteText}>
+                <b>Đã duyệt hết đề xuất.</b> Có {groups.confirmed.length} khái niệm để ôn.
+              </p>
+              <Button variant="primary" onClick={onOpenPractice}>
+                Ôn tập ngay
+              </Button>
+            </div>
+          )}
+          {entrances.includes("manual_create") && (
+            <PassagePanel
+              subjectCode={subjectCode}
+              mapStatus={mapStatus}
+              map={map}
+              openChunkId={location.chunk}
+              onOpenChunk={onOpenChunk}
+              onRetryMap={loadMap}
+              searchAvailable={searchAvailable}
+              onCreated={onCreated}
+            />
+          )}
+        </div>
+        <AcceptedList
+          confirmed={groups.confirmed.map(toAccepted)}
+          rejected={groups.rejected.map(toAccepted)}
+          headingRef={acceptedHeading}
+          onRename={(pair, term) => void run(pair, "rename", term)}
+          onReject={(pair) => void run(pair, "reject", null)}
+          onRestore={(pair) => void run(pair, "restore", null)}
+        />
+      </div>
+    </div>
+  );
+}
+
+function ConceptsLoading() {
+  return (
+    <div className={styles.loading} aria-busy="true">
+      <div className={styles.skeletonGrid} aria-hidden="true">
+        <div className={styles.skeletonCol}>
+          <Skeleton width="30%" height={22} />
+          {SKELETON_CARDS.map((key) => (
+            <Skeleton key={key} height={150} />
+          ))}
+        </div>
+        <div className={styles.skeletonCol}>
+          <Skeleton width="50%" height={22} />
+          <Skeleton height={44} />
+          <Skeleton height={44} />
+        </div>
+      </div>
+      <output className={styles.loadingText}>
+        <HolocronMark size={22} spinning />
+        Đang tải khái niệm…
+      </output>
+    </div>
+  );
+}

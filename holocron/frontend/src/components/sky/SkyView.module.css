@@ -52,6 +52,9 @@
 .confirmed {
   fill: var(--star);
   filter: drop-shadow(0 0 5px var(--star-glow));
+  /* Sao mới (`m-star-new`) phóng to quanh tâm của chính nó. */
+  transform-box: fill-box;
+  transform-origin: center;
 }
 
 .proposed {

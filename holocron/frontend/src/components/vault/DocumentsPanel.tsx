@@ -12,6 +12,7 @@ import type { UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
 import { createPoller } from "@/lib/poll";
 import { freshRuntime } from "@/lib/runtime";
+import { type VaultHrefFor, vaultHref } from "@/lib/vault";
 
 import { DocumentList } from "./DocumentList";
 import { ImportForm } from "./ImportForm";
@@ -47,8 +48,14 @@ async function loadSnapshot(subjectCode: string): Promise<DocumentsSnapshot> {
   return { documents, progress };
 }
 
+interface DocumentsPanelProps {
+  subjectCode: string;
+  /** Dựng địa chỉ xem lại trang; mặc định `vaultHref` (`/vault?doc=&page=`). Trang môn giữ trong `/subject`. */
+  hrefFor?: VaultHrefFor;
+}
+
 /** Mục "Tài liệu" của một môn: form nhập PDF và danh sách tài liệu, tự hỏi lại trạng thái khi có tài liệu đang đọc. */
-export function DocumentsPanel({ subjectCode }: { subjectCode: string }) {
+export function DocumentsPanel({ subjectCode, hrefFor = vaultHref }: DocumentsPanelProps) {
   const { runtime } = useShell();
   const [state, setState] = useState<ListState>({ kind: "loading" });
   const [pollError, setPollError] = useState<UiError | null>(null);
@@ -142,7 +149,7 @@ export function DocumentsPanel({ subjectCode }: { subjectCode: string }) {
           </EmptyState>
         )}
         {state.kind === "ready" && state.snapshot.documents.length > 0 && (
-          <DocumentList snapshot={state.snapshot} onChanged={reload} />
+          <DocumentList snapshot={state.snapshot} onChanged={reload} hrefFor={hrefFor} />
         )}
       </section>
     </>

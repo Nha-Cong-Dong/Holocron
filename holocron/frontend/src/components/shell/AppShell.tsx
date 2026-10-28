@@ -6,7 +6,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useReducer, useRef, us
 import { api, toUiError } from "@/lib/api";
 import { USE_MOCKS } from "@/lib/config";
 import { createLatestCounter } from "@/lib/latest";
-import { NAV_ITEMS, titleForPath } from "@/lib/navigation";
+import { shellHeadingForPath } from "@/lib/navigation";
 import {
   buildLabel,
   INITIAL_RUNTIME_STATE,
@@ -16,7 +16,9 @@ import {
   selectStatusItems,
 } from "@/lib/runtime";
 import { GLOBAL_SCOPE, resolveShortcut, targetKindOf } from "@/lib/shortcuts";
+import { subjectHref } from "@/lib/subject-route";
 import type { SubjectsState } from "@/lib/subjects";
+import { announceThemeChange, applyMotion, browserStorage, MOTION_STORAGE_KEY, readMotion } from "@/lib/theme";
 
 import styles from "./AppShell.module.css";
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
@@ -24,14 +26,15 @@ import { describeTarget } from "./keyboard";
 import { OfflineBanner } from "./OfflineBanner";
 import { ShellContext, type ShellContextValue } from "./ShellContext";
 import { ShortcutHelp } from "./ShortcutHelp";
-import { Sidebar } from "./Sidebar";
 import { StatusBar } from "./StatusBar";
+import { TopBar } from "./TopBar";
 
 type Overlay = "none" | "palette" | "help";
 
 /**
- * Khung app desktop: thanh bên (môn + điều hướng), vùng nội dung, thanh trạng thái khả năng, hộp lệnh `Ctrl+K` và
- * bảng phím tắt `?`. Trạng thái chạy đọc từ `GET /v1/runtime` một lần khi mở app và khi người dùng bấm "Kiểm tra lại".
+ * Khung app desktop: thanh trên (logo, breadcrumb, theme, "Cài đặt"), vùng nội dung, thanh trạng thái khả năng, hộp
+ * lệnh `Ctrl+K` và bảng phím tắt `?`. Khung không đọc `useSearchParams`: breadcrumb tự đọc `?code=` trong
+ * `<Suspense>` riêng của thanh trên; trang môn báo môn đang mở qua `selectSubject` cho các màn dùng môn của khung. Trạng thái chạy đọc từ `GET /v1/runtime` một lần khi mở app và khi người dùng bấm "Kiểm tra lại".
  */
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -81,6 +84,18 @@ export function AppShell({ children }: { children: ReactNode }) {
     };
   }, [refreshRuntime, reloadSubjects]);
 
+  // Tab khác bật/tắt "Giảm chuyển động": áp ngay cho mọi trang của tab này (không chỉ khi đang mở Cài đặt), rồi báo
+  // cho các nơi đang hiển thị lựa chọn đọc lại. Theme đổi ở tab khác do nút theme trên thanh trên xử lý.
+  useEffect(() => {
+    function onStorage(event: StorageEvent): void {
+      if (event.key !== MOTION_STORAGE_KEY) return;
+      applyMotion(document.documentElement, readMotion(browserStorage()));
+      announceThemeChange();
+    }
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
       const action = resolveShortcut(
@@ -111,21 +126,28 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   const commands = useMemo<PaletteCommand[]>(
     () => [
-      ...NAV_ITEMS.map((item) => ({
-        id: `nav:${item.href}`,
-        label: `Đi tới: ${item.label}`,
-        hint: item.description,
-        run: () => router.push(item.href),
+      { id: "home", label: "Về trang chủ", hint: "Danh sách môn học", run: () => router.push("/") },
+      ...(subjects.kind === "ready" ? subjects.subjects : []).map((subject) => ({
+        id: `subject:${subject.subject_code}`,
+        label: `Mở môn: ${subject.display_name.trim() || subject.subject_code}`,
+        hint: subject.subject_code,
+        run: () => router.push(subjectHref(subject.subject_code, "documents")),
       })),
+      {
+        id: "settings",
+        label: "Cài đặt",
+        hint: "Giao diện, giảm chuyển động, tính năng thử nghiệm",
+        run: () => router.push("/settings"),
+      },
       { id: "help", label: "Bảng phím tắt", hint: "Phím ?", run: () => setOverlay("help") },
       {
         id: "runtime",
-        label: "Kiểm tra lại kết nối backend",
-        hint: "Đọc lại trạng thái và khả năng",
+        label: "Kiểm tra lại kết nối",
+        hint: "Đọc lại trạng thái và khả năng của máy này",
         run: refreshRuntime,
       },
     ],
-    [router, refreshRuntime],
+    [router, refreshRuntime, subjects],
   );
 
   const context = useMemo<ShellContextValue>(
@@ -143,43 +165,30 @@ export function AppShell({ children }: { children: ReactNode }) {
     [runtime, refreshRuntime, subjects, reloadSubjects, subjectCode, overlay],
   );
 
+  // Mỗi route có đúng một <h1>: trang tự có tiêu đề (trang môn, Cài đặt) thì khung không render thêm.
+  const heading = shellHeadingForPath(pathname);
+
   return (
     <ShellContext.Provider value={context}>
       <a className={styles.skipLink} href="#main-content">
         Bỏ qua tới nội dung chính
       </a>
       <div className={styles.root}>
-        <div className={styles.frame}>
-          <Sidebar
-            pathname={pathname}
-            subjects={subjects}
-            onReloadSubjects={reloadSubjects}
-            subjectCode={subjectCode}
-            onSelectSubject={setSubjectCode}
-          />
-          <div className={styles.workspace}>
-            <header className={styles.header}>
-              <h1 className={styles.title}>{titleForPath(pathname)}</h1>
-              <div className={styles.headerActions}>
-                <button type="button" className={styles.headerButton} onClick={() => setOverlay("palette")}>
-                  Đi tới… <kbd>Ctrl+K</kbd>
-                </button>
-                <button
-                  type="button"
-                  className={styles.headerButton}
-                  onClick={() => setOverlay("help")}
-                  aria-label="Bảng phím tắt"
-                  title="Bảng phím tắt (?)"
-                >
-                  <kbd>?</kbd>
-                </button>
-              </div>
-            </header>
-            {selectOfflineMode(runtime) && <OfflineBanner />}
-            <main id="main-content" className={styles.content} tabIndex={-1}>
-              <div className={styles.contentInner}>{children}</div>
-            </main>
-          </div>
+        <TopBar
+          settingsCurrent={pathname.replace(/\/+$/, "") === "/settings"}
+          onOpenPalette={() => setOverlay("palette")}
+          onOpenHelp={() => setOverlay("help")}
+        />
+        <div className={styles.body}>
+          {selectOfflineMode(runtime) && <OfflineBanner />}
+          <main id="main-content" className={styles.content} tabIndex={-1}>
+            <div className={styles.contentInner}>
+              {heading !== null && (
+                <h1 className={heading.visuallyHidden ? "visually-hidden" : styles.pageTitle}>{heading.text}</h1>
+              )}
+              {children}
+            </div>
+          </main>
         </div>
         <StatusBar
           items={selectStatusItems(runtime, USE_MOCKS)}

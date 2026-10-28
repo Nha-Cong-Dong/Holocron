@@ -5,13 +5,20 @@ import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
 import {
+  announceThemeChange,
+  applyMotion,
+  applyTheme,
   type KeyValueStorage,
   MOTION_STORAGE_KEY,
   nextTheme,
   parseTheme,
+  readMotion,
   readTheme,
+  THEME_CHANGE_EVENT,
   THEME_STORAGE_KEY,
+  type ThemeRoot,
   themeToggleLabel,
+  writeMotion,
   writeTheme,
 } from "./theme";
 
@@ -100,5 +107,77 @@ describe("theme", () => {
     expect(script).toContain(`localStorage.getItem("${THEME_STORAGE_KEY}")`);
     expect(script).toContain(`localStorage.getItem("${MOTION_STORAGE_KEY}")`);
     expect(script).toContain("catch (e)");
+  });
+});
+
+describe("giảm chuyển động", () => {
+  it("đọc và ghi lựa chọn: bật lưu reduce, tắt lưu auto (theo hệ điều hành)", () => {
+    const storage = memoryStorage();
+    expect(readMotion(storage)).toBe(false);
+    expect(writeMotion(storage, true)).toBe(true);
+    expect(storage.data[MOTION_STORAGE_KEY]).toBe("reduce");
+    expect(readMotion(storage)).toBe(true);
+    expect(writeMotion(storage, false)).toBe(true);
+    expect(storage.data[MOTION_STORAGE_KEY]).toBe("auto");
+    expect(readMotion(storage)).toBe(false);
+  });
+
+  it("kho bị chặn, không có hoặc giá trị lạ: coi như tắt, không ném lỗi", () => {
+    expect(readMotion(blocked)).toBe(false);
+    expect(writeMotion(blocked, true)).toBe(false);
+    expect(readMotion(null)).toBe(false);
+    expect(writeMotion(null, true)).toBe(false);
+    expect(readMotion(memoryStorage({ [MOTION_STORAGE_KEY]: "REDUCE" }))).toBe(false);
+  });
+
+  it("giá trị ghi ra khớp điều kiện của theme-init.js", () => {
+    const storage = memoryStorage({ [THEME_STORAGE_KEY]: "light" });
+    writeMotion(storage, true);
+    const script = readFileSync(join(__dirname, "..", "..", "public", "theme-init.js"), "utf-8");
+    const dataset: Record<string, string> = { theme: "auto" };
+    runInNewContext(script, { document: { documentElement: { dataset } }, localStorage: storage });
+    expect(dataset).toEqual({ theme: "light", motion: "reduce" });
+    writeMotion(storage, false);
+    const after: Record<string, string> = { theme: "auto" };
+    runInNewContext(script, { document: { documentElement: { dataset: after } }, localStorage: storage });
+    expect(after).toEqual({ theme: "light" });
+  });
+
+  function fakeRoot(): ThemeRoot & { removed: string[] } {
+    const dataset: Record<string, string | undefined> = { theme: "auto" };
+    const removed: string[] = [];
+    return {
+      dataset,
+      removed,
+      removeAttribute: (name) => {
+        removed.push(name);
+        if (name === "data-motion") delete dataset.motion;
+      },
+    };
+  }
+
+  it("applyMotion: bật đặt data-motion=reduce, tắt xoá hẳn thuộc tính", () => {
+    const root = fakeRoot();
+    applyMotion(root, true);
+    expect(root.dataset.motion).toBe("reduce");
+    applyMotion(root, false);
+    expect(root.removed).toEqual(["data-motion"]);
+    expect("motion" in root.dataset).toBe(false);
+  });
+
+  it("applyTheme đặt data-theme", () => {
+    const root = fakeRoot();
+    applyTheme(root, "dark");
+    expect(root.dataset.theme).toBe("dark");
+  });
+});
+
+describe("sự kiện đổi giao diện", () => {
+  it("announceThemeChange phát đúng THEME_CHANGE_EVENT trên target được truyền", () => {
+    const target = new EventTarget();
+    const seen: string[] = [];
+    target.addEventListener(THEME_CHANGE_EVENT, (event) => seen.push(event.type));
+    announceThemeChange(target);
+    expect(seen).toEqual([THEME_CHANGE_EVENT]);
   });
 });

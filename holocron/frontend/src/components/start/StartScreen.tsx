@@ -7,6 +7,7 @@ import { ErrorNotice } from "@/components/common/ErrorNotice";
 import { Loading } from "@/components/common/LoadState";
 import { TesseractHelp } from "@/components/common/TesseractHelp";
 import { useShell } from "@/components/shell/ShellContext";
+import { CreateSubjectForm, OpenByCode } from "@/components/vault/SubjectHome";
 import { IS_DEVELOPMENT } from "@/lib/config";
 import type { ErrorKind } from "@/lib/errors";
 import {
@@ -23,6 +24,7 @@ import {
   type UnavailableGroup as UnavailableGroupName,
   unrecognizedGroupIntro,
 } from "@/lib/runtime";
+import { subjectHref } from "@/lib/subject-route";
 
 import styles from "./StartScreen.module.css";
 
@@ -58,7 +60,10 @@ const EGRESS_TEXT: Record<DataEgress, string> = {
     "Hiện đã bật LLM hoặc VLM: khi bạn dùng các tính năng ở nhóm “có gửi dữ liệu ra khỏi máy”, dữ liệu tương ứng được gửi tới dịch vụ đã cấu hình.",
 };
 
-/** Màn chạy lần đầu (trang gốc): đọc `capabilities` để nói rõ cái gì chạy offline được, cái gì cần cài thêm. */
+/**
+ * Trang chủ: danh sách môn (mở trang môn `/subject?code=`), tạo môn mới, và khả năng của máy (đọc `capabilities` để nói
+ * rõ cái gì chạy offline được, cái gì cần cài thêm).
+ */
 export function StartScreen() {
   const { runtime, refreshRuntime } = useShell();
   // Chỉ hiện khả năng khi lần tải gần nhất thành công; dữ liệu cũ không được trình bày như trạng thái hiện tại.
@@ -73,6 +78,9 @@ export function StartScreen() {
           kiểm chứng. Mọi con số trong câu hỏi do backend tính; giao diện chỉ hiển thị.
         </p>
       </section>
+
+      <SubjectList />
+      <CreateSubjectForm />
 
       {runtime.backend === "connecting" && (
         <Loading
@@ -106,16 +114,11 @@ export function StartScreen() {
         <h2 id="start-next">Bước tiếp theo</h2>
         <ul className={styles.nextSteps}>
           <li>
-            <Link href="/vault">Vault</Link>: tạo môn, kéo file PDF tài liệu vào, xem lại và xác nhận từng trang để văn
-            bản vào kho tri thức.
+            Mở một môn ở trên (hoặc tạo môn mới). Trong trang môn: thêm tài liệu PDF ở phần Tài liệu, nhận khái niệm ở
+            phần Khái niệm, rồi tạo đề ở phần Ôn tập.
           </li>
           <li>
-            <Link href="/practice">Luyện tập</Link>: chọn môn ở thanh bên, tạo đề từ các cặp khái niệm đã xác nhận rồi
-            làm từng câu.
-          </li>
-          <li>
-            <Link href="/ingestion">Nhập một đề thi</Link>: tải ảnh hoặc PDF đề, kiểm duyệt bảng số liệu trước khi sinh
-            câu song sinh.
+            Nhập đề thi cũ và câu hỏi song sinh nằm trong <Link href="/settings">Cài đặt</Link>, mục Thử nghiệm.
           </li>
           <li>
             Nhấn <kbd>Ctrl+K</kbd> để đi nhanh tới màn khác, hoặc <kbd>?</kbd> để xem toàn bộ phím tắt.
@@ -123,6 +126,44 @@ export function StartScreen() {
         </ul>
       </section>
     </div>
+  );
+}
+
+/** Danh sách môn dạng thẻ đơn giản (tên + mã), mỗi thẻ mở trang môn. */
+function SubjectList() {
+  const { subjects, reloadSubjects } = useShell();
+  const listMissing = subjects.kind === "error" && subjects.error.kind === "not_found";
+
+  return (
+    <section className={styles.section} aria-labelledby="start-subjects">
+      <h2 id="start-subjects">Môn học của bạn</h2>
+      {subjects.kind === "loading" && <Loading label="Đang tải danh sách môn…" />}
+      {subjects.kind === "error" && listMissing && (
+        <p className={styles.muted}>
+          Bản đang chạy chưa có danh sách môn. Mở môn bằng mã môn ở dưới; môn được tạo khi bạn nhập tài liệu đầu tiên
+          của môn đó.
+        </p>
+      )}
+      {subjects.kind === "error" && !listMissing && (
+        <ErrorNotice error={subjects.error} onRetry={reloadSubjects} onReload={reloadSubjects} />
+      )}
+      {subjects.kind === "ready" && subjects.subjects.length === 0 && (
+        <p className={styles.muted}>Chưa có môn nào. Tạo môn đầu tiên ở dưới.</p>
+      )}
+      {subjects.kind === "ready" && subjects.subjects.length > 0 && (
+        <ul className={`m-stagger ${styles.subjectGrid}`}>
+          {subjects.subjects.map((subject) => (
+            <li key={subject.subject_code}>
+              <Link className={`m-card ${styles.subjectCard}`} href={subjectHref(subject.subject_code, "documents")}>
+                <span className={styles.subjectName}>{subject.display_name.trim() || subject.subject_code}</span>
+                <span className={styles.subjectCode}>{subject.subject_code}</span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+      {subjects.kind === "error" && <OpenByCode hrefFor={(code) => subjectHref(code, "documents")} />}
+    </section>
   );
 }
 

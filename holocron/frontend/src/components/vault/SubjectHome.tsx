@@ -10,6 +10,7 @@ import { useShell } from "@/components/shell/ShellContext";
 import { api, toUiError } from "@/lib/api";
 import type { UiError } from "@/lib/errors";
 import { SUBJECT_CODE_PATTERN } from "@/lib/limits";
+import { subjectHref } from "@/lib/subject-route";
 import { checkSubjectForm, EXAM_FORMAT_OPTION_VI, EXAM_FORMATS } from "@/lib/subjects";
 import { vaultHref } from "@/lib/vault";
 import type { ExamFormat } from "@/types/holocron";
@@ -58,7 +59,8 @@ export function SubjectHome() {
   );
 }
 
-function CreateSubjectForm() {
+/** Tạo môn mới (`POST /v1/subjects`, §6.8); tạo xong mở trang môn `/subject?code=`. */
+export function CreateSubjectForm() {
   const router = useRouter();
   const { reloadSubjects, selectSubject } = useShell();
   const ids = useId();
@@ -83,7 +85,7 @@ function CreateSubjectForm() {
       const subject = await api.createSubject(check.payload);
       reloadSubjects();
       selectSubject(subject.subject_code);
-      router.push(vaultHref({ subject: subject.subject_code }));
+      router.push(subjectHref(subject.subject_code, "documents"));
     } catch (caught) {
       setError(toUiError(caught));
       setSubmitting(false);
@@ -154,8 +156,15 @@ function CreateSubjectForm() {
   );
 }
 
-/** Mở một môn theo mã khi backend chưa trả được danh sách môn (môn có thể đã được tạo ngầm khi nhập tài liệu). */
-function OpenByCode() {
+function vaultSubjectHref(subjectCode: string): string {
+  return vaultHref({ subject: subjectCode });
+}
+
+/**
+ * Mở một môn theo mã khi backend chưa trả được danh sách môn (môn có thể đã được tạo ngầm khi nhập tài liệu).
+ * `hrefFor` dựng địa chỉ của môn; mặc định là màn `/vault` cũ.
+ */
+export function OpenByCode({ hrefFor = vaultSubjectHref }: { hrefFor?: (subjectCode: string) => string }) {
   const router = useRouter();
   const ids = useId();
   const [code, setCode] = useState("");
@@ -169,7 +178,7 @@ function OpenByCode() {
       return;
     }
     setInvalid(false);
-    router.push(vaultHref({ subject: normalized }));
+    router.push(hrefFor(normalized));
   }
 
   return (

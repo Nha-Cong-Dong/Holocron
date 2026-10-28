@@ -15,7 +15,11 @@ export interface ShellContextValue {
   subjects: SubjectsState;
   /** Tải lại danh sách môn. */
   reloadSubjects: () => void;
-  /** Môn đang chọn ở thanh bên; `null` khi chưa chọn. */
+  /**
+   * Môn của trang `/subject` mở gần nhất (trang môn gọi `selectSubject` khi mã môn trên địa chỉ hợp lệ); route cũ
+   * `/vault`, `/pairs`, `/practice` dùng làm môn mặc định. `null` khi chưa mở môn nào. Rời trang môn thì giữ nguyên.
+   * Breadcrumb không dùng giá trị này (đọc `?code=` của địa chỉ).
+   */
   subjectCode: string | null;
   selectSubject: (subjectCode: string) => void;
   /** Đang mở hộp lệnh hoặc bảng phím tắt: màn hình con không được xử lý phím tắt riêng. */

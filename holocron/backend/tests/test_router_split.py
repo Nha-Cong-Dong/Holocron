@@ -37,7 +37,7 @@ def test_openapi_paths_and_order_are_unchanged() -> None:
     for path, methods in EXPECTED_PATHS:
         assert path in spec["paths"], path
         assert set(methods) <= set(spec["paths"][path]), path
-    assert spec["info"] == {"title": "Holocron Ingestion Gate", "version": "0.1.0a0"}
+    assert spec["info"] == {"title": "Holocron Ingestion Gate", "version": "0.2.0a0"}
 
 
 @pytest.mark.parametrize(

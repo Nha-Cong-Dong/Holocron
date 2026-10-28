@@ -15,7 +15,14 @@ import { api } from "@/lib/api";
 import type { UiError } from "@/lib/errors";
 import type { PairsLocation } from "@/lib/pairs";
 import { writeRecentSubject } from "@/lib/recent-subject";
-import { buildSkyLayout, type SkyPair } from "@/lib/sky";
+import { buildSkyLayout } from "@/lib/sky";
+import {
+  INITIAL_SKY_LOAD,
+  SKY_LOAD_TIMEOUT_MS,
+  type SkyLoadEvent,
+  type SkyLoadState,
+  skyLoadReducer,
+} from "@/lib/sky-load";
 import {
   parseSubjectDocumentLocation,
   parseSubjectLocation,
@@ -120,15 +127,6 @@ export function SubjectPage() {
   );
 }
 
-/** Thời gian chờ tối đa một lần tải bầu trời trước khi báo lỗi. */
-const SKY_LOAD_TIMEOUT_MS = 15_000;
-
-type SkyState =
-  | { kind: "loading" }
-  | { kind: "error" }
-  /** `stale`: lần tải lại gần nhất lỗi, đang giữ bầu trời của lần trước. */
-  | { kind: "ready"; pairs: readonly SkyPair[]; stale: boolean };
-
 interface SkyRequest {
   code: string;
   tab: SubjectTab;
@@ -142,7 +140,7 @@ interface SkyRequest {
  * trời cũ kèm dòng "Chưa cập nhật được", chưa có thì hiện ô tối với một câu và nút "Thử lại".
  */
 function SubjectSky({ code, title, tab }: { code: string; title: string; tab: SubjectTab }) {
-  const [state, setState] = useState<SkyState>({ kind: "loading" });
+  const [state, setState] = useState<SkyLoadState>(INITIAL_SKY_LOAD);
   const [request, setRequest] = useState<SkyRequest>({ code, tab, attempt: 0 });
   if (request.code !== code || request.tab !== tab) setRequest({ code, tab, attempt: request.attempt + 1 });
 
@@ -156,21 +154,22 @@ function SubjectSky({ code, title, tab }: { code: string; title: string; tab: Su
 
   useEffect(() => {
     let alive = true;
-    function fail(): void {
-      if (!alive) return;
-      setState((previous) => (previous.kind === "ready" ? { ...previous, stale: true } : { kind: "error" }));
+    function send(event: SkyLoadEvent): void {
+      if (alive) setState((previous) => skyLoadReducer(previous, event));
     }
-    // Lời gọi treo (không trả lời, không lỗi) không được giữ ô trời ở "Đang tải" mãi: hết giờ thì báo lỗi; nếu sau đó
-    // backend vẫn trả lời thì bầu trời hiện như thường.
-    const timer = window.setTimeout(fail, SKY_LOAD_TIMEOUT_MS);
+    // Chuyển trạng thái ở `lib/sky-load.ts`; ở đây chỉ nối sự kiện. Lời gọi treo thì hết giờ báo lỗi, trả lời đến muộn
+    // vẫn hiện bầu trời. `lib/api.ts` chưa nhận `AbortSignal` nên lời gọi hết giờ không huỷ được, chỉ bị bỏ qua khi rời
+    // màn hoặc khi có lần tải mới.
+    send({ type: "started" });
+    const timer = window.setTimeout(() => send({ type: "timedOut" }), SKY_LOAD_TIMEOUT_MS);
     api.listConceptPairs({ subjectCode: request.code, chapterCode: null, status: null }).then(
       (list) => {
         window.clearTimeout(timer);
-        if (alive) setState({ kind: "ready", pairs: list.pairs, stale: false });
+        send({ type: "succeeded", pairs: list.pairs });
       },
       () => {
         window.clearTimeout(timer);
-        fail();
+        send({ type: "failed" });
       },
     );
     return () => {
@@ -191,7 +190,7 @@ function SubjectSky({ code, title, tab }: { code: string; title: string; tab: Su
         size="full"
         status="error"
         onRetry={() => {
-          setState({ kind: "loading" });
+          setState((previous) => skyLoadReducer(previous, { type: "started" }));
           setRequest((previous) => ({ ...previous, attempt: previous.attempt + 1 }));
         }}
       />

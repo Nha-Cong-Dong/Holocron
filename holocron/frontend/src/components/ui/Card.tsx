@@ -20,7 +20,8 @@ export interface CardProps {
 
 /**
  * Thẻ: nghiêng nhẹ theo con trỏ chuột (tối đa 8°), viền vàng tím chạy vòng quanh khi rê chuột hoặc khi focus bàn phím
- * ở trong thẻ. Giảm chuyển động: không nghiêng, viền không chạy. Hành động của thẻ là nút hoặc link bên trong.
+ * ở trong thẻ (viền chạy trong lớp `.m-card-ring` riêng; thẻ không cắt overflow nên bảng thả xuống, gợi ý nổi bên trong
+ * vẫn tràn ra được). Giảm chuyển động: không nghiêng, viền không chạy. Hành động của thẻ là nút hoặc link bên trong.
  */
 export function Card({ children, className, tilt = true, as: Tag = "div" }: CardProps) {
   const ref = useRef<HTMLElement | null>(null);
@@ -59,6 +60,7 @@ export function Card({ children, className, tilt = true, as: Tag = "div" }: Card
       }}
       className={["m-card", styles.card, className ?? ""].filter((part) => part !== "").join(" ")}
     >
+      <span className="m-card-ring" aria-hidden="true" />
       {children}
     </Tag>
   );

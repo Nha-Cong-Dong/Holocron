@@ -25,45 +25,44 @@ export interface CheckboxProps {
 export function Checkbox({ checked, onChange, children, hint, disabled, name, className }: CheckboxProps) {
   const [touched, setTouched] = useState(false);
   const hintId = useId();
+  const labelClass = ["m-check", styles.check, disabled === true ? styles.disabled : ""]
+    .filter((part) => part !== "")
+    .join(" ");
   return (
-    <label
-      className={["m-check", styles.check, disabled === true ? styles.disabled : "", className ?? ""]
-        .filter((part) => part !== "")
-        .join(" ")}
-      data-animate={touched ? "" : undefined}
-    >
-      <input
-        type="checkbox"
-        className={styles.input}
-        checked={checked}
-        disabled={disabled}
-        name={name}
-        aria-describedby={hint === undefined ? undefined : hintId}
-        onChange={(event) => {
-          setTouched(true);
-          onChange(event.target.checked);
-        }}
-      />
-      <span className={`m-check-box ${styles.box}`} aria-hidden="true">
-        <svg className={`m-check-tick ${styles.tick}`} viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M6 12.5l4 4 8-9" />
-        </svg>
-      </span>
-      <span className="m-check-burst" aria-hidden="true">
-        {SPARK_ANGLES.map((angle) => (
-          <span key={angle} style={{ transform: `rotate(${angle}deg)` }}>
-            <i />
-          </span>
-        ))}
-      </span>
-      <span className={styles.text}>
-        {children}
-        {hint !== undefined && (
-          <span id={hintId} className={styles.hint}>
-            {hint}
-          </span>
-        )}
-      </span>
-    </label>
+    <div className={[styles.root, className ?? ""].filter((part) => part !== "").join(" ")}>
+      <label className={labelClass} data-animate={touched ? "" : undefined}>
+        <input
+          type="checkbox"
+          className={styles.input}
+          checked={checked}
+          disabled={disabled}
+          name={name}
+          aria-describedby={hint === undefined ? undefined : hintId}
+          onChange={(event) => {
+            setTouched(true);
+            onChange(event.target.checked);
+          }}
+        />
+        <span className={`m-check-box ${styles.box}`} aria-hidden="true">
+          <svg className={`m-check-tick ${styles.tick}`} viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 12.5l4 4 8-9" />
+          </svg>
+        </span>
+        <span className="m-check-burst" aria-hidden="true">
+          {SPARK_ANGLES.map((angle) => (
+            <span key={angle} style={{ transform: `rotate(${angle}deg)` }}>
+              <i />
+            </span>
+          ))}
+        </span>
+        <span className={styles.text}>{children}</span>
+      </label>
+      {/* Gợi ý nằm ngoài nhãn: tên của ô chỉ là chữ nhãn, gợi ý đọc riêng qua aria-describedby. */}
+      {hint !== undefined && (
+        <p id={hintId} className={styles.hint}>
+          {hint}
+        </p>
+      )}
+    </div>
   );
 }

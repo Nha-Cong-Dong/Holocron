@@ -1,6 +1,7 @@
 /**
  * Quy tắc của `src/app/motion.css` (brief UI PR 3): (a) mọi class thành phần có mặt trong cả hai khối giảm chuyển động
- * và hai khối giống nhau; (b) `!important` chỉ nằm trong hai khối đó; (c) `transition` và `@keyframes` chỉ animate
+ * và hai khối giống nhau, mọi animation của thành phần bị tắt (`animation: none !important`) hoặc phần tử bị ẩn
+ * (`display: none`) trong cả hai khối; (b) `!important` chỉ nằm trong hai khối đó; (c) `transition` và `@keyframes` chỉ animate
  * opacity, transform, translate, scale, rotate. Test đọc file CSS (không render) bằng một bộ tách khối nhỏ.
  */
 
@@ -144,12 +145,20 @@ function importantOutsideReduce(sheet: Sheet): string[] {
     .map((block) => block.prelude);
 }
 
-/** Class `m-*` xuất hiện trong selector của khối thành phần (giữa hai dấu mốc trong comment). */
-function componentClasses(css: string): string[] {
+/** Rule của khối thành phần: từ sau comment chứa dấu mốc bắt đầu tới comment chứa dấu mốc kết thúc. */
+function componentSection(css: string): Sheet | null {
   const start = css.indexOf(SECTION_START);
   const end = css.indexOf(SECTION_END);
-  if (start === -1 || end === -1 || end < start) return [];
-  const section = parseSheet(css.slice(start + SECTION_START.length, end));
+  const commentEnd = css.indexOf("*/", start);
+  if (start === -1 || end === -1 || commentEnd === -1 || end < commentEnd) return null;
+  const endComment = css.lastIndexOf("/*", end);
+  return parseSheet(css.slice(commentEnd + 2, endComment === -1 ? end : endComment));
+}
+
+/** Class `m-*` xuất hiện trong selector của khối thành phần (giữa hai dấu mốc trong comment). */
+function componentClasses(css: string): string[] {
+  const section = componentSection(css);
+  if (section === null) return [];
   const classes = new Set<string>();
   for (const rule of section.rules) {
     for (const match of rule.prelude.matchAll(/\.(m-[a-z0-9-]+)/g)) {
@@ -162,6 +171,63 @@ function componentClasses(css: string): string[] {
 function mentions(blocks: readonly Block[], className: string): boolean {
   const pattern = new RegExp(`\\.${className}(?![\\w-])`);
   return blocks.some((block) => pattern.test(block.prelude));
+}
+
+function selectorMentions(selector: string, className: string): boolean {
+  return new RegExp(`\\.${className}(?![\\w-])`).test(selector);
+}
+
+function pseudoElementOf(selector: string): string {
+  return /::[a-z-]+$/.exec(selector)?.[0] ?? "";
+}
+
+/** Một selector của rule có animation trong khối thành phần: class cuối (phần tử được animate) và pseudo-element. */
+interface AnimatedTarget {
+  selector: string;
+  classes: string[];
+  key: string;
+  pseudo: string;
+}
+
+function animatedTargets(css: string): AnimatedTarget[] {
+  const section = componentSection(css);
+  if (section === null) return [];
+  const targets: AnimatedTarget[] = [];
+  for (const rule of section.rules) {
+    const animates = declarations(rule.body).some(
+      ({ property, value }) => (property === "animation" || property === "animation-name") && !value.startsWith("none"),
+    );
+    if (!animates) continue;
+    for (const selector of selectors(rule.prelude)) {
+      const classes = [...selector.matchAll(/\.(m-[a-z0-9-]+)/g)].flatMap((match) =>
+        match[1] === undefined ? [] : [match[1]],
+      );
+      const key = classes[classes.length - 1];
+      if (key !== undefined) targets.push({ selector, classes, key, pseudo: pseudoElementOf(selector) });
+    }
+  }
+  return targets;
+}
+
+/**
+ * Selector có animation mà khối giảm chuyển động không tắt: cần một rule `animation: none !important` nhắm đúng class
+ * cuối (và cùng pseudo-element), hoặc một rule `display: none` (không pseudo-element) nhắm một class của selector đó.
+ */
+function unsilencedAnimations(targets: readonly AnimatedTarget[], reduce: readonly Block[]): string[] {
+  const rules = reduce.flatMap((block) =>
+    selectors(block.prelude).map((selector) => ({ selector, decls: declarations(block.body) })),
+  );
+  function silenced(target: AnimatedTarget): boolean {
+    return rules.some(({ selector, decls }) => {
+      const hides = decls.some(({ property, value }) => property === "display" && value.startsWith("none"));
+      if (hides && pseudoElementOf(selector) === "") {
+        if (target.classes.some((name) => selectorMentions(selector, name))) return true;
+      }
+      const stops = decls.some(({ property, value }) => property === "animation" && /^none\s*!important$/.test(value));
+      return stops && selectorMentions(selector, target.key) && pseudoElementOf(selector) === target.pseudo;
+    });
+  }
+  return targets.filter((target) => !silenced(target)).map((target) => target.selector);
 }
 
 /** Hai khối giảm chuyển động viết theo cùng một dạng, chỉ khác tiền tố `:root…`. */
@@ -180,6 +246,7 @@ function normalizeReduce(blocks: readonly Block[], root: string): string[] {
 const css = readFileSync(MOTION_CSS, "utf-8");
 const sheet = parseSheet(css);
 const classes = componentClasses(css);
+const animated = animatedTargets(css);
 
 describe("motion.css: giảm chuyển động", () => {
   it("tìm thấy khối thành phần và hai khối giảm chuyển động", () => {
@@ -194,6 +261,15 @@ describe("motion.css: giảm chuyển động", () => {
 
   it("(a) mọi class thành phần có trong khối công tắc của Cài đặt", () => {
     expect(classes.filter((name) => !mentions(sheet.reduceSwitch, name))).toEqual([]);
+  });
+
+  it("(a) mọi animation của thành phần bị tắt hoặc ẩn trong khối theo Windows", () => {
+    expect(animated.length).toBeGreaterThan(10);
+    expect(unsilencedAnimations(animated, sheet.reduceMedia)).toEqual([]);
+  });
+
+  it("(a) mọi animation của thành phần bị tắt hoặc ẩn trong khối công tắc của Cài đặt", () => {
+    expect(unsilencedAnimations(animated, sheet.reduceSwitch)).toEqual([]);
   });
 
   it("(a) hai khối giảm chuyển động giống nhau", () => {
@@ -232,6 +308,28 @@ describe("motion.css: bộ kiểm bắt được vi phạm", () => {
     expect(normalizeReduce(parsed.reduceMedia, REDUCE_MEDIA_ROOT)).not.toEqual(
       normalizeReduce(parsed.reduceSwitch, REDUCE_SWITCH_ROOT),
     );
+  });
+
+  it("báo animation chưa bị tắt: chỉ bỏ transition, sai pseudo-element, hoặc thiếu !important", () => {
+    const section = [
+      "/* THÀNH PHẦN — BẮT ĐẦU */",
+      ".m-a { animation: m-x 1s; }",
+      ".m-b::before { animation: m-x 1s; }",
+      ".m-c { animation: m-x 1s; }",
+      ".m-d i { animation: m-x 1s; }",
+      ".m-e[data-x] .m-f { animation: m-x 1s; }",
+      "/* THÀNH PHẦN — KẾT THÚC */",
+    ].join("\n");
+    const reduce = parseSheet(
+      [
+        `${REDUCE_SWITCH_ROOT} .m-a { transition: none !important; }`,
+        `${REDUCE_SWITCH_ROOT} .m-b { animation: none !important; }`,
+        `${REDUCE_SWITCH_ROOT} .m-c { animation: none; }`,
+        `${REDUCE_SWITCH_ROOT} .m-d { display: none; }`,
+        `${REDUCE_SWITCH_ROOT} .m-e .m-f { animation: none !important; }`,
+      ].join("\n"),
+    ).reduceSwitch;
+    expect(unsilencedAnimations(animatedTargets(section), reduce)).toEqual([".m-a", ".m-b::before", ".m-c"]);
   });
 
   it("báo !important ngoài khối giảm chuyển động", () => {

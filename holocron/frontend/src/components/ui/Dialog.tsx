@@ -103,6 +103,9 @@ export function Dialog({ open, onClose, title, description, children, footer, cl
           closingRef.current = false;
           return;
         }
+        // Trình duyệt tự đóng (ví dụ `<form method="dialog">`): gỡ nội dung như lần đóng thường rồi báo component cha.
+        ref.current?.classList.remove("is-closing");
+        setRendered(false);
         onClose();
       }}
     >

@@ -1,4 +1,9 @@
 /* Hình dáng ô đánh dấu; chuyển động ở motion.css (.m-check, .m-check-box, .m-check-tick, .m-check-burst). */
+.root {
+  display: inline-grid;
+  justify-items: start;
+}
+
 .check {
   position: relative;
   display: inline-flex;
@@ -68,7 +73,9 @@
   line-height: 24px;
 }
 
+/* Gợi ý thẳng hàng với chữ nhãn (ô 24 px + khoảng cách 10 px). */
 .hint {
+  margin: -6px 0 var(--sp-2) 34px;
   color: var(--ink-2);
   font-size: var(--fs-caption);
   line-height: var(--lh-caption);

@@ -613,19 +613,31 @@
 }
 
 /* ---------- 12. THẺ — B "Nghiêng theo chuột" + C "Viền sao chạy" ---------- */
-/* B: component đặt --m-tilt-x/--m-tilt-y (tối đa 8°) theo con trỏ chuột. C: dải màu xoay nằm dưới lớp nền ::after
- * (inset 2px, cùng nền với thẻ), nên chỉ lộ ra thành viền khi rê chuột hoặc khi focus bàn phím ở trong thẻ. */
+/* B: component đặt --m-tilt-x/--m-tilt-y (tối đa 8°) theo con trỏ chuột. C: dải màu xoay chạy trong lớp riêng
+ * .m-card-ring (bị cắt theo bo góc của thẻ) nằm dưới lớp nền ::after (inset 2px, cùng nền với thẻ), nên chỉ lộ ra thành
+ * viền khi rê chuột hoặc khi focus bàn phím ở trong thẻ. Thẻ không cắt overflow: bảng thả xuống, gợi ý nổi bên trong
+ * vẫn tràn ra ngoài; thẻ đang rê hoặc có focus nổi lên trên các thẻ bên cạnh. */
 .m-card {
   position: relative;
   isolation: isolate;
-  overflow: hidden;
   transform: perspective(600px) rotateX(var(--m-tilt-x, 0deg)) rotateY(var(--m-tilt-y, 0deg));
   transition: transform var(--d-micro) var(--ease-out);
 }
-.m-card::before {
-  content: "";
+.m-card:hover,
+.m-card:focus-within {
+  z-index: 1;
+}
+.m-card-ring {
   position: absolute;
   z-index: -2;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.m-card-ring::before {
+  content: "";
+  position: absolute;
   left: 50%;
   top: 50%;
   width: 200%;
@@ -642,11 +654,10 @@
   opacity: 0;
   transition: opacity var(--d-short) var(--ease-out);
   animation: m-spin calc(var(--d-celebrate) * 4) linear infinite paused;
-  pointer-events: none;
 }
-.m-card:hover::before,
-.m-card:has(:focus-visible)::before,
-.m-card:focus-visible::before {
+.m-card:hover > .m-card-ring::before,
+.m-card:has(:focus-visible) > .m-card-ring::before,
+.m-card:focus-visible > .m-card-ring::before {
   opacity: 1;
   animation-play-state: running;
 }
@@ -731,28 +742,28 @@
 }
 
 /* ---------- 15. MỤC THU GỌN — B "Trượt xuống" + C "Từng dòng" ---------- */
-.m-accordion summary .m-chevron {
+.m-accordion > summary .m-chevron {
   transition: transform var(--d-micro) var(--ease-out);
 }
-.m-accordion[open] summary .m-chevron {
+.m-accordion[open] > summary .m-chevron {
   transform: rotate(90deg);
 }
-.m-accordion[open] .m-accordion-body {
+.m-accordion[open] > .m-accordion-body {
   animation: m-li-in calc(var(--d-short) * 1.3) var(--ease-out) both;
 }
-.m-accordion[open] .m-accordion-body > * {
+.m-accordion[open] > .m-accordion-body > * {
   animation: m-li-in calc(var(--d-short) * 1.2) var(--ease-out) both;
 }
-.m-accordion[open] .m-accordion-body > :nth-child(2) {
+.m-accordion[open] > .m-accordion-body > :nth-child(2) {
   animation-delay: 50ms;
 }
-.m-accordion[open] .m-accordion-body > :nth-child(3) {
+.m-accordion[open] > .m-accordion-body > :nth-child(3) {
   animation-delay: 100ms;
 }
-.m-accordion[open] .m-accordion-body > :nth-child(4) {
+.m-accordion[open] > .m-accordion-body > :nth-child(4) {
   animation-delay: 150ms;
 }
-.m-accordion[open] .m-accordion-body > :nth-child(n + 5) {
+.m-accordion[open] > .m-accordion-body > :nth-child(n + 5) {
   animation-delay: 200ms;
 }
 
@@ -1170,13 +1181,13 @@
   :root:not([data-motion="full"]) .m-check .m-check-box,
   :root:not([data-motion="full"]) .m-check-tick,
   :root:not([data-motion="full"]) .m-switch .m-switch-knob,
-  :root:not([data-motion="full"]) .m-card::before,
+  :root:not([data-motion="full"]) .m-card-ring::before,
   :root:not([data-motion="full"]) .m-toast,
   :root:not([data-motion="full"]) .m-toast-star,
   :root:not([data-motion="full"]) .m-dialog,
   :root:not([data-motion="full"]) .m-dialog::backdrop,
-  :root:not([data-motion="full"]) .m-accordion .m-accordion-body,
-  :root:not([data-motion="full"]) .m-accordion .m-accordion-body > *,
+  :root:not([data-motion="full"]) .m-accordion > .m-accordion-body,
+  :root:not([data-motion="full"]) .m-accordion > .m-accordion-body > *,
   :root:not([data-motion="full"]) .m-progress .m-progress-fill::after {
     animation: none !important;
   }
@@ -1206,7 +1217,7 @@
   :root:not([data-motion="full"]) .m-field::after,
   :root:not([data-motion="full"]) .m-tab-pill,
   :root:not([data-motion="full"]) .m-dropdown-chevron,
-  :root:not([data-motion="full"]) .m-accordion .m-chevron,
+  :root:not([data-motion="full"]) .m-accordion > summary .m-chevron,
   :root:not([data-motion="full"]) .m-progress-fill,
   :root:not([data-motion="full"]) .m-progress-tip {
     transition: none !important;
@@ -1243,13 +1254,13 @@
 :root[data-motion="reduce"] .m-check .m-check-box,
 :root[data-motion="reduce"] .m-check-tick,
 :root[data-motion="reduce"] .m-switch .m-switch-knob,
-:root[data-motion="reduce"] .m-card::before,
+:root[data-motion="reduce"] .m-card-ring::before,
 :root[data-motion="reduce"] .m-toast,
 :root[data-motion="reduce"] .m-toast-star,
 :root[data-motion="reduce"] .m-dialog,
 :root[data-motion="reduce"] .m-dialog::backdrop,
-:root[data-motion="reduce"] .m-accordion .m-accordion-body,
-:root[data-motion="reduce"] .m-accordion .m-accordion-body > *,
+:root[data-motion="reduce"] .m-accordion > .m-accordion-body,
+:root[data-motion="reduce"] .m-accordion > .m-accordion-body > *,
 :root[data-motion="reduce"] .m-progress .m-progress-fill::after {
   animation: none !important;
 }
@@ -1277,7 +1288,7 @@
 :root[data-motion="reduce"] .m-field::after,
 :root[data-motion="reduce"] .m-tab-pill,
 :root[data-motion="reduce"] .m-dropdown-chevron,
-:root[data-motion="reduce"] .m-accordion .m-chevron,
+:root[data-motion="reduce"] .m-accordion > summary .m-chevron,
 :root[data-motion="reduce"] .m-progress-fill,
 :root[data-motion="reduce"] .m-progress-tip {
   transition: none !important;

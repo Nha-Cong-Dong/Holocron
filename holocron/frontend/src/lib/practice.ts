@@ -23,9 +23,9 @@ type TheorySlotFormat = NonNullable<TheorySlotSpec["format"]>;
 export type FormatChoice = "MCQ4" | "ESSAY" | "mixed";
 
 export const FORMAT_CHOICE_LABEL_VI: Record<FormatChoice, string> = {
-  MCQ4: "Trắc nghiệm (4 phương án)",
-  ESSAY: "Tự luận (trình bày khái niệm)",
-  mixed: "Kết hợp trắc nghiệm và tự luận",
+  MCQ4: "Trắc nghiệm",
+  ESSAY: "Tự luận",
+  mixed: "Kết hợp",
 };
 
 export const EXAM_FORMAT_LABEL_VI: Record<ExamFormat, string> = {
@@ -86,7 +86,7 @@ export interface BuilderInput {
 export type BuilderResult = { ok: true; payload: BlueprintCreate } | { ok: false; message: string };
 
 /** Hình thức của câu thứ `position` (từ 0): "kết hợp" xen kẽ trắc nghiệm rồi tự luận. */
-function slotFormat(choice: FormatChoice, position: number): TheorySlotFormat {
+export function slotFormat(choice: FormatChoice, position: number): TheorySlotFormat {
   if (choice === "mixed") return position % 2 === 0 ? "MCQ4" : "ESSAY";
   return choice;
 }
@@ -258,7 +258,7 @@ export function essaySubmission(draft: string): EssaySubmission {
  * `reason` để đoán nguyên nhân: lý do cụ thể do backend ghi và được hiển thị nguyên văn.
  */
 export const THEORY_TICKET_HINT_VI =
-  "Kiểm tra chương đã có tài liệu xác nhận và cặp khái niệm đã xác nhận ở trang Cặp khái niệm.";
+  "Kiểm tra chương đã có tài liệu xác nhận và khái niệm đã nhận ở tab Khái niệm của môn.";
 
 /** Dòng hiển thị của một ticket: lý do nguyên văn, cộng `THEORY_TICKET_HINT_VI` khi là slot lý thuyết. */
 export function ticketLine(ticket: { reason: string; theory: boolean }): string {

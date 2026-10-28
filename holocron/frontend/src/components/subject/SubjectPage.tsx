@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { EmptyState } from "@/components/common/LoadState";
 import { type TabItem, Tabs } from "@/components/common/Tabs";
@@ -15,8 +15,8 @@ import { api } from "@/lib/api";
 import type { UiError } from "@/lib/errors";
 import type { PairsLocation } from "@/lib/pairs";
 import { writeRecentSubject } from "@/lib/recent-subject";
-import { buildSkyLayout, type SkyLayout } from "@/lib/sky";
-import { NO_SKY_GAINS, type SkyGains, skyGains } from "@/lib/sky-gains";
+import { buildSkyLayout } from "@/lib/sky";
+import { EMPTY_SKY_TRACK, type SkyTrack, trackedGains, trackSkyLayout } from "@/lib/sky-gains";
 import {
   INITIAL_SKY_LOAD,
   SKY_LOAD_TIMEOUT_MS,
@@ -198,14 +198,12 @@ function SubjectSky({ code, title, tab, reloads }: { code: string; title: string
   const pairs = state.kind === "ready" ? state.pairs : null;
   const layout = useMemo(() => (pairs === null ? null : buildSkyLayout(title, pairs)), [title, pairs]);
 
-  // So với bố cục vẽ lần trước để biết sao nào vừa sáng thêm (lần vẽ đầu không có sao mới).
-  const drawn = useRef<SkyLayout | null>(null);
-  const [gains, setGains] = useState<SkyGains>(NO_SKY_GAINS);
-  useEffect(() => {
-    if (layout === null) return;
-    setGains(skyGains(drawn.current, layout));
-    drawn.current = layout;
-  }, [layout]);
+  // So với bố cục vẽ lần trước để biết sao nào vừa sáng thêm (lần vẽ đầu không có sao mới). Tính ngay trong render
+  // (cập nhật state khi bố cục đổi) để sao mới và bố cục mới luôn đi cùng một lần vẽ.
+  const [track, setTrack] = useState<SkyTrack>(EMPTY_SKY_TRACK);
+  const nextTrack = trackSkyLayout(track, layout);
+  if (nextTrack !== track) setTrack(nextTrack);
+  const gains = useMemo(() => trackedGains(nextTrack), [nextTrack]);
 
   if (layout !== null) {
     return (

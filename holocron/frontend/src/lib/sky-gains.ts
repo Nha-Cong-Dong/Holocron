@@ -43,3 +43,25 @@ export function newStarFlags(constellation: SkyConstellation, gain: number): boo
   const firstNew = lit - Math.max(0, Math.min(gain, lit));
   return constellation.stars.map((star, index) => star.kind === "confirmed" && index >= firstNew && index < lit);
 }
+
+/** Bố cục đang vẽ và bố cục vẽ ngay trước nó, để tính sao mới ngay trong lúc render (không qua effect). */
+export interface SkyTrack {
+  layout: SkyLayout | null;
+  previous: SkyLayout | null;
+}
+
+export const EMPTY_SKY_TRACK: SkyTrack = { layout: null, previous: null };
+
+/**
+ * Bước theo dõi bố cục: bố cục mới (khác đối tượng đang vẽ) ⇒ bố cục đang vẽ thành bố cục trước. Không đổi hoặc chưa có
+ * bố cục (đang tải lại, lỗi) ⇒ trả đúng `track` cũ, để màn biết không cần cập nhật.
+ */
+export function trackSkyLayout(track: SkyTrack, layout: SkyLayout | null): SkyTrack {
+  if (layout === null || layout === track.layout) return track;
+  return { layout, previous: track.layout };
+}
+
+/** Sao vừa sáng thêm của bố cục đang vẽ so với bố cục trước; chưa vẽ gì ⇒ không có. */
+export function trackedGains(track: SkyTrack): SkyGains {
+  return track.layout === null ? NO_SKY_GAINS : skyGains(track.previous, track.layout);
+}

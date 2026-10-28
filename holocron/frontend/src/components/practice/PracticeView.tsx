@@ -13,7 +13,7 @@ import type { UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
 import { type PairsLocation, pairsHref } from "@/lib/pairs";
 import type { PracticeBatch, PracticeBlueprint, PracticeTicket } from "@/lib/practice-data";
-import { ticketTechnical, ticketText } from "@/lib/practice-setup";
+import { failureTechnical, ticketTechnical, ticketText } from "@/lib/practice-setup";
 import { freshRuntime } from "@/lib/runtime";
 import { selectedSubject } from "@/lib/subjects";
 import type { BlueprintCreate } from "@/types/holocron";
@@ -147,9 +147,9 @@ export function PracticeView({ subjectCode: fixedSubject, hrefFor = pairsHref }:
           {/* Lỗi tạo đề hay soạn câu (kể cả 409 khi đề nguồn chưa duyệt): chỉ hiện lý do, không hiện câu nào. */}
           <ErrorState
             title="Chưa soạn được đề"
-            fix={failureText(stage.error)}
+            fix={screenErrorText(stage.error)}
             onRetry={() => (stage.kind === "create_failed" ? create(stage.payload) : generate(stage.blueprint))}
-            technical={stage.error.diagnostic}
+            technical={failureTechnical(stage.error)}
           />
           <div className={styles.actions}>
             <Button variant="secondary" onClick={restart}>
@@ -169,12 +169,6 @@ export function PracticeView({ subjectCode: fixedSubject, hrefFor = pairsHref }:
       )}
     </div>
   );
-}
-
-/** Vì sao và cách sửa khi chưa soạn được đề; lỗi chặn ở bước kiểm duyệt đề kèm danh sách lỗi do Gate viết. */
-function failureText(error: UiError): string {
-  const base = screenErrorText(error);
-  return error.issues.length > 0 ? `${base} ${error.issues.join("; ")}` : base;
 }
 
 /** Route cũ `/practice` khi chưa có danh sách môn. */

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildSkyLayout, type SkyPair } from "./sky";
-import { newStarFlags, skyGains } from "./sky-gains";
+import { EMPTY_SKY_TRACK, NO_SKY_GAINS, newStarFlags, skyGains, trackedGains, trackSkyLayout } from "./sky-gains";
 
 function pairs(chapter: string, confirmed: number, proposed = 0): SkyPair[] {
   return [
@@ -56,5 +56,27 @@ describe("newStarFlags", () => {
     expect(newStarFlags(constellation, 2)).toEqual([false, false, true, true, false, false, false, false]);
     expect(newStarFlags(constellation, 0).some(Boolean)).toBe(false);
     expect(newStarFlags(constellation, 9).filter(Boolean)).toHaveLength(4);
+  });
+});
+
+describe("trackSkyLayout và trackedGains: sao mới tính ngay khi bố cục đổi", () => {
+  it("lần vẽ đầu không có sao mới; bố cục mới ⇒ so với bố cục trước", () => {
+    const first = layout(pairs("ch1", 2));
+    const step1 = trackSkyLayout(EMPTY_SKY_TRACK, first);
+    expect(step1).toEqual({ layout: first, previous: null });
+    expect(trackedGains(step1).total).toBe(0);
+    const second = layout(pairs("ch1", 4));
+    const step2 = trackSkyLayout(step1, second);
+    expect(step2).toEqual({ layout: second, previous: first });
+    expect(trackedGains(step2).total).toBe(2);
+  });
+
+  it("cùng bố cục hoặc chưa có bố cục ⇒ giữ nguyên đối tượng (không cập nhật, sao mới không phát lại)", () => {
+    const first = layout(pairs("ch1", 2));
+    const step1 = trackSkyLayout(EMPTY_SKY_TRACK, first);
+    expect(trackSkyLayout(step1, first)).toBe(step1);
+    expect(trackSkyLayout(step1, null)).toBe(step1);
+    expect(trackSkyLayout(EMPTY_SKY_TRACK, null)).toBe(EMPTY_SKY_TRACK);
+    expect(trackedGains(EMPTY_SKY_TRACK)).toBe(NO_SKY_GAINS);
   });
 });

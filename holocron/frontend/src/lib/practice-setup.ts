@@ -7,6 +7,7 @@
  * câu là lựa chọn của người dùng. Không rẽ nhánh theo môn hay chương (CLAUDE.md §1).
  */
 
+import type { UiError } from "@/lib/errors";
 import { CHAPTER_CODE_PATTERN, MAX_THEORY_SLOTS } from "@/lib/limits";
 import {
   type BuilderResult,
@@ -152,4 +153,13 @@ export function ticketText(ticket: PracticeTicket, slots: readonly PracticeBluep
 /** Nguyên văn lý do backend ghi, để đặt trong "Chi tiết kỹ thuật". */
 export function ticketTechnical(tickets: readonly PracticeTicket[]): string {
   return tickets.map((ticket) => `#${ticket.slotIndex}: ${ticket.reason}`).join("\n");
+}
+
+/**
+ * "Chi tiết kỹ thuật" khi chưa soạn được đề: mã lỗi (`diagnostic`) rồi danh sách vấn đề do bước kiểm duyệt đề viết
+ * (`issues`), mỗi mục một dòng. Câu hướng dẫn chính không chứa các mục này. Không có gì ⇒ `undefined` (không hiện khối).
+ */
+export function failureTechnical(error: Pick<UiError, "diagnostic" | "issues">): string | undefined {
+  const lines = [...(error.diagnostic === undefined ? [] : [error.diagnostic]), ...error.issues];
+  return lines.length === 0 ? undefined : lines.join("\n");
 }

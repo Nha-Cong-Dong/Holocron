@@ -7,6 +7,7 @@ import {
   chapterChips,
   confirmedTotal,
   defaultSelection,
+  failureTechnical,
   formatOptions,
   initialFormat,
   NO_CHAPTER_SELECTED_VI,
@@ -182,5 +183,57 @@ describe("câu chưa soạn được", () => {
 
   it("nguyên văn lý do chỉ nằm ở phần kỹ thuật", () => {
     expect(ticketTechnical([{ slotIndex: 2, reason, theory: true }])).toBe(`#2: ${reason}`);
+  });
+});
+
+describe("setupSummary: đếm theo chương đang chọn", () => {
+  const chips = chapterChips(PAIRS);
+
+  it("một chương ⇒ số khái niệm của riêng chương đó", () => {
+    expect(setupSummary(10, chips, new Set(["ch2"]))).toBe("Đề 10 câu từ 2 khái niệm của 1 chòm sao.");
+  });
+
+  it("chương bị khoá trong lựa chọn không tính vào số khái niệm lẫn số chòm sao", () => {
+    expect(setupSummary(10, chips, new Set(["ch2", "ch3", "ch10"]))).toBe("Đề 10 câu từ 3 khái niệm của 2 chòm sao.");
+  });
+});
+
+describe("buildMultiChapterBlueprint: biên", () => {
+  const base = { subjectCode: "MAU101", chapters: ["ch1"], count: 5, choice: "MCQ4" as const };
+
+  it("một mã chương sai dạng trong nhiều chương ⇒ không dựng", () => {
+    expect(buildMultiChapterBlueprint({ ...base, chapters: ["ch1", "chuong1"] })).toMatchObject({ ok: false });
+  });
+
+  it("1 câu ⇒ dựng được, đúng 1 câu", () => {
+    const result = buildMultiChapterBlueprint({ ...base, count: 1 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.payload.theory_slots).toHaveLength(1);
+  });
+
+  it("số câu không nguyên hoặc NaN ⇒ không dựng", () => {
+    expect(buildMultiChapterBlueprint({ ...base, count: 2.5 })).toMatchObject({ ok: false });
+    expect(buildMultiChapterBlueprint({ ...base, count: Number.NaN })).toMatchObject({ ok: false });
+  });
+});
+
+describe("chi tiết kỹ thuật", () => {
+  it("nhiều câu chưa soạn được ⇒ mỗi câu một dòng", () => {
+    expect(
+      ticketTechnical([
+        { slotIndex: 1, reason: "a", theory: true },
+        { slotIndex: 2, reason: "b", theory: false },
+      ]),
+    ).toBe("#1: a\n#2: b");
+  });
+
+  it("chưa soạn được đề: mã lỗi rồi các vấn đề của bước kiểm duyệt, mỗi mục một dòng; không có gì ⇒ không hiện", () => {
+    expect(failureTechnical({ diagnostic: "HTTP 409 · BlockingIssues", issues: ["Thiếu bảng", "Sai đơn vị"] })).toBe(
+      "HTTP 409 · BlockingIssues\nThiếu bảng\nSai đơn vị",
+    );
+    expect(failureTechnical({ issues: ["Thiếu bảng"] })).toBe("Thiếu bảng");
+    expect(failureTechnical({ diagnostic: "HTTP 500", issues: [] })).toBe("HTTP 500");
+    expect(failureTechnical({ issues: [] })).toBeUndefined();
   });
 });

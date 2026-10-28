@@ -4,7 +4,8 @@
  */
 
 import type { UiError } from "@/lib/errors";
-import { titleForPath } from "@/lib/navigation";
+import { crumbTitleForPath } from "@/lib/navigation";
+import { parseSubjectLocation } from "@/lib/subject-route";
 import { type SubjectsState, selectedSubject } from "@/lib/subjects";
 import type { Subject } from "@/types/holocron";
 
@@ -57,8 +58,9 @@ export function subjectBreadcrumb(view: SubjectView): BreadcrumbItem[] {
 }
 
 /**
- * Breadcrumb của thanh trên theo đường dẫn: trang chủ không có breadcrumb; trang môn dùng `subjectBreadcrumb` với môn
- * đang mở (`subjectCode` của khung, do trang môn đặt); trang khác là "Môn học" › tiêu đề trang.
+ * Breadcrumb của thanh trên theo đường dẫn: trang chủ không có breadcrumb; trang môn dùng `subjectBreadcrumb` với
+ * `subjectCode` là mã môn đã kiểm mẫu lấy từ địa chỉ (`null` khi thiếu hoặc sai); trang khác là "Môn học" › tiêu đề
+ * breadcrumb của trang (`crumbTitleForPath`).
  */
 export function breadcrumbForPath(
   pathname: string,
@@ -68,5 +70,21 @@ export function breadcrumbForPath(
   const path = pathname.replace(/\/+$/, "") || "/";
   if (path === "/") return [];
   if (path === "/subject") return subjectBreadcrumb(subjectViewOf(subjectCode, subjects));
-  return [HOME_CRUMB, { label: titleForPath(path), href: null }];
+  return [HOME_CRUMB, { label: crumbTitleForPath(path), href: null }];
+}
+
+interface SearchParamsLike {
+  get: (name: string) => string | null;
+}
+
+/**
+ * Breadcrumb suy hoàn toàn từ địa chỉ hiện tại (đường dẫn + query) và danh sách môn: môn của trang `/subject` lấy từ
+ * `?code=` chứ không từ state của khung, nên mã sai không hiện môn cũ và đổi môn không nháy tên môn trước.
+ */
+export function breadcrumbForLocation(
+  pathname: string,
+  params: SearchParamsLike,
+  subjects: SubjectsState,
+): BreadcrumbItem[] {
+  return breadcrumbForPath(pathname, parseSubjectLocation(params).code, subjects);
 }

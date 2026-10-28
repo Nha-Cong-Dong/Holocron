@@ -1,7 +1,11 @@
+"use client";
+
 import Link from "next/link";
+import { usePathname, useSearchParams } from "next/navigation";
 
-import type { BreadcrumbItem } from "@/lib/subject-view";
+import { type BreadcrumbItem, breadcrumbForLocation } from "@/lib/subject-view";
 
+import { useShell } from "./ShellContext";
 import styles from "./TopBar.module.css";
 
 function Chevron() {
@@ -43,4 +47,15 @@ export function Breadcrumb({ items }: { items: readonly BreadcrumbItem[] }) {
       </ol>
     </nav>
   );
+}
+
+/**
+ * Breadcrumb theo địa chỉ hiện tại: môn của trang `/subject` đọc từ `?code=` (không từ state của khung) cùng danh sách
+ * môn. Đọc `useSearchParams()` nên phải nằm trong `<Suspense>` (thanh trên bọc sẵn); khung không đọc query.
+ */
+export function LocationBreadcrumb() {
+  const pathname = usePathname();
+  const params = useSearchParams();
+  const { subjects } = useShell();
+  return <Breadcrumb items={breadcrumbForLocation(pathname, params, subjects)} />;
 }

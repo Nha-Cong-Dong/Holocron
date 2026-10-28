@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Subject } from "@/types/holocron";
 import { localError } from "./errors";
 import {
+  breadcrumbForLocation,
   breadcrumbForPath,
   canShowPanes,
   HOME_CRUMB,
@@ -98,6 +99,54 @@ describe("breadcrumbForPath", () => {
 
   it("trang khác: Môn học › tiêu đề trang; mục cuối không phải liên kết", () => {
     expect(breadcrumbForPath("/settings", "VXL01", READY)).toEqual([HOME_CRUMB, { label: "Cài đặt", href: null }]);
-    expect(breadcrumbForPath("/ingestion/", null, READY)).toEqual([HOME_CRUMB, { label: "Nhập đề thi", href: null }]);
+    expect(breadcrumbForPath("/ingestion/", null, READY)).toEqual([
+      HOME_CRUMB,
+      { label: "Nhập đề thi cũ", href: null },
+    ]);
+  });
+});
+
+describe("breadcrumb của route cũ", () => {
+  it("dùng chữ của luồng mới, không lộ Vault hay Cặp khái niệm", () => {
+    const labels = ["/vault", "/pairs/", "/practice", "/ingestion", "/twins/"].map(
+      (path) => breadcrumbForPath(path, "VXL01", READY)[1]?.label,
+    );
+    expect(labels).toEqual(["Tài liệu", "Khái niệm", "Ôn tập", "Nhập đề thi cũ", "Câu hỏi song sinh"]);
+    for (const path of ["/vault", "/pairs", "/practice", "/ingestion", "/twins"]) {
+      const crumbs = breadcrumbForPath(path, null, READY);
+      expect(crumbs[0]).toEqual(HOME_CRUMB);
+      expect(crumbs[1]?.label).not.toMatch(/vault|cặp|chunk|backend/i);
+      expect(crumbs[1]?.href).toBeNull();
+    }
+  });
+
+  it("đường dẫn lạ dùng tiêu đề mặc định", () => {
+    expect(breadcrumbForPath("/khong-co", null, READY)).toEqual([HOME_CRUMB, { label: "Holocron", href: null }]);
+  });
+});
+
+describe("breadcrumbForLocation (môn lấy từ địa chỉ)", () => {
+  const query = (text: string) => new URLSearchParams(text);
+
+  it("mã sai hoặc chưa có mã ⇒ Chưa rõ môn, không hiện môn mở trước đó", () => {
+    expect(breadcrumbForLocation("/subject", query("code=sai"), READY)[1]?.label).toBe("Chưa rõ môn");
+    expect(breadcrumbForLocation("/subject", query(""), READY)[1]?.label).toBe("Chưa rõ môn");
+  });
+
+  it("danh sách môn chưa tải ⇒ hiện mã môn; tải xong ⇒ tên môn", () => {
+    expect(breadcrumbForLocation("/subject", query("code=VXL01"), { kind: "loading" })[1]?.label).toBe("VXL01");
+    expect(breadcrumbForLocation("/subject", query("code=VXL01"), READY)[1]?.label).toBe("Vi xử lý");
+  });
+
+  it("đổi môn: breadcrumb theo ngay mã trên địa chỉ mới", () => {
+    expect(breadcrumbForLocation("/subject/", query("code=VXL01&tab=concepts"), READY)[1]?.label).toBe("Vi xử lý");
+    expect(breadcrumbForLocation("/subject/", query("code=MAU101&tab=concepts"), READY)[1]?.label).toBe("MAU101");
+  });
+
+  it("trang khác bỏ qua ?code=", () => {
+    expect(breadcrumbForLocation("/settings", query("code=VXL01"), READY)).toEqual([
+      HOME_CRUMB,
+      { label: "Cài đặt", href: null },
+    ]);
   });
 });

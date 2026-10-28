@@ -2,18 +2,16 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { Suspense, useState } from "react";
 
 import { HolocronMark } from "@/components/brand/HolocronMark";
 import { Icon } from "@/components/common/Icon";
-import type { BreadcrumbItem } from "@/lib/subject-view";
 
-import { Breadcrumb } from "./Breadcrumb";
+import { LocationBreadcrumb } from "./Breadcrumb";
 import { ThemeToggle } from "./ThemeToggle";
 import styles from "./TopBar.module.css";
 
 interface TopBarProps {
-  crumbs: readonly BreadcrumbItem[];
   /** Đang ở trang Cài đặt: nút "Cài đặt" mang `aria-current="page"`. */
   settingsCurrent: boolean;
   onOpenPalette: () => void;
@@ -24,7 +22,7 @@ interface TopBarProps {
  * Thanh trên duy nhất của app (design-handoff/README.md màn 3, thay thanh bên): logo về trang chủ (mỗi lần bấm xoay
  * thêm 120°), breadcrumb, nút hộp lệnh `Ctrl+K`, bảng phím tắt `?`, đổi theme và "Cài đặt".
  */
-export function TopBar({ crumbs, settingsCurrent, onOpenPalette, onOpenHelp }: TopBarProps) {
+export function TopBar({ settingsCurrent, onOpenPalette, onOpenHelp }: TopBarProps) {
   const router = useRouter();
   const [turns, setTurns] = useState(0);
 
@@ -43,7 +41,10 @@ export function TopBar({ crumbs, settingsCurrent, onOpenPalette, onOpenHelp }: T
           <HolocronMark size={30} turns={turns} />
           <span aria-hidden="true">Holocron</span>
         </button>
-        <Breadcrumb items={crumbs} />
+        {/* Breadcrumb đọc query của địa chỉ; Suspense riêng để khung và trang không phải chờ (static export). */}
+        <Suspense fallback={null}>
+          <LocationBreadcrumb />
+        </Suspense>
         <div className={styles.actions}>
           <button
             type="button"

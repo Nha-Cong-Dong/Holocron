@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { filterCommands, foldForSearch, NAV_ITEMS, navItemForPath, titleForPath } from "./navigation";
+import {
+  crumbTitleForPath,
+  filterCommands,
+  foldForSearch,
+  NAV_ITEMS,
+  navItemForPath,
+  titleForPath,
+} from "./navigation";
 
 describe("navItemForPath", () => {
   it("khớp đường dẫn, chấp nhận / cuối của bản export tĩnh", () => {
@@ -63,5 +70,22 @@ describe("tiêu đề trang theo luồng mới", () => {
     expect(navItemForPath("/settings")).toBeNull();
     expect(titleForPath("/ingestion")).toBe("Nhập đề thi");
     expect(titleForPath("/")).toBe("Bắt đầu");
+  });
+});
+
+describe("crumbTitleForPath", () => {
+  it("route cũ dùng chữ của luồng mới; NAV_ITEMS và titleForPath giữ nguyên", () => {
+    expect(crumbTitleForPath("/vault/")).toBe("Tài liệu");
+    expect(crumbTitleForPath("/pairs")).toBe("Khái niệm");
+    expect(crumbTitleForPath("/practice")).toBe("Ôn tập");
+    expect(crumbTitleForPath("/ingestion")).toBe("Nhập đề thi cũ");
+    expect(crumbTitleForPath("/twins")).toBe("Câu hỏi song sinh");
+    expect(titleForPath("/vault")).toBe("Vault");
+    expect(navItemForPath("/pairs")?.label).toBe("Cặp khái niệm");
+  });
+
+  it("trang mới và đường dẫn lạ dùng titleForPath", () => {
+    expect(crumbTitleForPath("/settings")).toBe("Cài đặt");
+    expect(crumbTitleForPath("/khong-co")).toBe("Holocron");
   });
 });

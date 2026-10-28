@@ -16,7 +16,6 @@ import {
 } from "@/lib/runtime";
 import { GLOBAL_SCOPE, resolveShortcut, targetKindOf } from "@/lib/shortcuts";
 import { subjectHref } from "@/lib/subject-route";
-import { breadcrumbForPath } from "@/lib/subject-view";
 import type { SubjectsState } from "@/lib/subjects";
 
 import styles from "./AppShell.module.css";
@@ -32,8 +31,8 @@ type Overlay = "none" | "palette" | "help";
 
 /**
  * Khung app desktop: thanh trên (logo, breadcrumb, theme, "Cài đặt"), vùng nội dung, thanh trạng thái khả năng, hộp
- * lệnh `Ctrl+K` và bảng phím tắt `?`. Khung không đọc `useSearchParams`: môn của trang môn do chính trang đó báo qua
- * `selectSubject`. Trạng thái chạy đọc từ `GET /v1/runtime` một lần khi mở app và khi người dùng bấm "Kiểm tra lại".
+ * lệnh `Ctrl+K` và bảng phím tắt `?`. Khung không đọc `useSearchParams`: breadcrumb tự đọc `?code=` trong
+ * `<Suspense>` riêng của thanh trên; trang môn báo môn đang mở qua `selectSubject` cho các màn dùng môn của khung. Trạng thái chạy đọc từ `GET /v1/runtime` một lần khi mở app và khi người dùng bấm "Kiểm tra lại".
  */
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -159,7 +158,6 @@ export function AppShell({ children }: { children: ReactNode }) {
       </a>
       <div className={styles.root}>
         <TopBar
-          crumbs={breadcrumbForPath(pathname, subjectCode, subjects)}
           settingsCurrent={pathname.replace(/\/+$/, "") === "/settings"}
           onOpenPalette={() => setOverlay("palette")}
           onOpenHelp={() => setOverlay("help")}

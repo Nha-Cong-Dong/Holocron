@@ -1,12 +1,13 @@
 /**
- * Bảng điều hướng dùng chung cho thanh bên, tiêu đề trang và hộp lệnh `Ctrl+K`. Mỗi giai đoạn F2–F5 thêm màn của
- * mình vào đây. ID của bản ghi đi qua query string, không dùng route động, để giữ được static export (kế hoạch UI 4.3).
+ * Bảng route cũ (`NAV_ITEMS`), tiêu đề trang và tiêu đề breadcrumb của thanh trên, bộ lọc của hộp lệnh `Ctrl+K`. ID
+ * của bản ghi đi qua query string, không dùng route động, để giữ được static export (kế hoạch UI 4.3). `NAV_ITEMS` giữ
+ * nguyên cho các route cũ; điều hướng chính theo luồng mới không dùng bảng này.
  */
 
 export interface NavItem {
   href: string;
   label: string;
-  /** Chữ viết tắt khi thanh bên thu hẹp (dưới 1100 px). */
+  /** Chữ viết tắt (từ thời thanh bên; giữ cho bảng route cũ). */
   short: string;
   description: string;
 }
@@ -58,6 +59,23 @@ const PAGE_TITLES: Readonly<Record<string, string>> = {
 export function titleForPath(pathname: string): string {
   const path = trimTrailingSlash(pathname);
   return PAGE_TITLES[path] ?? navItemForPath(path)?.label ?? "Holocron";
+}
+
+/**
+ * Tiêu đề mục cuối của breadcrumb theo chữ của luồng mới (design-handoff/README.md mục 7): route cũ không lộ "Vault"
+ * hay "Cặp khái niệm". Không đổi `NAV_ITEMS`; đường dẫn không có trong bảng dùng `titleForPath`.
+ */
+const CRUMB_TITLES: Readonly<Record<string, string>> = {
+  "/vault": "Tài liệu",
+  "/pairs": "Khái niệm",
+  "/practice": "Ôn tập",
+  "/ingestion": "Nhập đề thi cũ",
+  "/twins": "Câu hỏi song sinh",
+};
+
+export function crumbTitleForPath(pathname: string): string {
+  const path = trimTrailingSlash(pathname);
+  return CRUMB_TITLES[path] ?? titleForPath(path);
 }
 
 /** Chuẩn hoá để lọc: NFD, bỏ dấu, `đ` → `d`, chữ thường, gộp khoảng trắng. */

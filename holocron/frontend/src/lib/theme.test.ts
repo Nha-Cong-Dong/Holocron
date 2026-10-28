@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 
 import { describe, expect, it } from "vitest";
 
@@ -72,6 +73,26 @@ describe("theme", () => {
 
   it("giá trị lạ trong kho bị bỏ qua", () => {
     expect(readTheme(memoryStorage({ [THEME_STORAGE_KEY]: "neon" }))).toBe("auto");
+  });
+
+  function runInitScript(storage: KeyValueStorage): Record<string, string> {
+    const script = readFileSync(join(__dirname, "..", "..", "public", "theme-init.js"), "utf-8");
+    const dataset: Record<string, string> = { theme: "auto" };
+    runInNewContext(script, { document: { documentElement: { dataset } }, localStorage: storage });
+    return dataset;
+  }
+
+  it("theme-init.js áp theme và giảm chuyển động đã lưu", () => {
+    const dataset = runInitScript(memoryStorage({ [THEME_STORAGE_KEY]: "dark", [MOTION_STORAGE_KEY]: "reduce" }));
+    expect(dataset).toEqual({ theme: "dark", motion: "reduce" });
+  });
+
+  it("theme-init.js bỏ qua giá trị lạ và giữ mặc định auto", () => {
+    expect(runInitScript(memoryStorage({ [THEME_STORAGE_KEY]: "neon" }))).toEqual({ theme: "auto" });
+  });
+
+  it("theme-init.js không ném lỗi khi kho bị chặn", () => {
+    expect(runInitScript(blocked)).toEqual({ theme: "auto" });
   });
 
   it("public/theme-init.js dùng đúng khoá lưu của lib/theme.ts", () => {

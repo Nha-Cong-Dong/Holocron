@@ -1,7 +1,7 @@
 /**
  * Nháp chưa lưu của màn Xem lại, giữ theo số trang ở `PageReview` (I5; quyết định 2026-10-29 "Lỗi ô thêm dòng" và
  * "PR 5 — nút Xác nhận các trang đọc tốt"):
- * - mỗi trang có chữ của ô "Thêm dòng vào cuối trang" và ô "Sửa" đang mở (dòng nào, chữ đang gõ);
+ * - mỗi trang có chữ của ô "Thêm dòng vào cuối trang" và ô "Sửa" đang mở (dòng nào, chữ đang gõ, chữ của dòng lúc mở);
  * - nháp nằm ngoài vùng xem một trang nên không mất khi vùng đó vẽ lại (lưu dòng khác làm `version` tăng) hay khi đổi
  *   trang rồi quay lại;
  * - còn nháp ở BẤT KỲ trang nào thì nút "Xác nhận các trang đọc tốt" khoá (`bulkConfirmBlock`). Không tự lưu hộ.
@@ -10,13 +10,18 @@
  */
 
 import { type ConfirmDocumentBlock, confirmDocumentBlock, lineEditBlock } from "@/lib/documents";
-import type { DocumentView, PageSummaryView } from "@/lib/documents-data";
+import type { DocumentView, LineView, PageSummaryView } from "@/lib/documents-data";
 import { unsavedDrafts } from "@/lib/review-confirm";
 
 /** Ô "Sửa" đang mở: dòng nào và chữ đang gõ (mở mà chưa đổi chữ vẫn tính là nháp). */
 export interface LineEditDraft {
   lineIndex: number;
   text: string;
+  /**
+   * Chữ của dòng lúc mở ô sửa. Dữ liệu trang tải lại (409, poll, lưu dòng khác) mà dòng đã khác chữ này thì ô sửa
+   * đóng và hiện xung đột (`lineEditState`), không cho "Lưu" ghi đè im lặng bản mới.
+   */
+  baseText: string;
 }
 
 export interface PageDraft {
@@ -50,9 +55,15 @@ export function setAppendText(drafts: ReviewDrafts, pageNumber: number, text: st
   return withDraft(drafts, pageNumber, { ...draftFor(drafts, pageNumber), appendText: text });
 }
 
-/** Mở ô "Sửa" cho một dòng, chữ ban đầu là chữ hiện tại của dòng. Ô đang mở (nếu có) được thay. */
+/**
+ * Mở ô "Sửa" cho một dòng, chữ ban đầu là chữ hiện tại của dòng (cũng là `baseText`). Ô đang mở (nếu có) được thay;
+ * "Sửa lại từ bản mới" khi xung đột cũng đi qua đây với chữ mới của dòng.
+ */
 export function startLineEdit(drafts: ReviewDrafts, pageNumber: number, lineIndex: number, text: string): ReviewDrafts {
-  return withDraft(drafts, pageNumber, { ...draftFor(drafts, pageNumber), editing: { lineIndex, text } });
+  return withDraft(drafts, pageNumber, {
+    ...draftFor(drafts, pageNumber),
+    editing: { lineIndex, text, baseText: text },
+  });
 }
 
 /** Đổi chữ của ô "Sửa" đang mở; không có ô nào mở thì giữ nguyên. */
@@ -72,6 +83,30 @@ export function closeLineEdit(drafts: ReviewDrafts, pageNumber: number, lineInde
   return withDraft(drafts, pageNumber, { ...draft, editing: null });
 }
 
+/**
+ * Ô "Sửa" đối chiếu với các dòng của bản trang đang hiện:
+ * - `open`: dòng còn nguyên chữ lúc mở (hoặc đã mang đúng chữ người dùng gõ, ví dụ bản trả về ngay sau khi chính ô này
+ *   lưu xong): ô sửa mở như thường;
+ * - `changed`: dòng đã đổi ở nơi khác; ô sửa đóng, hiện chữ mới của dòng và chữ người dùng đang gõ;
+ * - `removed`: dòng không còn trên trang.
+ * Hai trạng thái xung đột vẫn là nháp chưa lưu (khoá nút xác nhận) cho tới khi người dùng sửa lại hoặc bỏ chữ đã gõ.
+ * So sánh sau chuẩn hoá NFC, như `buildLineEdits`.
+ */
+export type LineEditState = { kind: "open" } | { kind: "changed"; currentText: string } | { kind: "removed" };
+
+export function lineEditState(
+  editing: LineEditDraft,
+  lines: readonly Pick<LineView, "lineIndex" | "text">[],
+): LineEditState {
+  const line = lines.find((item) => item.lineIndex === editing.lineIndex);
+  if (line === undefined) return { kind: "removed" };
+  const current = line.text.normalize("NFC");
+  if (current === editing.baseText.normalize("NFC") || current === editing.text.normalize("NFC")) {
+    return { kind: "open" };
+  }
+  return { kind: "changed", currentText: line.text };
+}
+
 /** Trang còn nháp chưa lưu: cùng điều kiện với nút xác nhận trang (`unsavedDrafts`). */
 export function pageHasDraft(draft: PageDraft): boolean {
   const flags = unsavedDrafts({ appendText: draft.appendText, editingLine: draft.editing?.lineIndex ?? null });
@@ -89,6 +124,24 @@ export function pagesWithDrafts(
   return pages
     .filter((page) => lineEditBlock(page) === null && pageHasDraft(draftFor(drafts, page.pageNumber)))
     .map((page) => page.pageNumber);
+}
+
+/** Nhãn chữ cạnh trang còn nháp trong danh sách trang (không chỉ dựa vào màu; nằm trong tên truy cập của link). */
+export const DRAFT_PAGE_LABEL_VI = "còn dòng chưa lưu";
+
+/** Số trang tối đa liệt kê trong câu dưới nút "Xác nhận các trang đọc tốt"; trang còn lại gộp thành "và N trang khác". */
+export const DRAFT_PAGES_LISTED = 8;
+
+/**
+ * Câu ngắn liệt kê trang còn nháp, hiện thêm dưới dòng nhắc khi nút "Xác nhận các trang đọc tốt" khoá vì nháp (dòng
+ * nhắc giữ nguyên chữ của quyết định). Ví dụ `[2, 5]` ⇒ "Trang 2, 5 còn dòng chưa lưu."; danh sách rỗng ⇒ `null`.
+ */
+export function draftPagesNote(pages: readonly number[]): string | null {
+  if (pages.length === 0) return null;
+  const listed = pages.slice(0, DRAFT_PAGES_LISTED);
+  const rest = pages.length - listed.length;
+  const list = `Trang ${listed.join(", ")}`;
+  return rest > 0 ? `${list} và ${rest} trang khác ${DRAFT_PAGE_LABEL_VI}.` : `${list} ${DRAFT_PAGE_LABEL_VI}.`;
 }
 
 /** Còn nháp ở bất kỳ trang nào của tài liệu. */

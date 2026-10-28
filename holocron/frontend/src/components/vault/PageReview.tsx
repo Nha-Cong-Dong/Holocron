@@ -47,9 +47,13 @@ import {
 import {
   bulkConfirmBlock,
   closeLineEdit,
+  DRAFT_PAGE_LABEL_VI,
   draftFor,
+  draftPagesNote,
+  lineEditState,
   NO_DRAFTS,
   type PageDraft,
+  pagesWithDrafts,
   type ReviewDrafts,
   setAppendText,
   setLineEditText,
@@ -327,6 +331,11 @@ export function PageReview({
     );
   }
   const docBlock = bulkConfirmBlock(doc, drafts);
+  // Trang còn nháp (chỉ trang còn sửa được, như điều kiện khoá nút): nhãn chữ trong danh sách trang và câu liệt kê dưới
+  // dòng nhắc khi nút "Xác nhận các trang đọc tốt" khoá vì nháp.
+  const draftPages = pagesWithDrafts(drafts, doc.pages);
+  const draftPageSet = new Set(draftPages);
+  const draftNote = docBlock === "unsaved_lines" ? draftPagesNote(draftPages) : null;
   const subjectHref = hrefFor({ subject: doc.subjectCode });
   const queue = reviewQueue(doc);
   const outcome = reviewOutcome(doc);
@@ -373,7 +382,9 @@ export function PageReview({
               void confirmAll();
             }}
             disabled={busy || docBlock !== null}
-            aria-describedby="review-doc-confirm-hint"
+            aria-describedby={
+              draftNote === null ? "review-doc-confirm-hint" : "review-doc-confirm-hint review-doc-draft-pages"
+            }
           >
             Xác nhận các trang đọc tốt
           </button>
@@ -388,6 +399,11 @@ export function PageReview({
               ? CONFIRM_PAGE_BLOCK_MESSAGE_VI.unsaved_lines
               : CONFIRM_DOCUMENT_BLOCK_MESSAGE_VI[docBlock]}
         </p>
+        {draftNote !== null && (
+          <p id="review-doc-draft-pages" className={styles.hint}>
+            {draftNote}
+          </p>
+        )}
         <ReviewBanner
           queueLength={queue.length}
           progress={reviewProgress(doc)}
@@ -411,6 +427,9 @@ export function PageReview({
                   <span className={styles.pageLinkStatus}>
                     {item.confirmed ? "Đã xác nhận" : PAGE_STATUS_LABEL_VI[item.status]}
                   </span>
+                  {draftPageSet.has(item.pageNumber) && (
+                    <span className={pageStyles.unsavedNote}>{DRAFT_PAGE_LABEL_VI}</span>
+                  )}
                 </Link>
               </li>
             ))}
@@ -595,8 +614,11 @@ function PagePanel({
   const confirmBlock = confirmPageBlock(page);
   const mismatches = mismatchesByLine(page.crossCheck.mismatches);
   const warnings = pageWarnings({ ...page, failureReason: page.failureReason });
-  const editing = draft.editing?.lineIndex ?? null;
-  const drafts = unsavedDrafts({ appendText: draft.appendText, editingLine: editing });
+  // Ô sửa đối chiếu với bản trang đang hiện: dòng đã đổi hoặc biến mất ở nơi khác thì ô đóng, hiện xung đột tại chỗ.
+  // Xung đột vẫn là nháp chưa lưu (khoá nút xác nhận) cho tới khi người dùng sửa lại hoặc bỏ chữ đã gõ.
+  const editState = draft.editing === null ? null : lineEditState(draft.editing, page.lines);
+  const editing = editState?.kind === "open" ? (draft.editing?.lineIndex ?? null) : null;
+  const drafts = unsavedDrafts({ appendText: draft.appendText, editingLine: draft.editing?.lineIndex ?? null });
   const [sending, setSending] = useState(false);
   // Số ms đã qua kể từ lúc trang hiện, đo khi hết `CONFIRM_GUARD_MS` để vẽ lại nút (chỉ cho `disabled`; `onClick` đo lại).
   const [shownElapsed, setShownElapsed] = useState<{ pageKey: string; ms: number } | null>(null);
@@ -822,6 +844,9 @@ function PagePanel({
               editable={editBlock === null && !busy}
               busy={busy}
               editing={editing === line.lineIndex}
+              conflictText={
+                editState?.kind === "changed" && draft.editing?.lineIndex === line.lineIndex ? draft.editing.text : null
+              }
               draft={editing === line.lineIndex && draft.editing !== null ? draft.editing.text : line.text}
               onDraftChange={onEditTextChange}
               onStartEdit={() => onStartEdit(line.lineIndex, line.text)}
@@ -837,6 +862,25 @@ function PagePanel({
             />
           ))}
         </ol>
+      )}
+      {editState?.kind === "removed" && draft.editing !== null && (
+        <div className={styles.warningNote} role="status">
+          <p>
+            Dòng {draft.editing.lineIndex} không còn trên trang này: trang vừa được sửa ở nơi khác. Chữ bạn đang gõ chưa
+            lưu: “{typedTextLabel(draft.editing.text)}”
+          </p>
+          <div className={styles.actions}>
+            <button
+              type="button"
+              className={`${styles.secondary} ${styles.small}`}
+              onClick={() => {
+                if (draft.editing !== null) onCloseEdit(draft.editing.lineIndex);
+              }}
+            >
+              Bỏ chữ đã gõ
+            </button>
+          </div>
+        </div>
       )}
       {page.lines.length === 0 && page.status !== "failed" && page.status !== "pending" && (
         <p className={styles.muted}>Trang không có dòng chữ nào.</p>
@@ -882,6 +926,11 @@ function PagePanel({
   );
 }
 
+/** Chữ người dùng đã gõ, hiện trong câu báo xung đột; chỉ khoảng trắng thì nói rõ là để trống. */
+function typedTextLabel(text: string): string {
+  return text.trim() === "" ? "(để trống)" : text;
+}
+
 interface LineRowProps {
   line: LineView;
   highlight: ReturnType<typeof lineHighlight>;
@@ -889,6 +938,11 @@ interface LineRowProps {
   /** Đang có thao tác ghi: Enter và nút "Lưu" không gửi thêm. */
   busy: boolean;
   editing: boolean;
+  /**
+   * Dòng vừa đổi ở nơi khác trong lúc ô sửa của nó đang mở (`lineEditState` là `changed`): chữ người dùng đã gõ, hiện
+   * kèm nút "Sửa lại từ bản mới" và "Bỏ chữ đã gõ"; `null` khi không xung đột.
+   */
+  conflictText: string | null;
   /** Chữ đang gõ trong ô sửa, do `PageReview` giữ theo trang (`lib/review-drafts.ts`). */
   draft: string;
   onDraftChange: (text: string) => void;
@@ -904,6 +958,7 @@ function LineRow({
   editable,
   busy,
   editing,
+  conflictText,
   draft,
   onDraftChange,
   onStartEdit,
@@ -925,6 +980,13 @@ function LineRow({
     }
     wasEditing.current = editing;
   }, [editing]);
+
+  // "Bỏ chữ đã gõ" khi xung đột: nút vừa bấm biến mất, đưa focus về nút "Sửa" của dòng thay vì để rơi ra ngoài trang.
+  const hadConflict = useRef(conflictText !== null);
+  useEffect(() => {
+    if (hadConflict.current && conflictText === null && !editing) editButton.current?.focus();
+    hadConflict.current = conflictText !== null;
+  }, [conflictText, editing]);
 
   function save(): void {
     const decision = lineSaveDecision(draft, busy);
@@ -975,9 +1037,36 @@ function LineRow({
           </span>
         )}
         {details.length > 0 && <span className={styles.lineFlags}>{details.join(" · ")}</span>}
+        {conflictText !== null && (
+          <span className={pageStyles.unsavedNote} role="status">
+            Dòng này vừa được sửa ở nơi khác. Chữ bạn đang gõ chưa lưu: “{typedTextLabel(conflictText)}”
+          </span>
+        )}
       </div>
       <div className={styles.actions}>
-        {editing ? (
+        {conflictText !== null ? (
+          <>
+            {editable && (
+              <button
+                ref={editButton}
+                type="button"
+                className={`${styles.secondary} ${styles.small}`}
+                onClick={onStartEdit}
+                aria-label={`Sửa lại dòng ${line.lineIndex} từ bản mới`}
+              >
+                Sửa lại từ bản mới
+              </button>
+            )}
+            <button
+              type="button"
+              className={`${styles.secondary} ${styles.small}`}
+              onClick={onCancel}
+              aria-label={`Bỏ chữ đã gõ ở dòng ${line.lineIndex}`}
+            >
+              Bỏ chữ đã gõ
+            </button>
+          </>
+        ) : editing ? (
           <>
             <button type="button" className={`${styles.primary} ${styles.small}`} onClick={save} disabled={busy}>
               {busy ? "Đang lưu…" : "Lưu"}

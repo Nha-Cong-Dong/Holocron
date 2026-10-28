@@ -96,7 +96,11 @@ export function PracticeView({ subjectCode: fixedSubject, hrefFor = pairsHref }:
   }, []);
 
   if (subjects.kind === "loading") return <Loading label="Đang tải danh sách môn…" />;
-  if (subjects.kind === "error") return <SubjectsUnavailable error={subjects.error} onRetry={reloadSubjects} />;
+  if (subjects.kind === "error") {
+    // Trong trang môn, trang đã báo lỗi tải danh sách môn (kèm "Thử lại"); không lặp lại thông báo thứ hai ở đây.
+    if (fixedSubject !== undefined && subjects.error.kind !== "not_found") return null;
+    return <SubjectsUnavailable error={subjects.error} onRetry={reloadSubjects} />;
+  }
   if (subjects.subjects.length === 0) {
     return (
       <EmptyState title="Chưa có môn học nào.">

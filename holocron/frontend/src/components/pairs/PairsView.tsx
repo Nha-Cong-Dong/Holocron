@@ -25,7 +25,7 @@ import {
   statusAfterCreate,
   subjectEntryStep,
 } from "@/lib/pairs";
-import { type ChunkView, parseChapterFilter, vaultHref } from "@/lib/vault";
+import { type ChunkView, parseChapterFilter } from "@/lib/vault";
 import type { ConceptPair, ConceptPairStatus } from "@/types/holocron";
 
 import { ChunkPicker } from "./ChunkPicker";
@@ -85,8 +85,7 @@ export function PairsView({ subjectCode: fixedSubject, hrefFor = pairsHref }: Pa
     return (
       <div className={styles.page}>
         <EmptyState title="Chưa chọn môn.">
-          Mở một môn ở <Link href="/">trang chủ</Link>, hoặc <Link href={vaultHref({})}>mở Vault</Link> để tạo môn và
-          nhập tài liệu.
+          Mở một môn ở <Link href="/">trang chủ</Link> (hoặc tạo môn mới ở đó), rồi chọn phần Khái niệm của môn.
         </EmptyState>
       </div>
     );

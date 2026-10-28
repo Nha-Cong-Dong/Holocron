@@ -433,7 +433,7 @@ def test_token_variable_value_is_the_token() -> None:
 
 
 # Giá trị toàn khoảng trắng KHÔNG làm biến thành "chưa đặt": cấu hình hỏng, fail-closed (duyệt 2026-10-29, câu 6).
-OTHER_BLANK_TOKENS = [" ", "　", "\x1f", "\n", "\r", "  ", "\t\n"]
+OTHER_BLANK_TOKENS = ["\u00a0", "\u3000", "\x1f", "\n", "\r", " \u00a0", "\t\n"]
 
 
 @pytest.mark.parametrize("value", OTHER_BLANK_TOKENS)
@@ -508,7 +508,7 @@ M10_CASES = [
     pytest.param("", False, id="empty"),
     pytest.param(" ", True, id="space"),
     pytest.param("\t", True, id="tab"),
-    pytest.param(" ", True, id="nbsp"),
+    pytest.param("\u00a0", True, id="nbsp"),
     pytest.param("\n", True, id="newline"),
     pytest.param(TOKEN, False, id="valid"),
 ]

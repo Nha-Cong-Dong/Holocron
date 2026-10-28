@@ -25,6 +25,7 @@ import http.client
 import io
 import logging
 import os
+import re
 import shutil
 import signal
 import socket
@@ -57,6 +58,17 @@ from .launcher_logging import (
 
 if sys.platform == "win32":
     import msvcrt
+    import winreg
+
+    def read_app_path(hive: str, subkey: str) -> str | None:
+        """Giá trị mặc định của một khoá `App Paths` ở HKCU/HKLM; không có hoặc lỗi => None."""
+        root = winreg.HKEY_CURRENT_USER if hive == "HKCU" else winreg.HKEY_LOCAL_MACHINE
+        try:
+            with winreg.OpenKey(root, subkey) as key:
+                value, _kind = winreg.QueryValueEx(key, "")
+        except OSError:
+            return None
+        return value if isinstance(value, str) else None
 
     def _try_lock(fd: int) -> bool:
         """Khoá byte đầu của file, không chặn (`LK_NBLCK`); đang bị tiến trình khác giữ ⇒ False."""
@@ -137,6 +149,10 @@ if sys.platform == "win32":
 else:
     import fcntl
 
+    def read_app_path(hive: str, subkey: str) -> str | None:
+        """Chỉ Windows có registry; nơi khác không có gì."""
+        return None
+
     def _try_lock(fd: int) -> bool:
         """`flock` độc quyền, không chặn; đang bị giữ ⇒ False."""
         try:
@@ -172,6 +188,17 @@ MAX_PORT = 65535
 PathExists = Callable[[Path], bool]
 Which = Callable[[str], str | None]
 Emit = Callable[[str], None]
+ReadRegistry = Callable[[str, str], str | None]
+
+BROWSER_CHOICES = ("auto", "chrome", "brave", "default")
+APP_PATHS_KEY = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths"
+# Chỉ Chrome và Brave; KHÔNG có Edge (người dùng quyết 2026-10-28: không dùng `--app` của Edge).
+BROWSER_SPECS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "chrome": ("chrome.exe", ("Google", "Chrome", "Application", "chrome.exe")),
+    "brave": ("brave.exe", ("BraveSoftware", "Brave-Browser", "Application", "brave.exe")),
+}
+BROWSER_ROOT_ENVS = ("ProgramFiles", "ProgramFiles(x86)")
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000  # giá trị Win32; `subprocess` chỉ có hằng này trên Windows
 
 
 class LauncherError(Exception):
@@ -618,6 +645,111 @@ def open_browser_default(url: str) -> None:
     webbrowser.open(url)
 
 
+def _expand_env(text: str, environ: Mapping[str, str]) -> str | None:
+    """Mở rộng `%VAR%` bằng `environ` (không phân biệt hoa thường); thiếu biến => None."""
+    folded = {key.upper(): value for key, value in environ.items()}
+    missing = False
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal missing
+        value = environ.get(match.group(1)) or folded.get(match.group(1).upper())
+        if not value:
+            missing = True
+            return ""
+        return value
+
+    result = re.sub(r"%([^%]+)%", replace, text)
+    return None if missing else result
+
+
+def find_browser(
+    name: str, environ: Mapping[str, str], *, home: Path, read_registry: ReadRegistry, exists: PathExists
+) -> str | None:
+    """Tìm `chrome`/`brave` trên Windows: App Paths (HKCU rồi HKLM), ProgramFiles, ProgramFiles(x86), LOCALAPPDATA.
+
+    Chỉ nhận file tồn tại; thiếu biến môi trường thì bỏ nhánh đó. Hàm thuần (giống `find_tesseract`).
+    """
+    spec = BROWSER_SPECS.get(name)
+    if spec is None:
+        return None
+    exe_name, relative = spec
+    candidates: list[Path] = []
+    for hive in ("HKCU", "HKLM"):
+        raw = read_registry(hive, f"{APP_PATHS_KEY}\\{exe_name}")
+        expanded = _expand_env(raw.strip().strip('"'), environ) if raw else None
+        if expanded:
+            candidates.append(Path(expanded))
+    for env_name in BROWSER_ROOT_ENVS:
+        root = _env_value(environ, env_name)
+        if root is not None:
+            candidates.append(Path(root).joinpath(*relative))
+    candidates.append(_local_app_data(environ, home).joinpath(*relative))
+    return next((str(path) for path in candidates if exists(path)), None)
+
+
+def make_browser_opener(
+    choice: str,
+    *,
+    environ: Mapping[str, str],
+    platform: str,
+    home: Path,
+    exists: PathExists,
+    emit: Emit,
+    fallback: Callable[[str], object],
+    read_registry: ReadRegistry = read_app_path,
+    popen: Callable[..., object] = subprocess.Popen,
+) -> Callable[[str], object]:
+    """Dựng hàm mở URL: Chrome/Brave ở chế độ app, không có thì `fallback` (trình duyệt mặc định).
+
+    `choice`: `auto` (Chrome rồi Brave, không thấy thì im lặng về mặc định), `chrome`, `brave` (không thấy thì in một
+    dòng qua `emit` rồi về mặc định), `default` (không tìm). Ngoài Windows mọi giá trị đều về `fallback` (hành vi cũ,
+    không dò PATH). Chạy `<exe> --app=<url> --user-data-dir=<LOCALAPPDATA>/Holocron/browser-profile`; hồ sơ cố định
+    dưới LOCALAPPDATA, KHÔNG theo `--data-dir`. Không có token trong URL hay đối số. Popen dùng danh sách đối số
+    (`shell=False`), không chờ, env kế thừa của người dùng như `open_browser_default` (ứng dụng của người dùng, cần
+    `APPDATA`, `SYSTEMROOT`... để tìm hồ sơ; launcher không đặt bí mật nào vào env). Tách khỏi Job bằng
+    `CREATE_BREAKAWAY_FROM_JOB`; Job không cho thì thử lại không cờ; vẫn lỗi (hoặc không tạo được hồ sơ) => `fallback`.
+    """
+
+    def open_url(url: str) -> object:
+        if choice == "default" or platform != "win32":
+            return fallback(url)
+        names = ("chrome", "brave") if choice == "auto" else (choice,)
+        exe = next(
+            (
+                found
+                for name in names
+                if (found := find_browser(name, environ, home=home, read_registry=read_registry, exists=exists))
+            ),
+            None,
+        )
+        if exe is None:
+            if choice != "auto":
+                emit(f"Không tìm thấy {choice.capitalize()}; dùng trình duyệt mặc định.")
+            return fallback(url)
+        profile = _local_app_data(environ, home) / "Holocron" / "browser-profile"
+        try:
+            profile.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return fallback(url)
+        args = [exe, f"--app={url}", f"--user-data-dir={profile}"]
+        for flags in (CREATE_BREAKAWAY_FROM_JOB, 0):
+            try:
+                return popen(
+                    args,
+                    shell=False,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    close_fds=True,
+                    creationflags=flags,
+                )
+            except OSError:
+                continue
+        return fallback(url)
+
+    return open_url
+
+
 def _raise_keyboard_interrupt(signum: int, frame: FrameType | None) -> None:
     raise KeyboardInterrupt
 
@@ -684,6 +816,12 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="holocron", description="Khởi động Holocron trên máy này.")
     parser.add_argument("--no-browser", action="store_true", help="không tự mở trình duyệt")
     parser.add_argument("--data-dir", default=None, help="thư mục dữ liệu (mặc định trong thư mục người dùng)")
+    parser.add_argument(
+        "--browser",
+        choices=BROWSER_CHOICES,
+        default="auto",
+        help="trình duyệt mở ở chế độ app: auto (Chrome rồi Brave), chrome, brave, default (trình duyệt mặc định)",
+    )
     parser.add_argument("--port", type=port_number, default=0, help="cổng nghe ở 127.0.0.1 (0 = ngẫu nhiên)")
     return parser.parse_args(argv)
 
@@ -714,12 +852,28 @@ def _serve_with_lock(args: argparse.Namespace, deps: LauncherDeps, launch: Launc
     return EXIT_OK
 
 
+def _browser_opener(args: argparse.Namespace, deps: LauncherDeps) -> Callable[[str], object]:
+    """`deps.open_browser` do test tiêm thì giữ nguyên; còn lại dựng opener chế độ app theo `--browser`."""
+    if deps.open_browser is not open_browser_default:
+        return deps.open_browser
+    return make_browser_opener(
+        args.browser,
+        environ=deps.environ,
+        platform=deps.platform,
+        home=deps.home,
+        exists=deps.exists,
+        emit=deps.emit,
+        fallback=open_browser_default,
+    )
+
+
 def _run_logged(args: argparse.Namespace, deps: LauncherDeps, sock: socket.socket, port: int) -> None:
     """Mở log file (sau khi đã giữ khoá) → in dòng version và vị trí log → luồng thăm → serve.
 
     Thư mục log suy từ `deps.environ`/platform/home; bí mật cần che lấy từ env đã đặt cho backend. Không mở được file
     log thì in cảnh báo thay cho dòng `Log:` và chạy tiếp. Ngoại lệ từ `deps.serve` ghi vào log rồi ném lại.
     """
+    opener = _browser_opener(args, deps)
     log_dir = default_log_dir(deps.environ, deps.platform, deps.home)
     header = (version_line(read_build_info(deps.build_info_path)), f"Log: {log_dir / LOG_FILENAME}")
     with file_logging(log_dir, deps.environ, header) as warning:
@@ -743,7 +897,7 @@ def _run_logged(args: argparse.Namespace, deps: LauncherDeps, sock: socket.socke
                 "fetch": deps.fetch,
                 "sleep": stop.wait,
                 "clock": deps.clock,
-                "open_browser": deps.open_browser,
+                "open_browser": opener,
                 "emit": deps.emit,
             },
         )
@@ -778,7 +932,11 @@ def main(argv: Sequence[str] | None = None, deps: LauncherDeps | None = None) ->
             outcome = wait_for_instance(launch.data_dir, sleep=deps.sleep, clock=deps.clock)
             if not isinstance(outcome, InstanceLock):
                 return handle_running_instance(
-                    launch.data_dir, outcome, no_browser=args.no_browser, open_browser=deps.open_browser, emit=deps.emit
+                    launch.data_dir,
+                    outcome,
+                    no_browser=args.no_browser,
+                    open_browser=_browser_opener(args, deps),
+                    emit=deps.emit,
                 )
             lock = outcome
         try:

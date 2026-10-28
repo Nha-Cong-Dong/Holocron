@@ -22,6 +22,8 @@ import {
   lineEditState,
   lockedDraftNotice,
   NO_DRAFTS,
+  nextAnnouncement,
+  pageDraftStatusMessage,
   pageHasDraft,
   pagesWithDrafts,
   setAppendText,
@@ -356,5 +358,55 @@ describe("setAppendText giữ nguyên chữ đang gõ", () => {
     const drafts = setAppendText(NO_DRAFTS, 1, "   ");
     expect(draftFor(drafts, 1).appendText).toBe("   ");
     expect(pageHasDraft(draftFor(drafts, 1))).toBe(false);
+  });
+});
+
+describe("nháp chỉ có khoảng trắng không tính là nháp", () => {
+  it("lockedDraftNotice: ô thêm dòng chỉ có khoảng trắng ⇒ appendText null, ô sửa đang mở giữ nguyên", () => {
+    const editing: LineEditDraft = { lineIndex: 0, text: "d", baseText: "d" };
+    expect(lockedDraftNotice({ appendText: "   ", editing }, "confirmed")).toEqual({ editing, appendText: null });
+  });
+
+  it("draftStatusMessage: trang bị khoá mà không có nháp (hoặc nháp chỉ khoảng trắng) ⇒ chuỗi rỗng", () => {
+    expect(draftStatusMessage(EMPTY_PAGE_DRAFT, null, "confirmed")).toBe("");
+    expect(draftStatusMessage({ appendText: " \t", editing: null }, null, "failed")).toBe("");
+  });
+
+  it("bulkConfirmBlock: nháp chỉ khoảng trắng hoặc nháp của trang không thuộc tài liệu ⇒ không khoá", () => {
+    const pages = [page(1, "ok"), page(2)];
+    expect(bulkConfirmBlock(doc(pages), setAppendText(NO_DRAFTS, 1, " \t"))).toBeNull();
+    expect(bulkConfirmBlock(doc(pages), setAppendText(NO_DRAFTS, 9, "z"))).toBeNull();
+  });
+});
+
+describe("vùng thông báo cố định ở PageReview", () => {
+  const conflict = "Dòng 4 vừa được sửa ở nơi khác. Chữ bạn đang gõ chưa lưu.";
+
+  it("pageDraftStatusMessage tự đối chiếu ô sửa với dòng và lý do khoá của trang", () => {
+    const draft = draftFor(setLineEditText(startLineEdit(NO_DRAFTS, 1, 4, "gốc"), 1, "đang gõ"), 1);
+    const lines = (text: string) => [{ lineIndex: 4, text }];
+    expect(pageDraftStatusMessage({ status: "ok", confirmed: false, lines: lines("gốc") }, draft)).toBe("");
+    expect(pageDraftStatusMessage({ status: "ok", confirmed: false, lines: lines("bản mới") }, draft)).toBe(conflict);
+    expect(pageDraftStatusMessage({ status: "ok", confirmed: false, lines: [] }, draft)).toBe(
+      "Dòng 4 không còn trên trang này. Chữ bạn đang gõ chưa lưu.",
+    );
+    expect(pageDraftStatusMessage({ status: "ok", confirmed: true, lines: lines("gốc") }, draft)).toBe(
+      "Trang này không sửa được nữa. Chữ bạn đã gõ chưa lưu.",
+    );
+    expect(pageDraftStatusMessage({ status: "ok", confirmed: true, lines: [] }, EMPTY_PAGE_DRAFT)).toBe("");
+  });
+
+  it("câu đổi ⇒ chữ mới; câu về rỗng ⇒ xoá chữ", () => {
+    expect(nextAnnouncement("", conflict)).toBe(conflict);
+    expect(nextAnnouncement(conflict, "")).toBe("");
+  });
+
+  it("ghi không liên quan (câu như cũ) ⇒ giữ đúng chữ cũ, không đọc lại", () => {
+    expect(nextAnnouncement(conflict, conflict)).toBe(conflict);
+  });
+
+  it("trang đang tải hoặc lỗi (chưa có câu) ⇒ giữ chữ cũ, không xoá rồi đọc lại khi tải xong", () => {
+    expect(nextAnnouncement(conflict, null)).toBe(conflict);
+    expect(nextAnnouncement("", null)).toBe("");
   });
 });

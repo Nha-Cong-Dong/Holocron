@@ -18,7 +18,7 @@ import {
   prefilledFormatChoice,
 } from "@/lib/practice";
 import { capabilityOf, isCapabilityBlocked, type RuntimeView } from "@/lib/runtime";
-import type { BlueprintCreate, Subject } from "@/types/contract-pending";
+import type { BlueprintCreate, Subject } from "@/types/holocron";
 
 import styles from "./Practice.module.css";
 
@@ -84,8 +84,8 @@ export function BlueprintBuilder({ subject, runtime, busy, onCreate }: Blueprint
       )}
       {USE_MOCKS && (
         <p className={styles.note}>
-          Dữ liệu mẫu: đề tạo ra luôn là cùng một bộ câu mẫu, không theo chương, số câu hay hình thức chọn ở đây. Kết
-          quả chấm tự luận cũng là kết quả cố định dựng sẵn cho từng câu, không dựa trên câu trả lời bạn viết.
+          Dữ liệu mẫu đang bật, nhưng môn học, bộ đề và câu hỏi ở màn này luôn lấy từ backend đang chạy, không lấy từ dữ
+          liệu mẫu.
         </p>
       )}
       <form className={styles.form} onSubmit={handleSubmit} noValidate>

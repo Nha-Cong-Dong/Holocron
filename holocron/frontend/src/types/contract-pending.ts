@@ -3,16 +3,41 @@
  * `types/holocron.ts` chỉ chứa kiểu khớp 1:1 với Pydantic đang chạy; khi backend triển khai một model dưới đây,
  * chuyển kiểu đó sang `holocron.ts` trong cùng PR và xoá khỏi file này (kế hoạch UI mục 3.2).
  * Mỗi kiểu ghi mục spec và trạng thái duyệt.
+ *
+ * Câu lý thuyết: backend dùng phương án 14(b) (union `TwinQuestion | TheoryTwin`, `TheorySlot` riêng; ở `holocron.ts`).
+ * Các kiểu "shape (a)" dưới đây (§5.9/§5.11 nguyên bản) chỉ còn dữ liệu mẫu và test của dữ liệu mẫu dùng: chờ (a) sau
+ * 29/10 (nợ ADR-004).
  */
 
-import type { DocumentImport, PageExtraction, PageSummary, ReviewReason, RuntimeInfo } from "@/types/holocron";
+import type {
+  Capability,
+  CapabilityName,
+  CapabilityReason,
+  Citation,
+  CognitiveLevel,
+  OptionKey,
+  PageExtraction,
+  PageSummary,
+  QuestionFormat,
+  ReviewReason,
+  ReviewStatus,
+  ReviewTicket,
+  RuntimeInfo,
+} from "@/types/holocron";
+
+// Kiểu khả năng và thân lỗi §6.0 đã có ở backend (`domain/capabilities.py`, `domain/llm.py`) và ở `holocron.ts`; xuất
+// lại ở đây cho nơi còn import từ file này.
+export type {
+  Capability,
+  CapabilityError,
+  CapabilityName,
+  CapabilityReason,
+  LlmUpstreamErrorDetail,
+} from "@/types/holocron";
 
 // --------------------------------------------------------------------------------- §5.12 Capability
 
-/**
- * Tên khả năng, đúng thứ tự khai báo `CapabilityName` (§5.12, đã duyệt 2026-10-25).
- * Đã có trong backend ở nhánh `feat/vault-theory-llm` (`domain/capabilities.py`), chưa nối vào `/v1/runtime`.
- */
+/** Tên khả năng, đúng thứ tự khai báo `CapabilityName` (§5.12, đã duyệt 2026-10-25); chưa nối vào `/v1/runtime`. */
 export const CAPABILITY_NAMES = [
   "ocr",
   "ocr_cross_check",
@@ -23,9 +48,7 @@ export const CAPABILITY_NAMES = [
   "essay_grading_llm",
   "template_authoring_llm",
   "vlm",
-] as const;
-
-export type CapabilityName = (typeof CAPABILITY_NAMES)[number];
+] as const satisfies readonly CapabilityName[];
 
 /** Mã lý do không khả dụng (§5.12; danh sách mã còn đề xuất, chờ duyệt). */
 export const CAPABILITY_REASONS = [
@@ -35,18 +58,7 @@ export const CAPABILITY_REASONS = [
   "ocr_language_missing",
   "secondary_ocr_disabled",
   "not_implemented",
-] as const;
-
-export type CapabilityReason = (typeof CAPABILITY_REASONS)[number];
-
-/** Một khả năng của app (§5.12, đã duyệt 2026-10-25). `reason` là null khi và chỉ khi `available = true`. */
-export interface Capability {
-  name: CapabilityName;
-  available: boolean;
-  reason: CapabilityReason | null;
-  /** Câu cố định theo `reason`; không chứa giá trị biến, khoá, tên model hay địa chỉ endpoint. */
-  detail_vi: string | null;
-}
+] as const satisfies readonly CapabilityReason[];
 
 /**
  * `GET /v1/runtime` theo §5.12. `capabilities` đã duyệt (đủ 9 phần tử theo thứ tự `CAPABILITY_NAMES`);
@@ -56,47 +68,6 @@ export interface Capability {
 export interface RuntimeInfoPending extends RuntimeInfo {
   mock_extractor?: boolean;
   capabilities?: Capability[];
-}
-
-// ------------------------------------------------------------------------------------- §6.0 lỗi
-
-/** `detail` của 409 khi endpoint cần một khả năng đang không khả dụng (§6.0, đã duyệt 2026-10-25). */
-export interface CapabilityError {
-  code: "CAPABILITY_UNAVAILABLE";
-  capability: CapabilityName;
-  reason: CapabilityReason;
-  message: string;
-}
-
-/** `detail` của 502 khi gọi LLM lỗi sau khi hết số lần thử của adapter (§6.0, đã duyệt 2026-10-25). */
-export interface LlmUpstreamErrorDetail {
-  code: "LLM_UPSTREAM_ERROR";
-  message: string;
-}
-
-// ------------------------------------------------------------------------------------ §5.14 Subject
-
-/** Hình thức thi của môn (§5.14; giá trị đã duyệt 2026-10-25, tên enum đề xuất). */
-export type ExamFormat = "mcq" | "essay" | "mixed";
-
-/**
- * Môn học (§5.14, model đã duyệt tối 2026-10-25). Endpoint `GET /v1/subjects` (§6.8) còn đề xuất.
- * `subject_code` theo mẫu `^[A-Z]{2,6}[0-9]{2,4}$`; `display_name` dài 1–200 ký tự.
- */
-export interface Subject {
-  subject_code: string;
-  display_name: string;
-  exam_format: ExamFormat;
-  version: number;
-  created_at: string;
-  updated_at: string;
-}
-
-/** Body của `POST /v1/subjects` (§6.8, đường dẫn và body còn đề xuất). Field bỏ trống thì backend lấy mặc định. */
-export interface SubjectCreate {
-  subject_code: string;
-  display_name?: string;
-  exam_format?: ExamFormat;
 }
 
 // ------------------------------------------------------------------------- §5.7, §6.5 bộ nhập PDF
@@ -122,15 +93,6 @@ export const REVIEW_REASONS: readonly ReviewReasonPending[] = [
   "OCR_ENGINE_MISSING",
 ];
 
-/**
- * `DocumentImport` với `chapter_code` (§5.7; field form bắt buộc của `POST /v1/documents` duyệt 2026-10-26, vị trí
- * field ở `DocumentImport` còn đề xuất). Backend của nhánh chưa nhận field form này và chưa trả field này.
- */
-export interface DocumentImportPending extends Omit<DocumentImport, "pages"> {
-  chapter_code: string;
-  pages: PageSummaryPending[];
-}
-
 /** `PageSummary` với `ReviewReason` của §5.7 v0.7 (có `LOW_TEXT_SCORE`). */
 export interface PageSummaryPending extends Omit<PageSummary, "review_reasons"> {
   review_reasons: ReviewReasonPending[];
@@ -141,67 +103,16 @@ export interface PageExtractionPending extends Omit<PageExtraction, "review_reas
   review_reasons: ReviewReasonPending[];
 }
 
-/** Một dòng sửa trong `PATCH …/lines` (§6.5); `text` rỗng nghĩa là dòng không vào văn bản xác nhận. */
-export interface LineEdit {
-  line_index: number;
-  text: string;
-}
-
-/** Body của `PATCH /v1/documents/{document_id}/pages/{page_number}/lines` (§6.5, quy tắc duyệt 2026-10-26). */
-export interface PageLinesPatch {
-  editor_id: string;
-  expected_version: number;
-  edits: LineEdit[];
-  appended_lines: string[];
-}
-
-/** Body của `POST /v1/documents/{document_id}/pages/{page_number}/confirm` (§6.5). */
-export interface PageConfirmRequest {
-  editor_id: string;
-  expected_version: number;
-}
-
-/** Body của `POST /v1/documents/{document_id}/confirm` (§6.5): chỉ xác nhận các trang `ok`. */
-export interface DocumentConfirmRequest {
-  editor_id: string;
-}
-
-// ------------------------------------------------------------------- §5.9 Blueprint (lát cắt dọc)
+// ------------------------------------------------------------------------ §5.9 Blueprint, shape (a)
 
 /**
- * Hình thức câu (§5.14): `QuestionFormat` của backend hiện chỉ có `MCQ4 | NUMERICAL`; `ESSAY` đã duyệt 2026-10-25
- * nhưng chưa có trong code.
+ * `BlueprintSlot` theo §5.9 (bản đổi duyệt 2026-10-26: `source_page_number`, `topic_key`, `self_solve` nullable).
+ * Backend dùng `TheorySlot` riêng (14(b)); chỉ dữ liệu mẫu còn dùng kiểu này: chờ (a) sau 29/10 (nợ ADR-004).
  */
-export type QuestionFormatPending = "MCQ4" | "NUMERICAL" | "ESSAY";
-
-/** Hình thức của slot lý thuyết (§5.9, field `format` duyệt 2026-10-26). */
-export type TheorySlotFormat = "MCQ4" | "ESSAY";
-
-/** Một slot lý thuyết do người dùng yêu cầu (§5.9, duyệt 2026-10-26). */
-export interface TheorySlotSpec {
-  /** Mẫu `^ch[0-9]{1,2}(\.[0-9]{1,2})?$`. */
-  chapter_code: string;
-  cognitive_level?: "remember" | "understand";
-  source_chunk_id?: string | null;
-  /** Giao diện luôn gửi lựa chọn tường minh; `null` để backend lấy mặc định từ `exam_format` (còn đề xuất). */
-  format?: TheorySlotFormat | null;
-}
-
-/** Body của `POST /v1/blueprints` (§5.9, §6.7). `item_ids` và `theory_slots` không cùng rỗng. */
-export interface BlueprintCreate {
-  subject_code: string;
-  item_ids?: string[];
-  theory_slots?: TheorySlotSpec[];
-  duration_minutes?: number | null;
-}
-
-export type CognitiveLevel = "remember" | "understand" | "apply" | "analyze" | "evaluate" | "create";
-
-/** `BlueprintSlot` theo §5.9 (bản đổi duyệt 2026-10-26: `source_page_number`, `topic_key`, `self_solve` nullable). */
 export interface BlueprintSlotPending {
   slot_index: number;
   source_page_number: number | null;
-  format: QuestionFormatPending;
+  format: QuestionFormat;
   chapter_code: string;
   topic_key: string | null;
   cognitive_level: CognitiveLevel;
@@ -211,10 +122,10 @@ export interface BlueprintSlotPending {
   distractor_archetypes: unknown[];
   self_solve: unknown;
   mapping_confidence: number;
-  review_status: "AUTO_PASS" | "AUTO_FALLBACK" | "NEEDS_REVIEW" | "APPROVED" | "REJECTED";
+  review_status: ReviewStatus;
 }
 
-/** `201 ExamBlueprint` của `POST /v1/blueprints` (§5.9, §6.7). */
+/** `ExamBlueprint` shape (a) (§5.9); backend trả `ExamBlueprint` của `holocron.ts`. Chờ (a) sau 29/10 (nợ ADR-004). */
 export interface ExamBlueprintPending {
   blueprint_id: string;
   source_exam_doc_id: string;
@@ -225,22 +136,14 @@ export interface ExamBlueprintPending {
   created_at: string;
 }
 
-// ---------------------------------------------------------------- §5.11 TwinQuestion sau ADR-005/007
-
-/** `Citation` (§5.8), như `types/holocron.ts`; chép lại để file này tự đứng. */
-export interface CitationPending {
-  doc_id: string;
-  page_number: number;
-  verbatim_quote: string;
-  chunk_id: string | null;
-}
+// ------------------------------------------------------ §5.11 TwinQuestion sau ADR-005/007, shape (a)
 
 /** `MisconceptionRef` (§5.11) với `citation` đã duyệt 2026-10-25 (câu lý thuyết; null với câu tính toán). */
 export interface MisconceptionRefPending {
   misconception_code: string;
   label_vi: string;
   rationale_vi: string;
-  citation: CitationPending | null;
+  citation: Citation | null;
 }
 
 export interface ComputationalTrace {
@@ -300,9 +203,10 @@ export interface EssaySpec {
   splitter_version: string;
 }
 
-export type OptionKeyPending = "A" | "B" | "C" | "D";
-
-/** `TwinQuestion` sau ADR-005 và ADR-007 (§5.11, §5.14). */
+/**
+ * `TwinQuestion` sau ADR-005 và ADR-007 (§5.11, §5.14). Backend trả union `TwinQuestion | TheoryTwin` (14(b)); chỉ dữ
+ * liệu mẫu còn dùng kiểu này: chờ (a) sau 29/10 (nợ ADR-004).
+ */
 export interface TwinQuestionPending {
   twin_id: string;
   blueprint_id: string;
@@ -311,37 +215,28 @@ export interface TwinQuestionPending {
   template_id: string | null;
   topic_key: string | null;
   seed: number;
-  format: QuestionFormatPending;
+  format: QuestionFormat;
   stem: string;
-  options: Record<OptionKeyPending, string> | null;
-  correct_key: OptionKeyPending | null;
+  options: Record<OptionKey, string> | null;
+  correct_key: OptionKey | null;
   numerical_answer: { value: number; tolerance_abs: number; unit: string | null; decimals: number } | null;
-  distractor_to_misconception_map: Partial<Record<OptionKeyPending, MisconceptionRefPending>>;
+  distractor_to_misconception_map: Partial<Record<OptionKey, MisconceptionRefPending>>;
   solution_explanation_vi: string;
-  citation: CitationPending;
+  citation: Citation;
   trace: GenerationTracePending;
-  review_status: "AUTO_PASS" | "AUTO_FALLBACK" | "NEEDS_REVIEW" | "APPROVED" | "REJECTED";
+  review_status: ReviewStatus;
   generated_at: string;
   artifacts: SolutionArtifact[];
   essay: EssaySpec | null;
 }
 
-/** `ReviewTicket` (§5.11) với `topic_key` nullable (duyệt 2026-10-26, null với slot lý thuyết). */
-export interface ReviewTicketPending {
-  blueprint_id: string;
-  slot_index: number;
-  topic_key: string | null;
-  reason: string;
-  attempts: unknown[];
-}
-
-/** `TwinBatch` với `batch_id`, `created_at` (§6.7, duyệt 2026-10-25). */
+/** `TwinBatch` shape (a): `twins` là `TwinQuestionPending`. Chờ (a) sau 29/10 (nợ ADR-004). */
 export interface TwinBatchPending {
   batch_id: string;
   blueprint_id: string;
   base_seed: number;
   twins: TwinQuestionPending[];
-  review_tickets: ReviewTicketPending[];
+  review_tickets: ReviewTicket[];
   created_at: string;
 }
 
@@ -384,5 +279,5 @@ export interface EssayGradeResult {
   matched_points: EssayPointResult[];
   missing_points: EssayPointResult[];
   answer_sha256: string;
-  citation: CitationPending;
+  citation: Citation;
 }

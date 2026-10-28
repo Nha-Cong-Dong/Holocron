@@ -6,8 +6,6 @@
  * truyền vào (khớp cờ `llm_configured` backend thật trả), mặc định `offline`.
  */
 
-import type { Subject } from "@/types/contract-pending";
-
 import { MOCK_IMPORT_DOC_ID, type MockDocumentStep } from "./fixtures/documents";
 import { RUNTIME_SCENARIOS, type RuntimeScenario } from "./fixtures/runtime";
 
@@ -29,45 +27,7 @@ export function currentRuntimeScenario(fallback: RuntimeScenario = DEFAULT_RUNTI
   return scenarioFromSearch(window.location.search, fallback);
 }
 
-/**
- * Kịch bản của màn luyện tập, chọn bằng query `?mock_practice=…`: `normal` (mặc định) trả batch mẫu đủ dạng câu;
- * `empty` trả batch không có câu nào vì chương chưa có cặp khái niệm đã xác nhận; `unapproved` trả 409 như khi bộ đề
- * dựa trên đề thi chưa được duyệt.
- */
-export const PRACTICE_SCENARIOS = ["normal", "empty", "unapproved"] as const;
-
-export type PracticeScenario = (typeof PRACTICE_SCENARIOS)[number];
-
-export const MOCK_PRACTICE_QUERY = "mock_practice";
-
-export function practiceScenarioFromSearch(search: string): PracticeScenario {
-  const value = new URLSearchParams(search).get(MOCK_PRACTICE_QUERY);
-  return PRACTICE_SCENARIOS.find((scenario) => scenario === value) ?? "normal";
-}
-
-export function currentPracticeScenario(): PracticeScenario {
-  if (typeof window === "undefined") return "normal";
-  return practiceScenarioFromSearch(window.location.search);
-}
-
-/**
- * Mã các blueprint do handler giả tạo trong phiên: chỉ những mã này được sinh câu bằng dữ liệu mẫu, và chỉ câu của
- * chúng tìm trích dẫn trong chunk mẫu.
- */
-const mockBlueprintIds = new Set<string>();
-
-export function rememberMockBlueprint(blueprintId: string): void {
-  mockBlueprintIds.add(blueprintId);
-}
-
-export function isMockBlueprint(blueprintId: string): boolean {
-  return mockBlueprintIds.has(blueprintId);
-}
-
-// ------------------------------------------------------------------------- môn học và tài liệu mẫu
-
-/** Môn do handler giả `POST /v1/subjects` tạo trong phiên (M3). */
-export const createdSubjects: Subject[] = [];
+// ------------------------------------------------------------------------- tài liệu mẫu
 
 /** Mã tài liệu mẫu (M4, M5): chỉ những mã này dùng fixture; mọi tài liệu khác gọi backend thật. */
 const MOCK_DOCUMENT_IDS: ReadonlySet<string> = new Set([MOCK_IMPORT_DOC_ID]);

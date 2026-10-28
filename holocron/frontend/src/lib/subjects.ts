@@ -5,7 +5,7 @@
 
 import type { UiError } from "@/lib/errors";
 import { SUBJECT_CODE_PATTERN, SUBJECT_DISPLAY_NAME_MAX_CHARS } from "@/lib/limits";
-import type { ExamFormat, Subject, SubjectCreate } from "@/types/contract-pending";
+import type { ExamFormat, Subject, SubjectCreate } from "@/types/holocron";
 
 /** Giá trị `exam_format` theo thứ tự khai báo (§5.14). */
 export const EXAM_FORMATS: readonly ExamFormat[] = ["mcq", "essay", "mixed"];

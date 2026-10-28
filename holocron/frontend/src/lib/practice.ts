@@ -12,8 +12,10 @@ import { CHAPTER_CODE_PATTERN, MAX_THEORY_SLOTS } from "@/lib/limits";
 import type { EssayGradeView, PracticeQuestion } from "@/lib/practice-data";
 import type { CapabilityView } from "@/lib/runtime";
 import type { ShortcutAction, ShortcutScope } from "@/lib/shortcuts";
-import type { BlueprintCreate, ExamFormat, TheorySlotFormat, TheorySlotSpec } from "@/types/contract-pending";
-import type { OptionKey } from "@/types/holocron";
+import type { BlueprintCreate, ExamFormat, OptionKey, TheorySlotSpec } from "@/types/holocron";
+
+/** Hình thức của slot lý thuyết mà form gửi tường minh (`TheorySlotSpec.format` khác null). */
+type TheorySlotFormat = NonNullable<TheorySlotSpec["format"]>;
 
 // ----------------------------------------------------------------------------------------- tạo đề
 
@@ -250,18 +252,6 @@ export function essaySubmission(draft: string): EssaySubmission {
 }
 
 // ------------------------------------------------------------------------------- slot không sinh được
-
-/**
- * Phần gợi ý nói rõ giao diện chưa có màn tạo cặp khái niệm. Không gợi ý xác nhận nhãn chunk: việc đó không tạo ra
- * cặp khái niệm.
- */
-export const PAIR_SCREEN_MISSING_VI = "Giao diện chưa có màn tạo cặp khái niệm nên chưa bổ sung được từ đây.";
-
-/**
- * Gợi ý chung cho slot lý thuyết không sinh được: nêu đúng tình trạng (chương chưa có cặp khái niệm đã xác nhận, màn tạo
- * cặp chưa có); không nêu ngưỡng cụ thể (lý do cụ thể do backend ghi).
- */
-export const VAULT_HINT_VI = `Chương này chưa có đủ cặp khái niệm đã xác nhận. ${PAIR_SCREEN_MISSING_VI}`;
 
 /**
  * Gợi ý cố định kèm MỌI ticket của slot lý thuyết (`topic_key = null`), đặt sau lý do backend ghi. Không so chuỗi

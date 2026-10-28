@@ -13,10 +13,9 @@ import { ticketLine } from "@/lib/practice";
 import type { PracticeBatch, PracticeBlueprint, PracticeTicket } from "@/lib/practice-data";
 import { freshRuntime } from "@/lib/runtime";
 import { selectedSubject } from "@/lib/subjects";
-import type { BlueprintCreate } from "@/types/contract-pending";
+import type { BlueprintCreate } from "@/types/holocron";
 
 import { BlueprintBuilder } from "./BlueprintBuilder";
-import { CitationBlueprintContext } from "./CitationPanel";
 import styles from "./Practice.module.css";
 import { PracticeSession } from "./PracticeSession";
 
@@ -182,15 +181,13 @@ function ReadyBatch({ batch, blueprint, onNewExam }: ReadyBatchProps) {
     <div className={styles.page}>
       <TicketNotice tickets={batch.tickets} />
       {hasSkipped && <SkippedNotice />}
-      {/* Đoạn nguồn của trích dẫn tìm theo môn và mã của blueprint sinh ra câu, không theo môn đang chọn (ADR-006). */}
-      <CitationBlueprintContext.Provider value={blueprint.blueprintId}>
-        <PracticeSession
-          questions={batch.questions}
-          blueprint={blueprint}
-          subjectCode={blueprint.subjectCode}
-          onNewExam={onNewExam}
-        />
-      </CitationBlueprintContext.Provider>
+      {/* Đoạn nguồn của trích dẫn tìm theo môn của blueprint sinh ra câu, không theo môn đang chọn (ADR-006). */}
+      <PracticeSession
+        questions={batch.questions}
+        blueprint={blueprint}
+        subjectCode={blueprint.subjectCode}
+        onNewExam={onNewExam}
+      />
     </div>
   );
 }

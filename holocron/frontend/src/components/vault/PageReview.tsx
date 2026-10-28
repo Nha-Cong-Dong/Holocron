@@ -43,6 +43,7 @@ import {
   confirmClick,
   focusOnShow,
   nextReviewTarget,
+  unsavedDrafts,
 } from "@/lib/review-confirm";
 import { classifyReviewFocus, lineToEdit, reviewKeyAction } from "@/lib/review-keys";
 import { awaitingSettle, queueNeighbors, reviewOutcome, reviewProgress, reviewQueue } from "@/lib/review-queue";
@@ -550,7 +551,9 @@ function PagePanel({
   const mismatches = mismatchesByLine(page.crossCheck.mismatches);
   const warnings = pageWarnings({ ...page, failureReason: page.failureReason });
   const [editing, setEditing] = useState<number | null>(null);
-  const [appendDraft, setAppendDraft] = useState(false);
+  // Chữ của ô thêm dòng giữ ở đây (không ở `AppendLine`) để nút xác nhận khoá ngay trong lần cập nhật state khi gõ.
+  const [appendText, setAppendText] = useState("");
+  const drafts = unsavedDrafts({ appendText, editingLine: editing });
   const [sending, setSending] = useState(false);
   // Số ms đã qua kể từ lúc trang hiện, đo khi hết `CONFIRM_GUARD_MS` để vẽ lại nút (chỉ cho `disabled`; `onClick` đo lại).
   const [shownElapsed, setShownElapsed] = useState<{ pageKey: string; ms: number } | null>(null);
@@ -586,8 +589,7 @@ function PagePanel({
   const confirmInput = {
     pageBlock: confirmBlock,
     hasSkippedLines: page.hasSkippedLines,
-    appendDraft,
-    editing: editing !== null,
+    ...drafts,
   };
   const buttonBlock = confirmButtonBlock(confirmInput);
   const confirmEnabled = canConfirmNow({
@@ -632,7 +634,7 @@ function PagePanel({
       focus,
       overlayOpen,
       busy,
-      hasDraft: editing !== null || appendDraft,
+      hasDraft: drafts.editing || drafts.appendDraft,
       canEdit: editBlock === null && page.lines.length > 0,
       hasPrevious,
       hasNext,
@@ -796,7 +798,12 @@ function PagePanel({
       {editBlock === "confirmed" && <p className={styles.hint}>{EDIT_BLOCK_MESSAGE_VI.confirmed}</p>}
 
       {editBlock === null && (
-        <AppendLine busy={busy} onAppend={(text) => onSaveLines([], [text])} onDraftChange={setAppendDraft} />
+        <AppendLine
+          busy={busy}
+          text={appendText}
+          onTextChange={setAppendText}
+          onAppend={(text) => onSaveLines([], [text])}
+        />
       )}
 
       {page.status !== "failed" && page.status !== "pending" && (
@@ -940,21 +947,16 @@ function LineRow({ line, highlight, editable, busy, editing, onStartEdit, onCanc
 
 interface AppendLineProps {
   busy: boolean;
+  /** Chữ trong ô, do `PagePanel` giữ: còn chữ chưa lưu thì nút xác nhận trang khoá cho tới khi lưu hoặc xoá chữ. */
+  text: string;
+  onTextChange: (text: string) => void;
   onAppend: (text: string) => Promise<boolean>;
-  /** Ô gõ thêm có chữ chưa lưu: nút xác nhận trang khoá cho tới khi lưu hoặc xoá chữ. */
-  onDraftChange: (hasDraft: boolean) => void;
 }
 
 /** Gõ thêm một dòng vào cuối trang (`appended_lines`, §6.5), cho chữ mà bộ đọc bỏ sót. */
-function AppendLine({ busy, onAppend, onDraftChange }: AppendLineProps) {
+function AppendLine({ busy, text, onTextChange, onAppend }: AppendLineProps) {
   const ids = useId();
-  const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const hasDraft = text.trim() !== "";
-
-  useEffect(() => {
-    onDraftChange(hasDraft);
-  }, [hasDraft, onDraftChange]);
 
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -965,7 +967,7 @@ function AppendLine({ busy, onAppend, onDraftChange }: AppendLineProps) {
     const problem = checkLineText(text);
     setError(problem);
     if (problem !== null) return;
-    if (await onAppend(text.normalize("NFC"))) setText("");
+    if (await onAppend(text.normalize("NFC"))) onTextChange("");
   }
 
   return (
@@ -975,7 +977,7 @@ function AppendLine({ busy, onAppend, onDraftChange }: AppendLineProps) {
         <input
           className={`${styles.input} ${styles.wideInput}`}
           value={text}
-          onChange={(event) => setText(event.target.value)}
+          onChange={(event) => onTextChange(event.target.value)}
           aria-invalid={error !== null}
           aria-describedby={`${ids}-hint`}
           disabled={busy}

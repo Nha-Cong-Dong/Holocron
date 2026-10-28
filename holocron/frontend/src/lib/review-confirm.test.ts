@@ -16,6 +16,7 @@ import {
   confirmClick,
   focusOnShow,
   nextReviewTarget,
+  unsavedDrafts,
 } from "./review-confirm";
 import { reviewKeyAction } from "./review-keys";
 import { CONFIRM_GUARD_MS, endSend, reviewSessionFor } from "./review-session";
@@ -207,5 +208,37 @@ describe("nextReviewTarget", () => {
     const after = [page(1, "needs_review", true), page(2, "needs_review")];
     expect(nextReviewTarget({ pages: before }, 1)).toBe(2);
     expect(nextReviewTarget({ pages: after }, 2)).toBeNull();
+  });
+});
+
+describe("unsavedDrafts: nháp suy từ state của component chứa nút, cùng lần cập nhật khi gõ", () => {
+  it("ô thêm dòng có chữ ⇒ nháp; trống hoặc chỉ khoảng trắng ⇒ không", () => {
+    expect(unsavedDrafts({ appendText: "x", editingLine: null })).toEqual({ appendDraft: true, editing: false });
+    expect(unsavedDrafts({ appendText: "  dòng  ", editingLine: null }).appendDraft).toBe(true);
+    expect(unsavedDrafts({ appendText: "", editingLine: null }).appendDraft).toBe(false);
+    expect(unsavedDrafts({ appendText: " 	 ", editingLine: null }).appendDraft).toBe(false);
+  });
+
+  it("ô 'Sửa' đang mở (kể cả dòng 0, chưa đổi chữ) ⇒ đang sửa", () => {
+    expect(unsavedDrafts({ appendText: "", editingLine: 0 })).toEqual({ appendDraft: false, editing: true });
+    expect(unsavedDrafts({ appendText: "", editingLine: 3 }).editing).toBe(true);
+  });
+
+  it("gõ một ký tự vào ô thêm dòng ⇒ chính lần tính đó khoá nút, có câu nhắc, không tự lưu", () => {
+    const typed = { pageBlock: null, hasSkippedLines: false, ...unsavedDrafts({ appendText: "a", editingLine: null }) };
+    expect(confirmButtonBlock(typed)).toBe("unsaved_lines");
+    expect(canConfirmNow({ ...typed, sending: false, msSinceShown: CONFIRM_GUARD_MS * 10 })).toBe(false);
+    const session = reviewSessionFor(null, "1:1", 0);
+    const click = confirmClick(session, { ...typed, busy: false }, CONFIRM_GUARD_MS * 10);
+    expect(click.accepted).toBe(false);
+    expect(click.session).toBe(session);
+  });
+
+  it("mở ô 'Sửa' một dòng ⇒ chính lần tính đó khoá nút", () => {
+    const opened = { pageBlock: null, hasSkippedLines: false, ...unsavedDrafts({ appendText: "", editingLine: 2 }) };
+    expect(confirmButtonBlock(opened)).toBe("unsaved_lines");
+    expect(
+      confirmClick(reviewSessionFor(null, "1:1", 0), { ...opened, busy: false }, CONFIRM_GUARD_MS * 10).accepted,
+    ).toBe(false);
   });
 });

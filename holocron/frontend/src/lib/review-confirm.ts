@@ -3,8 +3,10 @@
  * 2026-10-29 câu 17 A). Trang chỉ được xác nhận bằng nút; không có phím tắt, không tự chuyển trang sau khi xác nhận.
  *
  * - `canConfirmNow` là điều kiện DUY NHẤT: thuộc tính `disabled` của nút và handler `onClick` (nơi mọi cách kích hoạt
- *   đều đi qua: chuột, chạm, Enter/Space khi nút đang focus) cùng gọi hàm này. `onClick` gọi lại vì trạng thái ô thêm
- *   dòng lên component cha trễ một lần vẽ.
+ *   đều đi qua: chuột, chạm, Enter/Space khi nút đang focus) cùng gọi hàm này. `onClick` gọi lại để đo mốc thời gian và
+ *   khoá đang gửi đúng lúc bấm (không dựa vào lần vẽ trước).
+ * - `unsavedDrafts`: chữ của ô thêm dòng và dòng đang mở sửa nằm trong state của chính component chứa nút, nên ngay khi
+ *   người dùng gõ, cùng một lần cập nhật state đã khoá nút (không báo lên qua effect, không trễ một lần vẽ).
  * - `focusOnShow`: trang mới hiện thì focus đặt vào tiêu đề trang, không bao giờ vào nút xác nhận.
  * - `nextReviewTarget`: đích của nút "Sang trang cần xem kế tiếp", tính từ tài liệu đọc lại SAU khi xác nhận.
  */
@@ -27,6 +29,18 @@ export interface ConfirmNowInput {
   sending: boolean;
   /** Số mili giây từ lúc trang hiện ra (phiên `pageNumber:version`). */
   msSinceShown: number;
+}
+
+/**
+ * Trạng thái nháp chưa lưu, suy từ state của component chứa nút xác nhận: `appendText` là chữ trong ô "Thêm dòng vào
+ * cuối trang" (chỉ khoảng trắng coi như trống), `editingLine` là dòng đang mở ô "Sửa" (`null` khi không mở ô nào; mở
+ * mà chưa đổi chữ vẫn tính là đang sửa). Không tự lưu hộ dòng nào.
+ */
+export function unsavedDrafts(input: {
+  appendText: string;
+  editingLine: number | null;
+}): Pick<ConfirmNowInput, "appendDraft" | "editing"> {
+  return { appendDraft: input.appendText.trim() !== "", editing: input.editingLine !== null };
 }
 
 /**

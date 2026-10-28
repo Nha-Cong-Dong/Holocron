@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-
+import { classifyHttpError, classifyNetworkError, type ErrorKind, type UiError } from "./errors";
 import {
   chunksOfChapter,
   citationCaption,
@@ -7,6 +7,7 @@ import {
   passageNav,
   resolveOpenPassage,
   SENTENCE_LABEL_MAX_CHARS,
+  searchErrorText,
   selectionOfQuote,
   sentenceLabel,
   sentenceRanges,
@@ -315,5 +316,53 @@ describe("selectionOfQuote: lát xuất hiện hai lần", () => {
     const quote = "Ngắt là tín hiệu";
     expect(quote).toHaveLength(16);
     expect(selectionOfQuote(`${quote} và ${quote}`, quote)).toEqual({ start: 0, end: 16 });
+  });
+});
+
+describe("searchErrorText: lỗi tìm nói 'bấm Tìm lại', không nói 'Thử lại'", () => {
+  const kinds: ErrorKind[] = [
+    "network",
+    "server",
+    "capability",
+    "llm_upstream",
+    "blocking",
+    "version_conflict",
+    "state_conflict",
+    "duplicate",
+    "unapproved_source",
+    "too_large",
+    "unsupported_media",
+    "validation",
+    "not_found",
+    "forbidden",
+    "bad_request",
+    "busy",
+    "unknown",
+  ];
+
+  it("mọi loại lỗi: câu kết thúc bằng 'bấm Tìm lại.' và không chứa 'Thử lại' hay thông điệp kỹ thuật", () => {
+    for (const kind of kinds) {
+      const error: UiError = {
+        kind,
+        message: "Thông điệp gốc. Thử lại sau.",
+        action: "retry",
+        issues: [],
+        capability: null,
+        diagnostic: "HTTP 500",
+      };
+      const text = searchErrorText(error);
+      expect(text.endsWith("bấm Tìm lại.")).toBe(true);
+      expect(text).not.toMatch(/Thử lại/i);
+      expect(text).not.toContain("HTTP");
+    }
+  });
+
+  it("lỗi kết nối nói mở lại Holocron; lỗi dữ liệu tìm nói sửa ô tìm", () => {
+    expect(searchErrorText(classifyNetworkError(""))).toBe(
+      "Holocron chưa chạy xong hoặc đã tắt. Mở lại Holocron rồi bấm Tìm lại.",
+    );
+    expect(searchErrorText(classifyHttpError(422, null))).toBe(
+      "Holocron chưa tìm được với nội dung này. Sửa ô tìm rồi bấm Tìm lại.",
+    );
   });
 });

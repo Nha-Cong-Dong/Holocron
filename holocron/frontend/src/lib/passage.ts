@@ -8,6 +8,7 @@
  */
 
 import { charLength } from "@/lib/documents";
+import type { UiError } from "@/lib/errors";
 import {
   type ChunkMapStatus,
   type LengthCheck,
@@ -224,4 +225,27 @@ export function selectionOfQuote(rawText: string, quote: string): PassageSelecti
   if (quote === "") return null;
   const start = rawText.indexOf(quote);
   return start === -1 ? null : { start, end: start + quote.length };
+}
+
+/**
+ * Câu "vì sao + cách sửa" khi tìm trong tài liệu không thành. Khung tìm chỉ có nút "Tìm" nên mọi câu kết thúc bằng
+ * "bấm Tìm lại." (không nói "Thử lại"); không lộ từ kỹ thuật, mã lỗi nằm ở "Chi tiết kỹ thuật" nơi khác.
+ */
+export function searchErrorText(error: UiError): string {
+  switch (error.kind) {
+    case "network":
+      return "Holocron chưa chạy xong hoặc đã tắt. Mở lại Holocron rồi bấm Tìm lại.";
+    case "busy":
+      return "Thư mục dữ liệu của Holocron đang bận. Đợi vài giây rồi bấm Tìm lại.";
+    case "forbidden":
+      return "Holocron từ chối yêu cầu từ cửa sổ này. Mở lại Holocron trên máy rồi bấm Tìm lại.";
+    case "capability":
+    case "llm_upstream":
+      return "Tìm trong tài liệu chưa dùng được trên máy này. Mở Cài đặt để xem cần cài hay bật thêm gì, rồi bấm Tìm lại.";
+    case "validation":
+    case "bad_request":
+      return "Holocron chưa tìm được với nội dung này. Sửa ô tìm rồi bấm Tìm lại.";
+    default:
+      return "Holocron gặp trục trặc khi tìm trong tài liệu. Đợi một chút rồi bấm Tìm lại.";
+  }
 }

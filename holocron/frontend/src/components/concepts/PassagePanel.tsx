@@ -18,6 +18,7 @@ import {
   passageNav,
   resolveOpenPassage,
   type SentenceRange,
+  searchErrorText,
   selectionOfQuote,
   sentenceLabel,
   sentenceRanges,
@@ -236,7 +237,7 @@ function PassageSearch({ subjectCode, onPick }: { subjectCode: string; onPick: (
         setState(
           outcome.ok
             ? { kind: "done", hits: outcome.value.hits.map((hit) => hit.chunk) }
-            : { kind: "failed", message: screenErrorText(outcome.error) },
+            : { kind: "failed", message: searchErrorText(outcome.error) },
         ),
     );
   }

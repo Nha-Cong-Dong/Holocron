@@ -8,12 +8,7 @@
  */
 
 import type { ErrorKind, UiError } from "@/lib/errors";
-import {
-  CAPABILITY_NAMES,
-  CAPABILITY_REASONS,
-  type CapabilityName,
-  type CapabilityReason,
-} from "@/types/contract-pending";
+import { CAPABILITY_NAMES, CAPABILITY_REASONS, type CapabilityName, type CapabilityReason } from "@/types/holocron";
 
 // ------------------------------------------------------------------------------- kiểm dạng ở ranh giới
 
@@ -181,6 +176,9 @@ export const CAPABILITY_LABEL_VI: Record<CapabilityName, string> = {
   essay_grading_llm: "Chấm tự luận bằng LLM",
   template_authoring_llm: "LLM học cách sinh câu cho dạng bài mới",
   vlm: "Đọc ảnh bằng mô hình thị giác (VLM)",
+  concept_auto_proposal: "Đề xuất khái niệm tự động, không cần LLM",
+  line_review_queue: "Hàng đợi duyệt theo dòng nghi ngờ",
+  page_progress_eta: "Tiến độ theo trang và thời gian còn lại",
 };
 
 /** Nhãn cho tên khả năng frontend chưa biết; không chép tên thô của backend ra giao diện. */
@@ -226,6 +224,9 @@ export const CAPABILITY_USES_NETWORK: Record<CapabilityName, boolean> = {
   essay_grading_llm: true,
   template_authoring_llm: true,
   vlm: true,
+  concept_auto_proposal: false,
+  line_review_queue: false,
+  page_progress_eta: false,
 };
 
 /** Khả năng có thể gửi dữ liệu ra khỏi máy; tên lạ mặc định là có. */

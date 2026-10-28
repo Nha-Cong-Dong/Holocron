@@ -33,7 +33,7 @@ import {
   type CapabilityError,
   type CapabilityName,
   type CapabilityReason,
-} from "@/types/contract-pending";
+} from "@/types/holocron";
 
 export type ErrorKind =
   | "network"

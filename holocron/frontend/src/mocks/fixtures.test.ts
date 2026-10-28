@@ -174,6 +174,6 @@ describe("fillRuntimeGaps (M1)", () => {
     ) {
       filled.capabilities.pop();
     }
-    expect(RUNTIME_FIXTURES.offline.capabilities).toHaveLength(9);
+    expect(RUNTIME_FIXTURES.offline.capabilities).toHaveLength(12);
   });
 });

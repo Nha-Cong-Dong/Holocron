@@ -1,6 +1,6 @@
 """`services/capabilities.compute_capabilities` (spec v0.6 §5.12, §11.4). Không gọi mạng, không đọc môi trường máy chạy.
 
-`GET /v1/runtime` chưa trả danh sách này (cần sửa `routers/runtime.py`, ngoài phạm vi thay đổi hiện tại).
+`GET /v1/runtime` trả danh sách này (`routers/runtime.py`).
 """
 
 import pytest
@@ -36,6 +36,9 @@ EXPECTED_ORDER = (
     "essay_grading_llm",
     "template_authoring_llm",
     "vlm",
+    "concept_auto_proposal",
+    "line_review_queue",
+    "page_progress_eta",
 )
 
 
@@ -43,7 +46,7 @@ def _by_name(capabilities: list[Capability]) -> dict[str, Capability]:
     return {capability.name: capability for capability in capabilities}
 
 
-def test_lists_all_nine_capabilities_in_declaration_order() -> None:
+def test_lists_all_twelve_capabilities_in_declaration_order() -> None:
     capabilities = compute_capabilities(load_runtime_config({}))
     assert tuple(capability.name for capability in capabilities) == EXPECTED_ORDER == CAPABILITY_NAMES
 

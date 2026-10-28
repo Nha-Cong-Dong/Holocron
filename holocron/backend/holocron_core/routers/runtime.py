@@ -5,6 +5,8 @@ from __future__ import annotations
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from ..domain.capabilities import Capability
+from ..services.capabilities import compute_capabilities
 from ..services.extraction import MockDualPassExtractor
 from .deps import BuildInfoDep, ExtractorDep, LogDirDep, RuntimeConfigDep
 
@@ -20,6 +22,7 @@ class RuntimeInfo(BaseModel):
     app_version: str
     commit: str
     log_dir: str | None
+    capabilities: list[Capability]
 
 
 @router.get("/v1/runtime", response_model=RuntimeInfo)
@@ -33,4 +36,5 @@ def get_runtime(
         app_version=build.version,
         commit=build.commit,
         log_dir=log_dir,
+        capabilities=compute_capabilities(config),
     )

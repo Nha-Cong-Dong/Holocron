@@ -349,20 +349,43 @@ export function readingTotal(rows: readonly Pick<ReadingRow, "kind">[]): { finis
 /** Dòng vừa bị bỏ khỏi hàng đợi, còn vẽ tại chỗ cũ trong lúc chạy hiệu ứng ra. */
 export interface LeavingRow<R extends { id: string }> {
   row: R;
-  /** Vị trí của dòng trong danh sách lúc bị bỏ. */
-  index: number;
+  /** Id các dòng đứng trước dòng này trên màn lúc nó bị bỏ (kể cả dòng đang chạy hiệu ứng ra). */
+  before: readonly string[];
+}
+
+/** Id các dòng đứng trước `id` trong danh sách đang vẽ. */
+export function rowsBefore(shown: readonly { id: string }[], id: string): string[] {
+  const index = shown.findIndex((row) => row.id === id);
+  return (index === -1 ? shown : shown.slice(0, index)).map((row) => row.id);
 }
 
 /**
- * Danh sách để vẽ: dòng trong hàng đợi cộng các dòng vừa bỏ (chèn lại đúng vị trí cũ để hiệu ứng ra chạy tại chỗ).
- * Dòng vừa bỏ chỉ để trình bày: chúng đã ra khỏi hàng đợi nên không bao giờ được gửi.
+ * Danh sách để vẽ: dòng trong hàng đợi cộng các dòng vừa bỏ, mỗi dòng vừa bỏ chèn ngay sau dòng cuối cùng (đang có trên
+ * màn) từng đứng trước nó, nên bỏ nhanh nhiều dòng vẫn giữ đúng thứ tự cũ. Dòng vừa bỏ chỉ để trình bày: chúng đã ra
+ * khỏi hàng đợi nên không bao giờ được gửi.
  */
 export function withLeavingRows<R extends { id: string }>(rows: readonly R[], leaving: readonly LeavingRow<R>[]): R[] {
-  const result = rows.filter((row) => !leaving.some((item) => item.row.id === row.id));
-  for (const item of [...leaving].sort((left, right) => left.index - right.index)) {
-    result.splice(Math.min(Math.max(item.index, 0), result.length), 0, item.row);
+  const leavingIds = new Set(leaving.map((item) => item.row.id));
+  const result = rows.filter((row) => !leavingIds.has(row.id));
+  for (const item of leaving) {
+    const before = new Set(item.before);
+    let at = 0;
+    result.forEach((row, index) => {
+      if (before.has(row.id)) at = index + 1;
+    });
+    result.splice(at, 0, item.row);
   }
   return result;
+}
+
+/**
+ * Nơi đặt focus sau khi bỏ một dòng: dòng kế tiếp còn lại, không có thì dòng ngay trước, hết dòng thì `null` (nút chọn
+ * file).
+ */
+export function focusAfterRemove(rows: readonly { id: string }[], removedId: string): string | null {
+  const index = rows.findIndex((row) => row.id === removedId);
+  if (index === -1) return rows[0]?.id ?? null;
+  return rows[index + 1]?.id ?? rows[index - 1]?.id ?? null;
 }
 
 /**

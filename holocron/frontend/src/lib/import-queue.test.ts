@@ -10,6 +10,7 @@ import {
   chapterLabel,
   DEFAULT_SOURCE_KIND,
   defaultTitle,
+  focusAfterRemove,
   hasUnsentRows,
   type ImportQueueAction,
   type ImportQueueState,
@@ -21,6 +22,7 @@ import {
   queueProgress,
   readingRows,
   readingTotal,
+  rowsBefore,
   rowsOfSubject,
   START_BLOCK_MESSAGE_VI,
   settledAnnouncement,
@@ -319,9 +321,45 @@ describe("gửi lần lượt", () => {
 describe("trình bày", () => {
   it("dòng vừa bỏ được chèn lại đúng vị trí cũ để chạy hiệu ứng ra", () => {
     const rows = [{ id: "a" }, { id: "c" }];
-    expect(withLeavingRows(rows, [{ row: { id: "b" }, index: 1 }]).map((row) => row.id)).toEqual(["a", "b", "c"]);
-    expect(withLeavingRows(rows, [{ row: { id: "z" }, index: 9 }]).map((row) => row.id)).toEqual(["a", "c", "z"]);
-    expect(withLeavingRows([], [{ row: { id: "b" }, index: 0 }]).map((row) => row.id)).toEqual(["b"]);
+    expect(withLeavingRows(rows, [{ row: { id: "b" }, before: ["a"] }]).map((row) => row.id)).toEqual(["a", "b", "c"]);
+    expect(withLeavingRows(rows, [{ row: { id: "z" }, before: ["a", "c"] }]).map((row) => row.id)).toEqual([
+      "a",
+      "c",
+      "z",
+    ]);
+    expect(withLeavingRows([], [{ row: { id: "b" }, before: [] }]).map((row) => row.id)).toEqual(["b"]);
+  });
+
+  it("bỏ nhanh nhiều dòng (theo mọi thứ tự) vẫn giữ đúng thứ tự cũ, kể cả khi một dòng đã chạy xong hiệu ứng", () => {
+    const all = ["a", "b", "c", "d"].map((id) => ({ id }));
+    const ids = (list: readonly { id: string }[]) => list.map((row) => row.id);
+    // Bỏ b rồi c.
+    let shown = all;
+    const b = { row: { id: "b" }, before: rowsBefore(shown, "b") };
+    shown = withLeavingRows(
+      all.filter((row) => row.id !== "b"),
+      [b],
+    );
+    const c = { row: { id: "c" }, before: rowsBefore(shown, "c") };
+    const rest = [{ id: "a" }, { id: "d" }];
+    expect(ids(withLeavingRows(rest, [b, c]))).toEqual(["a", "b", "c", "d"]);
+    // b chạy xong hiệu ứng trước: c vẫn ở giữa a và d.
+    expect(ids(withLeavingRows(rest, [c]))).toEqual(["a", "c", "d"]);
+    // Bỏ c rồi b.
+    const c2 = { row: { id: "c" }, before: rowsBefore(all, "c") };
+    shown = withLeavingRows(
+      all.filter((row) => row.id !== "c"),
+      [c2],
+    );
+    const b2 = { row: { id: "b" }, before: rowsBefore(shown, "b") };
+    expect(ids(withLeavingRows(rest, [c2, b2]))).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("focus sau khi bỏ dòng: dòng kế, không có thì dòng trước, hết dòng thì null", () => {
+    const rows = [{ id: "a" }, { id: "b" }, { id: "c" }];
+    expect(focusAfterRemove(rows, "b")).toBe("c");
+    expect(focusAfterRemove(rows, "c")).toBe("b");
+    expect(focusAfterRemove([{ id: "a" }], "a")).toBeNull();
   });
 
   it("chỉ báo dòng vừa có kết quả, không báo lại kết quả cũ", () => {

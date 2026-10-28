@@ -198,58 +198,28 @@ function DocumentsHome({ subjectCode, hrefFor }: { subjectCode: string; hrefFor:
     );
   }
 
-  if (state.kind === "loading") {
-    return (
-      <div className={styles.root}>
-        <SendQueue subjectCode={subjectCode} rows={sent} />
-        <DocumentsLoading />
-      </div>
-    );
-  }
-  if (state.kind === "error") {
-    return (
-      <div className={styles.root}>
-        <SendQueue subjectCode={subjectCode} rows={sent} />
-        <ErrorState
-          title="Không mở được danh sách tài liệu"
-          fix={listErrorFix(state.error)}
-          onRetry={reload}
-          technical={state.error.diagnostic}
-        />
-      </div>
-    );
-  }
+  const snapshot = state.kind === "ready" ? state.snapshot : null;
+  const empty = snapshot !== null && snapshot.documents.length === 0 && sent.length === 0;
 
-  const snapshot = state.snapshot;
-  if (snapshot.documents.length === 0 && sent.length === 0) {
-    return (
-      <div className={styles.root}>
-        <CapabilityNotice runtime={freshRuntime(runtime)} name="ocr" />
-        <EmptyState
-          title="Chưa có tài liệu"
-          description="Thêm file PDF bài giảng, Holocron đọc và giữ lại số trang của từng đoạn."
-          action={{ label: "Thêm tài liệu", onClick: () => setMode("import") }}
-        />
-      </div>
-    );
-  }
-
+  // Một cây cho cả ba trạng thái của danh sách (đang tải, lỗi, có dữ liệu): `SendQueue` luôn ở cùng một vị trí nên không
+  // mount lại khi danh sách đổi trạng thái, vùng `aria-live` của nó giữ nguyên.
   return (
     <div className={styles.root}>
-      <div className={styles.head}>
-        <h2 className={styles.title}>Tài liệu của môn</h2>
-        <Button variant="primary" onClick={() => setMode("import")}>
-          Thêm tài liệu
-        </Button>
-      </div>
-      {staged.length > 0 && (
+      {snapshot !== null && !empty && (
+        <div className={styles.head}>
+          <h2 className={styles.title}>Tài liệu của môn</h2>
+          <Button variant="primary" onClick={() => setMode("import")}>
+            Thêm tài liệu
+          </Button>
+        </div>
+      )}
+      {snapshot !== null && !empty && staged.length > 0 && (
         <p className={styles.note}>
           Còn {staged.length} file đang chờ bạn kiểm lại trước khi đọc. Bấm “Thêm tài liệu” để tiếp tục.
         </p>
       )}
-      <CapabilityNotice runtime={freshRuntime(runtime)} name="ocr" />
-
-      {pollError !== null && (
+      {snapshot !== null && <CapabilityNotice runtime={freshRuntime(runtime)} name="ocr" />}
+      {snapshot !== null && pollError !== null && (
         <ErrorState
           title="Đã dừng cập nhật tiến độ đọc"
           fix="Holocron không trả lời nhiều lần liền nên tiến độ trên màn có thể đã cũ. Bấm Thử lại để cập nhật tiếp."
@@ -260,9 +230,28 @@ function DocumentsHome({ subjectCode, hrefFor }: { subjectCode: string; hrefFor:
 
       <SendQueue subjectCode={subjectCode} rows={sent} />
 
-      <ReadingList rows={reading} reviewHref={(docId) => hrefFor({ subject: subjectCode, doc: docId, page: null })} />
-
-      {snapshot.documents.length > 0 && <DocumentList snapshot={snapshot} onChanged={reload} hrefFor={hrefFor} />}
+      {state.kind === "loading" && <DocumentsLoading />}
+      {state.kind === "error" && (
+        <ErrorState
+          title="Không mở được danh sách tài liệu"
+          fix={listErrorFix(state.error)}
+          onRetry={reload}
+          technical={state.error.diagnostic}
+        />
+      )}
+      {empty && (
+        <EmptyState
+          title="Chưa có tài liệu"
+          description="Thêm file PDF bài giảng, Holocron đọc và giữ lại số trang của từng đoạn."
+          action={{ label: "Thêm tài liệu", onClick: () => setMode("import") }}
+        />
+      )}
+      {snapshot !== null && !empty && (
+        <ReadingList rows={reading} reviewHref={(docId) => hrefFor({ subject: subjectCode, doc: docId, page: null })} />
+      )}
+      {snapshot !== null && snapshot.documents.length > 0 && (
+        <DocumentList snapshot={snapshot} onChanged={reload} hrefFor={hrefFor} />
+      )}
     </div>
   );
 }

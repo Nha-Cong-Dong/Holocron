@@ -5,7 +5,14 @@ import { type DragEvent, useCallback, useEffect, useId, useRef, useState } from 
 import { Icon } from "@/components/common/Icon";
 import { Button } from "@/components/ui";
 import { useFlip } from "@/hooks/motion-hooks";
-import { type LeavingRow, START_BLOCK_MESSAGE_VI, startDecision, withLeavingRows } from "@/lib/import-queue";
+import {
+  focusAfterRemove,
+  type LeavingRow,
+  rowsBefore,
+  START_BLOCK_MESSAGE_VI,
+  startDecision,
+  withLeavingRows,
+} from "@/lib/import-queue";
 import { DOCUMENT_MAX_PAGES, DOCUMENT_UPLOAD_MAX_MIB } from "@/lib/limits";
 
 import styles from "./BatchImport.module.css";
@@ -14,6 +21,9 @@ import { ImportRow } from "./ImportRow";
 
 /** Thời gian chờ tối đa của `m-row-out` (160 ms) trước khi xoá dòng, phòng khi trình duyệt không chạy animation. */
 const ROW_OUT_FALLBACK_MS = 260;
+
+/** `focusTarget` khi bỏ dòng cuối cùng: focus về nút chọn file. */
+const PICK_TARGET = "pick";
 
 interface BatchImportProps {
   subjectCode: string;
@@ -38,6 +48,21 @@ export function BatchImport({ subjectCode, rows, onBack, onStarted }: BatchImpor
   // Dòng vừa bỏ: đã xoá khỏi hàng đợi ngay khi bấm (không thể bị gửi), chỉ còn bản vẽ chạy `m-row-out`.
   const [leaving, setLeaving] = useState<readonly LeavingRow<FileImportRow>[]>([]);
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  // Sau khi bỏ một dòng: id dòng nhận focus, hoặc `PICK_TARGET` (nút chọn file) khi hết dòng.
+  const focusTarget = useRef<string | null>(null);
+  const listElement = useRef<HTMLUListElement | null>(null);
+
+  useEffect(() => {
+    const target = focusTarget.current;
+    if (target === null) return;
+    focusTarget.current = null;
+    const button =
+      target === PICK_TARGET
+        ? window.document.getElementById(`${ids}-pick`)
+        : (listElement.current?.querySelector<HTMLElement>(`[data-flip-key="${CSS.escape(target)}"] [data-remove]`) ??
+          null);
+    button?.focus();
+  });
 
   useEffect(() => {
     const pending = timers.current;
@@ -55,9 +80,10 @@ export function BatchImport({ subjectCode, rows, onBack, onStarted }: BatchImpor
   }, []);
 
   function remove(row: FileImportRow): void {
-    const index = rows.findIndex((item) => item.id === row.id);
+    const before = rowsBefore(withLeavingRows(rows, leaving), row.id);
+    focusTarget.current = focusAfterRemove(rows, row.id) ?? PICK_TARGET;
     queue.remove(row.id);
-    setLeaving((previous) => [...previous, { row, index: index === -1 ? rows.length : index }]);
+    setLeaving((previous) => [...previous, { row, before }]);
     timers.current.set(
       row.id,
       setTimeout(() => dropLeaving(row.id), ROW_OUT_FALLBACK_MS),
@@ -100,7 +126,14 @@ export function BatchImport({ subjectCode, rows, onBack, onStarted }: BatchImpor
       </div>
 
       {shown.length > 0 && (
-        <ul ref={listRef} className={styles.rows} aria-label="File sẽ đọc">
+        <ul
+          ref={(element) => {
+            listRef.current = element;
+            listElement.current = element;
+          }}
+          className={styles.rows}
+          aria-label="File sẽ đọc"
+        >
           {shown.map((row) =>
             leavingIds.has(row.id) ? (
               <ImportRow
@@ -166,11 +199,11 @@ export function BatchImport({ subjectCode, rows, onBack, onStarted }: BatchImpor
           }}
         />
         {hasRows ? (
-          <Button variant="secondary" onClick={() => fileInput.current?.click()}>
+          <Button id={`${ids}-pick`} variant="secondary" onClick={() => fileInput.current?.click()}>
             Chọn thêm file
           </Button>
         ) : (
-          <Button variant="primary" onClick={() => fileInput.current?.click()}>
+          <Button id={`${ids}-pick`} variant="primary" onClick={() => fileInput.current?.click()}>
             Chọn file trên máy
           </Button>
         )}

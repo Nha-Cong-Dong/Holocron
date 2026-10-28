@@ -124,7 +124,9 @@ export interface SkyLayout {
   hiddenChapters: number;
   /** "+k chương" khi có chương ẩn, `null` khi không. */
   hiddenLabel: string | null;
-  /** Câu đọc cho trình đọc màn hình: số thật của mọi chương, kể cả chương ẩn và sao không vẽ được. */
+  /** Câu gợi ý bước tiếp theo khi chưa có chương nào (chỉ bầu trời có nhãn, tức trang môn); `null` khi không cần. */
+  emptyHint: string | null;
+  /** Câu đọc cho trình đọc màn hình: số thật của mọi chương (kể cả chương ẩn, sao không vẽ được) và câu gợi ý nếu có. */
   ariaLabel: string;
 }
 
@@ -135,6 +137,9 @@ export interface SkyOptions {
 
 export const FULL_SKY: SkyOptions = { maxConstellations: SKY_MAX_CONSTELLATIONS, withLabels: true };
 export const MINI_SKY: SkyOptions = { maxConstellations: MINI_SKY_MAX_CONSTELLATIONS, withLabels: false };
+
+/** Gợi ý trên bầu trời trống của trang môn. */
+export const EMPTY_SKY_HINT = "Chưa có sao nào. Nhận khái niệm ở tab Khái niệm để thắp sao đầu tiên.";
 
 /**
  * So sánh mã chương theo thứ tự tự nhiên: phần số so theo giá trị (`ch2` < `ch10`, `ch2.9` < `ch2.10`), phần chữ so
@@ -258,6 +263,8 @@ export function buildSkyLayout(title: string, pairs: readonly SkyPair[], options
   const hiddenChapters = chapters.length - shown.length;
   const slotWidth = shown.length === 0 ? SKY_WIDTH : SKY_WIDTH / shown.length;
   const area = options.withLabels ? AREA_WITH_LABELS : AREA_WITHOUT_LABELS;
+  const emptyHint = options.withLabels && chapters.length === 0 ? EMPTY_SKY_HINT : null;
+  const counts = skyAriaLabel(title, chapters);
   return {
     width: SKY_WIDTH,
     height: SKY_HEIGHT,
@@ -267,6 +274,7 @@ export function buildSkyLayout(title: string, pairs: readonly SkyPair[], options
     labelDetailY: LABEL_DETAIL_Y,
     hiddenChapters,
     hiddenLabel: hiddenChapters > 0 ? `+${hiddenChapters} chương` : null,
-    ariaLabel: skyAriaLabel(title, chapters),
+    emptyHint,
+    ariaLabel: emptyHint === null ? counts : `${counts} ${emptyHint}`,
   };
 }

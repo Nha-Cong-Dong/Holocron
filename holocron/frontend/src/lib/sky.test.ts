@@ -5,6 +5,7 @@ import {
   chapterLabel,
   compareChapterCodes,
   countChapters,
+  EMPTY_SKY_HINT,
   MINI_SKY,
   SKY_HEIGHT,
   SKY_WIDTH,
@@ -67,7 +68,22 @@ describe("buildSkyLayout", () => {
     expect(layout.height).toBe(SKY_HEIGHT);
     expect(layout.constellations).toEqual([]);
     expect(layout.hiddenLabel).toBeNull();
+    expect(layout.emptyHint).toBe(EMPTY_SKY_HINT);
+    expect(layout.ariaLabel).toBe(
+      "Bầu trời môn Vi xử lý: chưa có khái niệm nào. Chưa có sao nào. Nhận khái niệm ở tab Khái niệm để thắp sao đầu tiên.",
+    );
+  });
+
+  it("0 chương ở bầu trời mini: không có câu gợi ý tab", () => {
+    const layout = buildSkyLayout("Vi xử lý", [], MINI_SKY);
+    expect(layout.emptyHint).toBeNull();
     expect(layout.ariaLabel).toBe("Bầu trời môn Vi xử lý: chưa có khái niệm nào.");
+  });
+
+  it("đã có chương: không có câu gợi ý", () => {
+    const layout = buildSkyLayout("Vi xử lý", pairs("ch1", 0, 1));
+    expect(layout.emptyHint).toBeNull();
+    expect(layout.ariaLabel).not.toContain(EMPTY_SKY_HINT);
   });
 
   it("chương có 0 sao (chỉ cặp bị bỏ): 8 sao mờ, không có nét nối", () => {

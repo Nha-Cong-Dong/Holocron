@@ -14,7 +14,12 @@ export type SkyViewProps = {
   size: "full" | "mini";
   className?: string;
 } & (
-  | { status: "ready"; layout: SkyLayout }
+  | {
+      status: "ready";
+      layout: SkyLayout;
+      /** Lần tải lại gần nhất lỗi: vẫn vẽ bầu trời cũ, kèm một dòng nhỏ "Chưa cập nhật được". */
+      stale?: boolean;
+    }
   | { status: "loading" }
   | { status: "error"; onRetry: () => void; retrying?: boolean }
 );
@@ -26,7 +31,7 @@ function joinClasses(...names: readonly (string | undefined)[]): string {
 /**
  * Bầu trời kiến thức (design-handoff/README.md mục 4): ô luôn tối ở cả hai theme; mỗi chương một chòm sao, sao vàng là
  * khái niệm đã nhận, sao viền tím nhấp nháy là khái niệm chờ duyệt. `role="img"` với `aria-label` đọc đủ số thật mọi
- * chương (do `lib/sky.ts` dựng). Đang tải và lỗi vẽ trong cùng ô tối để không đẩy bố cục.
+ * chương và câu gợi ý khi trống (do `lib/sky.ts` dựng). Đang tải và lỗi vẽ trong cùng ô tối để không đẩy bố cục.
  */
 export function SkyView(props: SkyViewProps) {
   const frame = joinClasses(styles.frame, props.size === "mini" ? styles.mini : styles.full, props.className);
@@ -56,10 +61,9 @@ export function SkyView(props: SkyViewProps) {
   }
 
   const { layout } = props;
-  const empty = layout.constellations.length === 0;
   return (
-    <div className={frame} role="img" aria-label={layout.ariaLabel}>
-      <div className={styles.sky}>
+    <div className={frame}>
+      <div className={styles.sky} role="img" aria-label={layout.ariaLabel}>
         <svg
           className={styles.canvas}
           viewBox={`0 0 ${layout.width} ${layout.height}`}
@@ -112,12 +116,13 @@ export function SkyView(props: SkyViewProps) {
             {layout.hiddenLabel}
           </span>
         )}
-        {empty && props.size === "full" && (
+        {layout.emptyHint !== null && (
           <p className={styles.emptyText} aria-hidden="true">
-            Chưa có sao nào. Nhận khái niệm ở tab Khái niệm để thắp sao đầu tiên.
+            {layout.emptyHint}
           </p>
         )}
       </div>
+      {props.stale === true && <output className={styles.stale}>Chưa cập nhật được</output>}
     </div>
   );
 }

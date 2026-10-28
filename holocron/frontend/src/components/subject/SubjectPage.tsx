@@ -112,7 +112,11 @@ export function SubjectPage() {
   );
 }
 
-type SkyState = { kind: "loading" } | { kind: "error" } | { kind: "ready"; pairs: readonly SkyPair[] };
+type SkyState =
+  | { kind: "loading" }
+  | { kind: "error" }
+  /** `stale`: lần tải lại gần nhất lỗi, đang giữ bầu trời của lần trước. */
+  | { kind: "ready"; pairs: readonly SkyPair[]; stale: boolean };
 
 interface SkyRequest {
   code: string;
@@ -124,7 +128,7 @@ interface SkyRequest {
 /**
  * Bầu trời 790×200 dưới tiêu đề trang môn, từ cặp khái niệm của môn (`GET /v1/vault/concept-pairs`). Tải lại khi đổi
  * tab và khi cửa sổ lấy lại focus. Đang tải hay lỗi không chặn các tab ở dưới; lỗi khi đã có bầu trời thì giữ bầu
- * trời cũ, chưa có thì hiện ô tối với một câu và nút "Thử lại".
+ * trời cũ kèm dòng "Chưa cập nhật được", chưa có thì hiện ô tối với một câu và nút "Thử lại".
  */
 function SubjectSky({ code, title, tab }: { code: string; title: string; tab: SubjectTab }) {
   const [state, setState] = useState<SkyState>({ kind: "loading" });
@@ -143,10 +147,11 @@ function SubjectSky({ code, title, tab }: { code: string; title: string; tab: Su
     let alive = true;
     api.listConceptPairs({ subjectCode: request.code, chapterCode: null, status: null }).then(
       (list) => {
-        if (alive) setState({ kind: "ready", pairs: list.pairs });
+        if (alive) setState({ kind: "ready", pairs: list.pairs, stale: false });
       },
       () => {
-        if (alive) setState((previous) => (previous.kind === "ready" ? previous : { kind: "error" }));
+        if (alive)
+          setState((previous) => (previous.kind === "ready" ? { ...previous, stale: true } : { kind: "error" }));
       },
     );
     return () => {
@@ -157,7 +162,9 @@ function SubjectSky({ code, title, tab }: { code: string; title: string; tab: Su
   const pairs = state.kind === "ready" ? state.pairs : null;
   const layout = useMemo(() => (pairs === null ? null : buildSkyLayout(title, pairs)), [title, pairs]);
 
-  if (layout !== null) return <SkyView size="full" status="ready" layout={layout} />;
+  if (layout !== null) {
+    return <SkyView size="full" status="ready" layout={layout} stale={state.kind === "ready" && state.stale} />;
+  }
   if (state.kind === "error") {
     return (
       <SkyView

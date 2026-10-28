@@ -103,11 +103,11 @@ describe("shellHeadingForPath", () => {
   });
 
   it("route cũ: h1 hiện rõ theo chữ của luồng mới", () => {
-    expect(shellHeadingForPath("/vault/")).toEqual({ text: "Tài liệu", visuallyHidden: false });
-    expect(shellHeadingForPath("/pairs")).toEqual({ text: "Khái niệm", visuallyHidden: false });
-    expect(shellHeadingForPath("/practice")).toEqual({ text: "Ôn tập", visuallyHidden: false });
-    expect(shellHeadingForPath("/ingestion")).toEqual({ text: "Nhập đề thi cũ", visuallyHidden: false });
-    expect(shellHeadingForPath("/twins")).toEqual({ text: "Câu hỏi song sinh", visuallyHidden: false });
-    expect(shellHeadingForPath("/khong-co")).toEqual({ text: "Holocron", visuallyHidden: false });
+    expect(shellHeadingForPath("/vault/")).toBe("Tài liệu");
+    expect(shellHeadingForPath("/pairs")).toBe("Khái niệm");
+    expect(shellHeadingForPath("/practice")).toBe("Ôn tập");
+    expect(shellHeadingForPath("/ingestion")).toBe("Nhập đề thi cũ");
+    expect(shellHeadingForPath("/twins")).toBe("Câu hỏi song sinh");
+    expect(shellHeadingForPath("/khong-co")).toBe("Holocron");
   });
 });

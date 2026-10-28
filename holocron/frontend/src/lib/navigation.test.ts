@@ -49,3 +49,19 @@ describe("foldForSearch và filterCommands", () => {
     expect(filterCommands(commands, "khong co")).toEqual([]);
   });
 });
+
+describe("tiêu đề trang theo luồng mới", () => {
+  it("trang môn và Cài đặt có tiêu đề riêng, chấp nhận / cuối", () => {
+    expect(titleForPath("/subject")).toBe("Trang môn");
+    expect(titleForPath("/subject/")).toBe("Trang môn");
+    expect(titleForPath("/settings")).toBe("Cài đặt");
+    expect(titleForPath("/settings/")).toBe("Cài đặt");
+  });
+
+  it("không thêm hai trang này vào điều hướng cũ; route cũ giữ tiêu đề", () => {
+    expect(navItemForPath("/subject")).toBeNull();
+    expect(navItemForPath("/settings")).toBeNull();
+    expect(titleForPath("/ingestion")).toBe("Nhập đề thi");
+    expect(titleForPath("/")).toBe("Bắt đầu");
+  });
+});

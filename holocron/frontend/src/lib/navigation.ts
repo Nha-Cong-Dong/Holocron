@@ -46,8 +46,18 @@ export function navItemForPath(pathname: string): NavItem | null {
   return NAV_ITEMS.find((item) => item.href === path) ?? null;
 }
 
+/**
+ * Tiêu đề của các trang theo luồng mới (thanh trên). Không nằm trong `NAV_ITEMS` vì không phải mục điều hướng cố định:
+ * trang môn mở từ thẻ môn ở trang chủ, Cài đặt mở từ nút trên thanh trên.
+ */
+const PAGE_TITLES: Readonly<Record<string, string>> = {
+  "/subject": "Trang môn",
+  "/settings": "Cài đặt",
+};
+
 export function titleForPath(pathname: string): string {
-  return navItemForPath(pathname)?.label ?? "Holocron";
+  const path = trimTrailingSlash(pathname);
+  return PAGE_TITLES[path] ?? navItemForPath(path)?.label ?? "Holocron";
 }
 
 /** Chuẩn hoá để lọc: NFD, bỏ dấu, `đ` → `d`, chữ thường, gộp khoảng trắng. */

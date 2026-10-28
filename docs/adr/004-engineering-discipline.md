@@ -77,6 +77,16 @@ Bổ sung ngày 2026-10-24, các chỗ còn thiếu trong danh sách trên. Số
 
 Ghi chú: `tests/test_input_limits.py:36-53` khoá hành vi "bảng > 10 tiến trình → `OUT_OF_RANGE` (BLOCKING)". Đây là test I5 (CLAUDE.md §9), nên bước 2 của ADR-005 phải giữ hành vi này mà không sửa test. Đã duyệt 2026-10-24: khi đó giới hạn số dòng đến từ `input_schema` của template (`max_rows`, spec §5.10) thay cho `MAX_PROCESSES`; template RR khai báo `max_rows = 10` để giữ hành vi trên. ADR-005 mục 2 đã ghi thêm `max_rows`.
 
+### Khả năng chờ backend (UI mới)
+
+Duyệt 2026-10-29 (người dùng, `.claude/state/decisions-2026-10-28.md`, mục "Đổi kế hoạch lần cuối"; nguồn yêu cầu `design-handoff/README.md` mục 9). Phương án A: UI không đặt TODO trong code; mỗi chỗ chờ backend kiểm một khả năng có tên trong `GET /v1/runtime` (spec §5.12, §11.4), mặc định `available = false`, `reason = "not_implemented"`. Chỗ nào chưa có khả năng thì UI dùng chức năng hiện có kèm một câu giải thích ngắn, không hiển thị dữ liệu giả. "Nhập nhiều file" không cần khả năng mới (UI gửi lần lượt qua `POST /v1/documents`).
+
+| Mã | Tên khả năng | Lý do | Điều kiện xoá |
+|---|---|---|---|
+| CAP-001 | `concept_auto_proposal` | UI mới cần đề xuất khái niệm tự động không cần LLM (thuật ngữ + trích dẫn nguyên văn + số trang); backend chưa có | Tên vào `IMPLEMENTED_CAPABILITIES` và có test endpoint |
+| CAP-002 | `line_review_queue` | UI mới cần hàng đợi duyệt theo dòng nghi ngờ; backend chưa có; khi làm thật cần ADR I5 riêng | Tên vào `IMPLEMENTED_CAPABILITIES` và có test endpoint |
+| CAP-003 | `page_progress_eta` | UI mới cần tiến độ theo trang và thời gian còn lại cho từng tài liệu đang đọc; backend chưa có | Tên vào `IMPLEMENTED_CAPABILITIES` và có test endpoint |
+
 ## Phương án đã loại
 
 - **Chỉ dựa vào CI, không pre-commit:** phản hồi chậm và dễ đẩy commit sai chuẩn lên nhánh chung.

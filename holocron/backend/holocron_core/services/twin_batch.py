@@ -14,8 +14,12 @@ trùng. Dấu vân tay là sha256 của JSON chính tắc gồm `generator_versi
 theo thứ tự phương án" của §6.3 (nợ ADR-004).
 
 Lỗi template/sandbox hay thiếu căn cứ không làm hỏng batch: slot không sinh được đi vào `review_tickets` (mỗi slot
-tối đa một ticket). Phụ thuộc ngoài đi qua `Protocol` (`TemplateAuthor`, `TemplateRegistry`, `CitationProvider`,
-`VaultRepository`) để test thay bằng stub.
+tối đa một ticket). Với slot lý thuyết, Vault không nhất quán (cặp đã xác nhận mà chunk nguồn không có trong lần
+đọc chunk, hay trích dẫn không còn khớp nguyên văn chunk, `QuoteMismatchError`) cũng thành ticket với lý do cố định,
+không chép topic, `chunk_id` hay trích dẫn; lỗi khác của bộ sinh (vd seed ngoài khoảng) vẫn nổi lên.
+
+Phụ thuộc ngoài đi qua `Protocol` (`TemplateAuthor`, `TemplateRegistry`, `CitationProvider`, `VaultRepository`) để
+test thay bằng stub.
 """
 
 from __future__ import annotations
@@ -40,13 +44,15 @@ from ..domain.schemas import (
 )
 from ..domain.theory import TheoryQuestion
 from ..domain.twins import SEED_SPACE, ReviewTicket, TheoryTwin, TwinBatch, TwinBatchRequest
-from ..domain.vault import ConceptPair, ConceptPairStatus
+from ..domain.vault import ConceptPair, ConceptPairStatus, QuoteMismatchError
 from .pipeline import SEED_REROLL_BUDGET, SEED_STRIDE, TemplateAuthor, TemplateRegistry, produce_twin
-from .theory_generator import generate_theory_question
+from .theory_generator import candidate_pool, generate_theory_question
 
 # `TwinBatchRequest`, `TwinBatch` và `SEED_SPACE` đã chuyển về `domain/twins.py`; tên cũ vẫn import được từ module này.
 __all__ = [
     "SEED_SPACE",
+    "THEORY_MISSING_CHUNK_REASON",
+    "THEORY_QUOTE_MISMATCH_REASON",
     "THEORY_SEED_BAND",
     "CitationProvider",
     "NoCitationProvider",
@@ -65,6 +71,18 @@ THEORY_SEED_BAND = SEED_STRIDE * SEED_REROLL_BUDGET
 THEORY_DUPLICATE_REASON = (
     "không sinh được câu lý thuyết khác các câu đã có trong batch sau {budget} lần thử trong dải seed của twin {k}"
 )
+
+THEORY_MISSING_CHUNK_REASON = (
+    "Vault không nhất quán: có cặp khái niệm đã xác nhận của môn mà đoạn tài liệu nguồn không còn trong kho; "
+    "cần đối soát lại Vault rồi sinh lại"
+)
+"""Lý do cố định (§6.3): không chép topic, `chunk_id` hay trích dẫn vào ticket."""
+
+THEORY_QUOTE_MISMATCH_REASON = (
+    "Vault không nhất quán: trích dẫn của một cặp khái niệm không còn khớp nguyên văn đoạn tài liệu nguồn (I3); "
+    "cần đối soát lại Vault rồi sinh lại"
+)
+"""Lý do cố định (§6.3): không chép topic, `chunk_id` hay trích dẫn vào ticket."""
 
 
 class CitationProvider(Protocol):
@@ -119,7 +137,12 @@ def _with_format(slot: BlueprintSlot, fmt: QuestionFormat) -> BlueprintSlot:
 
 
 class _TheoryPool:
-    """Cặp đã xác nhận của môn và chunk nguồn của chúng, đọc một lần cho cả batch."""
+    """Cặp đã xác nhận của môn và chunk nguồn của chúng, đọc một lần cho cả batch.
+
+    Hai lần đọc (cặp, rồi chunk) không cùng snapshot: cặp nào trong nhóm ứng viên của bộ sinh mà chunk nguồn không có
+    trong lần đọc chunk thì `missing_chunks` bật. Bộ sinh có thể trích dẫn bất kỳ cặp nào của môn (đáp án hay phương án
+    nhiễu), nên kiểm trên cả nhóm ứng viên chứ không chỉ cặp của chương.
+    """
 
     def __init__(self, vault: VaultRepository | None, subject_code: str) -> None:
         self.pairs: Sequence[ConceptPair] = ()
@@ -130,6 +153,7 @@ class _TheoryPool:
             self.chunks = {
                 chunk.chunk_id: chunk for chunk in vault.list_chunks(subject_code) if chunk.chunk_id in sources
             }
+        self.missing_chunks = any(pair.chunk_id not in self.chunks for pair in candidate_pool(self.pairs, subject_code))
 
 
 def _theory_twins(
@@ -143,7 +167,9 @@ def _theory_twins(
 ) -> tuple[list[TheoryTwin], ReviewTicket | None]:
     """Twin lý thuyết của một slot và ticket đầu tiên của slot (nếu có).
 
-    Thiếu căn cứ trong Vault không phụ thuộc seed (ADR-007, `feasible_forms`), nên gặp ticket đó thì dừng slot.
+    Thiếu căn cứ trong Vault không phụ thuộc seed (ADR-007, `feasible_forms`), nên gặp ticket đó thì dừng slot. Vault
+    không nhất quán (`missing_chunks`, hay `QuoteMismatchError` ở twin k) cũng dừng slot: giữ các twin đã sinh, ticket
+    mang lý do cố định. Lỗi khác của bộ sinh không bị bắt.
     """
 
     def ticket(reason: str) -> ReviewTicket:
@@ -157,21 +183,26 @@ def _theory_twins(
 
     if slot.format is not QuestionFormat.MCQ4:
         return [], ticket(f"chưa sinh được câu lý thuyết hình thức {slot.format.value}")
+    if pool.missing_chunks:
+        return [], ticket(THEORY_MISSING_CHUNK_REASON)
     twins: list[TheoryTwin] = []
     first_ticket: ReviewTicket | None = None
     for k in range(count):
         produced: TheoryQuestion | None = None
         for j in range(SEED_REROLL_BUDGET):
-            result = generate_theory_question(
-                pool.pairs,
-                pool.chunks,
-                subject_code=blueprint.subject_code,
-                seed=theory_seed(base_seed, k, j),
-                blueprint_id=blueprint.blueprint_id,
-                slot_index=slot.slot_index,
-                topic_key=slot.topic_key,
-                chapter_code=slot.chapter_code,
-            )
+            try:
+                result = generate_theory_question(
+                    pool.pairs,
+                    pool.chunks,
+                    subject_code=blueprint.subject_code,
+                    seed=theory_seed(base_seed, k, j),
+                    blueprint_id=blueprint.blueprint_id,
+                    slot_index=slot.slot_index,
+                    topic_key=slot.topic_key,
+                    chapter_code=slot.chapter_code,
+                )
+            except QuoteMismatchError:
+                return twins, ticket(THEORY_QUOTE_MISMATCH_REASON)
             if isinstance(result, ReviewTicket):
                 return twins, result
             fingerprint = theory_fingerprint(result)

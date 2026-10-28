@@ -1,6 +1,6 @@
 "use client";
 
-import type { RefObject } from "react";
+import { type RefObject, useId } from "react";
 
 import { Button } from "@/components/ui";
 import type { ConceptView } from "@/lib/concept-board";
@@ -23,6 +23,8 @@ interface ProposalListProps {
   headingRef: RefObject<HTMLHeadingElement | null>;
   /** "Nhận tất cả" đang gửi: nút bận, bấm lại không có tác dụng. */
   bulkRunning: boolean;
+  /** Lý do khoá "Nhận tất cả" khi không thẻ nào nhận được; `null` khi bấm được. */
+  acceptAllReason: string | null;
   onAcceptAll: () => void;
   onAccept: (pair: ConceptPair, term: string | null) => void;
   onReject: (pair: ConceptPair) => void;
@@ -35,12 +37,14 @@ export function ProposalList({
   entries,
   headingRef,
   bulkRunning,
+  acceptAllReason,
   onAcceptAll,
   onAccept,
   onReject,
   onRetry,
   onLeft,
 }: ProposalListProps) {
+  const reasonId = useId();
   return (
     <section className={styles.main} aria-labelledby="concepts-proposals-title">
       <div className={styles.blockHead}>
@@ -50,10 +54,24 @@ export function ProposalList({
           </h2>
           <p className={styles.muted}>Mỗi khái niệm kèm đoạn trích nguyên văn. Nhận cái nào đúng ý bạn.</p>
         </div>
-        <Button variant="primary" busy={bulkRunning} busyLabel="Đang nhận" onClick={onAcceptAll}>
+        <Button
+          variant="primary"
+          busy={bulkRunning}
+          busyLabel="Đang nhận"
+          aria-disabled={acceptAllReason !== null || undefined}
+          aria-describedby={acceptAllReason !== null ? reasonId : undefined}
+          onClick={() => {
+            if (acceptAllReason === null) onAcceptAll();
+          }}
+        >
           Nhận tất cả
         </Button>
       </div>
+      {acceptAllReason !== null && (
+        <p id={reasonId} className={styles.reason}>
+          {acceptAllReason}
+        </p>
+      )}
       <ul className={styles.cards}>
         {entries.map((entry) => (
           <ProposalCard

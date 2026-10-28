@@ -8,7 +8,14 @@
  */
 
 import { charLength } from "@/lib/documents";
-import { type LengthCheck, PY_STRIP_CHARS, quoteLengthOk, termLengthOk } from "@/lib/pairs";
+import {
+  type ChunkMapStatus,
+  type LengthCheck,
+  lookupChunk,
+  PY_STRIP_CHARS,
+  quoteLengthOk,
+  termLengthOk,
+} from "@/lib/pairs";
 import { chapterLabel } from "@/lib/sky";
 import { type ChunkView, pageRangeLabel } from "@/lib/vault";
 
@@ -125,6 +132,31 @@ export function passageNav(chunks: readonly Pick<ChunkView, "chunkId">[], curren
     position: index + 1,
     total: chunks.length,
   };
+}
+
+export interface OpenPassage {
+  /** Đoạn hiện trong khung tự tạo; `null` khi môn chưa có đoạn nào. */
+  chunk: ChunkView | null;
+  /** Vì sao không mở được đoạn `?chunk=` (đang mở đoạn đầu tiên thay vào); `null` khi mở đúng đoạn. */
+  note: "not_loaded" | "missing" | null;
+}
+
+/**
+ * Đoạn mở ở khung tự tạo: đoạn `?chunk=` khi tra được trong map; không có trong map (map chưa tải hết) mà đó là kết
+ * quả tìm vừa chọn ⇒ dùng thẳng đoạn backend trả trong kết quả tìm; còn lại ⇒ đoạn đầu tiên của môn kèm lý do.
+ */
+export function resolveOpenPassage(
+  mapStatus: ChunkMapStatus,
+  map: ReadonlyMap<string, ChunkView>,
+  openChunkId: string | null,
+  picked: ChunkView | null,
+): OpenPassage {
+  const first = map.values().next().value ?? null;
+  if (openChunkId === null) return { chunk: first, note: null };
+  const lookup = lookupChunk(mapStatus, map, openChunkId);
+  if (lookup.kind === "found") return { chunk: lookup.chunk, note: null };
+  if (picked !== null && picked.chunkId === openChunkId) return { chunk: picked, note: null };
+  return { chunk: first, note: lookup.kind === "missing" ? "missing" : "not_loaded" };
 }
 
 /** Đoạn của chương `chapterCode` trong map, giữ thứ tự backend. */

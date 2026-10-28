@@ -4,7 +4,7 @@ import { type AnimationEvent, type KeyboardEvent, useEffect, useId, useRef, useS
 
 import { VerbatimQuote } from "@/components/common/VerbatimQuote";
 import { Button, Field } from "@/components/ui";
-import type { ConceptView } from "@/lib/concept-board";
+import { type ConceptView, renameKeyAction } from "@/lib/concept-board";
 import { type ActionGate, pairCitation, termLengthOk, termSegments } from "@/lib/pairs";
 import { pageRangeLabel } from "@/lib/vault";
 import type { ConceptPair } from "@/types/holocron";
@@ -77,7 +77,7 @@ interface RenameFormProps {
   onCancel: () => void;
 }
 
-/** Khung sửa tên tại chỗ: Enter lưu, Esc huỷ (focus trở về nút đã mở khung). */
+/** Khung sửa tên tại chỗ: Enter ở ô nhập lưu, Esc ở bất kỳ đâu trong khung huỷ (focus trở về nút đã mở khung). */
 export function RenameForm({ initial, submitLabel, busy, onSave, onCancel }: RenameFormProps) {
   const id = useId();
   const [draft, setDraft] = useState(initial);
@@ -98,24 +98,22 @@ export function RenameForm({ initial, submitLabel, busy, onSave, onCancel }: Ren
     onSave(draft.trim());
   }
 
-  function onKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      onCancel();
-    } else if (event.key === "Enter") {
-      event.preventDefault();
-      save();
-    }
+  // Esc ở bất kỳ đâu trong khung (ô nhập, "Huỷ", nút lưu) đều huỷ; Enter chỉ lưu khi đang ở ô nhập.
+  function onKeyDown(event: KeyboardEvent<HTMLFieldSetElement>): void {
+    const action = renameKeyAction(event.key, event.target instanceof HTMLInputElement);
+    if (action === null) return;
+    event.preventDefault();
+    if (action === "cancel") onCancel();
+    else save();
   }
 
   return (
-    <div className={styles.skeletonCol}>
+    <fieldset className={styles.renameFrame} aria-label="Sửa tên khái niệm" onKeyDown={onKeyDown}>
       <Field
         id={`${id}-term`}
         label="Tên khái niệm"
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
-        onKeyDown={onKeyDown}
         error={error}
         hint={RENAME_HINT_VI}
       />
@@ -127,7 +125,7 @@ export function RenameForm({ initial, submitLabel, busy, onSave, onCancel }: Ren
           {submitLabel}
         </Button>
       </div>
-    </div>
+    </fieldset>
   );
 }
 

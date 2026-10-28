@@ -1,20 +1,30 @@
 import { describe, expect, it } from "vitest";
 import type { ConceptPair, ConceptPairStatus } from "@/types/holocron";
 import {
+  ACCEPT_ALL_BLOCKED_VI,
+  ACCEPT_ALL_BUSY_VI,
+  ACCEPT_ALL_LOADING_VI,
+  acceptAllGate,
   acceptToast,
   type BulkCandidate,
   type BulkEvent,
   bulkCount,
   bulkMessageOf,
   bulkReducer,
+  type ChangeNote,
   CONCEPT_CONFLICT_VI,
+  changeEffects,
   conceptErrorText,
   conceptsScreen,
   conceptView,
   focusAfterRemoval,
   groupPairs,
   IDLE_BULK,
+  mergeChange,
   newlyConfirmed,
+  renameKeyAction,
+  SOURCE_LOADING_REASON_VI,
+  SOURCE_LOADING_VI,
   screenErrorText,
   sendQueued,
   visibleConceptEntrances,
@@ -244,5 +254,162 @@ describe("Nhận tất cả", () => {
     });
     expect(versions).toEqual([3]);
     expect(bulkReducer(state, { type: "dismiss", pairId: "a" }).items).toEqual([]);
+  });
+});
+
+describe("đoạn văn đang tải không bị coi là lỗi", () => {
+  it("thẻ ở mọi nhóm: câu 'đang tải', lý do khoá 'đang tải', không dùng câu 'chưa tải được'", () => {
+    for (const pairStatus of ["proposed", "confirmed", "rejected"] satisfies ConceptPairStatus[]) {
+      const view = conceptView(pair("x", pairStatus), "loading", new Map());
+      expect(view.sourceLoading).toBe(true);
+      expect(view.chunk).toBeNull();
+      expect(view.unverified).toBe(SOURCE_LOADING_VI);
+      const gate = pairStatus === "confirmed" ? view.actions.edit : view.actions.confirm;
+      expect(gate).toEqual({ shown: true, enabled: false, reason: SOURCE_LOADING_REASON_VI });
+      if (pairStatus === "proposed") {
+        expect(view.actions.edit).toEqual({ shown: true, enabled: false, reason: SOURCE_LOADING_REASON_VI });
+      }
+      expect(JSON.stringify(view.actions)).not.toContain("Chưa tải được");
+      if (pairStatus !== "rejected") expect(view.actions.reject).toEqual({ shown: true, enabled: true });
+      if (pairStatus === "rejected") expect(view.actions.edit).toEqual({ shown: false });
+    }
+  });
+
+  it("đoạn văn tải lỗi vẫn dùng câu 'chưa tải được'; tải xong mà tra được thì không khoá", () => {
+    const failed = conceptView(pair("x", "proposed"), "error", new Map());
+    expect(failed.sourceLoading).toBe(false);
+    expect(failed.unverified).toBe("Chưa tải được các đoạn của môn — chưa kiểm chứng được trang");
+    const found = conceptView(pair("a", "proposed"), "partial", new Map([["chk_a", chunk("chk_a")]]));
+    expect(found.sourceLoading).toBe(false);
+    expect(found.unverified).toBeNull();
+    expect(found.actions.confirm).toEqual({ shown: true, enabled: true });
+  });
+});
+
+describe("Nhận tất cả: khoá kèm lý do khi mọi thẻ khoá", () => {
+  const map = new Map([["chk_a", chunk("chk_a")]]);
+  const ready = conceptView(pair("a", "proposed"), "complete", map);
+  const missing = conceptView(pair("b", "proposed"), "complete", map);
+  const loading = conceptView(pair("c", "proposed"), "loading", new Map());
+
+  it("có ít nhất một thẻ rảnh nhận được ⇒ bấm được", () => {
+    expect(
+      acceptAllGate([
+        { view: missing, busy: false },
+        { view: ready, busy: false },
+      ]),
+    ).toEqual({ enabled: true });
+  });
+
+  it("mọi thẻ khoá: đang tải ⇒ lý do đang tải; không thì lý do chưa kiểm chứng", () => {
+    expect(acceptAllGate([{ view: loading, busy: false }])).toEqual({ enabled: false, reason: ACCEPT_ALL_LOADING_VI });
+    expect(acceptAllGate([{ view: missing, busy: false }])).toEqual({ enabled: false, reason: ACCEPT_ALL_BLOCKED_VI });
+  });
+
+  it("thẻ nhận được nhưng đang bận không tính; mọi thẻ bận ⇒ chờ gửi xong", () => {
+    expect(
+      acceptAllGate([
+        { view: ready, busy: true },
+        { view: missing, busy: false },
+      ]),
+    ).toEqual({
+      enabled: false,
+      reason: ACCEPT_ALL_BLOCKED_VI,
+    });
+    expect(acceptAllGate([{ view: ready, busy: true }])).toEqual({ enabled: false, reason: ACCEPT_ALL_BUSY_VI });
+  });
+});
+
+describe("câu lỗi cố định theo loại", () => {
+  const base = classifyNetworkError("http://127.0.0.1:8000");
+
+  it("lỗi kết nối nói Holocron chưa chạy hoặc đã tắt", () => {
+    expect(screenErrorText(base)).toBe("Holocron chưa chạy xong hoặc đã tắt. Mở lại Holocron rồi bấm Thử lại.");
+  });
+
+  it("lỗi máy chủ (500) có câu riêng, không nói chưa chạy hay đã tắt", () => {
+    const text = screenErrorText(classifyHttpError(500, null));
+    expect(text).toBe("Holocron gặp trục trặc khi xử lý yêu cầu này. Bấm Thử lại; nếu vẫn chưa được, mở lại Holocron.");
+    expect(text).not.toMatch(/đã tắt|chưa chạy/);
+  });
+
+  it("kho bận và lỗi lạ: câu cố định đúng", () => {
+    expect(screenErrorText({ ...base, kind: "busy" })).toBe(
+      "Thư mục dữ liệu của Holocron đang bận. Đợi vài giây rồi bấm Thử lại.",
+    );
+    expect(screenErrorText({ ...base, kind: "unknown" })).toBe(
+      "Holocron trả lời không như mong đợi. Bấm Thử lại; nếu vẫn lỗi, mở lại Holocron.",
+    );
+  });
+});
+
+describe("phím trong khung sửa tên", () => {
+  it("Esc ở ô nhập hay ở nút đều huỷ; Enter chỉ lưu ở ô nhập; phím khác không làm gì", () => {
+    expect(renameKeyAction("Escape", true)).toBe("cancel");
+    expect(renameKeyAction("Escape", false)).toBe("cancel");
+    expect(renameKeyAction("Enter", true)).toBe("save");
+    expect(renameKeyAction("Enter", false)).toBeNull();
+    expect(renameKeyAction("a", true)).toBeNull();
+  });
+});
+
+describe("hai thao tác gần nhau không mất toast, focus, tải lại bầu trời", () => {
+  const acceptA: ChangeNote = { accepted: 1, messages: [], focus: { kind: "concept", id: "b" } };
+  const acceptB: ChangeNote = { accepted: 1, messages: [], focus: { kind: "proposals" } };
+  const rename: ChangeNote = { accepted: 0, messages: ["Đã đổi tên thành “X”"], focus: null };
+
+  it("cộng dồn số đã nhận, giữ thông báo theo thứ tự, focus theo thao tác sau cùng có focus", () => {
+    const merged = mergeChange(mergeChange(mergeChange(null, acceptA), rename), acceptB);
+    expect(merged).toEqual({ accepted: 2, messages: ["Đã đổi tên thành “X”"], focus: { kind: "proposals" } });
+    expect(mergeChange(acceptA, rename)?.focus).toEqual({ kind: "concept", id: "b" });
+  });
+
+  it("lượt tải lại không kèm thao tác (lỗi 409, Thử lại) không xoá việc đang chờ", () => {
+    expect(mergeChange(acceptA, null)).toBe(acceptA);
+    expect(mergeChange(null, null)).toBeNull();
+  });
+
+  it("phát ở lượt mới nhất: toast gộp kèm số sao, rồi thông báo khác, focus, tải lại bầu trời", () => {
+    const merged = mergeChange(mergeChange(acceptA, rename), acceptB);
+    expect(changeEffects(merged, 2)).toEqual({
+      toasts: ["Đã nhận 2 khái niệm, 2 ngôi sao sáng lên", "Đã đổi tên thành “X”"],
+      focus: { kind: "proposals" },
+      reloadSky: true,
+    });
+    expect(changeEffects(acceptA, 0).toasts).toEqual(["Đã nhận 1 khái niệm"]);
+  });
+
+  it("tạo khái niệm (không nhận, không thông báo) vẫn tải lại bầu trời; không có việc ⇒ không phát gì", () => {
+    expect(changeEffects({ accepted: 0, messages: [], focus: null }, 3)).toEqual({
+      toasts: [],
+      focus: null,
+      reloadSky: true,
+    });
+    expect(changeEffects(null, 3)).toEqual({ toasts: [], focus: null, reloadSky: false });
+  });
+});
+
+describe("Nhận tất cả: trạng thái từng khái niệm", () => {
+  it("lỗi mạng ⇒ failed; 409 ⇒ conflict; thành công ⇒ accepted", async () => {
+    let state = bulkReducer(IDLE_BULK, {
+      type: "start",
+      candidates: ["a", "b", "c"].map((pairId) => ({ pairId, version: 3, allowed: true, reason: null })),
+    });
+    await sendQueued(
+      state,
+      (pairId) => {
+        if (pairId === "b") return Promise.reject(new ApiError(null, classifyNetworkError("")));
+        if (pairId === "c") return Promise.reject(new ApiError(409, conflictError()));
+        return Promise.resolve();
+      },
+      (event) => {
+        state = bulkReducer(state, event);
+      },
+    );
+    expect(state.items.map((item) => [item.pairId, item.status])).toEqual([
+      ["a", "accepted"],
+      ["b", "failed"],
+      ["c", "conflict"],
+    ]);
   });
 });

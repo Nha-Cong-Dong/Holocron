@@ -477,3 +477,12 @@
 :root[data-motion="reduce"] .sentence {
   transition: none;
 }
+
+.renameFrame {
+  margin: 0;
+  border: 0;
+  padding: 0;
+  min-width: 0;
+  display: grid;
+  gap: var(--sp-3);
+}

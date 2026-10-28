@@ -9,13 +9,14 @@ import { screenErrorText } from "@/lib/concept-board";
 import { toUiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
 import { VAULT_SEARCH_LIMIT } from "@/lib/limits";
-import { type ChunkMapStatus, chaptersOf, lookupChunk, runLatest } from "@/lib/pairs";
+import { type ChunkMapStatus, chaptersOf, runLatest } from "@/lib/pairs";
 import {
   chunksOfChapter,
   citationCaption,
   conceptCreateRequest,
   type PassageSelection,
   passageNav,
+  resolveOpenPassage,
   type SentenceRange,
   selectionOfQuote,
   sentenceLabel,
@@ -90,6 +91,15 @@ function PanelBody({
   searchAvailable,
   onCreated,
 }: PassagePanelProps) {
+  // Kết quả tìm vừa chọn: đoạn backend trả đủ trong kết quả, dùng thẳng khi map chưa tải tới đoạn đó.
+  const [picked, setPicked] = useState<ChunkView | null>(null);
+  const onPick = useCallback(
+    (chunk: ChunkView) => {
+      setPicked(chunk);
+      onOpenChunk(chunk.chunkId);
+    },
+    [onOpenChunk],
+  );
   if (mapStatus === "loading") {
     return (
       <div className={styles.skeletonCol} aria-busy="true">
@@ -117,22 +127,20 @@ function PanelBody({
   if (map.size === 0) {
     return <p className={styles.muted}>Môn này chưa có đoạn văn nào. Thêm tài liệu ở tab Tài liệu rồi quay lại đây.</p>;
   }
-  const lookup = openChunkId === null ? null : lookupChunk(mapStatus, map, openChunkId);
-  const first = map.values().next().value;
-  const current = lookup?.kind === "found" ? lookup.chunk : (first ?? null);
+  const { chunk: current, note } = resolveOpenPassage(mapStatus, map, openChunkId, picked);
   if (current === null) return null;
   return (
     <>
-      {lookup !== null && lookup.kind !== "found" && (
+      {note !== null && (
         <p className={styles.note}>
-          {lookup.kind === "not_loaded"
+          {note === "not_loaded"
             ? "Chưa tải hết đoạn văn của môn nên chưa mở được đoạn này. Chọn chương hoặc tìm trong tài liệu."
             : "Không tìm thấy đoạn này trong tài liệu của môn (tài liệu có thể đã bị xoá). Đang mở đoạn đầu tiên."}
         </p>
       )}
       <PassageNavigator map={map} current={current} onOpenChunk={onOpenChunk} />
       {searchAvailable ? (
-        <PassageSearch subjectCode={subjectCode} onOpenChunk={onOpenChunk} />
+        <PassageSearch subjectCode={subjectCode} onPick={onPick} />
       ) : (
         <p className={styles.muted}>
           Tìm trong tài liệu chưa dùng được trên máy này; chọn chương rồi đi qua từng đoạn.
@@ -201,7 +209,7 @@ type SearchState =
   | { kind: "done"; hits: ChunkView[] }
   | { kind: "failed"; message: string };
 
-function PassageSearch({ subjectCode, onOpenChunk }: { subjectCode: string; onOpenChunk: (chunkId: string) => void }) {
+function PassageSearch({ subjectCode, onPick }: { subjectCode: string; onPick: (chunk: ChunkView) => void }) {
   const [text, setText] = useState("");
   const [fieldError, setFieldError] = useState<string | undefined>(undefined);
   const [state, setState] = useState<SearchState>({ kind: "idle" });
@@ -256,7 +264,7 @@ function PassageSearch({ subjectCode, onOpenChunk }: { subjectCode: string; onOp
           <ul className={styles.results} aria-label="Kết quả tìm">
             {state.hits.map((chunk) => (
               <li key={chunk.chunkId}>
-                <button type="button" className={styles.result} onClick={() => onOpenChunk(chunk.chunkId)}>
+                <button type="button" className={styles.result} onClick={() => onPick(chunk)}>
                   <span className={styles.resultMeta}>{citationCaption(chunk.chapterCode, chunk)}</span>
                   <span>{sentenceLabel(chunk.rawText, RESULT_PREVIEW_CHARS)}</span>
                 </button>

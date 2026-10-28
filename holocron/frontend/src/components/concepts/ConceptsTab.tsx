@@ -9,17 +9,21 @@ import { Button, EmptyState, ErrorState, Skeleton, useToast } from "@/components
 import { useReducedMotion } from "@/hooks/motion-hooks";
 import { api } from "@/lib/api";
 import {
-  acceptToast,
+  acceptAllGate,
   type BulkCandidate,
   bulkMessageOf,
   bulkReducer,
+  type ChangeNote,
+  type ConceptFocus,
   type ConceptView,
+  changeEffects,
   conceptErrorText,
   conceptsScreen,
   conceptView,
   focusAfterRemoval,
   groupPairs,
   IDLE_BULK,
+  mergeChange,
   newlyConfirmed,
   screenErrorText,
   sendQueued,
@@ -58,17 +62,6 @@ type ListState =
   | { kind: "loading" }
   | { kind: "error"; error: UiError }
   | { kind: "ready"; pairs: ConceptPair[]; hasSkipped: boolean };
-
-type FocusTarget = { kind: "concept"; id: string } | { kind: "proposals" } | { kind: "accepted" };
-
-/** Việc cần làm khi danh sách tải lại xong sau một thao tác. */
-interface ChangeNote {
-  /** Số khái niệm backend đã nhận trong thao tác (toast "Đã nhận N khái niệm…"). */
-  accepted: number;
-  /** Thông báo khác (ví dụ đổi tên); `null` khi không có. */
-  message: string | null;
-  focus: FocusTarget | null;
-}
 
 type Operation = "accept" | "reject" | "rename" | "restore";
 
@@ -160,30 +153,38 @@ export function ConceptsTab({
   const [fresh, setFresh] = useState<ReadonlySet<string>>(new Set());
   const [leaving, setLeaving] = useState<ReadonlyMap<string, CardLeaving>>(new Map());
   const previousPairs = useRef<ConceptPair[] | null>(null);
-  const focusRequest = useRef<FocusTarget | null>(null);
+  const focusRequest = useRef<ConceptFocus | null>(null);
+  // Việc của các thao tác đã thành công mà chưa phát (toast, focus, tải lại bầu trời). Chỉ lượt tải lại mới nhất được
+  // áp, nên việc của thao tác trước dồn vào đây và phát ở lượt mới nhất, không mất khi hai thao tác gần nhau.
+  const pendingChange = useRef<ChangeNote | null>(null);
   const listCalls = useRef(createLatestCounter());
 
   const loadPairs = useCallback(
     (keepCurrent: boolean, change: ChangeNote | null) => {
       if (!keepCurrent) setListState({ kind: "loading" });
+      pendingChange.current = mergeChange(pendingChange.current, change);
       void runLatest(
         listCalls.current,
         () => api.listConceptPairs({ subjectCode, chapterCode: null, status: null }),
         (outcome) => {
+          const pending = pendingChange.current;
+          pendingChange.current = null;
           if (!outcome.ok) {
+            // Thao tác đã thành công dù chưa đọc lại được danh sách: vẫn báo, chỉ không nói số sao.
+            const effects = changeEffects(pending, 0);
+            for (const text of effects.toasts) toastRef.current.show(text);
+            if (effects.reloadSky) changedRef.current();
             if (keepCurrent && previousPairs.current !== null) setReloadNote(screenErrorText(outcome.error));
             else setListState({ kind: "error", error: outcome.error });
             return;
           }
           const next = outcome.value.pairs;
           const previous = previousPairs.current;
-          if (change !== null) {
-            const gains = skyGains(previous === null ? null : buildSkyLayout("", previous), buildSkyLayout("", next));
-            if (change.accepted > 0) toastRef.current.show(acceptToast(change.accepted, gains.total));
-            else if (change.message !== null) toastRef.current.show(change.message);
-            focusRequest.current = change.focus;
-            changedRef.current();
-          }
+          const gains = skyGains(previous === null ? null : buildSkyLayout("", previous), buildSkyLayout("", next));
+          const effects = changeEffects(pending, gains.total);
+          for (const text of effects.toasts) toastRef.current.show(text);
+          if (effects.focus !== null) focusRequest.current = effects.focus;
+          if (effects.reloadSky) changedRef.current();
           previousPairs.current = next;
           setFresh(newlyConfirmed(previous, next));
           setLeaving(new Map());
@@ -306,15 +307,15 @@ export function ConceptsTab({
         groups.proposed.map((item) => item.pair_id),
         pair.pair_id,
       );
-      const focus: FocusTarget = nextId === null ? { kind: "proposals" } : { kind: "concept", id: nextId };
+      const focus: ConceptFocus = nextId === null ? { kind: "proposals" } : { kind: "concept", id: nextId };
       leave(pair.pair_id, operation === "reject" ? "reject" : "accept", () =>
-        loadPairs(true, { accepted, message: null, focus }),
+        loadPairs(true, { accepted, messages: [], focus }),
       );
       return;
     }
-    const message = operation === "rename" && term !== null ? `Đã đổi tên thành “${term}”` : null;
-    const focus: FocusTarget = operation === "reject" ? { kind: "accepted" } : { kind: "concept", id: pair.pair_id };
-    loadPairs(true, { accepted, message, focus });
+    const messages = operation === "rename" && term !== null ? [`Đã đổi tên thành “${term}”`] : [];
+    const focus: ConceptFocus = operation === "reject" ? { kind: "accepted" } : { kind: "concept", id: pair.pair_id };
+    loadPairs(true, { accepted, messages, focus });
   }
 
   function retry(pair: ConceptPair): void {
@@ -323,7 +324,7 @@ export function ConceptsTab({
   }
 
   function acceptAll(): void {
-    if (bulkActive.current || bulk.running) return;
+    if (bulkActive.current || bulk.running || !allGate.enabled) return;
     const candidates: BulkCandidate[] = groups.proposed
       .filter((pair) => !busyIds.has(pair.pair_id))
       .map((pair) => {
@@ -352,11 +353,11 @@ export function ConceptsTab({
       dispatchBulk,
     ).then(() => {
       bulkActive.current = false;
-      loadPairs(true, { accepted, message: null, focus: { kind: "proposals" } });
+      loadPairs(true, { accepted, messages: [], focus: { kind: "proposals" } });
     });
   }
 
-  const onCreated = useCallback(() => loadPairs(true, { accepted: 0, message: null, focus: null }), [loadPairs]);
+  const onCreated = useCallback(() => loadPairs(true, { accepted: 0, messages: [], focus: null }), [loadPairs]);
   const onOpenChunk = useCallback(
     (chunkId: string) => router.replace(hrefFor({ chunk: chunkId }), { scroll: false }),
     [router, hrefFor],
@@ -422,6 +423,7 @@ export function ConceptsTab({
       error: cardErrors.get(pair.pair_id)?.text ?? null,
     };
   };
+  const allGate = acceptAllGate(proposalEntries);
   const entrances = visibleConceptEntrances({ autoProposalAvailable: AUTO_PROPOSAL_AVAILABLE });
   const searchAvailable = !isCapabilityBlocked(freshRuntime(runtime), "vault_search");
 
@@ -448,6 +450,7 @@ export function ConceptsTab({
               entries={proposalEntries}
               headingRef={proposalsHeading}
               bulkRunning={bulk.running}
+              acceptAllReason={!bulk.running && !allGate.enabled ? allGate.reason : null}
               onAcceptAll={acceptAll}
               onAccept={(pair, term) => void run(pair, "accept", term)}
               onReject={(pair) => void run(pair, "reject", null)}

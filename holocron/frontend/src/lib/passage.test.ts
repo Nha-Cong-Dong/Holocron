@@ -5,6 +5,7 @@ import {
   citationCaption,
   conceptCreateRequest,
   passageNav,
+  resolveOpenPassage,
   SENTENCE_LABEL_MAX_CHARS,
   selectionOfQuote,
   sentenceLabel,
@@ -195,5 +196,106 @@ describe("conceptCreateRequest", () => {
       field: "quote",
     });
     expect(conceptCreateRequest(source, { start: 9, end: 9 }, "Tên")).toMatchObject({ ok: false, field: "quote" });
+  });
+});
+
+describe("sentenceRanges: dòng gói giữa câu mở bằng chữ thường ngoài BMP", () => {
+  it("dòng sau mở bằng chữ thường ngoài BMP (cặp surrogate) vẫn là cùng một câu", () => {
+    const raw = "Biến chứa giá trị hiện\n𝑥 là cờ ngắt đang bật.";
+    const ranges = sentenceRanges(raw);
+    expect(ranges).toHaveLength(1);
+    expect(ranges[0]?.text).toBe(raw);
+  });
+});
+
+describe("sentenceLabel: biên độ dài", () => {
+  it("câu đúng 44 code point ⇒ nhãn là nguyên câu, không có …", () => {
+    const sentence = `${"a".repeat(SENTENCE_LABEL_MAX_CHARS - 1)}.`;
+    expect([...sentence]).toHaveLength(44);
+    expect(sentenceLabel(sentence)).toBe(sentence);
+  });
+
+  it("câu 80 ký tự không có khoảng trắng ở chỗ cắt ⇒ 42 code point đầu kèm … (dài 43)", () => {
+    const sentence = `${"x".repeat(79)}.`;
+    const label = sentenceLabel(sentence);
+    expect(label).toBe(`${"x".repeat(42)}…`);
+    expect([...label]).toHaveLength(43);
+  });
+});
+
+describe("conceptCreateRequest: biên vùng chọn và I3", () => {
+  const raw = "Mở đầu. Khi có yêu cầu ngắt trên chân INTR, CPU chỉ đáp ứng nếu cờ cho phép ngắt đang bật. Hết.";
+  const source = chunk("chk_1", "ch3", raw);
+
+  it("start = 0 và end = độ dài văn bản là vùng chọn hợp lệ", () => {
+    expect(conceptCreateRequest(source, { start: 0, end: 60 }, "Ngắt")).toEqual({
+      ok: true,
+      request: { chunkId: "chk_1", term: "Ngắt", definitionQuote: raw.slice(0, 60) },
+    });
+    expect(conceptCreateRequest(source, { start: 8, end: raw.length }, "Ngắt")).toEqual({
+      ok: true,
+      request: { chunkId: "chk_1", term: "Ngắt", definitionQuote: raw.slice(8, raw.length) },
+    });
+  });
+
+  it("vùng chọn rỗng ⇒ câu 'Chọn lại'; vị trí không nguyên ⇒ lỗi ở trích dẫn", () => {
+    expect(conceptCreateRequest(source, { start: 9, end: 9 }, "Ngắt")).toEqual({
+      ok: false,
+      field: "quote",
+      message: "Chọn lại một đoạn trong văn bản.",
+    });
+    expect(conceptCreateRequest(source, { start: 8.5, end: 60 }, "Ngắt")).toMatchObject({ ok: false, field: "quote" });
+    expect(conceptCreateRequest(source, { start: 8, end: 59.5 }, "Ngắt")).toMatchObject({ ok: false, field: "quote" });
+  });
+
+  it("I3: văn bản NFD ⇒ trích dẫn là đúng lát NFD, không NFC hoá", () => {
+    const rawNfd = raw.normalize("NFD");
+    expect(rawNfd).not.toBe(raw);
+    const start = rawNfd.indexOf("Khi");
+    const end = rawNfd.lastIndexOf(" ");
+    const result = conceptCreateRequest(chunk("chk_2", "ch3", rawNfd), { start, end }, "Ngắt");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.request.definitionQuote).toBe(rawNfd.slice(start, end));
+    expect(result.request.definitionQuote).not.toBe(rawNfd.slice(start, end).normalize("NFC"));
+  });
+
+  it("I3: xuống dòng và hai dấu cách liền trong vùng chọn được giữ nguyên", () => {
+    const text = "Định nghĩa:\nNgắt  là tín hiệu báo cho CPU một sự kiện.";
+    const result = conceptCreateRequest(chunk("chk_3", "ch3", text), { start: 0, end: text.length }, "Ngắt");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.request.definitionQuote).toBe(text);
+    expect(result.request.definitionQuote).toContain("\n");
+    expect(result.request.definitionQuote).toContain("Ngắt  là");
+  });
+});
+
+describe("resolveOpenPassage: kết quả tìm hiện thẳng đoạn backend trả", () => {
+  const first = chunk("chk_1", "ch1");
+  const second = chunk("chk_2", "ch2");
+  const map = new Map([
+    [first.chunkId, first],
+    [second.chunkId, second],
+  ]);
+  const hit = chunk("chk_far", "ch9", "Đoạn ở xa chưa nằm trong phần đã tải.");
+
+  it("chưa chọn đoạn ⇒ đoạn đầu tiên; đoạn có trong map ⇒ đúng đoạn đó", () => {
+    expect(resolveOpenPassage("complete", map, null, null)).toEqual({ chunk: first, note: null });
+    expect(resolveOpenPassage("partial", map, "chk_2", null)).toEqual({ chunk: second, note: null });
+  });
+
+  it("map chưa tải hết mà đoạn là kết quả tìm vừa chọn ⇒ hiện thẳng đoạn của kết quả tìm, không báo", () => {
+    expect(resolveOpenPassage("partial", map, "chk_far", hit)).toEqual({ chunk: hit, note: null });
+  });
+
+  it("đoạn không có trong map và không phải kết quả vừa chọn ⇒ đoạn đầu tiên kèm lý do đúng", () => {
+    expect(resolveOpenPassage("partial", map, "chk_far", null)).toEqual({ chunk: first, note: "not_loaded" });
+    expect(resolveOpenPassage("partial", map, "chk_far", second)).toEqual({ chunk: first, note: "not_loaded" });
+    expect(resolveOpenPassage("complete", map, "chk_gone", null)).toEqual({ chunk: first, note: "missing" });
+  });
+
+  it("map rỗng ⇒ không có đoạn", () => {
+    expect(resolveOpenPassage("complete", new Map(), null, null)).toEqual({ chunk: null, note: null });
   });
 });

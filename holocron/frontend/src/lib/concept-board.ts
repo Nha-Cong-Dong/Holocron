@@ -8,6 +8,7 @@
 
 import { toUiError, type UiError } from "@/lib/errors";
 import {
+  type ActionGate,
   type ChunkLookup,
   type ChunkMapStatus,
   lookupChunk,
@@ -76,6 +77,8 @@ export interface ConceptView {
   lookup: ChunkLookup;
   /** Đoạn nguồn khi tra được; `null` thì KHÔNG hiện trích dẫn như đã kiểm chứng và KHÔNG hiện số trang. */
   chunk: ChunkView | null;
+  /** Đoạn văn của môn còn đang tải: chưa tra được đoạn nhưng chưa phải lỗi (nút khoá với lý do "đang tải"). */
+  sourceLoading: boolean;
   /** "Chương 2 · tr. 14" khi tra được đoạn; chỉ "Chương 2" khi không. */
   caption: string;
   /** Câu báo chưa kiểm chứng được trang (khi không tra được đoạn); `null` khi đã tra được. */
@@ -84,10 +87,21 @@ export interface ConceptView {
   sourceLabel: string;
 }
 
+/** Câu trên thẻ khi đoạn văn của môn còn đang tải (chưa phải lỗi). */
+export const SOURCE_LOADING_VI = "Đang tải đoạn nguồn… — chưa kiểm chứng được trang";
+/** Lý do khoá "Nhận"/"Sửa" khi đoạn văn của môn còn đang tải. */
+export const SOURCE_LOADING_REASON_VI = "Đang tải đoạn nguồn của khái niệm này. Đợi một chút rồi nhận hoặc sửa.";
+
+/** Nút đang khoá vì chưa tra được đoạn: khi đoạn văn còn đang tải thì lý do là "đang tải", không phải "chưa tải được". */
+function loadingGate(gate: ActionGate): ActionGate {
+  return gate.shown && !gate.enabled ? { shown: true, enabled: false, reason: SOURCE_LOADING_REASON_VI } : gate;
+}
+
 /**
  * Cách hiện một khái niệm ở mọi nhóm (đề xuất, đã nhận, đã bỏ) theo cùng một luật: tra được đoạn nguồn thì có trích
  * dẫn nguyên văn kèm trang; không tra được (đoạn bị xoá, chưa tải hết hay tải lỗi) thì chữ thường, câu chưa kiểm chứng
- * và nút theo `pairActions` (khoá kèm lý do).
+ * và nút theo `pairActions` (khoá kèm lý do). Đoạn văn còn đang tải: cũng chưa hiện như đã kiểm chứng, nhưng câu và lý
+ * do khoá nói là đang tải (không coi là lỗi).
  */
 export function conceptView(
   pair: ConceptPair,
@@ -96,14 +110,42 @@ export function conceptView(
 ): ConceptView {
   const lookup = lookupChunk(mapStatus, map, pair.chunk_id);
   const found = lookup.kind === "found" ? lookup.chunk : null;
+  const sourceLoading = mapStatus === "loading";
+  const actions = pairActions(pair.status, lookup);
+  let unverified: string | null = null;
+  if (lookup.kind !== "found") unverified = sourceLoading ? SOURCE_LOADING_VI : lookupLabel(lookup);
   return {
     lookup,
     chunk: found,
+    sourceLoading,
     caption: found === null ? chapterLabel(pair.chapter_code) : citationCaption(pair.chapter_code, found),
-    unverified: lookup.kind === "found" ? null : lookupLabel(lookup),
-    actions: pairActions(pair.status, lookup),
+    unverified,
+    actions: sourceLoading
+      ? { edit: loadingGate(actions.edit), confirm: loadingGate(actions.confirm), reject: actions.reject }
+      : actions,
     sourceLabel: SOURCE_LABEL_VI[pair.proposed_by],
   };
+}
+
+/** Trạng thái nút "Nhận tất cả": khoá kèm lý do khi không còn thẻ nào nhận được. */
+export type AcceptAllGate = { enabled: true } | { enabled: false; reason: string };
+
+export const ACCEPT_ALL_LOADING_VI = "Đang tải đoạn nguồn của các khái niệm. Đợi một chút rồi bấm Nhận tất cả.";
+export const ACCEPT_ALL_BLOCKED_VI =
+  "Chưa kiểm chứng được đoạn nguồn của khái niệm nào ở đây nên chưa nhận được. Xem lý do trên từng thẻ.";
+export const ACCEPT_ALL_BUSY_VI = "Các khái niệm đang được gửi. Đợi một chút.";
+
+/**
+ * "Nhận tất cả" bật khi ít nhất một thẻ không đang bận nhận được. Mọi thẻ đều khoá ⇒ khoá kèm lý do: đoạn văn còn
+ * đang tải thì nói đang tải, không thì nói chưa kiểm chứng được. Mọi thẻ đang bận ⇒ khoá, chờ gửi xong.
+ */
+export function acceptAllGate(entries: readonly { view: ConceptView; busy: boolean }[]): AcceptAllGate {
+  const idle = entries.filter((entry) => !entry.busy);
+  const confirmable = idle.some((entry) => entry.view.actions.confirm.shown && entry.view.actions.confirm.enabled);
+  if (confirmable) return { enabled: true };
+  if (idle.length === 0) return { enabled: false, reason: ACCEPT_ALL_BUSY_VI };
+  const loading = idle.some((entry) => entry.view.sourceLoading);
+  return { enabled: false, reason: loading ? ACCEPT_ALL_LOADING_VI : ACCEPT_ALL_BLOCKED_VI };
 }
 
 // ------------------------------------------------------------------------------------ lối vào
@@ -140,8 +182,9 @@ export function acceptToast(accepted: number, starsLit: number): string {
 export function screenErrorText(error: UiError): string {
   switch (error.kind) {
     case "network":
-    case "server":
       return "Holocron chưa chạy xong hoặc đã tắt. Mở lại Holocron rồi bấm Thử lại.";
+    case "server":
+      return "Holocron gặp trục trặc khi xử lý yêu cầu này. Bấm Thử lại; nếu vẫn chưa được, mở lại Holocron.";
     case "busy":
       return "Thư mục dữ liệu của Holocron đang bận. Đợi vài giây rồi bấm Thử lại.";
     case "forbidden":
@@ -162,6 +205,59 @@ export const CONCEPT_CONFLICT_VI = "Khái niệm này vừa đổi ở nơi khá
 /** Câu lỗi trên một thẻ sau khi nhận hay bỏ không thành. */
 export function conceptErrorText(error: UiError): string {
   return error.kind === "version_conflict" ? CONCEPT_CONFLICT_VI : screenErrorText(error);
+}
+
+/** Phím trong khung sửa tên: Esc ở bất kỳ đâu trong khung ⇒ huỷ (focus về "Sửa"); Enter chỉ ở ô nhập ⇒ lưu. */
+export function renameKeyAction(key: string, inInput: boolean): "cancel" | "save" | null {
+  if (key === "Escape") return "cancel";
+  return key === "Enter" && inInput ? "save" : null;
+}
+
+// ------------------------------------------------------------------------------------ sau một thao tác
+
+/** Nơi đặt focus sau khi danh sách tải lại: một khái niệm, tiêu đề khối "Đề xuất" hoặc tiêu đề cột "Đã nhận". */
+export type ConceptFocus = { kind: "concept"; id: string } | { kind: "proposals" } | { kind: "accepted" };
+
+/** Việc cần làm sau một (hay nhiều) thao tác thành công, khi danh sách đã đọc lại. */
+export interface ChangeNote {
+  /** Số khái niệm backend đã nhận (toast "Đã nhận N khái niệm…"). */
+  accepted: number;
+  /** Thông báo khác (ví dụ đổi tên), theo thứ tự thao tác. */
+  messages: string[];
+  focus: ConceptFocus | null;
+}
+
+/**
+ * Gộp việc còn chờ với việc của thao tác mới. Chỉ lượt tải lại mới nhất được áp (lượt cũ bị bỏ), nên hai thao tác gần
+ * nhau phải dồn việc lại thay vì mất việc của thao tác đầu: cộng số đã nhận, giữ mọi thông báo theo thứ tự, focus theo
+ * thao tác sau cùng có chỗ focus.
+ */
+export function mergeChange(pending: ChangeNote | null, change: ChangeNote | null): ChangeNote | null {
+  if (change === null) return pending;
+  if (pending === null) return change;
+  return {
+    accepted: pending.accepted + change.accepted,
+    messages: [...pending.messages, ...change.messages],
+    focus: change.focus ?? pending.focus,
+  };
+}
+
+export interface ChangeEffects {
+  toasts: string[];
+  focus: ConceptFocus | null;
+  /** Có thao tác đã đổi danh sách: tải lại bầu trời. */
+  reloadSky: boolean;
+}
+
+/**
+ * Việc phát ra khi lượt tải lại mới nhất xong (thành công hay không): toast số đã nhận kèm số sao sáng thêm
+ * (`starsLit`, 0 khi chưa đọc lại được danh sách) rồi các thông báo khác, focus, và tải lại bầu trời. Không có việc chờ
+ * ⇒ không phát gì.
+ */
+export function changeEffects(pending: ChangeNote | null, starsLit: number): ChangeEffects {
+  if (pending === null) return { toasts: [], focus: null, reloadSky: false };
+  const toasts = pending.accepted > 0 ? [acceptToast(pending.accepted, starsLit)] : [];
+  return { toasts: [...toasts, ...pending.messages], focus: pending.focus, reloadSky: true };
 }
 
 // ------------------------------------------------------------------------------------ "Nhận tất cả"

@@ -34,7 +34,7 @@ ReviewReason = Literal[
     "HIGH_PAGE_CER",
     "OCR_ENGINE_MISSING",
 ]
-FailureReason = Literal["PAGE_TIMEOUT", "PAGE_ERROR", "OCR_ENGINE_MISSING"]
+FailureReason = Literal["PAGE_TIMEOUT", "PAGE_ERROR", "OCR_ENGINE_MISSING", "TOO_MANY_LINES"]
 PageStatus = Literal["pending", "ok", "needs_review", "failed"]
 CrossCheckStatus = Literal["ok", "mismatch", "unavailable", "not_applicable"]
 

@@ -271,7 +271,7 @@ export type ReviewReason =
   | "HIGH_PAGE_CER"
   | "OCR_ENGINE_MISSING";
 
-export type FailureReason = "PAGE_TIMEOUT" | "PAGE_ERROR" | "OCR_ENGINE_MISSING";
+export type FailureReason = "PAGE_TIMEOUT" | "PAGE_ERROR" | "OCR_ENGINE_MISSING" | "TOO_MANY_LINES";
 
 export type PageStatus = "pending" | "ok" | "needs_review" | "failed";
 

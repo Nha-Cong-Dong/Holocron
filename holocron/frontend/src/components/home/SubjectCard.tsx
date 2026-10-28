@@ -1,14 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useMemo } from "react";
 
 import { SkyView } from "@/components/sky/SkyView";
 import { Button, Card, Progress, Skeleton } from "@/components/ui";
 import type { HomeCard } from "@/lib/home-cards";
 import { buildSkyLayout, MINI_SKY } from "@/lib/sky";
-import { subjectHref } from "@/lib/subject-route";
 
 import styles from "./SubjectCard.module.css";
 
@@ -29,13 +27,34 @@ function MiniSky({ card }: { card: HomeCard }) {
   return <SkyView size="mini" status="ready" layout={layout} />;
 }
 
+/** Nút "Ôn tiếp", "Thêm tài liệu", "Mở môn" là chuyển trang: `Link` mang kiểu nút chính hoặc phụ (cùng lớp chuyển động). */
+function CardActionLink({ card }: { card: HomeCard }) {
+  const { action } = card;
+  if (card.primary) {
+    return (
+      <Link className={`m-btn-primary ${styles.actionPrimary}`} href={action.href} aria-label={action.ariaLabel}>
+        <span className="m-btn-sheen" aria-hidden="true" />
+        <span className="m-btn-label">{action.label}</span>
+      </Link>
+    );
+  }
+  return (
+    <Link className={`m-btn-secondary ${styles.actionSecondary}`} href={action.href} aria-label={action.ariaLabel}>
+      <span className="m-btn-label">{action.label}</span>
+      <svg className={`m-btn-arrow ${styles.arrow}`} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M5 12h14M13 6l6 6-6 6" />
+      </svg>
+    </Link>
+  );
+}
+
 /**
  * Thẻ môn ở trang chủ (design-handoff/README.md màn 1): bầu trời mini, tên môn, chỉ số thật backend đã trả (số tài liệu,
- * số khái niệm đã nhận, lần cập nhật), dòng tiến độ của tài liệu đang đọc, một nút đi tiếp. Đang tải: khung xương trong
+ * số khái niệm đã nhận, lần cập nhật), dòng tiến độ của tài liệu đang đọc, một link đi tiếp (tên môn là chữ thường để
+ * thẻ chỉ có một điều khiển chuyển trang). Đang tải: khung xương trong
  * thẻ; lỗi: "Chưa tải được số liệu" và nút "Thử lại" của riêng thẻ, chỉ số hiện "—".
  */
 export function SubjectCard({ card, onRetry }: SubjectCardProps) {
-  const router = useRouter();
   const { stats } = card;
   const titleId = `subject-card-${card.code}`;
 
@@ -47,7 +66,7 @@ export function SubjectCard({ card, onRetry }: SubjectCardProps) {
         {stats.kind === "ready" && <MiniSky card={card} />}
 
         <h2 id={titleId} className={styles.name}>
-          <Link href={subjectHref(card.code, "documents")}>{card.name}</Link>
+          {card.name}
         </h2>
 
         {stats.kind === "loading" && (
@@ -110,20 +129,7 @@ export function SubjectCard({ card, onRetry }: SubjectCardProps) {
         )}
 
         <div className={styles.actions}>
-          {card.primary ? (
-            <Button variant="primary" aria-label={card.action.ariaLabel} onClick={() => router.push(card.action.href)}>
-              {card.action.label}
-            </Button>
-          ) : (
-            <Button
-              variant="secondary"
-              arrow
-              aria-label={card.action.ariaLabel}
-              onClick={() => router.push(card.action.href)}
-            >
-              {card.action.label}
-            </Button>
-          )}
+          <CardActionLink card={card} />
         </div>
       </article>
     </Card>

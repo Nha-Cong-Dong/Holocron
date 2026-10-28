@@ -31,17 +31,6 @@
   overflow-wrap: anywhere;
 }
 
-.name a {
-  color: var(--ink);
-  text-decoration: none;
-  border-radius: 6px;
-}
-
-.name a:hover {
-  text-decoration: underline;
-  text-underline-offset: 4px;
-}
-
 .stats {
   display: flex;
   flex-wrap: wrap;
@@ -104,4 +93,47 @@
   display: flex;
   justify-content: flex-end;
   margin-top: auto;
+}
+
+/* Link mang kiểu nút (cùng hình dáng với Button của bộ thành phần dùng chung; chuyển động ở motion.css). */
+.actionPrimary,
+.actionSecondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: var(--tap-min);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.actionPrimary {
+  padding: 0 var(--sp-6);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.actionPrimary:hover {
+  background: var(--accent-hover);
+}
+
+.actionSecondary {
+  padding: 0 22px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1.5px var(--line-strong);
+  color: var(--ink);
+}
+
+.arrow {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }

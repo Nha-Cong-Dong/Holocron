@@ -5,7 +5,7 @@ import { type DragEvent, useCallback, useEffect, useId, useRef, useState } from 
 import { Icon } from "@/components/common/Icon";
 import { Button } from "@/components/ui";
 import { useFlip } from "@/hooks/motion-hooks";
-import { START_BLOCK_MESSAGE_VI, startDecision } from "@/lib/import-queue";
+import { type LeavingRow, START_BLOCK_MESSAGE_VI, startDecision, withLeavingRows } from "@/lib/import-queue";
 import { DOCUMENT_MAX_PAGES, DOCUMENT_UPLOAD_MAX_MIB } from "@/lib/limits";
 
 import styles from "./BatchImport.module.css";
@@ -35,7 +35,8 @@ export function BatchImport({ subjectCode, rows, onBack, onStarted }: BatchImpor
   const fileInput = useRef<HTMLInputElement>(null);
   const listRef = useFlip<HTMLUListElement>();
   const [dragging, setDragging] = useState(false);
-  const [leaving, setLeaving] = useState<ReadonlySet<string>>(new Set());
+  // Dòng vừa bỏ: đã xoá khỏi hàng đợi ngay khi bấm (không thể bị gửi), chỉ còn bản vẽ chạy `m-row-out`.
+  const [leaving, setLeaving] = useState<readonly LeavingRow<FileImportRow>[]>([]);
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
 
   useEffect(() => {
@@ -46,27 +47,20 @@ export function BatchImport({ subjectCode, rows, onBack, onStarted }: BatchImpor
     };
   }, []);
 
-  const finishRemove = useCallback(
-    (id: string) => {
-      const timer = timers.current.get(id);
-      if (timer !== undefined) clearTimeout(timer);
-      timers.current.delete(id);
-      queue.remove(id);
-      setLeaving((previous) => {
-        const next = new Set(previous);
-        next.delete(id);
-        return next;
-      });
-    },
-    [queue],
-  );
+  const dropLeaving = useCallback((id: string) => {
+    const timer = timers.current.get(id);
+    if (timer !== undefined) clearTimeout(timer);
+    timers.current.delete(id);
+    setLeaving((previous) => previous.filter((item) => item.row.id !== id));
+  }, []);
 
-  function startRemove(id: string): void {
-    if (leaving.has(id)) return;
-    setLeaving((previous) => new Set(previous).add(id));
+  function remove(row: FileImportRow): void {
+    const index = rows.findIndex((item) => item.id === row.id);
+    queue.remove(row.id);
+    setLeaving((previous) => [...previous, { row, index: index === -1 ? rows.length : index }]);
     timers.current.set(
-      id,
-      setTimeout(() => finishRemove(id), ROW_OUT_FALLBACK_MS),
+      row.id,
+      setTimeout(() => dropLeaving(row.id), ROW_OUT_FALLBACK_MS),
     );
   }
 
@@ -81,8 +75,10 @@ export function BatchImport({ subjectCode, rows, onBack, onStarted }: BatchImpor
     addFiles(event.dataTransfer.files);
   }
 
-  const decision = startDecision(rows.filter((row) => !leaving.has(row.id)));
+  const decision = startDecision(rows);
   const hasRows = rows.length > 0;
+  const shown = withLeavingRows(rows, leaving);
+  const leavingIds = new Set(leaving.map((item) => item.row.id));
 
   function start(): void {
     if (decision.block !== null) return;
@@ -103,19 +99,28 @@ export function BatchImport({ subjectCode, rows, onBack, onStarted }: BatchImpor
         </p>
       </div>
 
-      {hasRows && (
+      {shown.length > 0 && (
         <ul ref={listRef} className={styles.rows} aria-label="File sẽ đọc">
-          {rows.map((row) => (
-            <ImportRow
-              key={row.id}
-              row={row}
-              leaving={leaving.has(row.id)}
-              onEdit={(edit) => queue.edit(row.id, edit)}
-              onRemove={() => startRemove(row.id)}
-              onRetry={() => queue.retry(row.id)}
-              onLeft={() => finishRemove(row.id)}
-            />
-          ))}
+          {shown.map((row) =>
+            leavingIds.has(row.id) ? (
+              <ImportRow
+                key={row.id}
+                row={row}
+                leaving
+                onRemove={() => dropLeaving(row.id)}
+                onRetry={() => dropLeaving(row.id)}
+                onLeft={() => dropLeaving(row.id)}
+              />
+            ) : (
+              <ImportRow
+                key={row.id}
+                row={row}
+                onEdit={(edit) => queue.edit(row.id, edit)}
+                onRemove={() => remove(row)}
+                onRetry={() => queue.retry(row.id)}
+              />
+            ),
+          )}
         </ul>
       )}
 

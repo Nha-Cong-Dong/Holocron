@@ -48,7 +48,7 @@ interface ImportRowProps {
  * được thì "Chưa rõ chương" tô vàng) và loại tài liệu; sau khi bấm đọc thì hiện kết quả gửi của riêng file đó.
  */
 export function ImportRow({ row, leaving = false, onEdit, onRemove, onRetry, onLeft }: ImportRowProps) {
-  const staged = isStaged(row) && onEdit !== undefined;
+  const staged = isStaged(row) && (onEdit !== undefined || leaving);
   const name = row.file.name;
   const chapterUnknown = row.chapterCode === null;
   const titleProblem = row.problem === TITLE_TOO_LONG_VI ? row.problem : undefined;
@@ -171,7 +171,7 @@ function RowOutcome({ row }: { row: FileImportRow }) {
       if (row.error === null) return null;
       const text = importFailureText(row.file.name, row.error);
       return (
-        <div className={styles.failure} role="alert">
+        <div className={styles.failure}>
           <p className={styles.failureTitle}>{text.title}</p>
           <p>{text.fix}</p>
         </div>

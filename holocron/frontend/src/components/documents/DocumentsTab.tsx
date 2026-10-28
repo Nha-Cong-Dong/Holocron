@@ -10,14 +10,22 @@ import { DocumentList } from "@/components/vault/DocumentList";
 import { useDocumentsSnapshot } from "@/components/vault/DocumentsPanel";
 import { PageReview } from "@/components/vault/PageReview";
 import type { UiError } from "@/lib/errors";
-import { isStaged, queueProgress, readingRows, rowsOfSubject } from "@/lib/import-queue";
+import {
+  type ImportRowStatus,
+  isStaged,
+  newlySettled,
+  queueProgress,
+  readingRows,
+  rowsOfSubject,
+  settledAnnouncement,
+} from "@/lib/import-queue";
 import { freshRuntime } from "@/lib/runtime";
 import type { SubjectDocumentLocation } from "@/lib/subject-route";
 import type { VaultHrefFor } from "@/lib/vault";
 
 import { BatchImport } from "./BatchImport";
 import styles from "./DocumentsTab.module.css";
-import { useImportQueue } from "./ImportQueueProvider";
+import { type FileImportRow, useImportQueue } from "./ImportQueueProvider";
 import { ImportRow } from "./ImportRow";
 import { ReadingList } from "./ReadingList";
 
@@ -83,6 +91,58 @@ function DocumentsLoading() {
 
 type Mode = "list" | "import";
 
+interface SendQueueProps {
+  subjectCode: string;
+  rows: readonly FileImportRow[];
+}
+
+/**
+ * Phần "Gửi file": các file đã bấm đọc của môn và kết quả gửi từng file (có "Thử lại"). Hiện cả khi danh sách tài liệu
+ * đang tải hay lỗi. Một vùng `aria-live` chung đọc tiến độ và kết quả MỚI (không đọc lại kết quả cũ khi quay lại trang).
+ */
+function SendQueue({ subjectCode, rows }: SendQueueProps) {
+  const queue = useImportQueue();
+  const seen = useRef<ReadonlyMap<string, ImportRowStatus> | null>(null);
+  const [announcement, setAnnouncement] = useState("");
+
+  useEffect(() => {
+    const previous = seen.current;
+    seen.current = new Map(rows.map((row) => [row.id, row.status]));
+    if (previous === null) return;
+    const fresh = newlySettled(previous, rows);
+    if (fresh.length > 0) setAnnouncement(fresh.map(settledAnnouncement).join(" "));
+  }, [rows]);
+
+  if (rows.length === 0) return null;
+  const progress = queueProgress(rows);
+  const hasAccepted = rows.some((row) => row.status === "created" || row.status === "existing");
+
+  return (
+    <section className={styles.queue} aria-labelledby="documents-queue-title">
+      <div className={styles.queueHead}>
+        <h2 id="documents-queue-title" className={styles.queueTitle}>
+          Gửi file
+        </h2>
+        <output className={styles.queueCount} aria-live="polite">
+          Đã gửi {progress.settled}/{progress.total} file.{announcement === "" ? "" : ` ${announcement}`}
+        </output>
+      </div>
+      <ul className={styles.queueList}>
+        {rows.map((row) => (
+          <ImportRow key={row.id} row={row} onRemove={() => queue.remove(row.id)} onRetry={() => queue.retry(row.id)} />
+        ))}
+      </ul>
+      {hasAccepted && (
+        <div>
+          <Button variant="secondary" onClick={() => queue.clearSettled(subjectCode)}>
+            Ẩn các file đã nhận
+          </Button>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function DocumentsHome({ subjectCode, hrefFor }: { subjectCode: string; hrefFor: VaultHrefFor }) {
   const { runtime } = useShell();
   const queue = useImportQueue();
@@ -138,15 +198,25 @@ function DocumentsHome({ subjectCode, hrefFor }: { subjectCode: string; hrefFor:
     );
   }
 
-  if (state.kind === "loading") return <DocumentsLoading />;
+  if (state.kind === "loading") {
+    return (
+      <div className={styles.root}>
+        <SendQueue subjectCode={subjectCode} rows={sent} />
+        <DocumentsLoading />
+      </div>
+    );
+  }
   if (state.kind === "error") {
     return (
-      <ErrorState
-        title="Không mở được danh sách tài liệu"
-        fix={listErrorFix(state.error)}
-        onRetry={reload}
-        technical={state.error.diagnostic}
-      />
+      <div className={styles.root}>
+        <SendQueue subjectCode={subjectCode} rows={sent} />
+        <ErrorState
+          title="Không mở được danh sách tài liệu"
+          fix={listErrorFix(state.error)}
+          onRetry={reload}
+          technical={state.error.diagnostic}
+        />
+      </div>
     );
   }
 
@@ -163,9 +233,6 @@ function DocumentsHome({ subjectCode, hrefFor }: { subjectCode: string; hrefFor:
       </div>
     );
   }
-
-  const progress = queueProgress(sent);
-  const hasAccepted = sent.some((row) => row.status === "created" || row.status === "existing");
 
   return (
     <div className={styles.root}>
@@ -191,35 +258,7 @@ function DocumentsHome({ subjectCode, hrefFor }: { subjectCode: string; hrefFor:
         />
       )}
 
-      {sent.length > 0 && (
-        <section className={styles.queue} aria-labelledby="documents-queue-title">
-          <div className={styles.queueHead}>
-            <h2 id="documents-queue-title" className={styles.queueTitle}>
-              Gửi file
-            </h2>
-            <output className={styles.queueCount} aria-live="polite">
-              Đã gửi {progress.settled}/{progress.total} file
-            </output>
-          </div>
-          <ul className={styles.queueList}>
-            {sent.map((row) => (
-              <ImportRow
-                key={row.id}
-                row={row}
-                onRemove={() => queue.remove(row.id)}
-                onRetry={() => queue.retry(row.id)}
-              />
-            ))}
-          </ul>
-          {hasAccepted && (
-            <div>
-              <Button variant="secondary" onClick={() => queue.clearSettled(subjectCode)}>
-                Ẩn các file đã nhận
-              </Button>
-            </div>
-          )}
-        </section>
-      )}
+      <SendQueue subjectCode={subjectCode} rows={sent} />
 
       <ReadingList rows={reading} reviewHref={(docId) => hrefFor({ subject: subjectCode, doc: docId, page: null })} />
 

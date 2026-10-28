@@ -11,7 +11,7 @@
 import { guessChapterCode } from "@/lib/chapters";
 import { charLength, checkDocumentFile, type FileLike } from "@/lib/documents";
 import type { DocumentStatusView, DocumentSummaryView } from "@/lib/documents-data";
-import type { UiError } from "@/lib/errors";
+import { importFailureText, type UiError } from "@/lib/errors";
 import { type ReadingLine, readingLines } from "@/lib/home-cards";
 import { CHAPTER_CODE_PATTERN, DOCUMENT_TITLE_MAX_CHARS } from "@/lib/limits";
 import type { SourceKind } from "@/types/holocron";
@@ -260,9 +260,12 @@ export function rowsOfSubject<F extends FileLike>(rows: readonly ImportRow<F>[],
   return rows.filter((row) => row.subjectCode === subjectCode);
 }
 
-/** Còn file chưa gửi xong (đang sửa, chờ gửi, đang gửi): đóng hay tải lại cửa sổ sẽ mất các file này. */
+/**
+ * Còn file chưa vào được Holocron mà danh sách vẫn giữ (đang sửa, chờ gửi, đang gửi, gửi lỗi còn thử lại được, trùng
+ * nội dung): đóng hay tải lại cửa sổ sẽ mất các dòng này cùng file đã chọn.
+ */
 export function hasUnsentRows(rows: readonly Pick<ImportRow, "status" | "queued">[]): boolean {
-  return rows.some((row) => row.status === "ready" || row.status === "invalid" || row.status === "sending");
+  return rows.some((row) => row.status !== "created" && row.status !== "existing");
 }
 
 export type StartBlock = "empty" | "invalid";
@@ -339,4 +342,48 @@ export function readingRows(documents: readonly DocumentSummaryView[], watched: 
 /** Tổng tiến độ của màn "Đang đọc": số tài liệu đã đọc xong trên số dòng đang hiện. */
 export function readingTotal(rows: readonly Pick<ReadingRow, "kind">[]): { finished: number; total: number } {
   return { finished: rows.filter((row) => row.kind !== "reading").length, total: rows.length };
+}
+
+// ------------------------------------------------------------------------------------------ trình bày
+
+/** Dòng vừa bị bỏ khỏi hàng đợi, còn vẽ tại chỗ cũ trong lúc chạy hiệu ứng ra. */
+export interface LeavingRow<R extends { id: string }> {
+  row: R;
+  /** Vị trí của dòng trong danh sách lúc bị bỏ. */
+  index: number;
+}
+
+/**
+ * Danh sách để vẽ: dòng trong hàng đợi cộng các dòng vừa bỏ (chèn lại đúng vị trí cũ để hiệu ứng ra chạy tại chỗ).
+ * Dòng vừa bỏ chỉ để trình bày: chúng đã ra khỏi hàng đợi nên không bao giờ được gửi.
+ */
+export function withLeavingRows<R extends { id: string }>(rows: readonly R[], leaving: readonly LeavingRow<R>[]): R[] {
+  const result = rows.filter((row) => !leaving.some((item) => item.row.id === row.id));
+  for (const item of [...leaving].sort((left, right) => left.index - right.index)) {
+    result.splice(Math.min(Math.max(item.index, 0), result.length), 0, item.row);
+  }
+  return result;
+}
+
+/**
+ * Dòng vừa có kết quả kể từ lần trước (`previous`: trạng thái từng dòng lần trước). Dòng chưa có trong `previous` (ví
+ * dụ quay lại trang môn khi kết quả đã có từ trước) không tính là mới.
+ */
+export function newlySettled<R extends Pick<ImportRow, "id" | "status">>(
+  previous: ReadonlyMap<string, ImportRowStatus>,
+  rows: readonly R[],
+): R[] {
+  return rows.filter((row) => {
+    const before = previous.get(row.id);
+    return before !== undefined && !isSettled({ status: before }) && isSettled(row);
+  });
+}
+
+/** Câu đọc cho trình đọc màn hình khi một file vừa có kết quả gửi. */
+export function settledAnnouncement(row: Pick<ImportRow, "status" | "error"> & { file: FileLike }): string {
+  const name = row.file.name;
+  if (row.status === "created") return `Đã nhận “${name}”, đang đọc.`;
+  if (row.status === "existing") return `“${name}” đã có trong môn này, không đọc lại.`;
+  if (row.error !== null) return importFailureText(name, row.error).title;
+  return `Không nhập được “${name}”.`;
 }

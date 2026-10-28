@@ -16,14 +16,17 @@ import {
   importQueueReducer,
   initialImportQueue,
   isStaged,
+  newlySettled,
   nextToSend,
   queueProgress,
   readingRows,
   readingTotal,
   rowsOfSubject,
   START_BLOCK_MESSAGE_VI,
+  settledAnnouncement,
   startDecision,
   TITLE_TOO_LONG_VI,
+  withLeavingRows,
 } from "./import-queue";
 import { DOCUMENT_TITLE_MAX_CHARS, DOCUMENT_UPLOAD_MAX_BYTES } from "./limits";
 
@@ -264,15 +267,81 @@ describe("gửi lần lượt", () => {
       queued,
     );
     expect(queueProgress(state.rows)).toEqual({ settled: 3, total: 3 });
-    expect(hasUnsentRows(state.rows)).toBe(false);
+    // Dòng gửi lỗi còn thử lại được: đóng cửa sổ sẽ mất file đã chọn nên vẫn cảnh báo.
+    expect(hasUnsentRows(state.rows)).toBe(true);
     const cleared = importQueueReducer(state, { type: "clear_settled", subjectCode: "VXL01" });
     expect(cleared.rows.map((item) => item.id)).toEqual(["import-2"]);
+    expect(hasUnsentRows(importQueueReducer(cleared, { type: "remove", id: "import-2" }).rows)).toBe(false);
+  });
+
+  it("dòng trùng nội dung còn trong danh sách cũng tính là chưa gửi; chỉ dòng đã nhận thì không", () => {
+    const state = run(
+      [
+        { type: "send_started", id: "import-1" },
+        { type: "send_failed", id: "import-1", error: conflict },
+      ],
+      queued,
+    );
+    expect(hasUnsentRows(state.rows.filter((item) => item.id === "import-1"))).toBe(true);
+    const accepted = run(
+      [
+        { type: "send_started", id: "import-1" },
+        { type: "send_succeeded", id: "import-1", created: false, documentId: "doc_1" },
+      ],
+      queued,
+    );
+    expect(hasUnsentRows(accepted.rows.filter((item) => item.id === "import-1"))).toBe(false);
+  });
+
+  it("bỏ dòng rồi bấm đọc ⇒ dòng đó không được gửi", () => {
+    const staged = run([{ type: "add", subjectCode: "VXL01", files: [pdf("ch1.pdf"), pdf("ch2.pdf")] }]);
+    const state = run(
+      [
+        { type: "remove", id: "import-1" },
+        { type: "start", subjectCode: "VXL01" },
+      ],
+      staged,
+    );
+    expect(state.rows.map((item) => item.id)).toEqual(["import-2"]);
+    expect(nextToSend(state)?.id).toBe("import-2");
+    const sending = importQueueReducer(state, { type: "send_started", id: "import-2" });
+    const done = run([{ type: "send_succeeded", id: "import-2", created: true, documentId: "doc_2" }], sending);
+    expect(nextToSend(done)).toBeNull();
   });
 
   it("dòng đang sửa (chưa bấm đọc) cũng tính là chưa gửi", () => {
     const staged = run([{ type: "add", subjectCode: "VXL01", files: [pdf("Tong quan.pdf")] }]);
     expect(hasUnsentRows(staged.rows)).toBe(true);
     expect(hasUnsentRows([])).toBe(false);
+  });
+});
+
+describe("trình bày", () => {
+  it("dòng vừa bỏ được chèn lại đúng vị trí cũ để chạy hiệu ứng ra", () => {
+    const rows = [{ id: "a" }, { id: "c" }];
+    expect(withLeavingRows(rows, [{ row: { id: "b" }, index: 1 }]).map((row) => row.id)).toEqual(["a", "b", "c"]);
+    expect(withLeavingRows(rows, [{ row: { id: "z" }, index: 9 }]).map((row) => row.id)).toEqual(["a", "c", "z"]);
+    expect(withLeavingRows([], [{ row: { id: "b" }, index: 0 }]).map((row) => row.id)).toEqual(["b"]);
+  });
+
+  it("chỉ báo dòng vừa có kết quả, không báo lại kết quả cũ", () => {
+    const previous = new Map([
+      ["a", "sending" as const],
+      ["b", "created" as const],
+    ]);
+    const rows = [
+      { id: "a", status: "failed" as const },
+      { id: "b", status: "created" as const },
+      { id: "c", status: "created" as const },
+    ];
+    expect(newlySettled(previous, rows).map((row) => row.id)).toEqual(["a"]);
+  });
+
+  it("câu báo kết quả của từng file", () => {
+    const file = pdf("Bài 1.pdf");
+    expect(settledAnnouncement({ file, status: "created", error: null })).toBe("Đã nhận “Bài 1.pdf”, đang đọc.");
+    expect(settledAnnouncement({ file, status: "existing", error: null })).toContain("đã có");
+    expect(settledAnnouncement({ file, status: "failed", error: passwordError })).toBe("Không nhập được “Bài 1.pdf”.");
   });
 });
 

@@ -9,16 +9,34 @@
   background: var(--surface-sunken);
 }
 
-.brand {
+.brandRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
   padding: 0 var(--space-2);
-  font-family: var(--font-serif);
-  font-size: var(--text-xl);
-  font-weight: 600;
-  letter-spacing: 0.02em;
 }
 
-.brandShort {
-  display: none;
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xl);
+  font-weight: var(--fw-semibold);
+}
+
+/* Nút icon đổi theme: trạng thái nói bằng `aria-label`/`title`, vùng chạm tối thiểu theo `--tap-min`. */
+.themeToggle {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: var(--tap-min);
+  height: var(--tap-min);
+  padding: 0;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
 }
 
 .section {
@@ -68,7 +86,7 @@
 .item[aria-pressed="true"] {
   border-color: var(--border);
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-ink);
   font-weight: 600;
 }
 
@@ -102,7 +120,7 @@
   padding: 0;
   border: none;
   background: none;
-  color: var(--accent);
+  color: var(--accent-ink);
   font-size: var(--text-sm);
   text-decoration: underline;
   cursor: pointer;
@@ -129,13 +147,17 @@
     white-space: nowrap;
   }
 
-  .brandShort,
   .short {
     display: inline;
   }
 
   .brand {
     text-align: center;
+  }
+
+  .brandRow {
+    justify-content: center;
+    padding: 0;
   }
 
   .item {

@@ -2,10 +2,12 @@
 
 import Link from "next/link";
 
+import { HolocronMark } from "@/components/brand/HolocronMark";
 import { NAV_ITEMS, navItemForPath } from "@/lib/navigation";
 import type { SubjectsState } from "@/lib/subjects";
 
 import styles from "./Sidebar.module.css";
+import { ThemeToggle } from "./ThemeToggle";
 
 interface SidebarProps {
   pathname: string;
@@ -24,12 +26,13 @@ export function Sidebar({ pathname, subjects, onReloadSubjects, subjectCode, onS
 
   return (
     <aside className={styles.sidebar} aria-label="Thanh bên">
-      <p className={styles.brand}>
-        <span className={styles.brandFull}>Holocron</span>
-        <span className={styles.brandShort} aria-hidden="true">
-          H
-        </span>
-      </p>
+      <div className={styles.brandRow}>
+        <p className={styles.brand}>
+          <HolocronMark size={26} />
+          <span className={styles.brandFull}>Holocron</span>
+        </p>
+        <ThemeToggle />
+      </div>
 
       <section className={styles.section} aria-labelledby="sidebar-subjects">
         <h2 id="sidebar-subjects" className={styles.sectionTitle}>

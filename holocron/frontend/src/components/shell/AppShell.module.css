@@ -52,7 +52,7 @@
 }
 
 .headerButton:hover {
-  border-color: var(--accent);
+  border-color: var(--accent-ink);
   color: var(--text);
 }
 

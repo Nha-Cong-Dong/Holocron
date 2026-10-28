@@ -31,7 +31,7 @@
 }
 
 .action:hover {
-  border-color: var(--accent);
+  border-color: var(--accent-ink);
 }
 
 .diagnostic {

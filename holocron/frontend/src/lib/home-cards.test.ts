@@ -58,16 +58,22 @@ function pair(id: string, status: ConceptPairStatus, chapter = "ch1"): ConceptPa
   };
 }
 
+/** Mốc thời gian dựng theo giờ máy, nên ngày hiển thị không phụ thuộc múi giờ của máy chạy test. */
+function localIso(year: number, month: number, day: number, hour = 12): string {
+  return new Date(year, month - 1, day, hour).toISOString();
+}
+
 const SUBJECTS = [
-  subject("VXL01", "2026-10-20T12:00:00Z"),
-  subject("MMT01", "2026-10-28T12:00:00Z"),
-  subject("CTDL01", "2026-10-25T12:00:00Z"),
+  subject("VXL01", localIso(2026, 10, 20)),
+  subject("MMT01", localIso(2026, 10, 28)),
+  subject("CTDL01", localIso(2026, 10, 25)),
 ];
 
 describe("formatVietnameseDate", () => {
   it("dd/mm/yyyy", () => {
-    expect(formatVietnameseDate("2026-10-29T12:00:00Z")).toBe("29/10/2026");
-    expect(formatVietnameseDate("2026-03-05T12:00:00Z")).toBe("05/03/2026");
+    expect(formatVietnameseDate(localIso(2026, 10, 29))).toBe("29/10/2026");
+    expect(formatVietnameseDate(localIso(2026, 3, 5, 0))).toBe("05/03/2026");
+    expect(formatVietnameseDate(localIso(2026, 12, 31, 23))).toBe("31/12/2026");
   });
 
   it("chuỗi không đọc được ⇒ null", () => {

@@ -21,7 +21,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from ...domain.documents import PageEditAudit
+from ...domain.documents import PageEditAudit, PageSummary
 from ...domain.ingestion import IngestionItem, PatchAudit, UploadedDocument
 from ...domain.repositories import (
     IDEMPOTENCY_TTL,
@@ -56,6 +56,10 @@ from .connection import connect, fts5_available, immediate_transaction, is_busy,
 from .migrator import load_fts5_script, migrate
 
 IMPORTED_MEDIA_TYPE = "application/pdf"  # bộ nhập §6.5 chỉ nhận PDF trong MVP
+JSON1_MISSING_DETAIL = (
+    "SQLite của bản Python đang chạy thiếu JSON1 (json_extract, json_each), cần cho tài liệu nhập và Knowledge Vault; "
+    "hãy dùng bản Python đi kèm SQLite ≥ 3.38 (JSON1 có sẵn) hoặc SQLite biên dịch kèm JSON1"
+)
 _FTS_TABLES: dict[SearchIndex, str] = {"primary": "chunks_fts", "no_diacritics": "chunks_fts_nodiac"}
 _LOGGER = logging.getLogger(__name__)
 _EDIT_TABLES: dict[VaultEntity, tuple[str, str]] = {
@@ -94,6 +98,19 @@ def _version_conflict(
     return VersionConflictError(entity, key, expected, int(row["version"]))
 
 
+class SQLiteFeatureError(RuntimeError):
+    """SQLite thiếu tính năng mà kho bắt buộc phải có (JSON1); kho từ chối mở, app từ chối khởi động."""
+
+
+def json1_available(conn: sqlite3.Connection) -> bool:
+    """SQLite có JSON1: chạy thử đúng hai hàm kho dùng (`json_extract`, `json_each`), không đọc bảng nào."""
+    try:
+        conn.execute("SELECT json_extract('[1]', '$[0]'), (SELECT count(*) FROM json_each('[1]'))").fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return True
+
+
 @contextmanager
 def _storage_errors() -> Iterator[None]:
     """Đổi lỗi `sqlite3` mà tầng trên cần phân biệt thành lỗi domain: ràng buộc ⇒ `StorageError`, khoá bận ⇒
@@ -112,10 +129,15 @@ class SQLiteStore:
     """Kho SQLite; tạo bằng `SQLiteStore.open(path)` (`":memory:"` cho test)."""
 
     def __init__(self, conn: sqlite3.Connection) -> None:
-        """Nhận kết nối đã mở bằng `connection.connect`, chạy migration và tạo chỉ mục FTS5 nếu SQLite có FTS5.
+        """Nhận kết nối đã mở bằng `connection.connect`, kiểm JSON1, chạy migration và tạo chỉ mục FTS5 nếu SQLite
+        có FTS5.
 
-        DB có version mới hơn code ⇒ `SchemaVersionError` (từ chối khởi động).
+        SQLite thiếu JSON1 ⇒ `SQLiteFeatureError` trước khi chạy migration nào (từ chối khởi động, thông điệp nêu
+        cách sửa), thay vì `sqlite3.OperationalError` trần ở request đầu tiên đọc tóm tắt trang hay nhập chunk. DB
+        có version mới hơn code ⇒ `SchemaVersionError` (từ chối khởi động). Thiếu FTS5 thì vẫn chạy (BM25 tự cài).
         """
+        if not json1_available(conn):
+            raise SQLiteFeatureError(JSON1_MISSING_DETAIL)
         self._conn = conn
         self._lock = threading.RLock()
         with self._lock:
@@ -419,20 +441,22 @@ class SQLiteStore:
             int(meta.has_text_layer),
             document.status,
             _ts(meta.uploaded_at),
+            document.chapter_code,
         )
 
     def _upsert_imported(self, conn: sqlite3.Connection, document: ImportedDocument) -> sqlite3.Row:
         """Tạo dòng `documents`, hoặc bổ sung thông tin cho dòng cùng `document_id` (version tăng 1); trả dòng đã ghi."""
         conn.execute(
             "INSERT INTO documents (filename, media_type, size_bytes, subject_code, title, source_kind, "
-            "output_language, page_count, has_text_layer, status, uploaded_at, document_id, sha256) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "output_language, page_count, has_text_layer, status, uploaded_at, chapter_code, document_id, sha256) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (document_id) DO UPDATE SET filename = excluded.filename, "
             "media_type = excluded.media_type, size_bytes = excluded.size_bytes, "
             "subject_code = excluded.subject_code, title = excluded.title, source_kind = excluded.source_kind, "
             "output_language = excluded.output_language, page_count = excluded.page_count, "
             "has_text_layer = excluded.has_text_layer, status = excluded.status, "
-            "uploaded_at = excluded.uploaded_at, version = documents.version + 1",
+            "uploaded_at = excluded.uploaded_at, chapter_code = excluded.chapter_code, "
+            "version = documents.version + 1",
             (*self._imported_columns(document), document.meta.doc_id, document.meta.sha256),
         )
         row: sqlite3.Row = conn.execute(
@@ -471,7 +495,8 @@ class SQLiteStore:
 
     _IMPORTED_SELECT = (
         "SELECT document_id, sha256, filename, size_bytes, subject_code, title, source_kind, output_language, "
-        "page_count, has_text_layer, status, uploaded_at, version FROM documents WHERE subject_code IS NOT NULL"
+        "page_count, has_text_layer, status, uploaded_at, chapter_code, version FROM documents "
+        "WHERE subject_code IS NOT NULL"
     )
 
     @staticmethod
@@ -492,6 +517,7 @@ class SQLiteStore:
                 "filename": row["filename"],
                 "size_bytes": row["size_bytes"],
                 "output_language": row["output_language"],
+                "chapter_code": row["chapter_code"],
                 "status": row["status"],
                 "version": row["version"],
             }
@@ -508,7 +534,7 @@ class SQLiteStore:
             cursor = conn.execute(
                 "UPDATE documents SET filename = ?, media_type = ?, size_bytes = ?, subject_code = ?, title = ?, "
                 "source_kind = ?, output_language = ?, page_count = ?, has_text_layer = ?, status = ?, "
-                "uploaded_at = ?, version = version + 1 WHERE document_id = ? AND version = ?",
+                "uploaded_at = ?, chapter_code = ?, version = version + 1 WHERE document_id = ? AND version = ?",
                 (*self._imported_columns(document), document_id, expected_version),
             )
             if cursor.rowcount == 0:
@@ -531,29 +557,59 @@ class SQLiteStore:
                 rows = conn.execute(f"{self._IMPORTED_SELECT} AND subject_code = ?{order}", (subject_code,)).fetchall()
         return [self._imported_from_row(row) for row in rows]
 
+    def _delete_chunk_index(self, conn: sqlite3.Connection, document_id: str) -> set[str]:
+        """Xoá dòng chỉ mục FTS5 của mọi chunk thuộc tài liệu (bảng ảo không có khoá ngoại); trả các môn có chunk."""
+        if self._fts5:
+            for table in _FTS_TABLES.values():
+                conn.execute(
+                    f"DELETE FROM {table} WHERE chunk_id IN (SELECT chunk_id FROM chunks WHERE document_id = ?)",
+                    (document_id,),
+                )
+        return {
+            str(row["subject_code"])
+            for row in conn.execute("SELECT DISTINCT subject_code FROM chunks WHERE document_id = ?", (document_id,))
+        }
+
+    def _delete_document_row(self, conn: sqlite3.Connection, document_id: str) -> None:
+        subjects = self._delete_chunk_index(conn, document_id)
+        try:
+            conn.execute("DELETE FROM documents WHERE document_id = ?", (document_id,))
+        except sqlite3.IntegrityError as exc:
+            in_use = RecordInUseError(f"tài liệu {document_id} còn được ingestion item tham chiếu")
+            raise _translate(exc, in_use) from exc
+        self._relink(conn, subjects)  # chunk còn lại không được trỏ tới chunk vừa xoá
+
     def delete_document(self, document_id: str) -> bool:
         with self._write() as conn:
             if conn.execute("SELECT 1 FROM documents WHERE document_id = ?", (document_id,)).fetchone() is None:
                 return False
-            if self._fts5:
-                for table in _FTS_TABLES.values():
-                    conn.execute(
-                        f"DELETE FROM {table} WHERE chunk_id IN (SELECT chunk_id FROM chunks WHERE document_id = ?)",
-                        (document_id,),
-                    )
-            subjects = {
-                str(row["subject_code"])
-                for row in conn.execute(
-                    "SELECT DISTINCT subject_code FROM chunks WHERE document_id = ?", (document_id,)
-                )
-            }
-            try:
-                conn.execute("DELETE FROM documents WHERE document_id = ?", (document_id,))
-            except sqlite3.IntegrityError as exc:
-                in_use = RecordInUseError(f"tài liệu {document_id} còn được ingestion item tham chiếu")
-                raise _translate(exc, in_use) from exc
-            self._relink(conn, subjects)  # chunk còn lại không được trỏ tới chunk vừa xoá
+            self._delete_document_row(conn, document_id)
         return True
+
+    def revert_imported_document(self, document_id: str, upload: UploadedDocument | None) -> bool:
+        with self._write() as conn:
+            exists = conn.execute(f"{self._IMPORTED_SELECT} AND document_id = ?", (document_id,)).fetchone()
+            if exists is None:
+                return False
+            if upload is None:
+                self._delete_document_row(conn, document_id)
+                return True
+            subjects = self._delete_chunk_index(conn, document_id)
+            conn.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))  # cặp khái niệm theo CASCADE
+            conn.execute("DELETE FROM pages WHERE document_id = ?", (document_id,))  # lịch sử sửa trang theo CASCADE
+            conn.execute(
+                f"UPDATE documents SET filename = ?, media_type = ?, size_bytes = ?, uploaded_at = ?, "
+                f"{self._IMPORT_ONLY_RESET}, version = version + 1 WHERE document_id = ?",
+                (upload.filename, upload.media_type, upload.size_bytes, _ts(upload.uploaded_at), document_id),
+            )
+            self._relink(conn, subjects)
+        return True
+
+    # Cột chỉ bộ nhập §6.5 ghi; dòng chỉ do upload đề §6.1 tạo có mọi cột này là NULL.
+    _IMPORT_ONLY_RESET = (
+        "subject_code = NULL, title = NULL, source_kind = NULL, output_language = NULL, page_count = NULL, "
+        "has_text_layer = NULL, status = NULL, chapter_code = NULL"
+    )
 
     def add_page(
         self, document_id: str, page_number: int, page: BaseModel, *, status: PageStatus, confirmed: bool
@@ -641,6 +697,28 @@ class SQLiteStore:
                 (document_id, page_number),
             ).fetchone()
         return None if row is None else model.model_validate_json(str(row["extraction_json"]))
+
+    def list_page_summaries(self, document_id: str) -> list[PageSummary]:
+        """Đọc cột `status`, `confirmed` và hai field tóm tắt của JSON trang bằng `json_extract` của SQLite."""
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT page_number, status, confirmed, json_extract(extraction_json, '$.tier_used') AS tier_used, "
+                "json_extract(extraction_json, '$.review_reasons') AS review_reasons "
+                "FROM pages WHERE document_id = ? ORDER BY page_number",
+                (document_id,),
+            ).fetchall()
+        return [
+            PageSummary.model_validate(
+                {
+                    "page_number": row["page_number"],
+                    "status": row["status"],
+                    "tier_used": row["tier_used"],
+                    "review_reasons": json.loads(str(row["review_reasons"] or "[]")),
+                    "confirmed": bool(row["confirmed"]),
+                }
+            )
+            for row in rows
+        ]
 
     def list_pages[M: BaseModel](self, document_id: str, model: type[M]) -> list[M]:
         with self._read() as conn:
@@ -789,6 +867,11 @@ class SQLiteStore:
         with self._read() as conn:
             found = self._load_chunks(conn, "WHERE chunk_id = ?", (chunk_id,))
         return found[0] if found else None
+
+    def has_document_chunks(self, document_id: str) -> bool:
+        with self._read() as conn:
+            row = conn.execute("SELECT 1 FROM chunks WHERE document_id = ? LIMIT 1", (document_id,)).fetchone()
+        return row is not None
 
     def list_chunks(self, subject_code: str, chapter_code: str | None = None) -> list[KnowledgeChunk]:
         where = "WHERE subject_code = ?" + ("" if chapter_code is None else " AND chapter_code = ?")

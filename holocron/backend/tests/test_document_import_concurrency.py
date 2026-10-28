@@ -79,7 +79,7 @@ def _post(client: TestClient, content: bytes, subject_code: str, results: list[R
     results.append(
         client.post(
             "/v1/documents",
-            data={"subject_code": subject_code, "source_kind": "lecture_slides"},
+            data={"subject_code": subject_code, "source_kind": "lecture_slides", "chapter_code": "ch3"},
             files={"file": ("tai_lieu.pdf", content, "application/pdf")},
         )
     )

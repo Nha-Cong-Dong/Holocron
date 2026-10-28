@@ -45,11 +45,14 @@ export const mockApi: Partial<HolocronApi> = {
   gradeEssay,
 };
 
-/** Field của `GET /v1/runtime` (§5.12) mà backend chưa trả; chỉ những field này được bù từ fixture. */
+/**
+ * Field của `GET /v1/runtime` (§5.12) được bù từ fixture khi thân trả về thiếu chúng. Backend hiện đã trả `capabilities`;
+ * field này còn trong danh sách để bản backend cũ (chưa trả) vẫn chạy được với mock.
+ */
 export const RUNTIME_GAP_FIELDS = ["capabilities", "mock_extractor"] as const;
 
 /**
- * M1: `/v1/runtime` đã có ở backend nhưng chưa trả `capabilities` và `mock_extractor`. Hàm này nhận thân JSON thật
+ * M1: `/v1/runtime` đã có ở backend; backend hiện trả `capabilities` nhưng chưa trả `mock_extractor`. Hàm này nhận thân JSON thật
  * (chưa kiểm dạng) và chỉ bù field backend CHƯA trả từ fixture của kịch bản hiện tại; field backend đã trả (kể cả
  * sai dạng) giữ nguyên để bước kiểm dạng xử lý. Thân không phải object thì trả nguyên văn.
  */

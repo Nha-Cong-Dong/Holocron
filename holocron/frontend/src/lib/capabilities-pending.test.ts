@@ -116,6 +116,14 @@ describe("ba khả năng đề xuất ở nhóm chưa có trong bản đang ch�
     }
   });
 
+  // Người dùng chốt 2026-10-29: nhãn hiện cho người dùng không có chữ "LLM" (chữ cấm trên giao diện thường).
+  it("nhãn đề xuất khái niệm tự động đúng chữ đã chốt và không nhắc LLM", () => {
+    expect(capabilityLabel(pending("concept_auto_proposal", null))).toBe("Đề xuất khái niệm tự động");
+    for (const name of PENDING) {
+      expect(capabilityLabel(pending(name, null))).not.toMatch(/LLM/i);
+    }
+  });
+
   it("api.ts không chứa tên khả năng và không có endpoint gợi tới chúng", () => {
     const source = readFileSync(join(SRC_DIR, "lib", "api.ts"), "utf-8");
     for (const name of PENDING) {

@@ -201,3 +201,16 @@ describe("classifyReviewFocus chuẩn hoá role", () => {
     expect(classifyReviewFocus({ ...inside, role: " button " })).toBe("control");
   });
 });
+
+describe("classifyReviewFocus: chính vùng và SUMMARY", () => {
+  const base = { insideRegion: true, isRegion: false, role: null, isContentEditable: false };
+
+  it("chính vùng luôn là region dù tag hay role giống ô nhập hay nút", () => {
+    expect(classifyReviewFocus({ ...base, isRegion: true, tagName: "DIV", role: "textbox" })).toBe("region");
+    expect(classifyReviewFocus({ ...base, isRegion: true, tagName: "BUTTON" })).toBe("region");
+  });
+
+  it("SUMMARY là control", () => {
+    expect(classifyReviewFocus({ ...base, tagName: "SUMMARY" })).toBe("control");
+  });
+});

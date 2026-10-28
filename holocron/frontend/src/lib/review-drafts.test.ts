@@ -236,3 +236,15 @@ describe("draftPagesNote — câu liệt kê trang còn nháp dưới nút 'Xác
     expect(DRAFT_PAGE_LABEL_VI).toBe("còn dòng chưa lưu");
   });
 });
+
+describe("setAppendText giữ nguyên chữ đang gõ", () => {
+  it("không cắt khoảng trắng cuối", () => {
+    expect(draftFor(setAppendText(NO_DRAFTS, 1, "abc "), 1).appendText).toBe("abc ");
+  });
+
+  it("chỉ có khoảng trắng: giữ nguyên chữ nhưng không tính là nháp", () => {
+    const drafts = setAppendText(NO_DRAFTS, 1, "   ");
+    expect(draftFor(drafts, 1).appendText).toBe("   ");
+    expect(pageHasDraft(draftFor(drafts, 1))).toBe(false);
+  });
+});

@@ -81,7 +81,7 @@ describe("(e)(f) còn dòng chưa lưu", () => {
     expect(confirmButtonBlock({ pageBlock: null, appendDraft: false, editing: false })).toBeNull();
   });
 
-  it("onClick đọc lại trạng thái lúc bấm: ô thêm dòng vừa có chữ (cha chưa vẽ lại) vẫn bị chặn", () => {
+  it("onClick kiểm lại cùng điều kiện lúc bấm: ô thêm dòng còn chữ thì bị chặn, phiên không đổi", () => {
     const session = reviewSessionFor(null, "1:1", 0);
     const result = confirmClick(session, { ...PAGE, appendDraft: true }, CONFIRM_GUARD_MS * 10);
     expect(result.accepted).toBe(false);

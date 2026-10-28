@@ -5,8 +5,9 @@
  * - `canConfirmNow` là điều kiện DUY NHẤT: thuộc tính `disabled` của nút và handler `onClick` (nơi mọi cách kích hoạt
  *   đều đi qua: chuột, chạm, Enter/Space khi nút đang focus) cùng gọi hàm này. `onClick` gọi lại để đo mốc thời gian và
  *   khoá đang gửi đúng lúc bấm (không dựa vào lần vẽ trước).
- * - `unsavedDrafts`: chữ của ô thêm dòng và dòng đang mở sửa nằm trong state của chính component chứa nút, nên ngay khi
- *   người dùng gõ, cùng một lần cập nhật state đã khoá nút (không báo lên qua effect, không trễ một lần vẽ).
+ * - `unsavedDrafts`: chữ của ô thêm dòng và dòng đang mở sửa nằm trong state của `PageReview`, theo số trang
+ *   (`lib/review-drafts.ts`), truyền xuống vùng trang qua props: cùng một lần cập nhật state khi gõ đã khoá nút (không
+ *   báo lên qua effect, không trễ một lần vẽ), và vùng trang vẽ lại (version tăng) hay đổi trang không làm mất nháp.
  * - `focusOnShow`: trang mới hiện thì focus đặt vào tiêu đề trang, không bao giờ vào nút xác nhận.
  * - `nextReviewTarget`: đích của nút "Sang trang cần xem kế tiếp", tính từ tài liệu đọc lại SAU khi xác nhận.
  */

@@ -15,7 +15,6 @@ import {
   CONFIRM_DOCUMENT_BLOCK_MESSAGE_VI,
   CONFIRM_PAGE_BLOCK_MESSAGE_VI,
   checkLineText,
-  confirmDocumentBlock,
   confirmPageBlock,
   createPendingPagePoller,
   createSingleFlight,
@@ -45,6 +44,17 @@ import {
   nextReviewTarget,
   unsavedDrafts,
 } from "@/lib/review-confirm";
+import {
+  bulkConfirmBlock,
+  closeLineEdit,
+  draftFor,
+  NO_DRAFTS,
+  type PageDraft,
+  type ReviewDrafts,
+  setAppendText,
+  setLineEditText,
+  startLineEdit,
+} from "@/lib/review-drafts";
 import { classifyReviewFocus, lineToEdit, reviewKeyAction } from "@/lib/review-keys";
 import { awaitingSettle, queueNeighbors, reviewOutcome, reviewProgress, reviewQueue } from "@/lib/review-queue";
 import {
@@ -131,6 +141,9 @@ export function PageReview({
   const [confirmedHere, setConfirmedHere] = useState<number | null>(null);
   // Trang hiện lần trước, để biết trang mới hiện là đổi trang hay vẽ lại cùng trang (đặt focus, `focusOnShow`).
   const lastShownPage = useRef<number | null>(null);
+  // Nháp chưa lưu theo số trang (`lib/review-drafts.ts`): giữ ở đây, không ở `PagePanel`, để vùng trang vẽ lại (lưu dòng
+  // khác làm `version` tăng) hay đổi trang rồi quay lại không làm mất nháp (I5).
+  const [drafts, setDrafts] = useState<ReviewDrafts>(NO_DRAFTS);
 
   /** Đọc lại tài liệu; trả bản vừa áp, `null` khi lỗi hoặc đã có lần đọc mới hơn. */
   const fetchDocument = useCallback((): Promise<DocumentView | null> => {
@@ -313,7 +326,7 @@ export function PageReview({
       </div>
     );
   }
-  const docBlock = confirmDocumentBlock(doc);
+  const docBlock = bulkConfirmBlock(doc, drafts);
   const subjectHref = hrefFor({ subject: doc.subjectCode });
   const queue = reviewQueue(doc);
   const outcome = reviewOutcome(doc);
@@ -354,7 +367,11 @@ export function PageReview({
           <button
             type="button"
             className={styles.secondary}
-            onClick={() => void confirmAll()}
+            onClick={() => {
+              // Kiểm lại đúng điều kiện của `disabled` lúc bấm; còn nháp ở trang nào thì không gửi, không lưu hộ.
+              if (busy || bulkConfirmBlock(doc, drafts) !== null) return;
+              void confirmAll();
+            }}
             disabled={busy || docBlock !== null}
             aria-describedby="review-doc-confirm-hint"
           >
@@ -364,10 +381,12 @@ export function PageReview({
             Xoá tài liệu
           </button>
         </div>
-        <p id="review-doc-confirm-hint" className={styles.hint}>
+        <p id="review-doc-confirm-hint" className={docBlock === "unsaved_lines" ? pageStyles.unsavedNote : styles.hint}>
           {docBlock === null
             ? "Chỉ xác nhận các trang không có cảnh báo; trang cần xem kỹ phải xác nhận từng trang."
-            : CONFIRM_DOCUMENT_BLOCK_MESSAGE_VI[docBlock]}
+            : docBlock === "unsaved_lines"
+              ? CONFIRM_PAGE_BLOCK_MESSAGE_VI.unsaved_lines
+              : CONFIRM_DOCUMENT_BLOCK_MESSAGE_VI[docBlock]}
         </p>
         <ReviewBanner
           queueLength={queue.length}
@@ -424,6 +443,19 @@ export function PageReview({
             <PagePanel
               key={`${page.value.pageNumber}:${page.value.version}`}
               page={page.value}
+              draft={draftFor(drafts, page.value.pageNumber)}
+              onAppendTextChange={(text) =>
+                setDrafts((previous) => setAppendText(previous, page.value.pageNumber, text))
+              }
+              onStartEdit={(lineIndex, text) =>
+                setDrafts((previous) => startLineEdit(previous, page.value.pageNumber, lineIndex, text))
+              }
+              onEditTextChange={(text) =>
+                setDrafts((previous) => setLineEditText(previous, page.value.pageNumber, text))
+              }
+              onCloseEdit={(lineIndex) =>
+                setDrafts((previous) => closeLineEdit(previous, page.value.pageNumber, lineIndex))
+              }
               busy={busy}
               hasPrevious={neighbors.previous !== null}
               hasNext={neighbors.next !== null}
@@ -499,6 +531,14 @@ function PageSteps({ doc, pageNumber, hrefFor }: { doc: DocumentView; pageNumber
 
 interface PagePanelProps {
   page: PageView;
+  /** Nháp chưa lưu của trang, do `PageReview` giữ theo số trang (không mất khi vùng này vẽ lại hay đổi trang). */
+  draft: PageDraft;
+  onAppendTextChange: (text: string) => void;
+  /** Mở ô "Sửa" cho dòng `lineIndex`, chữ ban đầu là chữ hiện tại của dòng. */
+  onStartEdit: (lineIndex: number, text: string) => void;
+  onEditTextChange: (text: string) => void;
+  /** Đóng ô "Sửa" của đúng dòng `lineIndex`. */
+  onCloseEdit: (lineIndex: number) => void;
   busy: boolean;
   /** Có trang cần xem lại ở phía trước/sau (phím ←/→). */
   hasPrevious: boolean;
@@ -526,6 +566,11 @@ interface PagePanelProps {
  */
 function PagePanel({
   page,
+  draft,
+  onAppendTextChange,
+  onStartEdit,
+  onEditTextChange,
+  onCloseEdit,
   busy,
   hasPrevious,
   hasNext,
@@ -550,10 +595,8 @@ function PagePanel({
   const confirmBlock = confirmPageBlock(page);
   const mismatches = mismatchesByLine(page.crossCheck.mismatches);
   const warnings = pageWarnings({ ...page, failureReason: page.failureReason });
-  const [editing, setEditing] = useState<number | null>(null);
-  // Chữ của ô thêm dòng giữ ở đây (không ở `AppendLine`) để nút xác nhận khoá ngay trong lần cập nhật state khi gõ.
-  const [appendText, setAppendText] = useState("");
-  const drafts = unsavedDrafts({ appendText, editingLine: editing });
+  const editing = draft.editing?.lineIndex ?? null;
+  const drafts = unsavedDrafts({ appendText: draft.appendText, editingLine: editing });
   const [sending, setSending] = useState(false);
   // Số ms đã qua kể từ lúc trang hiện, đo khi hết `CONFIRM_GUARD_MS` để vẽ lại nút (chỉ cho `disabled`; `onClick` đo lại).
   const [shownElapsed, setShownElapsed] = useState<{ pageKey: string; ms: number } | null>(null);
@@ -648,7 +691,8 @@ function PagePanel({
           return { lineIndex: line.lineIndex, flagged: highlight.lowConf || highlight.mismatch };
         }),
       );
-      if (index !== null) setEditing(index);
+      const target = page.lines.find((line) => line.lineIndex === index);
+      if (target !== undefined) onStartEdit(target.lineIndex, target.text);
     } else {
       onStep(action.type);
     }
@@ -778,15 +822,17 @@ function PagePanel({
               editable={editBlock === null && !busy}
               busy={busy}
               editing={editing === line.lineIndex}
-              onStartEdit={() => setEditing(line.lineIndex)}
-              onCancel={() => setEditing(null)}
+              draft={editing === line.lineIndex && draft.editing !== null ? draft.editing.text : line.text}
+              onDraftChange={onEditTextChange}
+              onStartEdit={() => onStartEdit(line.lineIndex, line.text)}
+              onCancel={() => onCloseEdit(line.lineIndex)}
               onSave={async (text) => {
                 const edits = buildLineEdits(page.lines, new Map([[line.lineIndex, text]]));
                 if (edits.length === 0) {
-                  setEditing(null);
+                  onCloseEdit(line.lineIndex);
                   return;
                 }
-                if (await onSaveLines(edits, [])) setEditing(null);
+                if (await onSaveLines(edits, [])) onCloseEdit(line.lineIndex);
               }}
             />
           ))}
@@ -800,8 +846,8 @@ function PagePanel({
       {editBlock === null && (
         <AppendLine
           busy={busy}
-          text={appendText}
-          onTextChange={setAppendText}
+          text={draft.appendText}
+          onTextChange={onAppendTextChange}
           onAppend={(text) => onSaveLines([], [text])}
         />
       )}
@@ -843,29 +889,42 @@ interface LineRowProps {
   /** Đang có thao tác ghi: Enter và nút "Lưu" không gửi thêm. */
   busy: boolean;
   editing: boolean;
+  /** Chữ đang gõ trong ô sửa, do `PageReview` giữ theo trang (`lib/review-drafts.ts`). */
+  draft: string;
+  onDraftChange: (text: string) => void;
   onStartEdit: () => void;
   onCancel: () => void;
   onSave: (text: string) => Promise<void>;
 }
 
 /** Một dòng: chữ backend trả, cờ thành nhãn tiếng Việt; sửa tại chỗ (`Enter` lưu, `Esc` huỷ). */
-function LineRow({ line, highlight, editable, busy, editing, onStartEdit, onCancel, onSave }: LineRowProps) {
-  const [draft, setDraft] = useState(line.text);
+function LineRow({
+  line,
+  highlight,
+  editable,
+  busy,
+  editing,
+  draft,
+  onDraftChange,
+  onStartEdit,
+  onCancel,
+  onSave,
+}: LineRowProps) {
   const [error, setError] = useState<string | null>(null);
   const input = useRef<HTMLInputElement>(null);
   const editButton = useRef<HTMLButtonElement>(null);
-  const wasEditing = useRef(false);
+  // Bắt đầu bằng giá trị lúc mount: dòng vẽ lại khi ô sửa vẫn mở (nháp giữ ở `PageReview`) thì không giành focus.
+  const wasEditing = useRef(editing);
 
   useEffect(() => {
-    if (editing) {
-      setDraft(line.text);
+    if (editing && !wasEditing.current) {
       setError(null);
       input.current?.focus();
-    } else if (wasEditing.current) {
+    } else if (!editing && wasEditing.current) {
       editButton.current?.focus();
     }
     wasEditing.current = editing;
-  }, [editing, line.text]);
+  }, [editing]);
 
   function save(): void {
     const decision = lineSaveDecision(draft, busy);
@@ -901,7 +960,7 @@ function LineRow({ line, highlight, editable, busy, editing, onStartEdit, onCanc
               ref={input}
               className={styles.lineEditor}
               value={draft}
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={(event) => onDraftChange(event.target.value)}
               onKeyDown={onKeyDown}
               aria-label={`Sửa dòng ${line.lineIndex}`}
               aria-invalid={error !== null}
@@ -947,7 +1006,10 @@ function LineRow({ line, highlight, editable, busy, editing, onStartEdit, onCanc
 
 interface AppendLineProps {
   busy: boolean;
-  /** Chữ trong ô, do `PagePanel` giữ: còn chữ chưa lưu thì nút xác nhận trang khoá cho tới khi lưu hoặc xoá chữ. */
+  /**
+   * Chữ trong ô, do `PageReview` giữ theo trang (`lib/review-drafts.ts`): còn chữ chưa lưu thì nút xác nhận trang và nút
+   * "Xác nhận các trang đọc tốt" khoá cho tới khi lưu hoặc xoá chữ.
+   */
   text: string;
   onTextChange: (text: string) => void;
   onAppend: (text: string) => Promise<boolean>;

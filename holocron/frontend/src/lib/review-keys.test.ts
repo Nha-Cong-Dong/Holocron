@@ -147,6 +147,25 @@ describe("lineToEdit", () => {
     expect(lineToEdit([{ lineIndex: 4, flagged: false }])).toBe(4);
     expect(lineToEdit([])).toBeNull();
   });
+
+  it("nhiều dòng không cờ ⇒ dòng đầu, không phải dòng cuối", () => {
+    expect(
+      lineToEdit([
+        { lineIndex: 2, flagged: false },
+        { lineIndex: 7, flagged: false },
+      ]),
+    ).toBe(2);
+  });
+
+  it("nhiều dòng có cờ ⇒ dòng có cờ đầu tiên, không phải dòng có cờ cuối", () => {
+    expect(
+      lineToEdit([
+        { lineIndex: 0, flagged: false },
+        { lineIndex: 3, flagged: true },
+        { lineIndex: 5, flagged: true },
+      ]),
+    ).toBe(3);
+  });
 });
 
 describe("phím bổ trợ và lớp phủ chặn E, ←, →", () => {

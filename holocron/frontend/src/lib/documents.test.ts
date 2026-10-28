@@ -281,3 +281,23 @@ describe("thứ tự lý do khoá khi trang đã xác nhận mà trạng thái l
     expect(confirmPageBlock({ status: "failed", confirmed: true, lines })).toBe("failed");
   });
 });
+
+describe("canConfirmPage và thông điệp khoá sửa", () => {
+  const lines = [line(0, "Dòng một")];
+
+  it("canConfirmPage false với trang failed, pending, unknown và trang ok đã xác nhận", () => {
+    for (const status of ["failed", "pending", "unknown"] as const) {
+      expect(canConfirmPage({ status, confirmed: false, lines })).toBe(false);
+    }
+    expect(canConfirmPage({ status: "ok", confirmed: true, lines })).toBe(false);
+    expect(canConfirmPage({ status: "ok", confirmed: false, lines: [] })).toBe(false);
+    expect(canConfirmPage({ status: "ok", confirmed: false, lines })).toBe(true);
+  });
+
+  it("EDIT_BLOCK_MESSAGE_VI: các thông điệp đôi một khác nhau; `confirmed` nói trang đã xác nhận", () => {
+    const messages = Object.values(EDIT_BLOCK_MESSAGE_VI);
+    expect(new Set(messages).size).toBe(messages.length);
+    for (const message of messages) expect(message.trim().length).toBeGreaterThan(0);
+    expect(EDIT_BLOCK_MESSAGE_VI.confirmed).toContain("Trang đã xác nhận");
+  });
+});

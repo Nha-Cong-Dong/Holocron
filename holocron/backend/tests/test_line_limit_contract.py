@@ -14,9 +14,10 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from holocron_core.domain import documents, limits, vault
-from holocron_core.domain.documents import PageExtraction
+from holocron_core.domain.documents import ExtractedLine, LineEdit, PageExtraction
 from holocron_core.domain.vault import ConfirmedPage
 from holocron_core.infrastructure.document_readers.config import PdfReaderConfig
 from holocron_core.infrastructure.document_readers.protocol import (
@@ -177,3 +178,37 @@ def test_reader_lines_fit_vault(assembler: str, raw_text: str) -> None:
     confirmed = ConfirmedPage(page_number=page.page_number, lines=lines)
     assert confirmed.lines == lines
     assert _fits_vault(page)
+
+
+# --------------------------------------------------------------------------- #
+# Ghim hành vi hiện tại của các cổng độ dài (không đổi code)
+# --------------------------------------------------------------------------- #
+
+NFD_OVER_RAW = unicodedata.normalize("NFD", "ế") * 667  # thô 2001 code point, sau NFC chỉ 667
+
+
+def test_confirmed_page_over_limit_line_rejected_but_whitespace_is_stripped_first() -> None:
+    """`StrictModel` có `str_strip_whitespace=True` nên khoảng trắng thừa bị cắt TRƯỚC validator độ dài.
+
+    Dòng chỉ quá dài nhờ khoảng trắng vì vậy được nhận (đã cắt); dòng quá dài thật vẫn bị từ chối.
+    """
+    assert ConfirmedPage(page_number=1, lines=["a" * MAX + " "]).lines == ["a" * MAX]
+    assert ConfirmedPage(page_number=1, lines=[" " * (MAX + 1)]).lines == [""]
+    with pytest.raises(ValidationError, match="mỗi dòng tối đa"):
+        ConfirmedPage(page_number=1, lines=["a" * (MAX + 1)])
+
+
+def test_extracted_line_rejects_raw_over_limit_even_if_nfc_fits() -> None:
+    # Ghim hành vi hiện tại: giới hạn thô trước NFC; dòng thêm cuối trang (appended_lines) chỉ chặn sau NFC —
+    # chờ người dùng chốt có thống nhất không (2026-10-29).
+    assert len(NFD_OVER_RAW) == MAX + 1
+    assert len(unicodedata.normalize("NFC", NFD_OVER_RAW)) <= MAX
+    with pytest.raises(ValidationError, match="string_too_long"):
+        ExtractedLine(line_index=0, text=NFD_OVER_RAW, bbox=None, conf=0.9, engine="text_layer")
+
+
+def test_line_edit_rejects_raw_over_limit_even_if_nfc_fits() -> None:
+    # Ghim hành vi hiện tại: giới hạn thô trước NFC; dòng thêm cuối trang (appended_lines) chỉ chặn sau NFC —
+    # chờ người dùng chốt có thống nhất không (2026-10-29).
+    with pytest.raises(ValidationError, match="string_too_long"):
+        LineEdit(line_index=0, text=NFD_OVER_RAW)

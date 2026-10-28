@@ -59,7 +59,6 @@
   --space-7: 48px;
 
   --radius: var(--r-sm);
-  --sidebar-width: 200px;
   --statusbar-height: 28px;
   --motion-fast: var(--d-micro);
 }

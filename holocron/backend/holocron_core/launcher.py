@@ -14,6 +14,11 @@ Là composition root ở gốc package (ngoài năm tầng của CLAUDE.md §2.2
 4. Chỉ phiên bản đang giữ khoá mới mở log file (`launcher_logging`): in `Holocron <version> (<commit7>)` và `Log: …`
    sau bốn dòng đầu; handler file được gắn lại sau `uvicorn.Config` (bước đó xoá handler của logger `uvicorn*`).
 
+Phiên bản giữ khoá kiểm `HOLOCRON_REQUIRE_TOKEN` (cùng quy tắc `read_required_token` với `lifespan`) TRƯỚC khi bind
+socket, in URL hay mở trình duyệt: cấu hình hỏng ⇒ thông điệp chỉ nêu tên biến ra stderr và log, thoát `EXIT_ERROR`.
+`serve_app` trả `False` khi uvicorn trả về mà server chưa từng khởi động xong; launcher coi đó là lỗi, thoát
+`EXIT_ERROR` thay vì `EXIT_OK` (lỗi `lifespan` mà uvicorn tự `sys.exit` thì mã thoát của uvicorn đi thẳng ra ngoài).
+
 Các bước là hàm nhận phụ thuộc qua tham số (`environ`, `which`, `exists`, `fetch`, `sleep`, `clock`, `open_browser`)
 để test không cần binary thật, trình duyệt hay uvicorn.
 """
@@ -55,6 +60,7 @@ from .launcher_logging import (
     reattach_file_handlers,
     version_line,
 )
+from .routers.access import InvalidTokenConfigError, read_required_token
 
 if sys.platform == "win32":
     import msvcrt
@@ -199,6 +205,9 @@ BROWSER_SPECS: dict[str, tuple[str, tuple[str, ...]]] = {
 }
 BROWSER_ROOT_ENVS = ("ProgramFiles", "ProgramFiles(x86)")
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000  # giá trị Win32; `subprocess` chỉ có hằng này trên Windows
+
+
+SERVER_NOT_STARTED_MESSAGE = "Holocron không khởi động được; xem thông báo lỗi ở trên hoặc trong file log."
 
 
 class LauncherError(Exception):
@@ -774,8 +783,12 @@ def install_shutdown_signals() -> None:
         signal.signal(signal.SIGBREAK, _raise_keyboard_interrupt)
 
 
-def serve_app(sock: socket.socket) -> None:
-    """Import app SAU khi env đã đặt, rồi chạy uvicorn ở luồng chính trên socket đã listen."""
+def serve_app(sock: socket.socket) -> bool:
+    """Import app SAU khi env đã đặt, rồi chạy uvicorn ở luồng chính trên socket đã listen.
+
+    Trả `server.started`: `False` nghĩa là uvicorn trả về mà server chưa từng khởi động xong (ví dụ `lifespan` lỗi ở
+    bản uvicorn không tự `sys.exit`); launcher coi đó là lỗi.
+    """
     import uvicorn
 
     from .routers.api import app
@@ -783,7 +796,9 @@ def serve_app(sock: socket.socket) -> None:
     install_shutdown_signals()
     config = uvicorn.Config(app, log_level="warning", access_log=False)
     reattach_file_handlers()
-    uvicorn.Server(config).run(sockets=[sock])
+    server = uvicorn.Server(config)
+    server.run(sockets=[sock])
+    return server.started
 
 
 def use_utf8_console(stream: object) -> None:
@@ -794,6 +809,10 @@ def use_utf8_console(stream: object) -> None:
 
 def _print_line(message: str) -> None:
     print(message, flush=True)
+
+
+def _print_error_line(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
 
 
 def _path_exists(path: Path) -> bool:
@@ -811,11 +830,13 @@ class LauncherDeps:
     platform: str = sys.platform
     home: Path = field(default_factory=Path.home)
     emit: Emit = _print_line
+    emit_error: Emit = _print_error_line
     fetch: Callable[[int], bool] = probe_http
     clock: Callable[[], float] = time.monotonic
     sleep: Callable[[float], object] = time.sleep
     open_browser: Callable[[str], object] = open_browser_default
-    serve: Callable[[socket.socket], None] = serve_app
+    # Trả `False` khi server chưa từng khởi động xong; `None` (phụ thuộc giả trong test) coi như chạy bình thường.
+    serve: Callable[[socket.socket], bool | None] = serve_app
     assign_job: Callable[[], int | None] = assign_to_kill_on_close_job
     pid: int = field(default_factory=os.getpid)
     build_info_path: Path = field(default_factory=default_build_info_path)
@@ -843,6 +864,8 @@ def _serve_with_lock(args: argparse.Namespace, deps: LauncherDeps, launch: Launc
     `job` là handle Job Object (Windows); giữ tới khi tiến trình thoát, Windows đóng nó và giết tiến trình con còn lại.
     """
     remove_instance_info(launch.data_dir)
+    if not token_config_ok(deps):
+        return EXIT_ERROR
     apply_environment(deps.environ, launch.updates)
     job = deps.assign_job()
     if job is None and deps.platform == "win32":
@@ -859,6 +882,28 @@ def _serve_with_lock(args: argparse.Namespace, deps: LauncherDeps, launch: Launc
         finally:
             remove_instance_info(launch.data_dir)
     return EXIT_OK
+
+
+def token_config_ok(deps: LauncherDeps) -> bool:
+    """`HOLOCRON_REQUIRE_TOKEN` hợp lệ hoặc chưa đặt (cùng quy tắc `read_required_token` mà `lifespan` dùng).
+
+    Hỏng (kể cả toàn khoảng trắng) ⇒ in `Lỗi: …` ra stderr và ghi một dòng ERROR vào file log (chỉ file, không in đôi
+    ra console), rồi trả `False`. Thông điệp của `InvalidTokenConfigError` chỉ nêu tên biến, không mang giá trị.
+    """
+    try:
+        read_required_token(deps.environ)
+    except InvalidTokenConfigError as exc:
+        message = f"Lỗi: {exc}"
+        deps.emit_error(message)
+        log_dir = default_log_dir(deps.environ, deps.platform, deps.home)
+        header = (version_line(read_build_info(deps.build_info_path)),)
+        with file_logging(log_dir, deps.environ, header) as warning:
+            if warning is None:
+                logging.getLogger(LAUNCHER_LOGGER).error("%s", message, extra=FILE_ONLY)
+            else:
+                deps.emit_error(warning)
+        return False
+    return True
 
 
 def _browser_opener(args: argparse.Namespace, deps: LauncherDeps) -> Callable[[str], object]:
@@ -912,13 +957,16 @@ def _run_logged(args: argparse.Namespace, deps: LauncherDeps, sock: socket.socke
         )
         poller.start()
         try:
-            deps.serve(sock)
+            started = deps.serve(sock)
         except Exception:
             # Chỉ ghi file: ngoại lệ ném lại, Python tự in traceback ra console một lần.
             logging.getLogger(LAUNCHER_LOGGER).exception("Holocron dừng vì lỗi không mong đợi", extra=FILE_ONLY)
             raise
         finally:
             stop.set()
+        if started is False:
+            logging.getLogger(LAUNCHER_LOGGER).error("%s", SERVER_NOT_STARTED_MESSAGE, extra=FILE_ONLY)
+            raise LauncherError(SERVER_NOT_STARTED_MESSAGE)
 
 
 def main(argv: Sequence[str] | None = None, deps: LauncherDeps | None = None) -> int:

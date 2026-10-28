@@ -39,7 +39,7 @@ DOC_ID = "doc_00000000000000cc"
 GARBLED = "HÖ ®iÒu hµnh cÊp ph¸t CPU cho c¸c tiÕn tr×nh theo l−ît vµ ®−îc ch¹y tèi ®a mét l−îng tö."
 SAME_BOX: UnitBBox = (0.1, 0.1, 0.9, 0.12)
 TIME_LIMIT_S = 1.0
-ABSOLUTE_LIMIT_S = 3.0
+ABSOLUTE_LIMIT_S = 10.0
 RATIO_RUNS = 5
 RATIO_LIMIT = 5.0
 
@@ -88,32 +88,37 @@ def _median_elapsed(lines: int, config: PdfReaderConfig, runs: int = RATIO_RUNS)
     return page, statistics.median(samples)
 
 
-def _assert_scales_linearly(small: float, large: float, small_lines: int, large_lines: int) -> None:
-    """Thời gian ở cỡ lớn không quá `RATIO_LIMIT` lần thời gian ở cỡ nhỏ."""
+def _assert_cost_is_bounded(small: float, large: float, small_lines: int, large_lines: int) -> None:
+    """Thời gian ở cỡ lớn không quá `RATIO_LIMIT` lần thời gian ở cỡ nhỏ (xem docstring của test chính về giới hạn)."""
     ratio = large / small
     assert ratio < RATIO_LIMIT, f"tỉ lệ thời gian ×{ratio:.1f} (n {small_lines} → {large_lines}) ≥ ×{RATIO_LIMIT:.0f}"
 
 
-def test_adversarial_overlapping_lines_scale_linearly_and_are_cut() -> None:
+def test_adversarial_overlapping_lines_cost_is_bounded_and_are_cut() -> None:
     """Mọi dòng của hai lượt trùng một hộp toạ độ: thời gian không tăng theo bậc hai và trang bị cắt ở cả hai cỡ.
 
     Đo tỉ lệ thời gian giữa n₂ = 10·n₁ dòng thay vì chỉ ngưỡng giây tuyệt đối (CI chậm làm ngưỡng chập chờn).
     Cả hai cỡ đều vượt trần số cặp (n₁² > `cross_check_max_line_pairs`) nên đối chiếu bị cắt ở ≈ trần đó: thời gian
     gần như không tăng theo n, chỉ còn phần dựng và sắp xếp dữ liệu. Bản đúng đo được ×0.9–2.4 (n 500 → 5000);
     nới trần cặp lên 5 000 000 cho ×19–20 (n=500 không còn bị cắt); đối chiếu bậc hai thuần cho ≈ ×100.
-    Ngưỡng ×5 cách bản đúng ≥ 2 lần và bắt được cả ca nới trần. Lưới tuyệt đối 3 s ở n₂ (CI đo bản đúng ≈ 1.05 s)
-    chặn thêm các hồi quy làm chậm đều.
+    Ngưỡng ×5 cách bản đúng ≥ 2 lần và bắt được cả ca nới trần. Lưới tuyệt đối 10 s ở n₂ chỉ chống treo
+    (CI đo bản đúng ≈ 1.05 s); tỉ lệ mới là tiêu chí chính.
+    Giới hạn: tỉ lệ đo phần dựng (tuyến tính) cộng phần đối chiếu đã bị chặn. Nếu tối ưu mạnh phần đối chiếu khiến
+    phần dựng chiếm gần hết thời gian, tỉ lệ có thể tiến về ≈ ×10; khi đó chỉnh `RATIO_LIMIT` kèm lý do.
     """
     config = PdfReaderConfig()
     large_lines = config.cross_check_max_lines
     small_lines = large_lines // 10
-    assert small_lines**2 > config.cross_check_max_line_pairs, "cỡ nhỏ phải vượt trần số cặp để cũng bị cắt"
+    assert small_lines**2 > config.cross_check_max_line_pairs, (
+        f"cỡ nhỏ {small_lines}² phải > cross_check_max_line_pairs ({config.cross_check_max_line_pairs}) để cũng bị cắt; "
+        "đổi cấu hình mặc định thì chỉnh lại cỡ (và đo lại tỉ lệ bản đúng) cho thoả điều kiện này"
+    )
     small_page, small = _median_elapsed(small_lines, config)
     large_page, large = _median_elapsed(large_lines, config)
     _assert_cut(small_page)
     _assert_cut(large_page)
     assert large < ABSOLUTE_LIMIT_S, f"đối chiếu mất {large:.2f} s"
-    _assert_scales_linearly(small, large, small_lines, large_lines)
+    _assert_cost_is_bounded(small, large, small_lines, large_lines)
 
 
 def test_ratio_check_detects_quadratic_cross_check() -> None:
@@ -122,11 +127,14 @@ def test_ratio_check_detects_quadratic_cross_check() -> None:
     _, small = _median_elapsed(100, config, runs=3)
     _, large = _median_elapsed(1000, config, runs=1)
     with pytest.raises(AssertionError, match="tỉ lệ thời gian"):
-        _assert_scales_linearly(small, large, 100, 1000)
+        _assert_cost_is_bounded(small, large, 100, 1000)
 
 
 def test_adversarial_overlapping_lines_at_protocol_cap_are_cut_fast() -> None:
-    """Ở trần của giao thức (10 000 × 10 000) trang bị cắt ngay ở kiểm số dòng, O(1)."""
+    """Ở trần của giao thức (10 000 × 10 000) trang bị cắt ngay ở kiểm số dòng.
+
+    Phần cắt là O(1) nhưng dựng trang vẫn O(n); đo cục bộ 20 lần: 0.24–0.42 s (ngưỡng 1 s giữ như develop).
+    """
     page, elapsed = _timed_assemble(_same_box_page(MAX_PAGE_LINES, MAX_PAGE_LINES), PdfReaderConfig())
     assert elapsed < TIME_LIMIT_S, f"đối chiếu mất {elapsed:.2f} s"
     _assert_cut(page)

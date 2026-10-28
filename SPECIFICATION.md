@@ -1144,11 +1144,11 @@ CapabilityName = Literal[
     "essay_grading_llm",            # AnswerJudge (ADR-007 mục 5; sau MVP)
     "template_authoring_llm",       # TemplateAuthor viết template ứng viên (§10, §11.3)
     "vlm",                          # tầng 4 và dual-pass VLM (§11.2; đang park)
-    # Ba tên dưới (duyệt 2026-10-29, người dùng; nguồn yêu cầu: design-handoff/README.md mục 9): khả năng chờ backend của UI mới,
+    # Ba tên dưới (đề xuất, chờ duyệt (2026-10-29); nguồn yêu cầu: design-handoff/README.md mục 9): khả năng chờ backend của UI mới,
     # mặc định available = false, reason = "not_implemented"; ADR-004 mục "Khả năng chờ backend (UI mới)"
-    "concept_auto_proposal",        # đề xuất khái niệm tự động, không cần LLM: thuật ngữ + trích dẫn nguyên văn + số trang (duyệt 2026-10-29)
-    "line_review_queue",            # hàng đợi duyệt theo dòng nghi ngờ; khi làm thật cần ADR I5 riêng (duyệt 2026-10-29)
-    "page_progress_eta",            # tiến độ theo trang và thời gian còn lại cho từng tài liệu đang đọc (duyệt 2026-10-29)
+    "concept_auto_proposal",        # đề xuất khái niệm tự động, không cần LLM: thuật ngữ + trích dẫn nguyên văn + số trang (đề xuất, chờ duyệt (2026-10-29))
+    "line_review_queue",            # hàng đợi duyệt theo dòng nghi ngờ; khi làm thật cần ADR I5 riêng (đề xuất, chờ duyệt (2026-10-29))
+    "page_progress_eta",            # tiến độ theo trang và thời gian còn lại cho từng tài liệu đang đọc (đề xuất, chờ duyệt (2026-10-29))
 ]
 CapabilityReason = Literal[        # danh sách mã lý do: duyệt 2026-10-26 (§17 D7); khái niệm "khả năng kèm lý do" đã duyệt 2026-10-25
     "llm_not_configured",           # thiếu HOLOCRON_LLM_BASE_URL, HOLOCRON_LLM_API_KEY hoặc HOLOCRON_LLM_MODEL_EXTRACT (§11.2)
@@ -1171,7 +1171,7 @@ class RuntimeInfo(BaseModel):       # routers/; không lộ key, tên model hay 
     llm_configured: bool    # code: đủ ba biến LLM bắt buộc ở §11.2 (đã duyệt 2026-10-25; code hiện chỉ cần HOLOCRON_LLM_API_KEY)
     vlm_configured: bool    # code: đủ ba biến HOLOCRON_VLM_*
     mock_extractor: bool    # code (đề xuất, chờ duyệt; §17 D8): upload đề (§6.1) đang dùng MockDualPassExtractor, tức dữ liệu mẫu, không đọc file thật
-    capabilities: list[Capability]   # code: đủ 12 phần tử (9 tên duyệt 2026-10-25 + 3 tên duyệt 2026-10-29), theo thứ tự khai báo của CapabilityName; ba tên mới luôn available = false, reason = "not_implemented" với mọi cấu hình, vì không nằm trong IMPLEMENTED_CAPABILITIES, LLM_CAPABILITIES, VLM_CAPABILITIES
+    capabilities: list[Capability]   # code: đủ 12 phần tử (9 tên duyệt 2026-10-25 + 3 tên đề xuất, chờ duyệt (2026-10-29)), theo thứ tự khai báo của CapabilityName; ba tên mới luôn available = false, reason = "not_implemented" với mọi cấu hình, vì không nằm trong IMPLEMENTED_CAPABILITIES, LLM_CAPABILITIES, VLM_CAPABILITIES
     # Hai field dưới: hướng duyệt 2026-10-26 chiều; tên, kiểu và nguồn là đề xuất (chi tiết), chờ duyệt
     storage_mode: Literal["sqlite", "memory"]
         # code: theo kho thực sự đang chạy (kho SQLite ⇒ "sqlite", kho in-memory ⇒ "memory"), không chỉ theo việc
@@ -2029,9 +2029,9 @@ Quy tắc "503 khi thiếu key" của v0.5 bị bỏ. Thay vào đó, `GET /v1/r
 | `essay_grading_offline` | Không gì ngoài code; phần tự luận có trong bản đang chạy | Slot `ESSAY` ở `POST /v1/blueprints`, `POST /v1/twins/{id}/essay-grade` (§6.9) | 409 `CapabilityError` với `reason = "not_implemented"` nếu phần tự luận bị chuyển sang sau MVP |
 | `essay_grading_llm` | LLM đã cấu hình và có `AnswerJudge` (sau MVP) | Chưa có endpoint | Luôn `not_implemented` trong MVP |
 | `template_authoring_llm` | LLM đã cấu hình | Slot tính toán trong `POST …/twins` (§10) | Không trả lỗi: pipeline dùng template đã kiểm chứng làm fallback như hiện nay (`UnconfiguredTemplateAuthor`); không có fallback thì `ReviewTicket` |
-| `concept_auto_proposal` (duyệt 2026-10-29) | Chưa có code; khi làm thật không cần LLM | Chưa có endpoint | Luôn `not_implemented` trong bản hiện tại. UI dùng chức năng hiện có: người dùng tự tạo khái niệm bằng bôi chọn trong trang (hoặc chip chọn câu), kèm một câu giải thích ngắn; không hiển thị dữ liệu giả |
-| `line_review_queue` (duyệt 2026-10-29) | Chưa có code; khi làm thật cần ADR I5 riêng (CLAUDE.md §9) | Chưa có endpoint | Luôn `not_implemented`. UI dùng duyệt theo trang hiện có (§6.5), kèm một câu giải thích ngắn; không hiển thị dữ liệu giả |
-| `page_progress_eta` (duyệt 2026-10-29) | Chưa có code | Chưa có endpoint | Luôn `not_implemented`. UI chỉ hiện "x/y trang" từ trạng thái tài liệu có sẵn, kèm một câu giải thích ngắn; không hiện thời gian còn lại |
+| `concept_auto_proposal` (đề xuất, chờ duyệt (2026-10-29)) | Chưa có code; khi làm thật không cần LLM | Chưa có endpoint | Luôn `not_implemented` trong bản hiện tại. UI dùng chức năng hiện có: người dùng tự tạo khái niệm bằng bôi chọn trong trang (hoặc chip chọn câu), kèm một câu giải thích ngắn; không hiển thị dữ liệu giả |
+| `line_review_queue` (đề xuất, chờ duyệt (2026-10-29)) | Chưa có code; khi làm thật cần ADR I5 riêng (CLAUDE.md §9) | Chưa có endpoint | Luôn `not_implemented`. UI dùng duyệt theo trang hiện có (§6.5), kèm một câu giải thích ngắn; không hiển thị dữ liệu giả |
+| `page_progress_eta` (đề xuất, chờ duyệt (2026-10-29)) | Chưa có code | Chưa có endpoint | Luôn `not_implemented`. UI chỉ hiện "x/y trang" từ trạng thái tài liệu có sẵn, kèm một câu giải thích ngắn; không hiện thời gian còn lại |
 | `vlm` | Đủ ba biến `HOLOCRON_VLM_*` | Tầng 4, dual-pass VLM của §6.1 | Trang "cần xem kỹ" vẫn chờ người dùng xem lại; §6.1 dùng `MockDualPassExtractor` (`mock_extractor = true`; field đề xuất, chờ duyệt, §17 D8) |
 
 - Đề xuất nhãn bằng LLM (`chapter_code`, `cognitive_level`, nhãn chunk) không có khả năng riêng trong danh sách đã duyệt: thiếu LLM thì giữ mặc định và người dùng sửa, không trả lỗi (§5.4, §6.7). Đề xuất (chờ duyệt): thêm khả năng `label_suggestion_llm` để UI báo rõ (§17 D10).
@@ -2135,7 +2135,7 @@ Backend PHẢI chỉ lắng nghe `127.0.0.1` trong bản local-first.
 | Bộ nhập PDF | Magic bytes, số trang, timeout trên file mẫu tự tạo | `tests/test_pdf_input_limits.py` (`test_bad_pdf_limits`) |
 | Lọc trích dẫn theo môn (§5.8, đã duyệt 2026-10-25) | Chunk của môn khác không bao giờ được chọn, kể cả khi `topic_keys` khớp | test mới trong `tests/test_twin_batch.py` hoặc file test của `VaultCitationProvider` (tên đề xuất) |
 | Chấm tự luận offline (§5.14; tên file đã có ở dòng I1, I3 và I4 của bảng CLAUDE.md §9, dòng I1 và I3 duyệt 2026-10-26 chiều, §17 D11; file chưa có) | Cùng đầu vào cho cùng `EssayGradeResult` từng byte; câu trả lời NFC và NFD cho cùng kết quả; mọi ý là chuỗi con của `definition_quote`; tách ý gộp đoạn ngắn đúng; câu trả lời chép nguyên văn khớp đủ y/y ý; câu trả lời rỗng ý khớp 0 ý; `matched_count + len(missing_points) = total_points` | `tests/test_essay_grader.py` |
-| Chế độ khả năng (§11.4; tên file đề xuất) | Thiếu từng biến LLM ⇒ đúng khả năng bị báo `llm_not_configured`; endpoint cần LLM trả 409 `CapabilityError`; endpoint offline vẫn chạy; `GET /v1/runtime` trả đủ 12 khả năng đúng thứ tự §5.12, ba tên duyệt 2026-10-29 luôn `not_implemented` kể cả khi LLM và VLM đủ cấu hình; `GET /v1/runtime` chỉ gồm các field ở §5.12 (boolean, mã lý do, `storage_mode`, `llm_data_recipient`, `app_version`, `commit`, `log_dir`; duyệt 2026-10-28) và không lộ key, tên model hay endpoint | `tests/test_runtime_capabilities.py` |
+| Chế độ khả năng (§11.4; tên file đề xuất) | Thiếu từng biến LLM ⇒ đúng khả năng bị báo `llm_not_configured`; endpoint cần LLM trả 409 `CapabilityError`; endpoint offline vẫn chạy; `GET /v1/runtime` trả đủ 12 khả năng đúng thứ tự §5.12, ba tên đề xuất, chờ duyệt (2026-10-29) luôn `not_implemented` kể cả khi LLM và VLM đủ cấu hình; `GET /v1/runtime` chỉ gồm các field ở §5.12 (boolean, mã lý do, `storage_mode`, `llm_data_recipient`, `app_version`, `commit`, `log_dir`; duyệt 2026-10-28) và không lộ key, tên model hay endpoint | `tests/test_runtime_capabilities.py` |
 | Adapter LLM (§11.5; tên file đề xuất) | Có `User-Agent` riêng; không gửi `temperature`/`top_p`; JSON lỗi ⇒ thử lại đúng số lần rồi 502; đếm số lần thử; dùng stub HTTP, không gọi mạng | `tests/test_llm_adapter.py` |
 | Bảo mật app local (§13.1; tên file đề xuất) | `Host` lạ ⇒ 403; `Host` `[::1]:<port>` và dạng không kèm cổng ⇒ qua (duyệt 2026-10-26 chiều); request ghi có `Origin` lạ hoặc `null` ⇒ 403, không có `Origin` ⇒ qua (đề xuất (chi tiết), chờ duyệt, §13.1); có `HOLOCRON_REQUIRE_TOKEN` thì thiếu hoặc sai token ⇒ 403, đúng token ⇒ qua; không đặt biến thì không cần token | `tests/test_local_security.py` |
 | Frontend | `tsc --noEmit` và `next build` sạch | `holocron/frontend` |

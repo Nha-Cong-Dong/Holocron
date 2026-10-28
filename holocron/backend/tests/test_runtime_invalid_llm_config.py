@@ -28,7 +28,7 @@ from holocron_core.infrastructure.llm_config import (
 from holocron_core.infrastructure.memory_store import IngestionStore
 from holocron_core.routers import vault
 from holocron_core.routers.api import app
-from holocron_core.routers.deps import get_clock, get_runtime_config, get_store
+from holocron_core.routers.deps import get_build_info, get_clock, get_log_dir, get_runtime_config, get_store
 from holocron_core.services.vault import ingest_confirmed_text
 from tests.vault_support import NOW, PHILOSOPHY_PAGES, add_document, confirmed, document_id
 
@@ -117,6 +117,12 @@ def _runtime() -> TestClient:
 # --------------------------------------------------------------------------- #
 
 
+def _build_fields() -> dict[str, str | None]:
+    """Ba field build/log của `RuntimeInfo` (câu 7, duyệt 2026-10-28); giá trị kiểm riêng ở `test_runtime_build_info.py`."""
+    info = get_build_info()
+    return {"app_version": info.version, "commit": info.commit, "log_dir": get_log_dir()}
+
+
 def test_runtime_with_a_vlm_key_containing_a_space_is_200_and_vlm_not_configured(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -124,7 +130,7 @@ def test_runtime_with_a_vlm_key_containing_a_space_is_200_and_vlm_not_configured
     with caplog.at_level(logging.WARNING):
         response = _runtime().get("/v1/runtime")
     assert response.status_code == 200
-    assert response.json() == {"demo_mode": True, "llm_configured": False, "vlm_configured": False}
+    assert response.json() == {"demo_mode": True, "llm_configured": False, "vlm_configured": False, **_build_fields()}
     _assert_no_leak(response.text)
     assert "HOLOCRON_VLM_API_KEY" in caplog.text
     _assert_no_leak(caplog.text)
@@ -163,7 +169,7 @@ def test_runtime_keeps_a_valid_llm_when_only_the_vlm_is_broken(monkeypatch: pyte
     _set_env(monkeypatch, {**VALID_LLM_ENV, **VLM_ENV_WITH_BAD_KEY})
     response = _runtime().get("/v1/runtime")
     assert response.status_code == 200
-    assert response.json() == {"demo_mode": True, "llm_configured": True, "vlm_configured": False}
+    assert response.json() == {"demo_mode": True, "llm_configured": True, "vlm_configured": False, **_build_fields()}
     _assert_no_leak(response.text)
 
 

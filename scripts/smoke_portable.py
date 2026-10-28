@@ -646,7 +646,9 @@ def document_id_of(created: Mapping[str, object] | None) -> str | None:
 def upload_and_read_page(report: Report, port: int, label: str, filename: str, content: bytes) -> dict[str, object]:
     """Tải PDF lên, chờ đọc xong (≤ 300 s), trả JSON trang 1 (rỗng nếu bước nào FAIL; JSON hỏng ⇒ FAIL)."""
     body, content_type = multipart(
-        {"subject_code": "SMOKE101", "source_kind": "lecture_slides", "output_language": "vi"}, filename, content
+        {"subject_code": "SMOKE101", "source_kind": "lecture_slides", "output_language": "vi", "chapter_code": "ch1"},
+        filename,
+        content,
     )
     status, _, text = http_request(port, "POST", "/v1/documents", body=body, headers={"Content-Type": content_type})
     document_id = document_id_of(json_object(text)) if status in (200, 202) else None

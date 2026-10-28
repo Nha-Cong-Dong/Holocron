@@ -39,6 +39,9 @@ const offline: RuntimeInfoPending = {
   llm_configured: false,
   vlm_configured: false,
   mock_extractor: true,
+  app_version: "0.0.0-mock",
+  commit: "0000000",
+  log_dir: null,
   capabilities: [
     available("ocr"),
     available("ocr_cross_check"),
@@ -58,6 +61,9 @@ const llm: RuntimeInfoPending = {
   llm_configured: true,
   vlm_configured: false,
   mock_extractor: true,
+  app_version: "0.0.0-mock",
+  commit: "0000000",
+  log_dir: null,
   capabilities: [
     available("ocr"),
     available("ocr_cross_check"),
@@ -77,6 +83,9 @@ const noTesseract: RuntimeInfoPending = {
   llm_configured: true,
   vlm_configured: false,
   mock_extractor: true,
+  app_version: "0.0.0-mock",
+  commit: "0000000",
+  log_dir: null,
   capabilities: [
     unavailable("ocr", "ocr_engine_missing"),
     unavailable("ocr_cross_check", "secondary_ocr_disabled"),

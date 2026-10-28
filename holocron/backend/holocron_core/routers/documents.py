@@ -39,6 +39,7 @@ from ..infrastructure.document_readers.pdf_reader import PdfReader, PdfWorkerErr
 from ..infrastructure.llm_config import ConfigError
 from ..infrastructure.storage.original_files import OriginalFileStore
 from ..services.document_import import (
+    IMPORT_UNAVAILABLE_DETAIL,
     MAX_TITLE_LENGTH,
     BackgroundImportQueue,
     DocumentBusyError,
@@ -128,10 +129,13 @@ def requeue_on_startup(store: AppStore, runtime: ImportRuntime) -> list[str]:
 
 
 def get_import_runtime(request: Request) -> ImportRuntime:
+    """Bộ nhập của app. Không có (`lifespan` chưa chạy, hoặc đã gỡ khi tắt app) ⇒ 500 kèm `detail` như các đường
+    app-tắt khác (`ImportUnavailableError`), không 500 trần; mọi route dùng bộ nhập đi qua đây."""
     runtime = getattr(request.app.state, RUNTIME_STATE_ATTR, None)
     if isinstance(runtime, ImportRuntime):
         return runtime
-    raise RuntimeError("bộ nhập tài liệu chưa được khởi tạo (lifespan của app chưa chạy)")
+    _LOGGER.warning("request tới bộ nhập tài liệu khi bộ nhập chưa khởi tạo hoặc đã dừng (lifespan)")
+    raise HTTPException(status_code=500, detail=IMPORT_UNAVAILABLE_DETAIL)
 
 
 RuntimeDep = Annotated[ImportRuntime, Depends(get_import_runtime)]

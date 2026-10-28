@@ -20,6 +20,7 @@ from ..infrastructure.memory_store import IDEMPOTENCY_TTL, IngestionStore
 from ..infrastructure.storage import SQLiteStore, data_dir_from_env
 from ..services.document_import import ImportRuntime
 from . import blueprints, documents, ingestion, runtime, static_site, subjects, vault
+from .access import LocalAccessMiddleware, get_allowed_hosts, get_required_token
 from .blueprints import create_twins
 from .deps import (
     REGISTRY,
@@ -69,6 +70,7 @@ __all__ = [
     "IngestionItem",
     "IngestionItemCreate",
     "IngestionStore",
+    "LocalAccessMiddleware",
     "NonCloneableRequest",
     "RuntimeConfigDep",
     "RuntimeInfo",
@@ -82,10 +84,12 @@ __all__ = [
     "create_item",
     "create_twins",
     "flag_non_cloneable",
+    "get_allowed_hosts",
     "get_citation_provider",
     "get_clock",
     "get_extractor",
     "get_item",
+    "get_required_token",
     "get_runtime",
     "get_runtime_config",
     "get_store",
@@ -132,6 +136,9 @@ async def _store_busy(_: Request, exc: Exception) -> JSONResponse:
 
 
 app = FastAPI(title="Holocron Ingestion Gate", version="0.1.0a0", lifespan=_lifespan)
+# Kiểm `Host` và token (nếu bật) cho MỌI request, trước routing và trước khi đọc body (SPECIFICATION §6.0, §13.1):
+# gồm cả `/openapi.json`, `/docs`, `/redoc`, 404 và 405. Provider tra qua `app.dependency_overrides` để test override.
+app.add_middleware(LocalAccessMiddleware, overrides=lambda: app.dependency_overrides)
 app.add_exception_handler(StorageBusyError, _store_busy)
 app.include_router(runtime.router)
 app.include_router(ingestion.router)

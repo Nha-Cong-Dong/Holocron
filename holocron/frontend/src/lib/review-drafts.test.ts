@@ -6,14 +6,21 @@
 
 import { describe, expect, it } from "vitest";
 
-import { CONFIRM_PAGE_BLOCK_MESSAGE_VI } from "./documents";
+import { CONFIRM_PAGE_BLOCK_MESSAGE_VI, type EditBlock, lineEditBlock } from "./documents";
 import type { DocumentView, PageStatusView, PageSummaryView } from "./documents-data";
 import {
   anyPageHasDraft,
   bulkConfirmBlock,
   closeLineEdit,
+  DRAFT_PAGE_LABEL_VI,
+  DRAFT_PAGES_LISTED,
   draftFor,
+  draftPagesNote,
+  draftStatusMessage,
   EMPTY_PAGE_DRAFT,
+  type LineEditDraft,
+  lineEditState,
+  lockedDraftNotice,
   NO_DRAFTS,
   pageHasDraft,
   pagesWithDrafts,
@@ -48,7 +55,10 @@ describe("giữ nháp theo trang", () => {
     drafts = startLineEdit(drafts, 4, 7, "chữ cũ");
     drafts = setLineEditText(drafts, 4, "chữ mới");
     expect(draftFor(drafts, 1)).toEqual({ appendText: "a", editing: null });
-    expect(draftFor(drafts, 4)).toEqual({ appendText: "", editing: { lineIndex: 7, text: "chữ mới" } });
+    expect(draftFor(drafts, 4)).toEqual({
+      appendText: "",
+      editing: { lineIndex: 7, text: "chữ mới", baseText: "chữ cũ" },
+    });
     expect(draftFor(drafts, 2)).toEqual(EMPTY_PAGE_DRAFT);
   });
 
@@ -87,7 +97,7 @@ describe("giữ nháp theo trang", () => {
 
   it("mở ô sửa giữ chữ của ô thêm dòng", () => {
     const drafts = startLineEdit(setAppendText(NO_DRAFTS, 1, "a"), 1, 3, "t");
-    expect(draftFor(drafts, 1)).toEqual({ appendText: "a", editing: { lineIndex: 3, text: "t" } });
+    expect(draftFor(drafts, 1)).toEqual({ appendText: "a", editing: { lineIndex: 3, text: "t", baseText: "t" } });
   });
 });
 
@@ -102,11 +112,47 @@ describe("nháp ở bất kỳ trang nào", () => {
     expect(anyPageHasDraft(NO_DRAFTS, pages)).toBe(false);
   });
 
-  it("trang không còn sửa được (đã xác nhận, đọc lỗi) hay không thuộc tài liệu thì nháp không tính", () => {
+  it("trang không thuộc tài liệu thì nháp không tính (không có trang nào để hiện nháp đó)", () => {
+    expect(pagesWithDrafts(setAppendText(NO_DRAFTS, 9, "z"), pages)).toEqual([]);
+  });
+
+  it("trang không còn sửa được (đã xác nhận, đọc lỗi) mà còn nháp: vẫn hiện câu báo nên vẫn tính", () => {
     let drafts = setAppendText(NO_DRAFTS, 3, "c");
-    drafts = setAppendText(drafts, 4, "d");
-    drafts = setAppendText(drafts, 9, "z");
-    expect(pagesWithDrafts(drafts, pages)).toEqual([]);
+    drafts = startLineEdit(drafts, 4, 0, "d");
+    expect(pagesWithDrafts(drafts, pages)).toEqual([3, 4]);
+    expect(lockedDraftNotice(draftFor(drafts, 3), lineEditBlock(page(3, "ok", true)))).toEqual({
+      editing: null,
+      appendText: "c",
+    });
+    expect(lockedDraftNotice(draftFor(drafts, 4), lineEditBlock(page(4, "failed")))).toEqual({
+      editing: { lineIndex: 0, text: "d", baseText: "d" },
+      appendText: null,
+    });
+  });
+
+  it("trang có trong danh sách nháp ⇔ giao diện còn hiện nháp (ô trên trang sửa được, câu báo trên trang bị khoá)", () => {
+    const blocks: (EditBlock | null)[] = [null, "confirmed", "failed", "pending", "unknown"];
+    const samples = [
+      EMPTY_PAGE_DRAFT,
+      draftFor(setAppendText(NO_DRAFTS, 1, " \t"), 1),
+      draftFor(setAppendText(NO_DRAFTS, 1, "a"), 1),
+      draftFor(startLineEdit(NO_DRAFTS, 1, 0, "x"), 1),
+    ];
+    for (const block of blocks) {
+      for (const sample of samples) {
+        const drafts = new Map([[1, sample]]);
+        const listed = pagesWithDrafts(drafts, [page(1)]).includes(1);
+        // Trang sửa được hiện nháp ngay trong ô (thêm dòng, sửa, xung đột); trang bị khoá hiện `lockedDraftNotice`.
+        const shown = block === null ? pageHasDraft(sample) : lockedDraftNotice(sample, block) !== null;
+        expect(listed).toBe(shown);
+      }
+    }
+  });
+
+  it("trang còn sửa được thì không có câu báo khoá (nháp hiện trong ô)", () => {
+    expect(lockedDraftNotice(draftFor(setAppendText(NO_DRAFTS, 1, "a"), 1), null)).toBeNull();
+    expect(lockedDraftNotice(EMPTY_PAGE_DRAFT, "confirmed")).toBeNull();
+    expect(lockedDraftNotice(draftFor(setAppendText(NO_DRAFTS, 1, "  "), 1), "confirmed")).toBeNull();
   });
 
   it("chỉ khoảng trắng ở ô thêm dòng không tính", () => {
@@ -140,5 +186,175 @@ describe("bulkConfirmBlock — nút 'Xác nhận các trang đọc tốt'", () =
 
   it("dòng nhắc dùng đúng chữ của quyết định", () => {
     expect(CONFIRM_PAGE_BLOCK_MESSAGE_VI.unsaved_lines).toBe("Còn dòng chưa lưu. Lưu hoặc xoá trước khi xác nhận");
+  });
+});
+
+describe("lineEditState — dữ liệu trang tải lại khi ô 'Sửa' đang mở (409, poll, lưu dòng khác)", () => {
+  function opened(text: string): LineEditDraft {
+    const editing = draftFor(startLineEdit(NO_DRAFTS, 1, 2, text), 1).editing;
+    if (editing === null) throw new Error("ô sửa phải mở");
+    return editing;
+  }
+  const lines = (text: string) => [
+    { lineIndex: 1, text: "dòng một" },
+    { lineIndex: 2, text },
+  ];
+
+  it("mở ô sửa ghi lại chữ của dòng lúc mở; gõ thêm không đổi chữ đó", () => {
+    const drafts = setLineEditText(startLineEdit(NO_DRAFTS, 1, 2, "gốc"), 1, "đang gõ");
+    expect(draftFor(drafts, 1).editing).toEqual({ lineIndex: 2, text: "đang gõ", baseText: "gốc" });
+  });
+
+  it("dòng không đổi ⇒ giữ ô sửa và chữ đang gõ", () => {
+    const editing = { ...opened("gốc"), text: "đang gõ" };
+    expect(lineEditState(editing, lines("gốc"), null)).toEqual({ kind: "open" });
+  });
+
+  it("dòng không đổi nhưng khác dạng Unicode (NFD) ⇒ vẫn coi là không đổi", () => {
+    const editing = { ...opened("Tiếng Việt".normalize("NFC")), text: "x" };
+    expect(lineEditState(editing, lines("Tiếng Việt".normalize("NFD")), null)).toEqual({ kind: "open" });
+  });
+
+  it("chữ lúc mở ở dạng NFD, dòng ở dạng NFC cùng chữ ⇒ không xung đột", () => {
+    const editing = { ...opened("Tiếng Việt".normalize("NFD")), text: "x" };
+    expect(lineEditState(editing, lines("Tiếng Việt".normalize("NFC")), null)).toEqual({ kind: "open" });
+  });
+
+  it("dòng đổi ở nơi khác ⇒ xung đột", () => {
+    const editing = { ...opened("gốc"), text: "đang gõ" };
+    expect(lineEditState(editing, lines("người khác sửa"), null)).toEqual({ kind: "changed" });
+  });
+
+  it("mở mà chưa gõ gì, dòng đổi ở nơi khác ⇒ vẫn xung đột (không cho Lưu ghi đè)", () => {
+    expect(lineEditState(opened("gốc"), lines("bản mới"), null)).toEqual({ kind: "changed" });
+  });
+
+  it("dòng biến mất ⇒ xung đột 'removed'", () => {
+    const editing = { ...opened("gốc"), text: "đang gõ" };
+    expect(lineEditState(editing, [{ lineIndex: 1, text: "dòng một" }], null)).toEqual({ kind: "removed" });
+    expect(lineEditState(editing, [], null)).toEqual({ kind: "removed" });
+  });
+
+  it("trang không còn sửa được ⇒ 'locked', đứng trước mọi so sánh dòng", () => {
+    const editing = { ...opened("gốc"), text: "đang gõ" };
+    for (const block of ["confirmed", "failed", "pending", "unknown"] as const) {
+      expect(lineEditState(editing, lines("gốc"), block)).toEqual({ kind: "locked" });
+      expect(lineEditState(editing, [], block)).toEqual({ kind: "locked" });
+    }
+  });
+
+  it("dòng mang đúng chữ người dùng gõ (bản trả về ngay sau khi chính ô này lưu) ⇒ nháp khớp server, đóng ô sửa", () => {
+    let drafts = setLineEditText(startLineEdit(NO_DRAFTS, 1, 2, "gốc"), 1, "đã sửa");
+    const editing = draftFor(drafts, 1).editing;
+    if (editing === null) throw new Error("ô sửa phải mở");
+    expect(lineEditState(editing, lines("đã sửa"), null)).toEqual({ kind: "matched" });
+    // `PagePanel` đóng ô sửa của đúng dòng đó: hết nháp, nút xác nhận mở lại.
+    drafts = closeLineEdit(drafts, 1, editing.lineIndex);
+    expect(pageHasDraft(draftFor(drafts, 1))).toBe(false);
+    expect(bulkConfirmBlock(doc([page(1, "ok")]), drafts)).toBeNull();
+  });
+
+  it("chữ đang gõ ở dạng NFD trùng dòng NFC vừa lưu ⇒ cũng là khớp server", () => {
+    const editing = { ...opened("gốc"), text: "Tiếng Việt".normalize("NFD") };
+    expect(lineEditState(editing, lines("Tiếng Việt".normalize("NFC")), null)).toEqual({ kind: "matched" });
+  });
+
+  it("sau khi khớp và đóng, sửa tiếp lấy chữ mới làm mốc: gõ thêm không thành xung đột, không mất chữ", () => {
+    let drafts = closeLineEdit(setLineEditText(startLineEdit(NO_DRAFTS, 1, 2, "gốc"), 1, "đã sửa"), 1, 2);
+    drafts = setLineEditText(startLineEdit(drafts, 1, 2, "đã sửa"), 1, "đã sửa thêm");
+    const editing = draftFor(drafts, 1).editing;
+    expect(editing).toEqual({ lineIndex: 2, text: "đã sửa thêm", baseText: "đã sửa" });
+    if (editing !== null) expect(lineEditState(editing, lines("đã sửa"), null)).toEqual({ kind: "open" });
+  });
+
+  it("không trạng thái nào làm mất chữ đang gõ: còn mốc cũ mà chữ khác cả hai ⇒ xung đột, chữ còn nguyên", () => {
+    const drafts = setLineEditText(startLineEdit(NO_DRAFTS, 1, 2, "gốc"), 1, "đã sửa thêm");
+    const editing = draftFor(drafts, 1).editing;
+    if (editing === null) throw new Error("ô sửa phải mở");
+    expect(lineEditState(editing, lines("đã sửa"), null)).toEqual({ kind: "changed" });
+    expect(editing.text).toBe("đã sửa thêm");
+    expect(bulkConfirmBlock(doc([page(1, "ok")]), drafts)).toBe("unsaved_lines");
+  });
+
+  it("xung đột 'changed' vẫn là nháp chưa lưu: khoá nút xác nhận cho tới khi bỏ chữ đã gõ hoặc sửa lại từ bản mới", () => {
+    const pages = [page(1, "ok")];
+    let drafts = setLineEditText(startLineEdit(NO_DRAFTS, 1, 2, "gốc"), 1, "đang gõ");
+    const conflicted = draftFor(drafts, 1).editing;
+    if (conflicted === null) throw new Error("ô sửa phải mở");
+    // Dựng đúng trạng thái xung đột trước khi kiểm nút.
+    expect(lineEditState(conflicted, lines("bản mới"), null)).toEqual({ kind: "changed" });
+    expect(bulkConfirmBlock(doc(pages), drafts)).toBe("unsaved_lines");
+    // "Sửa lại từ bản mới": mở lại với chữ mới của dòng, chữ đó thành mốc mới.
+    const restarted = startLineEdit(drafts, 1, 2, "bản mới");
+    const editing = draftFor(restarted, 1).editing;
+    expect(editing).toEqual({ lineIndex: 2, text: "bản mới", baseText: "bản mới" });
+    if (editing !== null) expect(lineEditState(editing, lines("bản mới"), null)).toEqual({ kind: "open" });
+    expect(bulkConfirmBlock(doc(pages), restarted)).toBe("unsaved_lines");
+    // "Bỏ chữ đã gõ": đóng ô, hết nháp.
+    drafts = closeLineEdit(drafts, 1, 2);
+    expect(bulkConfirmBlock(doc(pages), drafts)).toBeNull();
+  });
+});
+
+describe("draftStatusMessage — vùng thông báo cố định của trang", () => {
+  const editingDraft = draftFor(setLineEditText(startLineEdit(NO_DRAFTS, 1, 4, "gốc"), 1, "đang gõ"), 1);
+  const appendDraft = draftFor(setAppendText(NO_DRAFTS, 1, "a"), 1);
+
+  it("không có gì cần báo ⇒ chuỗi rỗng (vùng vẫn có trong trang)", () => {
+    expect(draftStatusMessage(EMPTY_PAGE_DRAFT, null, null)).toBe("");
+    expect(draftStatusMessage(editingDraft, { kind: "open" }, null)).toBe("");
+    expect(draftStatusMessage(editingDraft, { kind: "matched" }, null)).toBe("");
+    expect(draftStatusMessage(appendDraft, null, null)).toBe("");
+  });
+
+  it("xung đột và trang bị khoá ⇒ câu báo, không đọc lại chữ đã gõ", () => {
+    expect(draftStatusMessage(editingDraft, { kind: "changed" }, null)).toBe(
+      "Dòng 4 vừa được sửa ở nơi khác. Chữ bạn đang gõ chưa lưu.",
+    );
+    expect(draftStatusMessage(editingDraft, { kind: "removed" }, null)).toBe(
+      "Dòng 4 không còn trên trang này. Chữ bạn đang gõ chưa lưu.",
+    );
+    expect(draftStatusMessage(editingDraft, { kind: "locked" }, "confirmed")).toBe(
+      "Trang này không sửa được nữa. Chữ bạn đã gõ chưa lưu.",
+    );
+    expect(draftStatusMessage(appendDraft, null, "confirmed")).toBe(
+      "Trang này không sửa được nữa. Chữ bạn đã gõ chưa lưu.",
+    );
+  });
+});
+
+describe("draftPagesNote — câu liệt kê trang còn nháp dưới nút 'Xác nhận các trang đọc tốt'", () => {
+  it("không có trang nào ⇒ null", () => {
+    expect(draftPagesNote([])).toBeNull();
+  });
+
+  it("một trang và nhiều trang, giữ thứ tự được truyền", () => {
+    expect(draftPagesNote([2])).toBe("Trang 2 còn dòng chưa lưu.");
+    expect(draftPagesNote([2, 5])).toBe("Trang 2, 5 còn dòng chưa lưu.");
+  });
+
+  it(`quá ${DRAFT_PAGES_LISTED} trang ⇒ liệt kê ${DRAFT_PAGES_LISTED} trang đầu rồi 'và N trang khác'`, () => {
+    const pages = Array.from({ length: DRAFT_PAGES_LISTED + 3 }, (_, index) => index + 1);
+    expect(draftPagesNote(pages)).toBe("Trang 1, 2, 3, 4, 5, 6, 7, 8 và 3 trang khác còn dòng chưa lưu.");
+    expect(draftPagesNote(pages.slice(0, DRAFT_PAGES_LISTED))).toBe("Trang 1, 2, 3, 4, 5, 6, 7, 8 còn dòng chưa lưu.");
+    expect(draftPagesNote(pages.slice(0, DRAFT_PAGES_LISTED + 1))).toBe(
+      "Trang 1, 2, 3, 4, 5, 6, 7, 8 và 1 trang khác còn dòng chưa lưu.",
+    );
+  });
+
+  it("nhãn trong danh sách trang là chữ, không chỉ màu", () => {
+    expect(DRAFT_PAGE_LABEL_VI).toBe("còn dòng chưa lưu");
+  });
+});
+
+describe("setAppendText giữ nguyên chữ đang gõ", () => {
+  it("không cắt khoảng trắng cuối", () => {
+    expect(draftFor(setAppendText(NO_DRAFTS, 1, "abc "), 1).appendText).toBe("abc ");
+  });
+
+  it("chỉ có khoảng trắng: giữ nguyên chữ nhưng không tính là nháp", () => {
+    const drafts = setAppendText(NO_DRAFTS, 1, "   ");
+    expect(draftFor(drafts, 1).appendText).toBe("   ");
+    expect(pageHasDraft(draftFor(drafts, 1))).toBe(false);
   });
 });

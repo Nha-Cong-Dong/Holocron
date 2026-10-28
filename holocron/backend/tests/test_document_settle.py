@@ -433,8 +433,35 @@ def test_oversize_page_premise() -> None:
     assert MAX_PAGE_LINES < OVERSIZE_LINES <= READER_MAX_PAGE_LINES
 
 
+def _write_oversize_page_directly(setup: Setup, doc_id: str, *, confirmed: bool) -> None:
+    """Ghi thẳng trang 1 quá dài (`ok`) vào kho, bỏ qua bước đọc (nơi trang như vậy thành `failed`): chỉ để phủ các
+    nhánh phòng thủ của bước xác nhận và settle."""
+    page = _page(setup, doc_id, 1)
+    forced = big_page(doc_id, 1).model_copy(update={"confirmed": confirmed, "version": page.version + 1})
+    setup.store.inner.update_page(doc_id, 1, forced, status="ok", confirmed=confirmed, expected_version=page.version)
+
+
 def test_page_confirm_rejects_an_oversize_page_before_writing(setup: Setup) -> None:
+    """Câu 18 (a): trang quá dài thành `failed` (`TOO_MANY_LINES`) lúc đọc nên không xác nhận được (409), không ghi
+    gì; các trang còn lại xác nhận được và tài liệu thành `confirmed`."""
     doc_id = _fully_read(setup, "trang-qua-dai", {1: lambda d: big_page(d, 1)})
+    before = _page(setup, doc_id, 1)
+    assert (before.status, before.failure_reason, before.lines) == ("failed", "TOO_MANY_LINES", [])
+    response = _confirm_page(setup, doc_id, 1)
+    assert response.status_code == 409, response.text
+    assert _page(setup, doc_id, 1) == before, "không ghi xác nhận trang nào"
+    assert _document(setup, doc_id)["status"] == "review"
+    assert not setup.store.has_document_chunks(doc_id)
+    assert _confirm_page(setup, doc_id, 2).status_code == 200
+    assert _confirm_page(setup, doc_id, 3).status_code == 200
+    assert _document(setup, doc_id)["status"] == "confirmed"
+    assert _chunk_ids(setup, doc_id) == _expected_chunk_ids(setup, doc_id)
+
+
+def test_page_confirm_rejects_an_oversize_page_written_directly(setup: Setup) -> None:
+    """Phòng thủ: trang quá dài `ok` có trong kho (ghi thẳng, bỏ qua bước đọc) vẫn bị chặn TRƯỚC khi ghi xác nhận."""
+    doc_id = _fully_read(setup, "trang-qua-dai-ghi-thang")
+    _write_oversize_page_directly(setup, doc_id, confirmed=False)
     before = _page(setup, doc_id, 1)
     response = _confirm_page(setup, doc_id, 1)
     assert response.status_code == 422, response.text
@@ -445,8 +472,26 @@ def test_page_confirm_rejects_an_oversize_page_before_writing(setup: Setup) -> N
     assert not setup.store.has_document_chunks(doc_id)
 
 
-def test_batch_confirm_skips_an_oversize_page_with_a_warning(setup: Setup, caplog: pytest.LogCaptureFixture) -> None:
+def test_batch_confirm_skips_an_oversize_page_with_a_warning(setup: Setup) -> None:
+    """Câu 18 (a): trang quá dài đã `failed` (`TOO_MANY_LINES`) lúc đọc; xác nhận lô nhận các trang còn lại và tài
+    liệu thành `confirmed`, Vault nhận văn bản của các trang đó."""
     doc_id = _fully_read(setup, "lo-trang-qua-dai", {1: lambda d: big_page(d, 1)})
+    response = _confirm_document(setup, doc_id)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [page["confirmed"] for page in body["pages"]] == [False, True, True]
+    assert [page["status"] for page in body["pages"]] == ["failed", "ok", "ok"]
+    assert _page(setup, doc_id, 1).failure_reason == "TOO_MANY_LINES"
+    assert body["status"] == "confirmed", "trang failed không chặn tài liệu (§5.7)"
+    assert _chunk_ids(setup, doc_id) == _expected_chunk_ids(setup, doc_id)
+
+
+def test_batch_confirm_skips_an_oversize_page_written_directly_with_a_warning(
+    setup: Setup, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Phòng thủ: trang quá dài `ok` có trong kho (ghi thẳng, bỏ qua bước đọc) bị bỏ qua kèm cảnh báo trong log."""
+    doc_id = _fully_read(setup, "lo-trang-qua-dai-ghi-thang")
+    _write_oversize_page_directly(setup, doc_id, confirmed=False)
     with caplog.at_level(logging.WARNING, logger=document_import.__name__):
         response = _confirm_document(setup, doc_id)
     assert response.status_code == 200, response.text
@@ -472,14 +517,19 @@ def test_page_at_the_vault_limit_confirms_and_blank_lines_do_not_count(setup: Se
 
 
 def test_background_read_keeps_review_with_an_unconfirmable_oversize_page(setup: Setup) -> None:
+    """Câu 18 (a), luồng đọc nền: trang quá dài thành `failed` (`TOO_MANY_LINES`) ngay khi ghi, không xác nhận được;
+    đọc xong các trang còn lại thì tài liệu `review` và xác nhận được."""
     doc_id, job = _post_held(setup, "doc-nen-trang-qua-dai")
     _read(job, OversizeFirstPageThenCrash(page_count=3))
-    assert _confirm_page(setup, doc_id, 1).status_code == 422
+    assert (_page(setup, doc_id, 1).status, _page(setup, doc_id, 1).failure_reason) == ("failed", "TOO_MANY_LINES")
+    assert _confirm_page(setup, doc_id, 1).status_code == 409
     assert not _page(setup, doc_id, 1).confirmed
-    _read(job, FakePdfReader(page_count=3, failed_pages=frozenset({2, 3})))
+    _read(job, FakePdfReader(page_count=3))
     document = _document(setup, doc_id)
     assert document["status"] == "review"
-    assert [page["status"] for page in document["pages"]] == ["ok", "failed", "failed"]
+    assert [page["status"] for page in document["pages"]] == ["failed", "ok", "ok"]
+    assert _confirm_document(setup, doc_id).status_code == 200
+    assert _document(setup, doc_id)["status"] == "confirmed"
 
 
 def test_unexpected_settle_error_after_reading_keeps_review(setup: Setup, caplog: pytest.LogCaptureFixture) -> None:
@@ -488,9 +538,8 @@ def test_unexpected_settle_error_after_reading_keeps_review(setup: Setup, caplog
     văn bản của trang."""
     doc_id, job = _post_held(setup, "settle-loi-bat-ngo")
     _read(job, OversizeFirstPageThenCrash(page_count=3))
-    page = _page(setup, doc_id, 1)
-    forced = page.model_copy(update={"confirmed": True, "version": page.version + 1})
-    setup.store.inner.update_page(doc_id, 1, forced, status=page.status, confirmed=True, expected_version=page.version)
+    assert _page(setup, doc_id, 1).failure_reason == "TOO_MANY_LINES", "bước đọc không để trang quá dài ở lại"
+    _write_oversize_page_directly(setup, doc_id, confirmed=True)
     caplog.clear()
     with caplog.at_level(logging.INFO, logger=document_import.__name__):
         _read(job, FakePdfReader(page_count=3, failed_pages=frozenset({2, 3})))

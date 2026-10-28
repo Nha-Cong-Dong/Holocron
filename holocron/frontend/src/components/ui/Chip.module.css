@@ -1,0 +1,50 @@
+/* Hình dáng chip; chuyển động ở motion.css (.m-chip, .m-chip-check, .m-chip-star). */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--tap-min);
+  padding: 0 18px 0 12px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--fs-body);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+
+.selected {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Chip radio: focus của input vẽ lên cả chip. */
+.chip:has(.radio:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.radio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.check {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}

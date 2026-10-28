@@ -1,0 +1,45 @@
+.root {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-8) var(--sp-6);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--sh-1);
+  text-align: center;
+}
+
+.art {
+  width: 120px;
+  height: 80px;
+}
+
+.artLine {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 4;
+}
+
+.artStar {
+  fill: var(--star);
+}
+
+.artPending {
+  fill: none;
+  stroke: var(--star-pending);
+  stroke-width: 1.5;
+}
+
+.title {
+  font-size: var(--fs-h3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-h3);
+}
+
+.description {
+  max-width: 48ch;
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}

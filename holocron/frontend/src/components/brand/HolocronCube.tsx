@@ -1,12 +1,11 @@
 "use client";
-// Khối Holocron 3D (màn chào). Bấm / Enter / Space: tầng trên xoay thêm 90° và bắn hạt sao.
-// Dùng kèm styles/tokens.css + styles/motion.css (class .m-burst).
+// Khối Holocron 3D (màn chào). Bấm / Enter / Space: tầng trên xoay thêm 90°.
+// Dùng kèm styles/tokens.css + styles/motion.css. Không bắn hạt sao khi bấm (người dùng bỏ 2026-10-29).
 import { useState } from "react";
 import styles from "./HolocronCube.module.css";
 
 const TOP = ["pnp", "pnn", "nnp", "nnn"] as const;
 const BOTTOM = ["ppp", "ppn", "npp", "npn"] as const;
-const RAYS = [0, 36, 72, 108, 144, 180, 216, 252, 288, 324];
 
 type CornerKey = (typeof TOP)[number] | (typeof BOTTOM)[number];
 
@@ -68,15 +67,6 @@ export function HolocronCube({ size = 220, label = "Xoay khối Holocron" }: { s
           </span>
         </span>
       </span>
-      {turns > 0 && (
-        <span key={turns} className="m-burst" aria-hidden="true">
-          {RAYS.map((a) => (
-            <span key={a} style={{ transform: `rotate(${a}deg)` }}>
-              <i />
-            </span>
-          ))}
-        </span>
-      )}
     </button>
   );
 }

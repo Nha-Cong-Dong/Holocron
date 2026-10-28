@@ -2,7 +2,7 @@
 
 import { usePathname, useRouter } from "next/navigation";
 import { type ReactNode, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-
+import { ToastProvider } from "@/components/ui/Toast";
 import { api, toUiError } from "@/lib/api";
 import { USE_MOCKS } from "@/lib/config";
 import { createLatestCounter } from "@/lib/latest";
@@ -170,36 +170,38 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <ShellContext.Provider value={context}>
-      <a className={styles.skipLink} href="#main-content">
-        Bỏ qua tới nội dung chính
-      </a>
-      <div className={styles.root}>
-        <TopBar
-          settingsCurrent={pathname.replace(/\/+$/, "") === "/settings"}
-          onOpenPalette={() => setOverlay("palette")}
-          onOpenHelp={() => setOverlay("help")}
-        />
-        <div className={styles.body}>
-          {selectOfflineMode(runtime) && <OfflineBanner />}
-          <main id="main-content" className={styles.content} tabIndex={-1}>
-            <div className={styles.contentInner}>
-              {heading !== null && (
-                <h1 className={heading.visuallyHidden ? "visually-hidden" : styles.pageTitle}>{heading.text}</h1>
-              )}
-              {children}
-            </div>
-          </main>
+      <ToastProvider>
+        <a className={styles.skipLink} href="#main-content">
+          Bỏ qua tới nội dung chính
+        </a>
+        <div className={styles.root}>
+          <TopBar
+            settingsCurrent={pathname.replace(/\/+$/, "") === "/settings"}
+            onOpenPalette={() => setOverlay("palette")}
+            onOpenHelp={() => setOverlay("help")}
+          />
+          <div className={styles.body}>
+            {selectOfflineMode(runtime) && <OfflineBanner />}
+            <main id="main-content" className={styles.content} tabIndex={-1}>
+              <div className={styles.contentInner}>
+                {heading !== null && (
+                  <h1 className={heading.visuallyHidden ? "visually-hidden" : styles.pageTitle}>{heading.text}</h1>
+                )}
+                {children}
+              </div>
+            </main>
+          </div>
+          <StatusBar
+            items={selectStatusItems(runtime, USE_MOCKS)}
+            buildLabel={buildLabel(runtime.runtime)}
+            logDir={logDirOf(runtime.runtime)}
+            canRetry={runtime.backend === "unreachable" || runtime.backend === "error"}
+            onRetry={refreshRuntime}
+          />
         </div>
-        <StatusBar
-          items={selectStatusItems(runtime, USE_MOCKS)}
-          buildLabel={buildLabel(runtime.runtime)}
-          logDir={logDirOf(runtime.runtime)}
-          canRetry={runtime.backend === "unreachable" || runtime.backend === "error"}
-          onRetry={refreshRuntime}
-        />
-      </div>
-      <CommandPalette open={overlay === "palette"} onClose={closeOverlay} commands={commands} />
-      <ShortcutHelp open={overlay === "help"} onClose={closeOverlay} />
+        <CommandPalette open={overlay === "palette"} onClose={closeOverlay} commands={commands} />
+        <ShortcutHelp open={overlay === "help"} onClose={closeOverlay} />
+      </ToastProvider>
     </ShellContext.Provider>
   );
 }

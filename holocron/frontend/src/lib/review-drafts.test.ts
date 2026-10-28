@@ -16,11 +16,13 @@ import {
   DRAFT_PAGES_LISTED,
   draftFor,
   draftPagesNote,
-  draftStatusMessage,
   EMPTY_PAGE_DRAFT,
   type LineEditDraft,
+  lineEditDenial,
+  lineEditLock,
   lineEditState,
   lockedDraftNotice,
+  NO_ANNOUNCEMENT,
   NO_DRAFTS,
   nextAnnouncement,
   pageDraftStatusMessage,
@@ -37,6 +39,11 @@ function page(pageNumber: number, status: PageStatusView = "needs_review", confi
 
 function doc(pages: PageSummaryView[], status: DocumentView["status"] = "review") {
   return { status, pages };
+}
+
+/** Trang đang hiện cho `pageDraftStatusMessage`: dòng 4 mang chữ `text` (`null` thì trang không có dòng nào). */
+function shownPage(pageNumber: number, text: string | null, confirmed = false, status: PageStatusView = "ok") {
+  return { pageNumber, status, confirmed, lines: text === null ? [] : [{ lineIndex: 4, text }] };
 }
 
 describe("giữ nháp theo trang", () => {
@@ -298,30 +305,102 @@ describe("lineEditState — dữ liệu trang tải lại khi ô 'Sửa' đang m
   });
 });
 
-describe("draftStatusMessage — vùng thông báo cố định của trang", () => {
+describe("pageDraftStatusMessage — vùng thông báo cố định của trang", () => {
   const editingDraft = draftFor(setLineEditText(startLineEdit(NO_DRAFTS, 1, 4, "gốc"), 1, "đang gõ"), 1);
   const appendDraft = draftFor(setAppendText(NO_DRAFTS, 1, "a"), 1);
 
   it("không có gì cần báo ⇒ chuỗi rỗng (vùng vẫn có trong trang)", () => {
-    expect(draftStatusMessage(EMPTY_PAGE_DRAFT, null, null)).toBe("");
-    expect(draftStatusMessage(editingDraft, { kind: "open" }, null)).toBe("");
-    expect(draftStatusMessage(editingDraft, { kind: "matched" }, null)).toBe("");
-    expect(draftStatusMessage(appendDraft, null, null)).toBe("");
+    expect(pageDraftStatusMessage(shownPage(1, "gốc"), EMPTY_PAGE_DRAFT)).toBe("");
+    // Ô sửa mở, dòng còn nguyên chữ lúc mở.
+    expect(pageDraftStatusMessage(shownPage(1, "gốc"), editingDraft)).toBe("");
+    // Dòng đã mang đúng chữ đang gõ (nháp khớp server).
+    expect(pageDraftStatusMessage(shownPage(1, "đang gõ"), editingDraft)).toBe("");
+    expect(pageDraftStatusMessage(shownPage(1, "gốc"), appendDraft)).toBe("");
   });
 
   it("xung đột và trang bị khoá ⇒ câu báo, không đọc lại chữ đã gõ", () => {
-    expect(draftStatusMessage(editingDraft, { kind: "changed" }, null)).toBe(
+    expect(pageDraftStatusMessage(shownPage(1, "bản mới"), editingDraft)).toBe(
       "Dòng 4 vừa được sửa ở nơi khác. Chữ bạn đang gõ chưa lưu.",
     );
-    expect(draftStatusMessage(editingDraft, { kind: "removed" }, null)).toBe(
+    expect(pageDraftStatusMessage(shownPage(1, null), editingDraft)).toBe(
       "Dòng 4 không còn trên trang này. Chữ bạn đang gõ chưa lưu.",
     );
-    expect(draftStatusMessage(editingDraft, { kind: "locked" }, "confirmed")).toBe(
-      "Trang này không sửa được nữa. Chữ bạn đã gõ chưa lưu.",
+    expect(pageDraftStatusMessage(shownPage(1, "gốc", true), editingDraft)).toBe(
+      "Trang 1 không sửa được nữa. Chữ bạn đã gõ chưa lưu.",
     );
-    expect(draftStatusMessage(appendDraft, null, "confirmed")).toBe(
-      "Trang này không sửa được nữa. Chữ bạn đã gõ chưa lưu.",
+    expect(pageDraftStatusMessage(shownPage(1, "gốc", true), appendDraft)).toBe(
+      "Trang 1 không sửa được nữa. Chữ bạn đã gõ chưa lưu.",
     );
+  });
+
+  it("câu báo cấp trang mang số trang: hai trang cùng bị khoá ra hai câu khác nhau", () => {
+    expect(pageDraftStatusMessage(shownPage(7, null, false, "failed"), appendDraft)).toBe(
+      "Trang 7 không sửa được nữa. Chữ bạn đã gõ chưa lưu.",
+    );
+    expect(pageDraftStatusMessage(shownPage(2, null, true), appendDraft)).not.toBe(
+      pageDraftStatusMessage(shownPage(3, null, true), appendDraft),
+    );
+  });
+});
+
+describe("khoá nút 'Sửa' của dòng khác khi trang còn ô sửa (không mất nháp im lặng)", () => {
+  const otherLine = { lineIndex: 2, text: "hai" };
+  const lines = [otherLine, { lineIndex: 4, text: "gốc" }];
+  const editingDraft = draftFor(setLineEditText(startLineEdit(NO_DRAFTS, 1, 4, "gốc"), 1, "đang gõ"), 1);
+  const openReason = "Đang sửa dòng 4. Lưu hoặc huỷ trước khi sửa dòng khác.";
+  const conflictReason = "Dòng 4 còn chữ chưa lưu. Sửa lại hoặc bỏ chữ đã gõ trước.";
+  const discardReason = "Dòng 4 còn chữ chưa lưu. Bỏ chữ đã gõ trước khi sửa dòng khác.";
+
+  it("không có ô sửa (kể cả chỉ có chữ ở ô thêm dòng) ⇒ không khoá dòng nào", () => {
+    expect(lineEditLock(EMPTY_PAGE_DRAFT, lines, null)).toBeNull();
+    expect(lineEditLock(draftFor(setAppendText(NO_DRAFTS, 1, "a"), 1), lines, null)).toBeNull();
+    expect(lineEditDenial(null, 2)).toBeNull();
+  });
+
+  it("ô sửa đang mở ⇒ dòng khác khoá kèm lý do, chính dòng đó không khoá", () => {
+    const lock = lineEditLock(editingDraft, lines, null);
+    expect(lock).toEqual({ lineIndex: 4, reason: openReason });
+    expect(lineEditDenial(lock, 2)).toBe(openReason);
+    expect(lineEditDenial(lock, 4)).toBeNull();
+  });
+
+  it("mở ô mà chưa đổi chữ vẫn khoá dòng khác", () => {
+    const lock = lineEditLock(draftFor(startLineEdit(NO_DRAFTS, 1, 4, "gốc"), 1), lines, null);
+    expect(lineEditDenial(lock, 2)).toBe(openReason);
+  });
+
+  it("dòng đổi ở nơi khác (changed) ⇒ dòng khác khoá; dòng đó vẫn được 'Sửa lại từ bản mới'", () => {
+    const lock = lineEditLock(editingDraft, [otherLine, { lineIndex: 4, text: "bản mới" }], null);
+    expect(lineEditDenial(lock, 2)).toBe(conflictReason);
+    expect(lineEditDenial(lock, 4)).toBeNull();
+  });
+
+  it("dòng biến mất (removed) hay trang bị khoá còn nháp sửa (locked) ⇒ dòng khác khoá, chỉ còn bỏ chữ đã gõ", () => {
+    expect(lineEditDenial(lineEditLock(editingDraft, [otherLine], null), 2)).toBe(discardReason);
+    expect(lineEditDenial(lineEditLock(editingDraft, lines, "confirmed"), 2)).toBe(discardReason);
+  });
+
+  it("nháp đã khớp server (matched, ô sắp đóng) ⇒ không khoá", () => {
+    expect(lineEditLock(editingDraft, [otherLine, { lineIndex: 4, text: "đang gõ" }], null)).toBeNull();
+  });
+
+  it("startLineEdit không thay ô sửa của dòng khác: nháp giữ nguyên", () => {
+    const drafts = setLineEditText(startLineEdit(NO_DRAFTS, 1, 4, "gốc"), 1, "đang gõ");
+    expect(startLineEdit(drafts, 1, 2, "hai")).toBe(drafts);
+    // Cùng dòng ("Sửa lại từ bản mới") thì thay; trang khác không bị ảnh hưởng.
+    expect(draftFor(startLineEdit(drafts, 1, 4, "bản mới"), 1).editing).toEqual({
+      lineIndex: 4,
+      text: "bản mới",
+      baseText: "bản mới",
+    });
+    expect(draftFor(startLineEdit(drafts, 2, 2, "x"), 2).editing).toEqual({ lineIndex: 2, text: "x", baseText: "x" });
+  });
+
+  it("đóng ô sửa xong ⇒ dòng khác mở được", () => {
+    let drafts = setLineEditText(startLineEdit(NO_DRAFTS, 1, 4, "gốc"), 1, "đang gõ");
+    drafts = closeLineEdit(drafts, 1, 4);
+    expect(lineEditLock(draftFor(drafts, 1), lines, null)).toBeNull();
+    expect(draftFor(startLineEdit(drafts, 1, 2, "hai"), 1).editing?.lineIndex).toBe(2);
   });
 });
 
@@ -367,9 +446,9 @@ describe("nháp chỉ có khoảng trắng không tính là nháp", () => {
     expect(lockedDraftNotice({ appendText: "   ", editing }, "confirmed")).toEqual({ editing, appendText: null });
   });
 
-  it("draftStatusMessage: trang bị khoá mà không có nháp (hoặc nháp chỉ khoảng trắng) ⇒ chuỗi rỗng", () => {
-    expect(draftStatusMessage(EMPTY_PAGE_DRAFT, null, "confirmed")).toBe("");
-    expect(draftStatusMessage({ appendText: " \t", editing: null }, null, "failed")).toBe("");
+  it("pageDraftStatusMessage: trang bị khoá mà không có nháp (hoặc nháp chỉ khoảng trắng) ⇒ chuỗi rỗng", () => {
+    expect(pageDraftStatusMessage(shownPage(1, null, true), EMPTY_PAGE_DRAFT)).toBe("");
+    expect(pageDraftStatusMessage(shownPage(1, null, false, "failed"), { appendText: " \t", editing: null })).toBe("");
   });
 
   it("bulkConfirmBlock: nháp chỉ khoảng trắng hoặc nháp của trang không thuộc tài liệu ⇒ không khoá", () => {
@@ -381,32 +460,56 @@ describe("nháp chỉ có khoảng trắng không tính là nháp", () => {
 
 describe("vùng thông báo cố định ở PageReview", () => {
   const conflict = "Dòng 4 vừa được sửa ở nơi khác. Chữ bạn đang gõ chưa lưu.";
+  const onPage1 = { pageNumber: 1, text: conflict };
 
   it("pageDraftStatusMessage tự đối chiếu ô sửa với dòng và lý do khoá của trang", () => {
     const draft = draftFor(setLineEditText(startLineEdit(NO_DRAFTS, 1, 4, "gốc"), 1, "đang gõ"), 1);
-    const lines = (text: string) => [{ lineIndex: 4, text }];
-    expect(pageDraftStatusMessage({ status: "ok", confirmed: false, lines: lines("gốc") }, draft)).toBe("");
-    expect(pageDraftStatusMessage({ status: "ok", confirmed: false, lines: lines("bản mới") }, draft)).toBe(conflict);
-    expect(pageDraftStatusMessage({ status: "ok", confirmed: false, lines: [] }, draft)).toBe(
+    expect(pageDraftStatusMessage(shownPage(1, "gốc"), draft)).toBe("");
+    expect(pageDraftStatusMessage(shownPage(1, "bản mới"), draft)).toBe(conflict);
+    expect(pageDraftStatusMessage(shownPage(1, null), draft)).toBe(
       "Dòng 4 không còn trên trang này. Chữ bạn đang gõ chưa lưu.",
     );
-    expect(pageDraftStatusMessage({ status: "ok", confirmed: true, lines: lines("gốc") }, draft)).toBe(
-      "Trang này không sửa được nữa. Chữ bạn đã gõ chưa lưu.",
+    expect(pageDraftStatusMessage(shownPage(1, "gốc", true), draft)).toBe(
+      "Trang 1 không sửa được nữa. Chữ bạn đã gõ chưa lưu.",
     );
-    expect(pageDraftStatusMessage({ status: "ok", confirmed: true, lines: [] }, EMPTY_PAGE_DRAFT)).toBe("");
+    expect(pageDraftStatusMessage(shownPage(1, null, true), EMPTY_PAGE_DRAFT)).toBe("");
   });
 
   it("câu đổi ⇒ chữ mới; câu về rỗng ⇒ xoá chữ", () => {
-    expect(nextAnnouncement("", conflict)).toBe(conflict);
-    expect(nextAnnouncement(conflict, "")).toBe("");
+    expect(nextAnnouncement({ pageNumber: 1, text: "" }, { pageNumber: 1, message: conflict })).toEqual(onPage1);
+    expect(nextAnnouncement(onPage1, { pageNumber: 1, message: "" })).toEqual({ pageNumber: 1, text: "" });
   });
 
   it("ghi không liên quan (câu như cũ) ⇒ giữ đúng chữ cũ, không đọc lại", () => {
-    expect(nextAnnouncement(conflict, conflict)).toBe(conflict);
+    expect(nextAnnouncement(onPage1, { pageNumber: 1, message: conflict })).toBe(onPage1);
   });
 
-  it("trang đang tải hoặc lỗi (chưa có câu) ⇒ giữ chữ cũ, không xoá rồi đọc lại khi tải xong", () => {
-    expect(nextAnnouncement(conflict, null)).toBe(conflict);
-    expect(nextAnnouncement("", null)).toBe("");
+  it("tải lại CÙNG trang (đang tải hoặc lỗi, chưa có câu) ⇒ giữ chữ cũ, không xoá rồi đọc lại khi tải xong", () => {
+    expect(nextAnnouncement(onPage1, { pageNumber: 1, message: null })).toBe(onPage1);
+    const empty = { pageNumber: 1, text: "" };
+    expect(nextAnnouncement(empty, { pageNumber: 1, message: null })).toBe(empty);
+  });
+
+  it("sang trang khác còn đang tải ⇒ bỏ chữ của trang cũ ngay", () => {
+    expect(nextAnnouncement(onPage1, { pageNumber: 2, message: null })).toEqual({ pageNumber: 2, text: "" });
+  });
+
+  it("sang trang khác đã hiện ⇒ lấy câu của trang mới, kể cả rỗng", () => {
+    expect(nextAnnouncement(onPage1, { pageNumber: 2, message: "" })).toEqual({ pageNumber: 2, text: "" });
+    const locked2 = "Trang 2 không sửa được nữa. Chữ bạn đã gõ chưa lưu.";
+    expect(nextAnnouncement(onPage1, { pageNumber: 2, message: locked2 })).toEqual({ pageNumber: 2, text: locked2 });
+  });
+
+  it("đổi trang rồi quay lại trang có xung đột ⇒ chữ đã được đặt lại nên vùng đổi chữ và đọc lại", () => {
+    let announced = nextAnnouncement(NO_ANNOUNCEMENT, { pageNumber: 1, message: conflict });
+    announced = nextAnnouncement(announced, { pageNumber: 2, message: null });
+    expect(announced.text).toBe("");
+    announced = nextAnnouncement(announced, { pageNumber: 1, message: null });
+    expect(announced).toEqual({ pageNumber: 1, text: "" });
+    expect(nextAnnouncement(announced, { pageNumber: 1, message: conflict })).toEqual(onPage1);
+  });
+
+  it("chưa có trang nào ⇒ vùng rỗng", () => {
+    expect(nextAnnouncement(NO_ANNOUNCEMENT, { pageNumber: null, message: null })).toBe(NO_ANNOUNCEMENT);
   });
 });

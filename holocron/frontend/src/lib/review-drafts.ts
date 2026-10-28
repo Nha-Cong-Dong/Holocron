@@ -56,12 +56,15 @@ export function setAppendText(drafts: ReviewDrafts, pageNumber: number, text: st
 }
 
 /**
- * Mở ô "Sửa" cho một dòng, chữ ban đầu là chữ hiện tại của dòng (cũng là `baseText`). Ô đang mở (nếu có) được thay;
- * "Sửa lại từ bản mới" khi xung đột cũng đi qua đây với chữ mới của dòng.
+ * Mở ô "Sửa" cho một dòng, chữ ban đầu là chữ hiện tại của dòng (cũng là `baseText`). "Sửa lại từ bản mới" khi xung đột
+ * cũng đi qua đây với chữ mới của dòng (ô của cùng dòng được thay). Trang đang có ô sửa (mở hay xung đột) của DÒNG KHÁC
+ * thì giữ nguyên, không thay: nháp đó không bao giờ mất im lặng (giao diện khoá nút "Sửa" theo `lineEditDenial`).
  */
 export function startLineEdit(drafts: ReviewDrafts, pageNumber: number, lineIndex: number, text: string): ReviewDrafts {
+  const draft = draftFor(drafts, pageNumber);
+  if (draft.editing !== null && draft.editing.lineIndex !== lineIndex) return drafts;
   return withDraft(drafts, pageNumber, {
-    ...draftFor(drafts, pageNumber),
+    ...draft,
     editing: { lineIndex, text, baseText: text },
   });
 }
@@ -117,6 +120,49 @@ export function lineEditState(
   return { kind: "changed" };
 }
 
+/**
+ * Dòng đang giữ ô "Sửa" của trang và lý do (bằng chữ) khoá nút "Sửa" của mọi dòng khác. Một trang chỉ có một ô sửa, nên
+ * khi ô đó còn mở (`open`) hay còn chữ chưa lưu sau xung đột (`changed`, `removed`, `locked`), mở ô ở dòng khác sẽ làm
+ * mất nháp: nút "Sửa" của dòng khác khoá kèm lý do cho tới khi người dùng lưu, huỷ, sửa lại hoặc bỏ chữ đã gõ.
+ * `matched` (nháp đã khớp server, ô sắp đóng) không khoá.
+ */
+export interface LineEditLock {
+  /** Dòng đang giữ ô sửa; nút của chính dòng này ("Sửa lại từ bản mới") không bị khoá. */
+  lineIndex: number;
+  /** Câu giải thích hiện cạnh danh sách dòng, nút "Sửa" bị khoá trỏ tới qua `aria-describedby`. */
+  reason: string;
+}
+
+export function lineEditLock(
+  draft: PageDraft,
+  lines: readonly Pick<LineView, "lineIndex" | "text">[],
+  editBlock: EditBlock | null,
+): LineEditLock | null {
+  const editing = draft.editing;
+  if (editing === null) return null;
+  const line = editing.lineIndex;
+  switch (lineEditState(editing, lines, editBlock).kind) {
+    case "matched":
+      return null;
+    case "open":
+      return { lineIndex: line, reason: `Đang sửa dòng ${line}. Lưu hoặc huỷ trước khi sửa dòng khác.` };
+    case "changed":
+      return { lineIndex: line, reason: `Dòng ${line} còn chữ chưa lưu. Sửa lại hoặc bỏ chữ đã gõ trước.` };
+    case "removed":
+    case "locked":
+      return { lineIndex: line, reason: `Dòng ${line} còn chữ chưa lưu. Bỏ chữ đã gõ trước khi sửa dòng khác.` };
+  }
+}
+
+/**
+ * Lý do nút "Sửa" của dòng `lineIndex` bị khoá; `null` khi bấm được. Thuộc tính `disabled`, `aria-describedby` và
+ * handler của nút cùng gọi hàm này.
+ */
+export function lineEditDenial(lock: LineEditLock | null, lineIndex: number): string | null {
+  if (lock === null || lock.lineIndex === lineIndex) return null;
+  return lock.reason;
+}
+
 /** Trang còn nháp chưa lưu: cùng điều kiện với nút xác nhận trang (`unsavedDrafts`). */
 export function pageHasDraft(draft: PageDraft): boolean {
   const flags = unsavedDrafts({ appendText: draft.appendText, editingLine: draft.editing?.lineIndex ?? null });
@@ -146,9 +192,15 @@ export function lockedDraftNotice(draft: PageDraft, editBlock: EditBlock | null)
 /**
  * Câu cho vùng thông báo cố định của trang (`role="status"`, luôn có trong trang, rỗng khi không có gì): báo xung đột
  * hay nháp trên trang bị khoá. Không đọc lại chữ đã gõ (chữ đó hiện ngay tại câu báo). Chuỗi rỗng khi không có gì cần
- * báo. `state` là `lineEditState` của ô sửa (`null` khi không mở ô nào).
+ * báo. `state` là `lineEditState` của ô sửa (`null` khi không mở ô nào). Câu cấp trang mang số trang, để hai trang cùng
+ * bị khoá vẫn ra hai câu khác nhau (vùng đổi chữ nên trình đọc màn hình đọc).
  */
-export function draftStatusMessage(draft: PageDraft, state: LineEditState | null, editBlock: EditBlock | null): string {
+function draftStatusMessage(
+  pageNumber: number,
+  draft: PageDraft,
+  state: LineEditState | null,
+  editBlock: EditBlock | null,
+): string {
   const lineIndex = draft.editing?.lineIndex;
   if (lineIndex !== undefined && state?.kind === "changed") {
     return `Dòng ${lineIndex} vừa được sửa ở nơi khác. Chữ bạn đang gõ chưa lưu.`;
@@ -157,29 +209,50 @@ export function draftStatusMessage(draft: PageDraft, state: LineEditState | null
     return `Dòng ${lineIndex} không còn trên trang này. Chữ bạn đang gõ chưa lưu.`;
   }
   if (lockedDraftNotice(draft, editBlock) !== null) {
-    return "Trang này không sửa được nữa. Chữ bạn đã gõ chưa lưu.";
+    return `Trang ${pageNumber} không sửa được nữa. Chữ bạn đã gõ chưa lưu.`;
   }
   return "";
 }
 
 /** `draftStatusMessage` cho trang đang hiện: tự đối chiếu ô sửa với các dòng và lý do khoá sửa của trang. */
 export function pageDraftStatusMessage(
-  page: Pick<PageView, "status" | "confirmed"> & { lines: readonly Pick<LineView, "lineIndex" | "text">[] },
+  page: Pick<PageView, "pageNumber" | "status" | "confirmed"> & {
+    lines: readonly Pick<LineView, "lineIndex" | "text">[];
+  },
   draft: PageDraft,
 ): string {
   const editBlock = lineEditBlock(page);
   const state = draft.editing === null ? null : lineEditState(draft.editing, page.lines, editBlock);
-  return draftStatusMessage(draft, state, editBlock);
+  return draftStatusMessage(page.pageNumber, draft, state, editBlock);
+}
+
+/** Chữ đang có trong vùng thông báo cố định và trang mà chữ đó thuộc về. */
+export interface Announcement {
+  /** Trang của chữ; `null` khi chưa có trang nào (lúc đầu, hay đang mở trang cần xem đầu tiên). */
+  pageNumber: number | null;
+  text: string;
+}
+
+export const NO_ANNOUNCEMENT: Announcement = { pageNumber: null, text: "" };
+
+/** Trang mà màn đang hướng tới và câu báo của nó; `message` là `null` khi trang chưa hiện (đang tải, lỗi). */
+export interface ShownPageMessage {
+  pageNumber: number | null;
+  message: string | null;
 }
 
 /**
- * Chữ mới của vùng thông báo cố định (`role="status"` ở `PageReview`, không mount lại khi vùng trang vẽ lại). `current`
- * là câu của trang đang hiện, `null` khi chưa có trang nào hiện (đang tải, lỗi): giữ chữ cũ, để tải lại xong không đọc
- * lại xung đột đã báo. Câu không đổi (ví dụ sau một lần ghi không liên quan) thì trả đúng `previous`: chữ trong vùng
- * không đổi nên trình đọc màn hình không đọc lại.
+ * Chữ mới của vùng thông báo cố định (`role="status"` ở `PageReview`, không mount lại khi vùng trang vẽ lại):
+ * - đổi sang trang khác (kể cả lúc trang mới còn đang tải): bỏ chữ của trang cũ, lấy câu của trang mới (`""` khi chưa
+ *   có), không để câu xung đột của trang cũ nằm lại trong vùng khi đã sang trang khác;
+ * - cùng trang mà chưa có câu (đang tải lại, lỗi): giữ chữ cũ, để tải lại xong không đọc lại xung đột đã báo;
+ * - cùng trang, câu không đổi (ví dụ sau một lần ghi không liên quan): trả đúng `previous`, chữ trong vùng không đổi nên
+ *   trình đọc màn hình không đọc lại.
  */
-export function nextAnnouncement(previous: string, current: string | null): string {
-  return current ?? previous;
+export function nextAnnouncement(previous: Announcement, shown: ShownPageMessage): Announcement {
+  if (shown.pageNumber !== previous.pageNumber) return { pageNumber: shown.pageNumber, text: shown.message ?? "" };
+  if (shown.message === null || shown.message === previous.text) return previous;
+  return { pageNumber: shown.pageNumber, text: shown.message };
 }
 
 /**

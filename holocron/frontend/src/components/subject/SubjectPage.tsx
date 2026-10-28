@@ -38,14 +38,20 @@ import type { VaultLocation } from "@/lib/vault";
 
 import styles from "./SubjectPage.module.css";
 
-/** `id` của tab Khái niệm (`Tabs` đặt `${idPrefix}-tab-${chỉ số}`): xem lại xong thì focus vào đây. */
-const CONCEPTS_TAB_ID = "subject-tab-1";
+/** `idPrefix` của hàng tab môn. */
+const TABS_ID_PREFIX = "subject";
 
 const TAB_ITEMS: readonly TabItem<SubjectTab>[] = [
   { id: "documents", label: "Tài liệu", icon: "document" },
   { id: "concepts", label: "Khái niệm", icon: "concept" },
   { id: "practice", label: "Ôn tập", icon: "practice" },
 ];
+
+/**
+ * `id` của tab Khái niệm (`Tabs` đặt `${idPrefix}-tab-${chỉ số}`), tính từ vị trí tab trong `TAB_ITEMS`: xem lại xong
+ * thì focus vào đây.
+ */
+const CONCEPTS_TAB_ID = `${TABS_ID_PREFIX}-tab-${TAB_ITEMS.findIndex((item) => item.id === "concepts")}`;
 
 /**
  * Trang môn `/subject?code=&tab=` (design-handoff/README.md màn 3): tiêu đề là tên môn (chưa tải ⇒ mã môn), bầu trời
@@ -227,7 +233,7 @@ function SubjectPanes({ code, tab, documentLocation, listError, onReloadSubjects
   return (
     <Tabs
       label="Phần của môn"
-      idPrefix="subject"
+      idPrefix={TABS_ID_PREFIX}
       items={TAB_ITEMS}
       selected={tab}
       onSelect={(next) => router.push(subjectHref(code, next))}

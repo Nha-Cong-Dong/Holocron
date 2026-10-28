@@ -24,12 +24,12 @@ export interface DocumentsSnapshot {
   progress: ReadonlyMap<string, DocumentView>;
 }
 
-export type ListState =
+type ListState =
   | { kind: "loading" }
   | { kind: "error"; error: UiError }
   | { kind: "ready"; snapshot: DocumentsSnapshot };
 
-export function hasProcessing(snapshot: DocumentsSnapshot): boolean {
+function hasProcessing(snapshot: DocumentsSnapshot): boolean {
   return snapshot.documents.some((document) => document.status === "processing");
 }
 

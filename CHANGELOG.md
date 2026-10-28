@@ -6,6 +6,7 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 ## [Unreleased]
 
 ### 🚀 Tính năng mới
+- Launcher bản portable mở Holocron ở chế độ app bằng Chrome hoặc Brave (cửa sổ riêng, hồ sơ riêng ở `%LOCALAPPDATA%\Holocronrowser-profile`; tìm qua App Paths trong registry HKCU/HKLM rồi `%ProgramFiles%`, `%ProgramFiles(x86)%`, `%LOCALAPPDATA%`); không có thì dùng trình duyệt mặc định như trước; không bao giờ dùng Edge `--app`; thêm cờ `--browser auto|chrome|brave|default`. Token không vào URL hay dòng lệnh. Không thêm dependency (quyết định người dùng 2026-10-28).
 - Frontend `npm run build:static` dựng site tĩnh (`output: "export"`, base API `/`, không dữ liệu mẫu) (PR #69).
 - Backend phục vụ bản export tĩnh khi đặt `HOLOCRON_WEB_DIR`: chèn `window.__HOLOCRON_RUNTIME__`, `/_next/static/*` immutable, đường dẫn lạ/không an toàn ⇒ 404, phản hồi API giữ nguyên; thư mục sai ⇒ `ConfigError` chỉ nêu tên biến (PR #71).
 - Launcher bản zip portable `python -X utf8 -m holocron_core.launcher` (cổng ngẫu nhiên 127.0.0.1, đặt biến khi chưa có, khoá một phiên bản, tự mở trình duyệt, Job Object kill-on-close trên Windows) (PR #70).

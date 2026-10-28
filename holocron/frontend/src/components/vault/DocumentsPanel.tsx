@@ -24,12 +24,12 @@ export interface DocumentsSnapshot {
   progress: ReadonlyMap<string, DocumentView>;
 }
 
-type ListState =
+export type ListState =
   | { kind: "loading" }
   | { kind: "error"; error: UiError }
   | { kind: "ready"; snapshot: DocumentsSnapshot };
 
-function hasProcessing(snapshot: DocumentsSnapshot): boolean {
+export function hasProcessing(snapshot: DocumentsSnapshot): boolean {
   return snapshot.documents.some((document) => document.status === "processing");
 }
 
@@ -48,18 +48,21 @@ async function loadSnapshot(subjectCode: string): Promise<DocumentsSnapshot> {
   return { documents, progress };
 }
 
-interface DocumentsPanelProps {
-  subjectCode: string;
-  /** Dựng địa chỉ xem lại trang; mặc định `vaultHref` (`/vault?doc=&page=`). Trang môn giữ trong `/subject`. */
-  hrefFor?: VaultHrefFor;
+export interface DocumentsSnapshotApi {
+  state: ListState;
+  /** Lỗi khi tự hỏi lại tiến độ đọc đã bỏ cuộc (lỗi liên tiếp); danh sách cũ vẫn giữ. */
+  pollError: UiError | null;
+  /** Đọc lại danh sách ngay; còn tài liệu đang đọc thì tự hỏi lại theo chu kỳ (`lib/poll.ts`). */
+  reload: () => void;
 }
 
-/** Mục "Tài liệu" của một môn: form nhập PDF và danh sách tài liệu, tự hỏi lại trạng thái khi có tài liệu đang đọc. */
-export function DocumentsPanel({ subjectCode, hrefFor = vaultHref }: DocumentsPanelProps) {
-  const { runtime } = useShell();
+/**
+ * Danh sách tài liệu của một môn, tự hỏi lại khi có tài liệu đang đọc. Dùng chung cho `/vault` và tab Tài liệu của
+ * trang môn.
+ */
+export function useDocumentsSnapshot(subjectCode: string): DocumentsSnapshotApi {
   const [state, setState] = useState<ListState>({ kind: "loading" });
   const [pollError, setPollError] = useState<UiError | null>(null);
-  const [outcome, setOutcome] = useState<DocumentImportOutcome | null>(null);
   const loads = useRef(createLatestCounter());
 
   const poller = useMemo(
@@ -102,6 +105,21 @@ export function DocumentsPanel({ subjectCode, hrefFor = vaultHref }: DocumentsPa
       poller.stop();
     };
   }, [reload, poller]);
+
+  return { state, pollError, reload };
+}
+
+interface DocumentsPanelProps {
+  subjectCode: string;
+  /** Dựng địa chỉ xem lại trang; mặc định `vaultHref` (`/vault?doc=&page=`). Trang môn giữ trong `/subject`. */
+  hrefFor?: VaultHrefFor;
+}
+
+/** Mục "Tài liệu" của một môn: form nhập PDF và danh sách tài liệu, tự hỏi lại trạng thái khi có tài liệu đang đọc. */
+export function DocumentsPanel({ subjectCode, hrefFor = vaultHref }: DocumentsPanelProps) {
+  const { runtime } = useShell();
+  const { state, pollError, reload } = useDocumentsSnapshot(subjectCode);
+  const [outcome, setOutcome] = useState<DocumentImportOutcome | null>(null);
 
   const onImported = useCallback(
     (result: DocumentImportOutcome) => {

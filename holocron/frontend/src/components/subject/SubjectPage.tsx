@@ -6,12 +6,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { EmptyState } from "@/components/common/LoadState";
 import { type TabItem, Tabs } from "@/components/common/Tabs";
+import { DocumentsTab } from "@/components/documents/DocumentsTab";
 import { PairsView } from "@/components/pairs/PairsView";
 import { PracticeView } from "@/components/practice/PracticeView";
 import { useShell } from "@/components/shell/ShellContext";
 import { SkyView } from "@/components/sky/SkyView";
-import { DocumentsPanel } from "@/components/vault/DocumentsPanel";
-import { PageReview } from "@/components/vault/PageReview";
 import { api } from "@/lib/api";
 import type { UiError } from "@/lib/errors";
 import type { PairsLocation } from "@/lib/pairs";
@@ -32,6 +31,9 @@ import type { VaultLocation } from "@/lib/vault";
 
 import styles from "./SubjectPage.module.css";
 
+/** `id` của tab Khái niệm (`Tabs` đặt `${idPrefix}-tab-${chỉ số}`): xem lại xong thì focus vào đây. */
+const CONCEPTS_TAB_ID = "subject-tab-1";
+
 const TAB_ITEMS: readonly TabItem<SubjectTab>[] = [
   { id: "documents", label: "Tài liệu", icon: "document" },
   { id: "concepts", label: "Khái niệm", icon: "concept" },
@@ -42,7 +44,8 @@ const TAB_ITEMS: readonly TabItem<SubjectTab>[] = [
  * Trang môn `/subject?code=&tab=` (design-handoff/README.md màn 3): tiêu đề là tên môn (chưa tải ⇒ mã môn), bầu trời
  * kiến thức của môn, rồi ba phần Tài liệu · Khái niệm · Ôn tập. Mã môn đọc từ địa chỉ và truyền làm prop cho từng
  * phần; khung được báo qua `selectSubject` (và mã được lưu làm môn gần nhất cho trang chủ) để hộp lệnh và các route cũ
- * biết môn mở gần nhất. Phần Tài liệu đọc thêm `?doc=&page=` để xem lại một trang ngay trong tab. Phải nằm trong
+ * biết môn mở gần nhất. Phần Tài liệu (`DocumentsTab`, màn 4–6) đọc thêm `?doc=&page=` để xem lại một tài liệu ngay
+ * trong tab; xem lại xong thì sang tab Khái niệm. Phải nằm trong
  * `<Suspense>` vì đọc `useSearchParams()`.
  */
 export function SubjectPage() {
@@ -199,6 +202,11 @@ function SubjectPanes({ code, tab, documentLocation, listError, onReloadSubjects
     (vaultLocation: Partial<VaultLocation>) => subjectDocumentsHref(code, vaultLocation),
     [code],
   );
+  // Xem lại xong một tài liệu: sang tab Khái niệm và đặt focus vào tab đó (design-handoff/README.md màn 6).
+  const onDocumentFinished = useCallback(() => {
+    router.push(subjectHref(code, "concepts"));
+    requestAnimationFrame(() => document.getElementById(CONCEPTS_TAB_ID)?.focus());
+  }, [router, code]);
 
   return (
     <Tabs
@@ -208,18 +216,14 @@ function SubjectPanes({ code, tab, documentLocation, listError, onReloadSubjects
       selected={tab}
       onSelect={(next) => router.push(subjectHref(code, next))}
     >
-      {tab === "documents" &&
-        (documentLocation.doc === null ? (
-          <DocumentsPanel subjectCode={code} hrefFor={documentsHref} />
-        ) : (
-          <PageReview
-            key={documentLocation.doc}
-            documentId={documentLocation.doc}
-            pageNumber={documentLocation.page ?? 1}
-            hrefFor={documentsHref}
-            expectedSubjectCode={code}
-          />
-        ))}
+      {tab === "documents" && (
+        <DocumentsTab
+          subjectCode={code}
+          location={documentLocation}
+          hrefFor={documentsHref}
+          onFinished={onDocumentFinished}
+        />
+      )}
       {tab === "concepts" && <PairsView subjectCode={code} hrefFor={conceptsHref} documentsHrefFor={documentsHref} />}
       {tab === "practice" &&
         (listError === null ? (

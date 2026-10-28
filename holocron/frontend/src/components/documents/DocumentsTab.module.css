@@ -1,0 +1,95 @@
+/* Tab Tài liệu của trang môn: danh sách, hàng đợi gửi, trạng thái đang tải. */
+.root {
+  display: grid;
+  gap: var(--sp-5);
+  min-width: 0;
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.title {
+  font-size: var(--fs-h3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-h3);
+}
+
+.note {
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--warn-soft);
+  color: var(--ink);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.queue {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.queueHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.queueTitle {
+  font-size: var(--fs-h3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-h3);
+}
+
+.queueCount {
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.queueList {
+  display: grid;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.loading {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.skeletonList {
+  display: grid;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.skeletonRow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.loadingText {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}

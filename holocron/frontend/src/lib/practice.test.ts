@@ -7,7 +7,6 @@ import { localError } from "./errors";
 import { createLatestCounter } from "./latest";
 import {
   answerOutcome,
-  appendSentence,
   buildBlueprintCreate,
   defaultFormatChoice,
   entrySummary,
@@ -22,7 +21,6 @@ import {
   practiceReducer,
   practiceScope,
   revealPolicy,
-  VAULT_HINT_VI,
 } from "./practice";
 import { type EssayGradeView, type PracticeQuestion, parseEssayGradeResult, parsePracticeBatch } from "./practice-data";
 import { type KeyInput, resolveShortcut, type ShortcutScope } from "./shortcuts";
@@ -363,23 +361,6 @@ describe("phím tắt của màn luyện tập", () => {
     expect(press({ kind: "mcq", phase: "unanswered" }, key("k", { ctrlKey: true }))).toBeNull();
     expect(press({ kind: "mcq", phase: "unanswered" }, key("?"))).toBeNull();
     expect(press({ kind: "mcq", phase: "unanswered" }, key("Escape"))).toBeNull();
-  });
-});
-
-describe("lý do slot không sinh được", () => {
-  it("không ra hai dấu chấm khi lý do đã kết thúc bằng dấu câu", () => {
-    expect(appendSentence("không đủ căn cứ trong Vault", VAULT_HINT_VI)).toBe(
-      `không đủ căn cứ trong Vault. ${VAULT_HINT_VI}`,
-    );
-    expect(appendSentence("Chương có ít hơn 4 khái niệm.", VAULT_HINT_VI)).toBe(
-      `Chương có ít hơn 4 khái niệm. ${VAULT_HINT_VI}`,
-    );
-    expect(appendSentence("Thiếu dữ liệu…  ", VAULT_HINT_VI)).toBe(`Thiếu dữ liệu… ${VAULT_HINT_VI}`);
-    expect(appendSentence("", VAULT_HINT_VI)).toBe(VAULT_HINT_VI);
-  });
-
-  it("gợi ý chung không ghi cứng ngưỡng số khái niệm", () => {
-    expect(VAULT_HINT_VI).not.toMatch(/\d|bốn|ít nhất/u);
   });
 });
 

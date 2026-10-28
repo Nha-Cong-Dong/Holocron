@@ -14,10 +14,10 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field
 
-from .documents import PageEditAudit
+from .documents import CHAPTER_CODE_PATTERN, PageEditAudit, PageSummary
 from .ingestion import IngestionItem, UploadedDocument
-from .schemas import DocumentMeta, ExamBlueprint, KnowledgeChunk
-from .twins import IdempotencyRecord
+from .schemas import BlueprintSummary, DocumentMeta, ExamBlueprint, ExamFormat, KnowledgeChunk, Subject
+from .twins import IdempotencyRecord, TwinBatch
 from .vault import ConceptPair, ConceptPairStatus, VaultEdit
 
 IDEMPOTENCY_TTL = timedelta(hours=24)
@@ -84,17 +84,30 @@ class DocumentExistsError(StorageError):
         self.document_id = document_id
 
 
+class SubjectExistsError(StorageError):
+    """Đã có môn cùng `subject_code` (kể cả môn tạo ngầm); `create_subject` không ghi gì (§6.8: 409)."""
+
+    def __init__(self, subject_code: str) -> None:
+        super().__init__(f"môn {subject_code} đã có")
+        self.subject_code = subject_code
+
+
 class VaultSearchUnavailableError(StorageError):
     """SQLite không có FTS5; tầng gọi dùng BM25 tự cài (§5.13, ADR-006 mục 4)."""
 
 
 class ImportedDocument(BaseModel):
-    """Một dòng `documents` của tài liệu nhập qua bộ nhập PDF (§6.5); upload đề (§6.1) chỉ có `UploadedDocument`."""
+    """Một dòng `documents` của tài liệu nhập qua bộ nhập PDF (§6.5); upload đề (§6.1) chỉ có `UploadedDocument`.
+
+    `chapter_code` là field form bắt buộc của `POST /v1/documents` (§6.5, duyệt 2026-10-26); bộ nhập luôn đặt nó.
+    `None` chỉ gặp ở bản ghi tạo trước khi có cột `documents.chapter_code` (migration 0002).
+    """
 
     meta: DocumentMeta
     filename: str = Field(min_length=1, max_length=255)
     size_bytes: int = Field(ge=1)
     output_language: OutputLanguage = "vi"
+    chapter_code: str | None = Field(default=None, pattern=CHAPTER_CODE_PATTERN)
     status: DocumentStatus
     version: int = Field(default=1, ge=1)
 
@@ -141,14 +154,53 @@ def same_item_state(stored: IngestionItem, expected: IngestionItem) -> bool:
     return stored.model_dump(exclude={"audits"}) == expected.model_dump(exclude={"audits"})
 
 
+class SubjectRepository(Protocol):
+    """Môn học (§5.13 bảng `subjects`, §5.14, §6.8). Bảng khác không có khoá ngoại tới môn."""
+
+    def list_subjects(self) -> list[Subject]:
+        """Mọi môn, sắp theo `subject_code`."""
+        ...
+
+    def get_subject(self, subject_code: str) -> Subject | None: ...
+
+    def create_subject(self, subject: Subject) -> Subject:
+        """Tạo môn với `version = 1`; đã có môn cùng mã ⇒ `SubjectExistsError`, không ghi gì."""
+        ...
+
+    def update_subject(
+        self,
+        subject_code: str,
+        expected_version: int,
+        *,
+        display_name: str | None,
+        exam_format: ExamFormat | None,
+        now: datetime,
+    ) -> Subject:
+        """So-và-ghi nguyên tử các field khác `None`, `version` tăng 1, `updated_at = now`.
+
+        Không có môn ⇒ `RecordNotFoundError`; version lệch ⇒ `VersionConflictError`.
+        """
+        ...
+
+
 class BlueprintRepository(Protocol):
-    def save_blueprint(self, blueprint: ExamBlueprint, item_ids: Sequence[str] = ()) -> ExamBlueprint:
-        """Lưu blueprint kèm item nguồn (item thứ i ứng với slot i + 1, §5.9) để kiểm lại I5 khi sinh twin."""
+    def save_blueprint(
+        self, blueprint: ExamBlueprint, item_ids: Sequence[str] = (), *, implicit_subject: Subject | None = None
+    ) -> ExamBlueprint:
+        """Lưu blueprint kèm item nguồn (item thứ i ứng với slot i + 1, §5.9) để kiểm lại I5 khi sinh twin.
+
+        `implicit_subject`: môn tạo ngầm (§5.14) khi `blueprint.subject_code` chưa có môn; được tạo trong CÙNG giao dịch
+        với blueprint, nên lưu lỗi thì không có môn nào được tạo. Môn đã có thì giữ nguyên.
+        """
         ...
 
     def get_blueprint(self, blueprint_id: str) -> ExamBlueprint | None: ...
 
     def blueprint_item_ids(self, blueprint_id: str) -> tuple[str, ...]: ...
+
+    def list_blueprint_summaries(self, subject_code: str | None = None) -> list[BlueprintSummary]:
+        """Mới nhất trước (theo `created_at`, hoà thì theo `blueprint_id`); `batch_count` = số batch đã lưu (§6.7)."""
+        ...
 
 
 class TwinBatchRepository(Protocol):
@@ -158,13 +210,33 @@ class TwinBatchRepository(Protocol):
         """Bản ghi còn hiệu lực (`now - stored_at <= IDEMPOTENCY_TTL`) của `(blueprint, key)`; hết hạn ⇒ `None`."""
         ...
 
+    def save_batch(self, batch: TwinBatch, idempotency_key: str | None, body_digest: str) -> TwinBatch:
+        """API ghi batch duy nhất của luồng sinh twin (§6.3), nguyên tử; trả batch mà request nhận được.
+
+        Mốc thời gian là `batch.created_at` (cũng là `stored_at` của bản ghi idempotency).
+        - `idempotency_key` `None` ⇒ ghi batch với khoá `NULL`.
+        - Khoá K chưa có bản ghi, hoặc bản ghi của K đã hết hạn TTL ⇒ dọn khoá K cũ (nếu hết hạn) rồi ghi với K.
+        - K đang có bản ghi còn hạn với body khác ⇒ ghi batch mới với khoá `NULL`, KHÔNG đụng bản ghi của K.
+        - K đang có bản ghi còn hạn với cùng body ⇒ không ghi gì, trả đúng batch cũ (cùng `batch_id`).
+        Blueprint không tồn tại ⇒ `MissingReferenceError` (kho SQLite).
+        """
+        ...
+
     def save_idempotent(self, blueprint_id: str, key: str, record: IdempotencyRecord) -> None:
-        """Ghi bản ghi mới cho `(blueprint, key)`; bản ghi cũ cùng khoá không còn tra được nữa."""
+        """Ghi bản ghi mới cho `(blueprint, key)`; bản ghi cũ cùng khoá không còn tra được nữa.
+
+        Đường ghi cấp thấp có từ trước `save_batch` (giữ cho test kho); router không dùng.
+        """
         ...
 
 
 class DocumentRepository(Protocol):
-    """Tài liệu nhập qua §6.5 và trang của nó. Trang lưu dạng JSON của model trang do tầng gọi chọn (§5.7)."""
+    """Tài liệu nhập qua §6.5 và trang của nó. Trang lưu dạng JSON của model trang do tầng gọi chọn (§5.7); bộ nhập
+    dùng `PageExtraction`, và `list_page_summaries` đọc các field tóm tắt của model đó."""
+
+    def get_document(self, document_id: str) -> UploadedDocument | None:
+        """Dòng `documents` bất kể ai tạo (upload đề §6.1 hoặc bộ nhập §6.5); như `IngestionRepository`."""
+        ...
 
     def save_imported_document(self, document: ImportedDocument) -> ImportedDocument:
         """Tạo mới, hoặc bổ sung thông tin cho bản ghi đã có cùng `document_id` (version tăng 1)."""
@@ -179,6 +251,9 @@ class DocumentRepository(Protocol):
         `ValueError`. Bản ghi chỉ do upload đề tạo (chưa có `subject_code`) được bổ sung thông tin như
         `save_imported_document`. Đã có tài liệu nhập cùng `document_id` ⇒ `DocumentExistsError`. Lỗi ở bất kỳ bước
         nào (kể cả `StorageBusyError` giữa chừng) ⇒ không ghi gì. Trả bản ghi đã lưu.
+
+        Môn của tài liệu chưa có thì được tạo ngầm trong CÙNG giao dịch (§5.14, `Subject.implicit(subject_code,
+        meta.uploaded_at)`); môn đã có giữ nguyên. Lỗi ⇒ không có môn nào được tạo.
         """
         ...
 
@@ -198,6 +273,21 @@ class DocumentRepository(Protocol):
         """Xoá tài liệu cùng trang, chunk, chỉ mục và cặp khái niệm; `False` khi không có.
 
         Còn item tham chiếu ⇒ `RecordInUseError`.
+        """
+        ...
+
+    def revert_imported_document(self, document_id: str, upload: UploadedDocument | None) -> bool:
+        """Gỡ đúng phần mà một lần nhập §6.5 vừa thêm, trong MỘT giao dịch; `False` khi không có tài liệu nhập.
+
+        `upload` là dòng `documents` do upload đề §6.1 tạo TRƯỚC lần nhập này (đọc bằng `get_document` trước khi
+        gọi `create_imported_document`), hoặc `None` khi lần nhập tạo dòng mới:
+        - `None` ⇒ xoá hẳn như `delete_document` (còn item tham chiếu ⇒ `RecordInUseError`, không xoá gì);
+        - có giá trị ⇒ giữ dòng (item của §6.1 vẫn trỏ được tới), trả các cột về đúng `upload`, bỏ mọi thông tin
+          của bộ nhập (môn, chương, tiêu đề, trạng thái…) cùng trang, lịch sử sửa trang và chunk; version tăng 1.
+
+        Trong cùng giao dịch, môn của tài liệu bị xoá nếu nó vẫn đúng là bản ghi mà `create_imported_document` của
+        lần nhập này tạo ngầm (`Subject.implicit(subject_code, meta.uploaded_at)`, `version = 1`) và không còn tài
+        liệu hay blueprint nào cùng `subject_code`: request lỗi thì không để lại môn tạo ngầm (§5.14).
         """
         ...
 
@@ -233,6 +323,14 @@ class DocumentRepository(Protocol):
 
     def list_pages[M: BaseModel](self, document_id: str, model: type[M]) -> list[M]:
         """Theo `page_number` tăng dần."""
+        ...
+
+    def list_page_summaries(self, document_id: str) -> list[PageSummary]:
+        """Tóm tắt từng trang (`DocumentImport.pages`), theo `page_number` tăng dần, KHÔNG dựng lại các dòng.
+
+        Dùng cho các `GET` hỏi trạng thái (client hỏi 1–2 s một lần, §6.5): chỉ đọc cột `status`, `confirmed` và các
+        field `tier_used`, `review_reasons` của JSON trang, không validate danh sách dòng của mọi trang.
+        """
         ...
 
 
@@ -274,6 +372,11 @@ class VaultRepository(Protocol):
         ...
 
     def get_chunk(self, chunk_id: str) -> KnowledgeChunk | None: ...
+
+    def has_document_chunks(self, document_id: str) -> bool:
+        """Vault đã có ít nhất một chunk cắt từ tài liệu `document_id` (bộ nhập §6.5 dùng để biết văn bản đã vào
+        Vault hay chưa, kể cả khi tài liệu chưa kịp thành `confirmed`)."""
+        ...
 
     def list_chunks(self, subject_code: str, chapter_code: str | None = None) -> list[KnowledgeChunk]:
         """Sắp theo `(doc_id, page_number, chunk_id)` (§6.6)."""
@@ -329,6 +432,12 @@ class VaultRepository(Protocol):
 
 
 class AppStore(
-    IngestionRepository, BlueprintRepository, TwinBatchRepository, DocumentRepository, VaultRepository, Protocol
+    IngestionRepository,
+    BlueprintRepository,
+    TwinBatchRepository,
+    DocumentRepository,
+    VaultRepository,
+    SubjectRepository,
+    Protocol,
 ):
     """Kho mà các router dùng, cấp qua `Depends(get_store)`."""

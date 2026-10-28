@@ -23,25 +23,41 @@ interface ChunkPickerProps {
   map: ReadonlyMap<string, ChunkView>;
   /** Map chưa đủ (chạm trần số request). */
   partial: boolean;
+  /** Dựng địa chỉ mở một chunk (giữ bộ lọc); mặc định `pairsHref` (`/pairs?…`). */
+  hrefFor?: (location: Partial<PairsLocation>) => string;
+  /** Địa chỉ phần Tài liệu của môn; mặc định `/vault?subject=`. */
+  documentsHref?: string;
 }
 
 /**
  * Danh sách chunk để chọn khi chưa mở chunk nào: đủ chunk của chương đang lọc, hoặc vài chunk đầu của môn khi chưa
  * chọn chương. Mỗi chunk là một liên kết `?chunk=` (giữ bộ lọc hiện tại).
  */
-export function ChunkPicker({ location, subjectCode, map, partial }: ChunkPickerProps) {
+export function ChunkPicker({
+  location,
+  subjectCode,
+  map,
+  partial,
+  hrefFor = pairsHref,
+  documentsHref,
+}: ChunkPickerProps) {
   const { chunks, truncated } = chunksToPick(map, location.chapter, PAIRS_CHUNK_PREVIEW_COUNT);
   return (
     <>
       {partial && <p className={styles.warningNote}>Chưa tải hết chunk của môn; danh sách dưới đây có thể thiếu.</p>}
       {chunks.length === 0 ? (
         <EmptyState
-          title={location.chapter === null ? "Kho tri thức của môn này còn trống." : "Chương này chưa có chunk nào."}
+          title={
+            location.chapter === null
+              ? "Môn này chưa có văn bản để tạo khái niệm."
+              : "Chương này chưa có đoạn văn bản nào."
+          }
         >
           {location.chapter === null ? (
             <>
-              Văn bản vào kho sau khi bạn xác nhận mọi trang của một tài liệu.{" "}
-              <Link href={vaultHref({ subject: subjectCode })}>Mở Vault</Link> để nhập PDF hoặc xác nhận trang.
+              Văn bản có sau khi bạn xác nhận mọi trang của một tài liệu.{" "}
+              <Link href={documentsHref ?? vaultHref({ subject: subjectCode })}>Mở phần Tài liệu</Link> để thêm PDF hoặc
+              xác nhận trang.
             </>
           ) : (
             "Bỏ lọc chương hoặc chọn chương khác."
@@ -63,7 +79,7 @@ export function ChunkPicker({ location, subjectCode, map, partial }: ChunkPicker
                 <div className={styles.actions}>
                   <Link
                     className={styles.secondary}
-                    href={pairsHref({ ...location, subject: subjectCode, chunk: chunk.chunkId })}
+                    href={hrefFor({ ...location, subject: subjectCode, chunk: chunk.chunkId })}
                   >
                     Mở chunk này
                   </Link>

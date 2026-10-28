@@ -9,14 +9,14 @@ import { useShell } from "@/components/shell/ShellContext";
 import { api, toUiError } from "@/lib/api";
 import type { UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
-import { appendSentence, PAIR_SCREEN_MISSING_VI, VAULT_HINT_VI } from "@/lib/practice";
+import { type PairsLocation, pairsHref } from "@/lib/pairs";
+import { ticketLine } from "@/lib/practice";
 import type { PracticeBatch, PracticeBlueprint, PracticeTicket } from "@/lib/practice-data";
 import { freshRuntime } from "@/lib/runtime";
 import { selectedSubject } from "@/lib/subjects";
-import type { BlueprintCreate } from "@/types/contract-pending";
+import type { BlueprintCreate } from "@/types/holocron";
 
 import { BlueprintBuilder } from "./BlueprintBuilder";
-import { CitationBlueprintContext } from "./CitationPanel";
 import styles from "./Practice.module.css";
 import { PracticeSession } from "./PracticeSession";
 
@@ -31,19 +31,28 @@ type Stage =
   | { kind: "generate_failed"; error: UiError; blueprint: PracticeBlueprint }
   | { kind: "ready"; blueprint: PracticeBlueprint; batch: PracticeBatch };
 
+export interface PracticeViewProps {
+  /** Môn cố định (trang môn); ưu tiên hơn môn của khung. Bỏ trống ⇒ môn của khung (route cũ `/practice`). */
+  subjectCode?: string;
+  /** Dựng địa chỉ phần khái niệm (liên kết khi câu lý thuyết không sinh được); mặc định `pairsHref` (`/pairs?…`). */
+  hrefFor?: (location: Partial<PairsLocation>) => string;
+}
+
 /**
- * `/practice`: màn luyện tập (F4, lát cắt dọc §4). Chọn môn ở thanh bên → tạo đề (`POST /v1/blueprints`) → sinh câu
- * (`POST /v1/blueprints/{id}/twins`) → làm từng câu. Mọi con số và đáp án do backend trả; giao diện chỉ so khoá.
+ * Màn luyện tập (F4, lát cắt dọc §4): chọn môn (trang môn truyền qua prop; route cũ `/practice` dùng môn của khung) →
+ * tạo đề (`POST /v1/blueprints`) → sinh câu (`POST /v1/blueprints/{id}/twins`) → làm từng câu. Mọi con số và đáp án do
+ * backend trả; giao diện chỉ so khoá.
  */
-export function PracticeView() {
-  const { runtime, subjects, reloadSubjects, subjectCode } = useShell();
+export function PracticeView({ subjectCode: fixedSubject, hrefFor = pairsHref }: PracticeViewProps) {
+  const { runtime, subjects, reloadSubjects, subjectCode: shellSubject } = useShell();
+  const subjectCode = fixedSubject ?? shellSubject;
   const subject = selectedSubject(subjects, subjectCode);
   const [stage, setStage] = useState<Stage>({ kind: "setup" });
   const calls = useRef(createLatestCounter());
   // Một khoá cho mỗi bộ đề: "Thử lại" sau lỗi mạng gửi lại cùng body và nhận đúng lượt sinh cũ nếu backend đã sinh xong.
   const idempotencyKeys = useRef(new Map<string, string>());
 
-  // Đổi môn ở thanh bên: bỏ đề đang làm của môn cũ và mọi lời gọi còn chờ.
+  // Đổi môn: bỏ đề đang làm của môn cũ và mọi lời gọi còn chờ.
   useEffect(() => {
     if (subjectCode === null) return;
     calls.current.invalidate();
@@ -87,7 +96,11 @@ export function PracticeView() {
   }, []);
 
   if (subjects.kind === "loading") return <Loading label="Đang tải danh sách môn…" />;
-  if (subjects.kind === "error") return <SubjectsUnavailable error={subjects.error} onRetry={reloadSubjects} />;
+  if (subjects.kind === "error") {
+    // Trong trang môn, trang tự báo việc thiếu danh sách môn (mọi loại lỗi, kèm "Thử lại" khi hợp lý); không lặp lại.
+    if (fixedSubject !== undefined) return null;
+    return <SubjectsUnavailable error={subjects.error} onRetry={reloadSubjects} />;
+  }
   if (subjects.subjects.length === 0) {
     return (
       <EmptyState title="Chưa có môn học nào.">
@@ -98,7 +111,9 @@ export function PracticeView() {
   }
   if (subject === null) {
     return (
-      <EmptyState title="Chưa chọn môn.">Chọn một môn ở thanh bên trái để tạo đề luyện tập cho môn đó.</EmptyState>
+      <EmptyState title="Chưa chọn môn.">
+        Mở một môn ở <Link href="/">trang chủ</Link> để tạo đề luyện tập cho môn đó.
+      </EmptyState>
     );
   }
 
@@ -134,6 +149,7 @@ export function PracticeView() {
           batch={stage.batch}
           blueprint={stage.blueprint}
           onNewExam={restart}
+          conceptsHref={hrefFor({})}
         />
       )}
     </div>
@@ -156,26 +172,21 @@ interface ReadyBatchProps {
   batch: PracticeBatch;
   blueprint: PracticeBlueprint;
   onNewExam: () => void;
+  /** Địa chỉ phần khái niệm của môn sinh ra đề. */
+  conceptsHref: string;
 }
 
-function ReadyBatch({ batch, blueprint, onNewExam }: ReadyBatchProps) {
+function ReadyBatch({ batch, blueprint, onNewExam, conceptsHref }: ReadyBatchProps) {
   const hasSkipped = batch.skipped.malformed > 0 || batch.skipped.unsupported > 0;
   if (batch.questions.length === 0) {
-    const onlyTheory = batch.tickets.length > 0 && batch.tickets.every((ticket) => ticket.theory);
     return (
       <div className={styles.page}>
-        <EmptyState
-          title={
-            onlyTheory
-              ? "Chưa có cặp khái niệm đã xác nhận cho chương này nên chưa sinh được câu nào."
-              : "Lượt sinh này không có câu nào để luyện."
-          }
-        >
-          {onlyTheory
-            ? `Lý do của từng câu ở bên dưới. ${PAIR_SCREEN_MISSING_VI}`
-            : "Thử tạo đề với chương khác, hoặc xem lý do của từng câu bên dưới."}
+        <EmptyState title="Lượt sinh này không có câu nào để luyện.">
+          {batch.tickets.length > 0
+            ? "Lý do của từng câu do backend ghi ở bên dưới. Sửa theo gợi ý rồi tạo lại đề, hoặc tạo đề với chương khác."
+            : "Thử tạo đề với chương khác."}
         </EmptyState>
-        <TicketNotice tickets={batch.tickets} showVaultHint={!onlyTheory} />
+        <TicketNotice tickets={batch.tickets} conceptsHref={conceptsHref} />
         {hasSkipped && <SkippedNotice />}
         <div className={styles.actions}>
           <button type="button" className={styles.primary} onClick={onNewExam}>
@@ -187,29 +198,24 @@ function ReadyBatch({ batch, blueprint, onNewExam }: ReadyBatchProps) {
   }
   return (
     <div className={styles.page}>
-      <TicketNotice tickets={batch.tickets} showVaultHint />
+      <TicketNotice tickets={batch.tickets} conceptsHref={conceptsHref} />
       {hasSkipped && <SkippedNotice />}
-      {/* Đoạn nguồn của trích dẫn tìm theo môn và mã của blueprint sinh ra câu, không theo môn đang chọn (ADR-006). */}
-      <CitationBlueprintContext.Provider value={blueprint.blueprintId}>
-        <PracticeSession
-          questions={batch.questions}
-          blueprint={blueprint}
-          subjectCode={blueprint.subjectCode}
-          onNewExam={onNewExam}
-        />
-      </CitationBlueprintContext.Provider>
+      {/* Đoạn nguồn của trích dẫn tìm theo môn của blueprint sinh ra câu, không theo môn đang chọn (ADR-006). */}
+      <PracticeSession
+        questions={batch.questions}
+        blueprint={blueprint}
+        subjectCode={blueprint.subjectCode}
+        onNewExam={onNewExam}
+      />
     </div>
   );
 }
 
-interface TicketNoticeProps {
-  tickets: PracticeTicket[];
-  /** Thêm `VAULT_HINT_VI` sau lý do của ticket lý thuyết (tắt khi khối rỗng ở trên đã nói điều đó). */
-  showVaultHint: boolean;
-}
-
-/** Slot không sinh được (`review_tickets`): hiện lý do backend ghi, không hiện câu hỏng. */
-function TicketNotice({ tickets, showVaultHint }: TicketNoticeProps) {
+/**
+ * Slot không sinh được (`review_tickets`): hiện nguyên lý do backend ghi, kèm gợi ý cố định với slot lý thuyết
+ * (`ticketLine`); không hiện câu hỏng.
+ */
+function TicketNotice({ tickets, conceptsHref }: { tickets: PracticeTicket[]; conceptsHref: string }) {
   if (tickets.length === 0) return null;
   return (
     <section className={styles.tickets} aria-labelledby="practice-tickets-title">
@@ -219,11 +225,15 @@ function TicketNotice({ tickets, showVaultHint }: TicketNoticeProps) {
       <ul>
         {tickets.map((ticket) => (
           <li key={ticket.slotIndex}>
-            Câu thứ {ticket.slotIndex} trong đề:{" "}
-            {showVaultHint && ticket.theory ? appendSentence(ticket.reason, VAULT_HINT_VI) : ticket.reason}
+            Câu thứ {ticket.slotIndex} trong đề: {ticketLine(ticket)}
           </li>
         ))}
       </ul>
+      {tickets.some((ticket) => ticket.theory) && (
+        <p>
+          <Link href={conceptsHref}>Mở phần Khái niệm</Link>
+        </p>
+      )}
     </section>
   );
 }

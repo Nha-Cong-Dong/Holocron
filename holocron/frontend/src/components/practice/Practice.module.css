@@ -103,7 +103,7 @@
 .secondary {
   min-height: 36px;
   padding: var(--space-1) var(--space-4);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--accent-ink);
   border-radius: var(--radius);
   font-weight: 600;
   cursor: pointer;
@@ -116,7 +116,7 @@
 
 .secondary {
   background: var(--surface);
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .primary:disabled,
@@ -129,7 +129,7 @@
   padding: 0;
   border: 0;
   background: none;
-  color: var(--accent);
+  color: var(--accent-ink);
   text-decoration: underline;
   cursor: pointer;
 }
@@ -162,7 +162,7 @@
 }
 
 .stepButton[aria-current="step"] {
-  border-color: var(--accent);
+  border-color: var(--accent-ink);
   background: var(--accent-soft);
   font-weight: 600;
 }
@@ -218,7 +218,7 @@
 }
 
 .option:has(input:checked) {
-  border-color: var(--accent);
+  border-color: var(--accent-ink);
   background: var(--accent-soft);
 }
 
@@ -273,7 +273,7 @@
  * hoạch UI mục 5.4). `[tabindex]` nâng độ ưu tiên trên quy tắc `:focus:not(:focus-visible)` ở `globals.css`.
  */
 .result[tabindex]:focus {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-ink);
   outline-offset: 2px;
   border-radius: var(--radius);
 }
@@ -390,7 +390,7 @@
 }
 
 .sourceText:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-ink);
 }
 
 .highlight {

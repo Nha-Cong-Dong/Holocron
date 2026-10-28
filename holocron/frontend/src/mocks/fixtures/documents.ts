@@ -11,7 +11,12 @@
  * `DocumentImport` và của `DocumentSummary`; thao tác ngoài kịch bản trả bản hiện tại.
  */
 
-import type { DocumentImportPending, PageExtractionPending, PageSummaryPending } from "@/types/contract-pending";
+import type { PageExtractionPending, PageSummaryPending } from "@/types/contract-pending";
+import type { DocumentImport } from "@/types/holocron";
+
+/** `DocumentImport` của dữ liệu mẫu: trang có thể mang `LOW_TEXT_SCORE` (§5.7 v0.7), backend chưa có mã này. */
+type MockDocumentImport = Omit<DocumentImport, "pages"> & { pages: PageSummaryPending[] };
+
 import type { DocumentMeta, DocumentSummary, ExtractedLine } from "@/types/holocron";
 
 export const MOCK_IMPORT_DOC_ID = "doc_5e2a7c9d1b3f4a68";
@@ -200,8 +205,8 @@ export function pageSummaryOf(page: PageExtractionPending): PageSummaryPending {
 /** `DocumentImport` của tài liệu mẫu dựng từ các trang và `status` dựng sẵn của một bước kịch bản. */
 export function mockDocumentImport(
   pages: readonly PageExtractionPending[],
-  status: DocumentImportPending["status"],
-): DocumentImportPending {
+  status: MockDocumentImport["status"],
+): MockDocumentImport {
   return {
     meta: structuredClone(MOCK_DOCUMENT_META),
     filename: "tai-lieu-mau-lich-on-tap.pdf",
@@ -218,13 +223,13 @@ export type MockDocumentStep = "initial" | "page2_edited" | "confirmed";
 
 export interface MockDocumentSnapshot {
   pages: readonly PageExtractionPending[];
-  document: DocumentImportPending;
+  document: MockDocumentImport;
   summary: DocumentSummary;
 }
 
 function snapshot(
   pages: readonly PageExtractionPending[],
-  status: DocumentImportPending["status"],
+  status: MockDocumentImport["status"],
   counts: Pick<DocumentSummary, "pages_pending" | "pages_needs_review" | "pages_failed" | "pages_confirmed">,
 ): MockDocumentSnapshot {
   return {

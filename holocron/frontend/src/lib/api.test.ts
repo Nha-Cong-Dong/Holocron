@@ -170,13 +170,6 @@ describe("getRuntime()", () => {
     expect(error.info.kind).toBe("network");
     expect(toUiError(error).kind).toBe("network");
   });
-
-  it("bật mock: endpoint backend chưa có lấy từ dữ liệu mẫu, không gọi fetch", async () => {
-    const calls = stubFetch(() => Promise.reject(new TypeError("không được gọi")));
-    const subjects = await createApi(true).listSubjects();
-    expect(subjects.length).toBeGreaterThan(0);
-    expect(calls).toEqual([]);
-  });
 });
 
 describe("màn luyện tập ở ranh giới", () => {
@@ -215,18 +208,6 @@ describe("màn luyện tập ở ranh giới", () => {
     expect(error.info.kind).toBe("server");
     expect(calls[0]?.url).toBe(`${DEFAULT_API_BASE}/v1/twins/twin%201/essay-grade`);
     expect(calls[0]?.init?.body).toBe(JSON.stringify({ answer_text: "câu trả lời" }));
-  });
-
-  it("bật mock: blueprint thật vẫn gọi backend để sinh câu; blueprint mẫu dùng batch mẫu", async () => {
-    const calls = stubFetch(() => Promise.resolve(jsonResponse(404, { detail: "không có blueprint" })));
-    const mocked = createApi(true);
-    const error = await captureError(mocked.generatePracticeBatch("bp_that", { count: 1 }, null));
-    expect(error.info.kind).toBe("not_found");
-    expect(calls).toHaveLength(1);
-    const blueprint = await mocked.createBlueprint({ subject_code: "MAU101", theory_slots: [] });
-    const batch = await mocked.generatePracticeBatch(blueprint.blueprintId, { count: 1 }, null);
-    expect(batch.questions.length).toBeGreaterThan(0);
-    expect(calls).toHaveLength(1);
   });
 });
 
@@ -514,25 +495,6 @@ describe("bật dữ liệu mẫu: chỉ bản ghi mẫu dùng fixture", () => {
     expect(calls[0]?.url).toBe(`${DEFAULT_API_BASE}/v1/documents?subject_code=${MOCK_IMPORT_SUBJECT}`);
     const otherSubject = await mocked.listDocuments("MAU202");
     expect(otherSubject.map((document) => document.docId)).toEqual([REAL_DOC_ID]);
-  });
-
-  it("listVaultChunks: câu của blueprint mẫu dùng chunk mẫu; blueprint thật cùng môn mẫu vẫn gọi backend", async () => {
-    const calls = stubFetch(() => Promise.resolve(jsonResponse(200, { total: 0, chunks: [] })));
-    const mocked = createApi(true);
-    const blueprint = await mocked.createBlueprint({ subject_code: MOCK_IMPORT_SUBJECT, theory_slots: [] });
-    const query = { subjectCode: blueprint.subjectCode, chapterCode: null, offset: 0, limit: 50 };
-
-    const sample = await mocked.listVaultChunks({ ...query, blueprintId: blueprint.blueprintId });
-    expect(sample.chunks.length).toBeGreaterThan(0);
-    expect(calls).toHaveLength(0);
-
-    const real = await mocked.listVaultChunks({ ...query, blueprintId: "bp_that" });
-    expect(real.chunks).toEqual([]);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.url).not.toContain("blueprint");
-
-    await mocked.listVaultChunks(query);
-    expect(calls).toHaveLength(2);
   });
 
   it("tắt dữ liệu mẫu: luôn gọi backend theo môn của blueprint, mã blueprint không gửi đi", async () => {

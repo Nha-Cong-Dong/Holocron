@@ -10,9 +10,12 @@ import { invalidResponseError, type UiError } from "@/lib/errors";
 import { essayHeadline } from "@/lib/essay";
 import { CHAPTER_CODE_PATTERN, MAX_THEORY_SLOTS } from "@/lib/limits";
 import type { EssayGradeView, PracticeQuestion } from "@/lib/practice-data";
+import type { CapabilityView } from "@/lib/runtime";
 import type { ShortcutAction, ShortcutScope } from "@/lib/shortcuts";
-import type { BlueprintCreate, ExamFormat, TheorySlotFormat, TheorySlotSpec } from "@/types/contract-pending";
-import type { OptionKey } from "@/types/holocron";
+import type { BlueprintCreate, ExamFormat, OptionKey, TheorySlotSpec } from "@/types/holocron";
+
+/** Hình thức của slot lý thuyết mà form gửi tường minh (`TheorySlotSpec.format` khác null). */
+type TheorySlotFormat = NonNullable<TheorySlotSpec["format"]>;
 
 // ----------------------------------------------------------------------------------------- tạo đề
 
@@ -50,6 +53,27 @@ export function formatChoices(essayAvailable: boolean): FormatChoice[] {
 export function defaultFormatChoice(examFormat: ExamFormat, allowed: readonly FormatChoice[]): FormatChoice | null {
   const preferred: FormatChoice = examFormat === "mcq" ? "MCQ4" : examFormat === "essay" ? "ESSAY" : "mixed";
   return allowed.includes(preferred) ? preferred : null;
+}
+
+/** Dòng giải thích khi môn thi tự luận hoặc kết hợp nhưng chưa dùng được tự luận (đề chỉ gồm trắc nghiệm). */
+export const ESSAY_NOT_AVAILABLE_VI = "Tự luận chưa có trong bản này";
+
+/**
+ * Chỉ cho chọn câu tự luận khi backend báo rõ khả năng chấm tự luận offline là khả dụng. Backend chưa báo danh sách
+ * khả năng (`unknown`) hay báo không khả dụng thì chỉ còn trắc nghiệm, để luồng mặc định không gửi slot ESSAY rồi nhận
+ * 409 (`CapabilityError`).
+ */
+export function essayChoiceAvailable(essayGrading: CapabilityView): boolean {
+  return essayGrading.state === "available";
+}
+
+/**
+ * Lựa chọn điền sẵn của form tạo đề. Tự luận dùng được thì theo `exam_format` của môn (`defaultFormatChoice`); không
+ * thì luôn là trắc nghiệm, kể cả môn thi tự luận hay kết hợp (giao diện kèm dòng `ESSAY_NOT_AVAILABLE_VI`).
+ */
+export function prefilledFormatChoice(examFormat: ExamFormat, essayAvailable: boolean): FormatChoice {
+  if (!essayAvailable) return "MCQ4";
+  return defaultFormatChoice(examFormat, formatChoices(true)) ?? "MCQ4";
 }
 
 export interface BuilderInput {
@@ -230,16 +254,16 @@ export function essaySubmission(draft: string): EssaySubmission {
 // ------------------------------------------------------------------------------- slot không sinh được
 
 /**
- * Phần gợi ý nói rõ giao diện chưa có màn tạo cặp khái niệm. Không gợi ý xác nhận nhãn chunk: việc đó không tạo ra
- * cặp khái niệm.
+ * Gợi ý cố định kèm MỌI ticket của slot lý thuyết (`topic_key = null`), đặt sau lý do backend ghi. Không so chuỗi
+ * `reason` để đoán nguyên nhân: lý do cụ thể do backend ghi và được hiển thị nguyên văn.
  */
-export const PAIR_SCREEN_MISSING_VI = "Giao diện chưa có màn tạo cặp khái niệm nên chưa bổ sung được từ đây.";
+export const THEORY_TICKET_HINT_VI =
+  "Kiểm tra chương đã có tài liệu xác nhận và cặp khái niệm đã xác nhận ở trang Cặp khái niệm.";
 
-/**
- * Gợi ý chung cho slot lý thuyết không sinh được: nêu đúng tình trạng (chương chưa có cặp khái niệm đã xác nhận, màn tạo
- * cặp chưa có); không nêu ngưỡng cụ thể (lý do cụ thể do backend ghi).
- */
-export const VAULT_HINT_VI = `Chương này chưa có đủ cặp khái niệm đã xác nhận. ${PAIR_SCREEN_MISSING_VI}`;
+/** Dòng hiển thị của một ticket: lý do nguyên văn, cộng `THEORY_TICKET_HINT_VI` khi là slot lý thuyết. */
+export function ticketLine(ticket: { reason: string; theory: boolean }): string {
+  return ticket.theory ? appendSentence(ticket.reason, THEORY_TICKET_HINT_VI) : ticket.reason;
+}
 
 /**
  * Nối lý do backend ghi với một câu gợi ý: thêm dấu chấm khi lý do chưa kết thúc bằng dấu câu, để không ra "..".

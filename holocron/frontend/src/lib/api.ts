@@ -4,7 +4,8 @@
  * - Base URL và header token lấy từ `lib/config.ts` lúc gọi (chạy được dưới `next dev`, static export và vỏ desktop).
  * - Lỗi được phân loại tập trung ở `lib/errors.ts`; component đọc `ApiError.info` để chọn thông điệp và hành động.
  * - `api` gộp dữ liệu mẫu cho endpoint backend CHƯA có khi bật `NEXT_PUBLIC_HOLOCRON_MOCKS`; endpoint đã có luôn gọi
- *   backend thật (kế hoạch UI mục 3.2). `/v1/runtime` đã có nên luôn gọi backend; cờ mock chỉ bù field backend chưa trả.
+ *   backend thật (kế hoạch UI mục 3.2), gồm môn học, tạo bộ đề và sinh câu. `/v1/runtime` đã có nên luôn gọi backend;
+ *   cờ mock chỉ bù field backend chưa trả.
  * - Thân `/v1/runtime` được kiểm dạng ở đây (`normalizeRuntimeInfo`) trước khi tới component.
  */
 
@@ -51,26 +52,11 @@ import {
   type SearchResultView,
   searchQueryString,
 } from "@/lib/vault";
-import {
-  fillRuntimeGaps,
-  mockApi,
-  mockDocumentApi,
-  mockPracticeBatch,
-  mockSubjectApi,
-  mockVaultSourceChunks,
-} from "@/mocks";
-import { isMockBlueprint, isMockDocument } from "@/mocks/store";
+import { fillRuntimeGaps, mockApi, mockDocumentApi } from "@/mocks";
+import { isMockDocument } from "@/mocks/store";
+import type { EssayGradeRequest } from "@/types/contract-pending";
 import type {
   BlueprintCreate,
-  DocumentConfirmRequest,
-  EssayGradeRequest,
-  LineEdit,
-  PageConfirmRequest,
-  PageLinesPatch,
-  Subject,
-  SubjectCreate,
-} from "@/types/contract-pending";
-import type {
   CellPatch,
   ChunkLabelsPatch,
   ConceptPair,
@@ -78,8 +64,14 @@ import type {
   ConceptPairCreate,
   ConceptPairReject,
   ConceptPairStatus,
+  DocumentConfirmRequest,
   IngestionItem,
+  LineEdit,
   NonCloneableRequest,
+  PageConfirmRequest,
+  PageLinesPatch,
+  Subject,
+  SubjectCreate,
   TablePatchRequest,
   TwinBatch,
   TwinBatchRequest,
@@ -156,11 +148,6 @@ function validated<T>(value: T | null): T {
 export interface ChunkQuery {
   /** Môn của blueprint sinh ra câu (ADR-006 mục 6), không phải môn đang chọn ở thanh bên. */
   subjectCode: string;
-  /**
-   * Blueprint sinh ra câu. Không gửi lên backend; chỉ dùng để chọn nguồn khi bật dữ liệu mẫu (câu của blueprint mẫu
-   * trích dẫn chunk mẫu).
-   */
-  blueprintId?: string;
   chapterCode: string | null;
   offset: number;
   limit: number;
@@ -193,7 +180,7 @@ export interface DocumentImportInput {
 export interface HolocronApi {
   /** `GET /v1/runtime` (§5.12), đã kiểm dạng. */
   getRuntime: () => Promise<RuntimeView>;
-  /** `GET /v1/subjects` (§6.8, đường dẫn còn đề xuất; chưa có ở backend), đã kiểm dạng từng phần tử. */
+  /** `GET /v1/subjects` (§6.8), đã kiểm dạng từng phần tử. */
   listSubjects: () => Promise<Subject[]>;
   /** `POST /v1/ingestion/upload` (§6.1). */
   uploadDocument: (file: File, topicKey: string, quantum: number | null) => Promise<UploadResponse>;
@@ -214,11 +201,11 @@ export interface HolocronApi {
     payload: TwinBatchRequest,
     idempotencyKey: string | null,
   ) => Promise<TwinBatch>;
-  /** `POST /v1/blueprints` (§6.7; chưa có ở backend), đã kiểm dạng. */
+  /** `POST /v1/blueprints` (§6.7): 201 `ExamBlueprint`, đã kiểm dạng. */
   createBlueprint: (payload: BlueprintCreate) => Promise<PracticeBlueprint>;
   /**
    * `POST /v1/blueprints/{id}/twins` (§6.3) cho màn luyện tập: cùng endpoint với `createTwinBatch` nhưng thân trả về
-   * được kiểm dạng thành từng câu (câu sai dạng bị bỏ và được đếm).
+   * (union `TwinQuestion | TheoryTwin`) được kiểm dạng thành từng câu (câu sai dạng bị bỏ và được đếm).
    */
   generatePracticeBatch: (
     blueprintId: string,
@@ -229,7 +216,7 @@ export interface HolocronApi {
   gradeEssay: (twinId: string, answerText: string) => Promise<EssayGradeView>;
   /** `GET /v1/vault/chunks` (§6.6) cho màn luyện tập (tìm văn bản nguồn của trích dẫn), đã kiểm dạng. */
   listVaultChunks: (query: ChunkQuery) => Promise<ChunkPageView>;
-  /** `POST /v1/subjects` (§6.8, đường dẫn còn đề xuất; chưa có ở backend), đã kiểm dạng. */
+  /** `POST /v1/subjects` (§6.8): 201 `Subject`, đã kiểm dạng. */
   createSubject: (payload: SubjectCreate) => Promise<Subject>;
   /** `GET /v1/documents?subject_code=` (§6.5), đã kiểm dạng; mới nhất trước. */
   listDocuments: (subjectCode: string) => Promise<DocumentSummaryView[]>;
@@ -533,7 +520,8 @@ export const realApi: HolocronApi = {
 
 /**
  * Bộ hàm gọi backend theo cờ mock. Bật mock: endpoint backend chưa có lấy từ `mockApi`; `/v1/runtime` vẫn gọi backend
- * thật (backend không chạy thì vẫn báo không kết nối), chỉ bù `capabilities` và `mock_extractor` còn thiếu.
+ * thật (backend không chạy thì vẫn báo không kết nối), chỉ bù `capabilities` và `mock_extractor` còn thiếu. Môn học,
+ * tạo bộ đề và sinh câu luôn gọi backend thật, kể cả khi bật mock.
  */
 export function createApi(useMocks: boolean): HolocronApi {
   if (!useMocks) return realApi;
@@ -541,20 +529,8 @@ export function createApi(useMocks: boolean): HolocronApi {
   return {
     ...realApi,
     ...mockApi,
-    ...mockSubjectApi,
     getRuntime: () => loadRuntime(fillRuntimeGaps),
-    // Sinh câu đã có ở backend (câu tính toán): chỉ blueprint do dữ liệu mẫu tạo mới lấy batch mẫu (M8).
-    generatePracticeBatch: (blueprintId, payload, idempotencyKey) =>
-      isMockBlueprint(blueprintId)
-        ? mockPracticeBatch()
-        : realApi.generatePracticeBatch(blueprintId, payload, idempotencyKey),
     // Các endpoint dưới đây đã có ở backend: chỉ bản ghi do dữ liệu mẫu tạo ra (chọn theo mã) mới lấy fixture.
-    // `GET /v1/vault/chunks`: chỉ câu của blueprint mẫu (chọn theo mã blueprint, không theo môn: môn mẫu vẫn có thể
-    // chứa tài liệu thật) tìm trích dẫn trong chunk mẫu.
-    listVaultChunks: (query) =>
-      query.blueprintId !== undefined && isMockBlueprint(query.blueprintId)
-        ? mockVaultSourceChunks()
-        : realApi.listVaultChunks(query),
     // `GET /v1/documents`: danh sách thật (mới nhất trước), thêm tài liệu mẫu của môn ở cuối để mở được màn xem lại
     // mẫu.
     listDocuments: async (subjectCode) => [

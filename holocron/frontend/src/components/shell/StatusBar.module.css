@@ -81,3 +81,31 @@
   font-size: var(--text-xs);
   cursor: pointer;
 }
+
+.build {
+  margin-left: auto;
+  color: var(--text-muted);
+}
+
+.logDir {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.path {
+  max-width: 28ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono, monospace);
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

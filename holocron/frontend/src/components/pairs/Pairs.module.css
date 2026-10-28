@@ -121,7 +121,7 @@
 .secondary {
   min-height: 32px;
   padding: 0 var(--space-3);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--accent-ink);
   border-radius: var(--radius);
   font-size: var(--text-sm);
   font-weight: 600;
@@ -135,7 +135,7 @@
 
 .secondary {
   background: var(--surface);
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 a.secondary {

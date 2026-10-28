@@ -17,11 +17,10 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
 
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 
-from ...domain.documents import PageEditAudit
+from ...domain.documents import PageEditAudit, PageSummary
 from ...domain.ingestion import IngestionItem, PatchAudit, UploadedDocument
 from ...domain.repositories import (
     IDEMPOTENCY_TTL,
@@ -35,15 +34,16 @@ from ...domain.repositories import (
     SearchIndex,
     StorageBusyError,
     StorageError,
+    SubjectExistsError,
     VaultEntity,
     VaultSearchUnavailableError,
     VersionConflictError,
     check_page_audit,
     same_item_state,
 )
-from ...domain.schemas import DocumentMeta, ExamBlueprint, KnowledgeChunk, TwinQuestion
+from ...domain.schemas import BlueprintSummary, DocumentMeta, ExamBlueprint, ExamFormat, KnowledgeChunk, Subject
 from ...domain.search_text import search_body, strip_diacritics
-from ...domain.twins import IdempotencyRecord, ReviewTicket, TwinBatch
+from ...domain.twins import BatchTwin, IdempotencyRecord, ReviewTicket, TwinBatch
 from ...domain.vault import (
     ConceptPair,
     ConceptPairStatus,
@@ -56,8 +56,13 @@ from .connection import connect, fts5_available, immediate_transaction, is_busy,
 from .migrator import load_fts5_script, migrate
 
 IMPORTED_MEDIA_TYPE = "application/pdf"  # bộ nhập §6.5 chỉ nhận PDF trong MVP
+JSON1_MISSING_DETAIL = (
+    "SQLite của bản Python đang chạy thiếu JSON1 (json_extract, json_each), cần cho tài liệu nhập và Knowledge Vault; "
+    "hãy dùng bản Python đi kèm SQLite ≥ 3.38 (JSON1 có sẵn) hoặc SQLite biên dịch kèm JSON1"
+)
 _FTS_TABLES: dict[SearchIndex, str] = {"primary": "chunks_fts", "no_diacritics": "chunks_fts_nodiac"}
 _LOGGER = logging.getLogger(__name__)
+_BATCH_TWIN = TypeAdapter(BatchTwin)  # twin_json đọc lại theo union câu tính toán / câu lý thuyết (`TwinBatch.twins`)
 _EDIT_TABLES: dict[VaultEntity, tuple[str, str]] = {
     "chunk": ("chunks", "chunk_id"),
     "concept_pair": ("concept_pairs", "pair_id"),
@@ -94,6 +99,19 @@ def _version_conflict(
     return VersionConflictError(entity, key, expected, int(row["version"]))
 
 
+class SQLiteFeatureError(RuntimeError):
+    """SQLite thiếu tính năng mà kho bắt buộc phải có (JSON1); kho từ chối mở, app từ chối khởi động."""
+
+
+def json1_available(conn: sqlite3.Connection) -> bool:
+    """SQLite có JSON1: chạy thử đúng hai hàm kho dùng (`json_extract`, `json_each`), không đọc bảng nào."""
+    try:
+        conn.execute("SELECT json_extract('[1]', '$[0]'), (SELECT count(*) FROM json_each('[1]'))").fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return True
+
+
 @contextmanager
 def _storage_errors() -> Iterator[None]:
     """Đổi lỗi `sqlite3` mà tầng trên cần phân biệt thành lỗi domain: ràng buộc ⇒ `StorageError`, khoá bận ⇒
@@ -112,10 +130,15 @@ class SQLiteStore:
     """Kho SQLite; tạo bằng `SQLiteStore.open(path)` (`":memory:"` cho test)."""
 
     def __init__(self, conn: sqlite3.Connection) -> None:
-        """Nhận kết nối đã mở bằng `connection.connect`, chạy migration và tạo chỉ mục FTS5 nếu SQLite có FTS5.
+        """Nhận kết nối đã mở bằng `connection.connect`, kiểm JSON1, chạy migration và tạo chỉ mục FTS5 nếu SQLite
+        có FTS5.
 
-        DB có version mới hơn code ⇒ `SchemaVersionError` (từ chối khởi động).
+        SQLite thiếu JSON1 ⇒ `SQLiteFeatureError` trước khi chạy migration nào (từ chối khởi động, thông điệp nêu
+        cách sửa), thay vì `sqlite3.OperationalError` trần ở request đầu tiên đọc tóm tắt trang hay nhập chunk. DB
+        có version mới hơn code ⇒ `SchemaVersionError` (từ chối khởi động). Thiếu FTS5 thì vẫn chạy (BM25 tự cài).
         """
+        if not json1_available(conn):
+            raise SQLiteFeatureError(JSON1_MISSING_DETAIL)
         self._conn = conn
         self._lock = threading.RLock()
         with self._lock:
@@ -302,8 +325,11 @@ class SQLiteStore:
     # BlueprintRepository
     # ------------------------------------------------------------------ #
 
-    def save_blueprint(self, blueprint: ExamBlueprint, item_ids: Sequence[str] = ()) -> ExamBlueprint:
+    def save_blueprint(
+        self, blueprint: ExamBlueprint, item_ids: Sequence[str] = (), *, implicit_subject: Subject | None = None
+    ) -> ExamBlueprint:
         with self._write() as conn:
+            self._ensure_subject(conn, implicit_subject)
             conn.execute(
                 "INSERT INTO blueprints (blueprint_id, subject_code, blueprint_json, created_at) VALUES (?, ?, ?, ?) "
                 "ON CONFLICT (blueprint_id) DO UPDATE SET subject_code = excluded.subject_code, "
@@ -336,44 +362,121 @@ class SQLiteStore:
             ).fetchall()
         return tuple(str(row["item_id"]) for row in rows)
 
+    def list_blueprint_summaries(self, subject_code: str | None = None) -> list[BlueprintSummary]:
+        sql = (
+            "SELECT b.blueprint_id, b.subject_code, json_extract(b.blueprint_json, '$.total_questions') AS total, "
+            "b.created_at, (SELECT COUNT(*) FROM twin_batches t WHERE t.blueprint_id = b.blueprint_id) AS batches "
+            "FROM blueprints b"
+        )
+        order = " ORDER BY b.created_at DESC, b.blueprint_id DESC"
+        with self._read() as conn:
+            if subject_code is None:
+                rows = conn.execute(sql + order).fetchall()
+            else:
+                rows = conn.execute(f"{sql} WHERE b.subject_code = ?{order}", (subject_code,)).fetchall()
+        return [
+            BlueprintSummary(
+                blueprint_id=str(row["blueprint_id"]),
+                subject_code=str(row["subject_code"]),
+                total_questions=int(row["total"]),
+                created_at=datetime.fromisoformat(str(row["created_at"])),
+                batch_count=int(row["batches"]),
+            )
+            for row in rows
+        ]
+
     # ------------------------------------------------------------------ #
     # TwinBatchRepository
     # ------------------------------------------------------------------ #
 
+    _BATCH_SELECT = (
+        "SELECT batch_id, blueprint_id, base_seed, body_digest, created_at FROM twin_batches "
+        "WHERE blueprint_id = ? AND idempotency_key = ?"
+    )
+
+    @staticmethod
+    def _load_batch(conn: sqlite3.Connection, row: sqlite3.Row) -> TwinBatch:
+        """Dựng lại batch từ dòng `twin_batches` cùng twin và ticket của nó; twin validate theo union của `TwinBatch`."""
+        twins = conn.execute(
+            "SELECT twin_json FROM twins WHERE batch_id = ? ORDER BY ordinal", (row["batch_id"],)
+        ).fetchall()
+        tickets = conn.execute(
+            "SELECT ticket_json FROM review_tickets WHERE batch_id = ? ORDER BY ticket_id", (row["batch_id"],)
+        ).fetchall()
+        return TwinBatch(
+            batch_id=str(row["batch_id"]),
+            blueprint_id=str(row["blueprint_id"]),
+            base_seed=int(row["base_seed"]),
+            twins=[_BATCH_TWIN.validate_json(str(twin["twin_json"])) for twin in twins],
+            review_tickets=[ReviewTicket.model_validate_json(str(ticket["ticket_json"])) for ticket in tickets],
+            created_at=datetime.fromisoformat(str(row["created_at"])),
+        )
+
+    @staticmethod
+    def _insert_batch(conn: sqlite3.Connection, batch: TwinBatch, body_digest: str, key: str | None) -> None:
+        """Ghi một batch (dòng `twin_batches`, twin, ticket); `request_json` để `NULL` vì chỉ lưu `body_digest`."""
+        try:
+            conn.execute(
+                "INSERT INTO twin_batches (batch_id, blueprint_id, base_seed, request_json, body_digest, "
+                "idempotency_key, created_at) VALUES (?, ?, ?, NULL, ?, ?, ?)",
+                (batch.batch_id, batch.blueprint_id, batch.base_seed, body_digest, key, _ts(batch.created_at)),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise _translate(exc, MissingReferenceError(f"không tìm thấy blueprint {batch.blueprint_id}")) from exc
+        conn.executemany(
+            "INSERT INTO twins (twin_id, batch_id, slot_index, ordinal, twin_json) VALUES (?, ?, ?, ?, ?)",
+            [
+                (twin.twin_id, batch.batch_id, twin.slot_index, ordinal, _dump(twin))
+                for ordinal, twin in enumerate(batch.twins)
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO review_tickets (batch_id, slot_index, ticket_json) VALUES (?, ?, ?)",
+            [(batch.batch_id, ticket.slot_index, _dump(ticket)) for ticket in batch.review_tickets],
+        )
+
     def get_idempotent(self, blueprint_id: str, key: str, now: datetime) -> IdempotencyRecord | None:
         with self._read() as conn:
-            row = conn.execute(
-                "SELECT batch_id, base_seed, body_digest, created_at FROM twin_batches "
-                "WHERE blueprint_id = ? AND idempotency_key = ?",
-                (blueprint_id, key),
-            ).fetchone()
+            row = conn.execute(self._BATCH_SELECT, (blueprint_id, key)).fetchone()
             if row is None:
                 return None
             stored_at = datetime.fromisoformat(str(row["created_at"]))
             if now - stored_at > IDEMPOTENCY_TTL:
                 return None
-            twins = conn.execute(
-                "SELECT twin_json FROM twins WHERE batch_id = ? ORDER BY ordinal", (row["batch_id"],)
-            ).fetchall()
-            tickets = conn.execute(
-                "SELECT ticket_json FROM review_tickets WHERE batch_id = ? ORDER BY ticket_id", (row["batch_id"],)
-            ).fetchall()
-        batch = TwinBatch(
-            blueprint_id=blueprint_id,
-            base_seed=int(row["base_seed"]),
-            twins=[TwinQuestion.model_validate_json(str(twin["twin_json"])) for twin in twins],
-            review_tickets=[ReviewTicket.model_validate_json(str(ticket["ticket_json"])) for ticket in tickets],
-        )
+            batch = self._load_batch(conn, row)
         return IdempotencyRecord(body_digest=str(row["body_digest"]), stored_at=stored_at, batch=batch)
+
+    def save_batch(self, batch: TwinBatch, idempotency_key: str | None, body_digest: str) -> TwinBatch:
+        """Một giao dịch `BEGIN IMMEDIATE`: đọc bản ghi của khoá, quyết định theo `TwinBatchRepository.save_batch`, ghi.
+
+        Khoá hết hạn được đặt `NULL` trước khi ghi lại đúng khoá đó, để giữ index UNIQUE
+        `(blueprint_id, idempotency_key)`; batch cũ vẫn còn trong bảng (vẫn tính vào `batch_count`).
+        """
+        key = idempotency_key
+        with self._write() as conn:
+            if key is not None:
+                row = conn.execute(self._BATCH_SELECT, (batch.blueprint_id, key)).fetchone()
+                if row is not None:
+                    stored_at = datetime.fromisoformat(str(row["created_at"]))
+                    if batch.created_at - stored_at > IDEMPOTENCY_TTL:
+                        conn.execute(
+                            "UPDATE twin_batches SET idempotency_key = NULL WHERE batch_id = ?", (row["batch_id"],)
+                        )
+                    elif str(row["body_digest"]) == body_digest:
+                        return self._load_batch(conn, row)
+                    else:
+                        key = None  # khác body: request mới, không đụng bản ghi của khoá (§6.3)
+            self._insert_batch(conn, batch, body_digest, key)
+        return batch
 
     def save_idempotent(self, blueprint_id: str, key: str, record: IdempotencyRecord) -> None:
         """Dọn khoá rồi ghi batch mới trong cùng giao dịch, để giữ index UNIQUE `(blueprint_id, idempotency_key)`.
 
         Khoá hết hạn (của mọi blueprint, tính tới `record.stored_at`) và khoá cũ trùng `(blueprint, key)` được đặt
         `NULL`; batch cũ vẫn còn trong bảng nhưng không tra theo khoá được nữa (cùng hành vi ghi đè của bản in-memory).
-        `request_json` để `NULL` vì bản ghi idempotency chỉ mang `body_digest`.
+        `batch_id` là của `record.batch`, `created_at` là `record.stored_at` (cùng giá trị, `IdempotencyRecord`).
         """
-        batch_id = f"tb_{uuid4().hex[:16]}"
+        batch = record.batch.model_copy(update={"blueprint_id": blueprint_id})
         cutoff = _ts(record.stored_at - IDEMPOTENCY_TTL)
         with self._write() as conn:
             conn.execute(
@@ -381,25 +484,113 @@ class SQLiteStore:
                 "WHERE idempotency_key IS NOT NULL AND (created_at < ? OR (blueprint_id = ? AND idempotency_key = ?))",
                 (cutoff, blueprint_id, key),
             )
-            try:
-                conn.execute(
-                    "INSERT INTO twin_batches (batch_id, blueprint_id, base_seed, request_json, body_digest, "
-                    "idempotency_key, created_at) VALUES (?, ?, ?, NULL, ?, ?, ?)",
-                    (batch_id, blueprint_id, record.batch.base_seed, record.body_digest, key, _ts(record.stored_at)),
+            self._insert_batch(conn, batch, record.body_digest, key)
+
+    # ------------------------------------------------------------------ #
+    # SubjectRepository
+    # ------------------------------------------------------------------ #
+
+    _SUBJECT_SELECT = "SELECT subject_code, display_name, exam_format, version, created_at, updated_at FROM subjects"
+
+    @staticmethod
+    def _ensure_subject(conn: sqlite3.Connection, subject: Subject | None) -> None:
+        """Tạo môn ngầm khi chưa có, trong giao dịch của bản ghi chính; môn đã có giữ nguyên."""
+        if subject is None:
+            return
+        conn.execute(
+            "INSERT INTO subjects (subject_code, display_name, exam_format, created_at, updated_at, version) "
+            "VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT (subject_code) DO NOTHING",
+            (
+                subject.subject_code,
+                subject.display_name,
+                subject.exam_format.value,
+                _ts(subject.created_at),
+                _ts(subject.updated_at),
+            ),
+        )
+
+    @staticmethod
+    def _drop_implicit_subject(conn: sqlite3.Connection, subject: Subject | None) -> None:
+        """Gỡ môn tạo ngầm của một lần nhập bị huỷ, nếu nó còn nguyên và không còn tài liệu hay blueprint nào cùng môn."""
+        if subject is None:
+            return
+        conn.execute(
+            "DELETE FROM subjects WHERE subject_code = ? AND display_name = ? AND exam_format = ? AND created_at = ? "
+            "AND updated_at = ? AND version = 1 "
+            "AND NOT EXISTS (SELECT 1 FROM documents WHERE subject_code = ?) "
+            "AND NOT EXISTS (SELECT 1 FROM blueprints WHERE subject_code = ?)",
+            (
+                subject.subject_code,
+                subject.display_name,
+                subject.exam_format.value,
+                _ts(subject.created_at),
+                _ts(subject.updated_at),
+                subject.subject_code,
+                subject.subject_code,
+            ),
+        )
+
+    def list_subjects(self) -> list[Subject]:
+        with self._read() as conn:
+            rows = conn.execute(f"{self._SUBJECT_SELECT} ORDER BY subject_code").fetchall()
+        return [Subject.model_validate(dict(row)) for row in rows]
+
+    def get_subject(self, subject_code: str) -> Subject | None:
+        with self._read() as conn:
+            row = conn.execute(f"{self._SUBJECT_SELECT} WHERE subject_code = ?", (subject_code,)).fetchone()
+        return None if row is None else Subject.model_validate(dict(row))
+
+    def create_subject(self, subject: Subject) -> Subject:
+        with self._write() as conn:
+            cursor = conn.execute(
+                "INSERT INTO subjects (subject_code, display_name, exam_format, created_at, updated_at, version) "
+                "VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT (subject_code) DO NOTHING",
+                (
+                    subject.subject_code,
+                    subject.display_name,
+                    subject.exam_format.value,
+                    _ts(subject.created_at),
+                    _ts(subject.updated_at),
+                ),
+            )
+            if cursor.rowcount == 0:
+                raise SubjectExistsError(subject.subject_code)
+            row = conn.execute(f"{self._SUBJECT_SELECT} WHERE subject_code = ?", (subject.subject_code,)).fetchone()
+        return Subject.model_validate(dict(row))
+
+    def update_subject(
+        self,
+        subject_code: str,
+        expected_version: int,
+        *,
+        display_name: str | None,
+        exam_format: ExamFormat | None,
+        now: datetime,
+    ) -> Subject:
+        with self._write() as conn:
+            cursor = conn.execute(
+                "UPDATE subjects SET display_name = COALESCE(?, display_name), "
+                "exam_format = COALESCE(?, exam_format), updated_at = ?, version = version + 1 "
+                "WHERE subject_code = ? AND version = ?",
+                (
+                    display_name,
+                    None if exam_format is None else exam_format.value,
+                    _ts(now),
+                    subject_code,
+                    expected_version,
+                ),
+            )
+            if cursor.rowcount == 0:
+                raise _version_conflict(
+                    conn,
+                    "môn học",
+                    subject_code,
+                    expected_version,
+                    "SELECT version FROM subjects WHERE subject_code = ?",
+                    (subject_code,),
                 )
-            except sqlite3.IntegrityError as exc:
-                raise _translate(exc, MissingReferenceError(f"không tìm thấy blueprint {blueprint_id}")) from exc
-            conn.executemany(
-                "INSERT INTO twins (twin_id, batch_id, slot_index, ordinal, twin_json) VALUES (?, ?, ?, ?, ?)",
-                [
-                    (twin.twin_id, batch_id, twin.slot_index, ordinal, _dump(twin))
-                    for ordinal, twin in enumerate(record.batch.twins)
-                ],
-            )
-            conn.executemany(
-                "INSERT INTO review_tickets (batch_id, slot_index, ticket_json) VALUES (?, ?, ?)",
-                [(batch_id, ticket.slot_index, _dump(ticket)) for ticket in record.batch.review_tickets],
-            )
+            row = conn.execute(f"{self._SUBJECT_SELECT} WHERE subject_code = ?", (subject_code,)).fetchone()
+        return Subject.model_validate(dict(row))
 
     # ------------------------------------------------------------------ #
     # DocumentRepository
@@ -419,20 +610,22 @@ class SQLiteStore:
             int(meta.has_text_layer),
             document.status,
             _ts(meta.uploaded_at),
+            document.chapter_code,
         )
 
     def _upsert_imported(self, conn: sqlite3.Connection, document: ImportedDocument) -> sqlite3.Row:
         """Tạo dòng `documents`, hoặc bổ sung thông tin cho dòng cùng `document_id` (version tăng 1); trả dòng đã ghi."""
         conn.execute(
             "INSERT INTO documents (filename, media_type, size_bytes, subject_code, title, source_kind, "
-            "output_language, page_count, has_text_layer, status, uploaded_at, document_id, sha256) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "output_language, page_count, has_text_layer, status, uploaded_at, chapter_code, document_id, sha256) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (document_id) DO UPDATE SET filename = excluded.filename, "
             "media_type = excluded.media_type, size_bytes = excluded.size_bytes, "
             "subject_code = excluded.subject_code, title = excluded.title, source_kind = excluded.source_kind, "
             "output_language = excluded.output_language, page_count = excluded.page_count, "
             "has_text_layer = excluded.has_text_layer, status = excluded.status, "
-            "uploaded_at = excluded.uploaded_at, version = documents.version + 1",
+            "uploaded_at = excluded.uploaded_at, chapter_code = excluded.chapter_code, "
+            "version = documents.version + 1",
             (*self._imported_columns(document), document.meta.doc_id, document.meta.sha256),
         )
         row: sqlite3.Row = conn.execute(
@@ -467,11 +660,13 @@ class SQLiteStore:
                     "VALUES (?, ?, 'pending', ?, 0, ?)",
                     (document_id, page_number, _dump(page), updated_at),
                 )
+            self._ensure_subject(conn, Subject.implicit(document.meta.subject_code, document.meta.uploaded_at))
         return self._imported_from_row(row)
 
     _IMPORTED_SELECT = (
         "SELECT document_id, sha256, filename, size_bytes, subject_code, title, source_kind, output_language, "
-        "page_count, has_text_layer, status, uploaded_at, version FROM documents WHERE subject_code IS NOT NULL"
+        "page_count, has_text_layer, status, uploaded_at, chapter_code, version FROM documents "
+        "WHERE subject_code IS NOT NULL"
     )
 
     @staticmethod
@@ -492,6 +687,7 @@ class SQLiteStore:
                 "filename": row["filename"],
                 "size_bytes": row["size_bytes"],
                 "output_language": row["output_language"],
+                "chapter_code": row["chapter_code"],
                 "status": row["status"],
                 "version": row["version"],
             }
@@ -508,7 +704,7 @@ class SQLiteStore:
             cursor = conn.execute(
                 "UPDATE documents SET filename = ?, media_type = ?, size_bytes = ?, subject_code = ?, title = ?, "
                 "source_kind = ?, output_language = ?, page_count = ?, has_text_layer = ?, status = ?, "
-                "uploaded_at = ?, version = version + 1 WHERE document_id = ? AND version = ?",
+                "uploaded_at = ?, chapter_code = ?, version = version + 1 WHERE document_id = ? AND version = ?",
                 (*self._imported_columns(document), document_id, expected_version),
             )
             if cursor.rowcount == 0:
@@ -531,29 +727,63 @@ class SQLiteStore:
                 rows = conn.execute(f"{self._IMPORTED_SELECT} AND subject_code = ?{order}", (subject_code,)).fetchall()
         return [self._imported_from_row(row) for row in rows]
 
+    def _delete_chunk_index(self, conn: sqlite3.Connection, document_id: str) -> set[str]:
+        """Xoá dòng chỉ mục FTS5 của mọi chunk thuộc tài liệu (bảng ảo không có khoá ngoại); trả các môn có chunk."""
+        if self._fts5:
+            for table in _FTS_TABLES.values():
+                conn.execute(
+                    f"DELETE FROM {table} WHERE chunk_id IN (SELECT chunk_id FROM chunks WHERE document_id = ?)",
+                    (document_id,),
+                )
+        return {
+            str(row["subject_code"])
+            for row in conn.execute("SELECT DISTINCT subject_code FROM chunks WHERE document_id = ?", (document_id,))
+        }
+
+    def _delete_document_row(self, conn: sqlite3.Connection, document_id: str) -> None:
+        subjects = self._delete_chunk_index(conn, document_id)
+        try:
+            conn.execute("DELETE FROM documents WHERE document_id = ?", (document_id,))
+        except sqlite3.IntegrityError as exc:
+            in_use = RecordInUseError(f"tài liệu {document_id} còn được ingestion item tham chiếu")
+            raise _translate(exc, in_use) from exc
+        self._relink(conn, subjects)  # chunk còn lại không được trỏ tới chunk vừa xoá
+
     def delete_document(self, document_id: str) -> bool:
         with self._write() as conn:
             if conn.execute("SELECT 1 FROM documents WHERE document_id = ?", (document_id,)).fetchone() is None:
                 return False
-            if self._fts5:
-                for table in _FTS_TABLES.values():
-                    conn.execute(
-                        f"DELETE FROM {table} WHERE chunk_id IN (SELECT chunk_id FROM chunks WHERE document_id = ?)",
-                        (document_id,),
-                    )
-            subjects = {
-                str(row["subject_code"])
-                for row in conn.execute(
-                    "SELECT DISTINCT subject_code FROM chunks WHERE document_id = ?", (document_id,)
-                )
-            }
-            try:
-                conn.execute("DELETE FROM documents WHERE document_id = ?", (document_id,))
-            except sqlite3.IntegrityError as exc:
-                in_use = RecordInUseError(f"tài liệu {document_id} còn được ingestion item tham chiếu")
-                raise _translate(exc, in_use) from exc
-            self._relink(conn, subjects)  # chunk còn lại không được trỏ tới chunk vừa xoá
+            self._delete_document_row(conn, document_id)
         return True
+
+    def revert_imported_document(self, document_id: str, upload: UploadedDocument | None) -> bool:
+        with self._write() as conn:
+            exists = conn.execute(f"{self._IMPORTED_SELECT} AND document_id = ?", (document_id,)).fetchone()
+            if exists is None:
+                return False
+            imported = self._imported_from_row(exists)
+            implicit_subject = Subject.implicit(imported.meta.subject_code, imported.meta.uploaded_at)
+            if upload is None:
+                self._delete_document_row(conn, document_id)
+                self._drop_implicit_subject(conn, implicit_subject)
+                return True
+            subjects = self._delete_chunk_index(conn, document_id)
+            conn.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))  # cặp khái niệm theo CASCADE
+            conn.execute("DELETE FROM pages WHERE document_id = ?", (document_id,))  # lịch sử sửa trang theo CASCADE
+            conn.execute(
+                f"UPDATE documents SET filename = ?, media_type = ?, size_bytes = ?, uploaded_at = ?, "
+                f"{self._IMPORT_ONLY_RESET}, version = version + 1 WHERE document_id = ?",
+                (upload.filename, upload.media_type, upload.size_bytes, _ts(upload.uploaded_at), document_id),
+            )
+            self._relink(conn, subjects)
+            self._drop_implicit_subject(conn, implicit_subject)
+        return True
+
+    # Cột chỉ bộ nhập §6.5 ghi; dòng chỉ do upload đề §6.1 tạo có mọi cột này là NULL.
+    _IMPORT_ONLY_RESET = (
+        "subject_code = NULL, title = NULL, source_kind = NULL, output_language = NULL, page_count = NULL, "
+        "has_text_layer = NULL, status = NULL, chapter_code = NULL"
+    )
 
     def add_page(
         self, document_id: str, page_number: int, page: BaseModel, *, status: PageStatus, confirmed: bool
@@ -641,6 +871,28 @@ class SQLiteStore:
                 (document_id, page_number),
             ).fetchone()
         return None if row is None else model.model_validate_json(str(row["extraction_json"]))
+
+    def list_page_summaries(self, document_id: str) -> list[PageSummary]:
+        """Đọc cột `status`, `confirmed` và hai field tóm tắt của JSON trang bằng `json_extract` của SQLite."""
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT page_number, status, confirmed, json_extract(extraction_json, '$.tier_used') AS tier_used, "
+                "json_extract(extraction_json, '$.review_reasons') AS review_reasons "
+                "FROM pages WHERE document_id = ? ORDER BY page_number",
+                (document_id,),
+            ).fetchall()
+        return [
+            PageSummary.model_validate(
+                {
+                    "page_number": row["page_number"],
+                    "status": row["status"],
+                    "tier_used": row["tier_used"],
+                    "review_reasons": json.loads(str(row["review_reasons"] or "[]")),
+                    "confirmed": bool(row["confirmed"]),
+                }
+            )
+            for row in rows
+        ]
 
     def list_pages[M: BaseModel](self, document_id: str, model: type[M]) -> list[M]:
         with self._read() as conn:
@@ -789,6 +1041,11 @@ class SQLiteStore:
         with self._read() as conn:
             found = self._load_chunks(conn, "WHERE chunk_id = ?", (chunk_id,))
         return found[0] if found else None
+
+    def has_document_chunks(self, document_id: str) -> bool:
+        with self._read() as conn:
+            row = conn.execute("SELECT 1 FROM chunks WHERE document_id = ? LIMIT 1", (document_id,)).fetchone()
+        return row is not None
 
     def list_chunks(self, subject_code: str, chapter_code: str | None = None) -> list[KnowledgeChunk]:
         where = "WHERE subject_code = ?" + ("" if chapter_code is None else " AND chapter_code = ?")

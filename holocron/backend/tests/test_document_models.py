@@ -55,7 +55,7 @@ def test_literals_match_spec() -> None:
     assert set(get_args(LineEngine)) == {"text_layer", "tesseract", "vlm", "human"}
     assert get_args(TierUsed) == ("text_layer", "ocr", "layout", "vlm")
     assert get_args(LineFlag) == ("LOW_LINE_CONF", "TOKEN_MISMATCH", "HIGH_LINE_CER")
-    assert get_args(FailureReason) == ("PAGE_TIMEOUT", "PAGE_ERROR", "OCR_ENGINE_MISSING")
+    assert get_args(FailureReason) == ("PAGE_TIMEOUT", "PAGE_ERROR", "OCR_ENGINE_MISSING", "TOO_MANY_LINES")
     assert REVIEW_REASON_ORDER == get_args(ReviewReason)
     assert REVIEW_REASON_ORDER == (
         "LOW_OCR_SCORE",

@@ -20,6 +20,8 @@ export type PairListState =
 
 interface PairListProps {
   subjectCode: string;
+  /** Địa chỉ phần Tài liệu của môn; mặc định `/vault?subject=`. */
+  documentsHref?: string;
   state: PairListState;
   /** Đang lọc theo chương hoặc trạng thái (để câu trạng thái trống nói đúng lý do). */
   filtered: boolean;
@@ -36,6 +38,7 @@ interface PairListProps {
 /** Danh sách cặp theo đúng thứ tự backend trả `(chapter_code, term, pair_id)`; không hiện số đếm theo trạng thái. */
 export function PairList({
   subjectCode,
+  documentsHref,
   state,
   filtered,
   mapStatus,
@@ -55,13 +58,14 @@ export function PairList({
       {state.kind === "loading" && <Loading label="Đang tải cặp khái niệm…" />}
       {state.kind === "error" && <ErrorNotice error={state.error} onRetry={onReloadList} onReload={onReloadList} />}
       {state.kind === "ready" && state.value.pairs.length === 0 && (
-        <EmptyState title={filtered ? "Không có cặp nào khớp bộ lọc." : "Môn này chưa có cặp khái niệm nào."}>
+        <EmptyState title={filtered ? "Không có khái niệm nào khớp bộ lọc." : "Môn này chưa có khái niệm nào."}>
           {filtered ? (
-            "Đổi chương hoặc trạng thái để xem các cặp khác, hoặc bôi định nghĩa trong một chunk ở cột bên."
+            "Đổi chương hoặc trạng thái để xem các khái niệm khác, hoặc bôi định nghĩa trong một đoạn văn bản ở cột bên."
           ) : (
             <>
-              Chọn một chunk ở cột bên rồi bôi đoạn định nghĩa để tạo cặp. Chưa có văn bản thì{" "}
-              <Link href={vaultHref({ subject: subjectCode })}>mở Vault</Link> để nhập và xác nhận tài liệu.
+              Chọn một đoạn văn bản ở cột bên rồi bôi phần định nghĩa để tạo khái niệm. Chưa có văn bản thì{" "}
+              <Link href={documentsHref ?? vaultHref({ subject: subjectCode })}>mở phần Tài liệu</Link> để thêm và xác
+              nhận tài liệu.
             </>
           )}
         </EmptyState>

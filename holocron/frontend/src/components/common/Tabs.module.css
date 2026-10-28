@@ -1,0 +1,52 @@
+/* Hàng tab của trang môn (design-handoff/README.md màn 3). Mỗi tab rộng cố định để vạch dưới trượt đúng một bước
+   bằng `translateX(<chỉ số> * 100%)`. */
+.root {
+  --tab-width: 168px;
+
+  display: grid;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.list {
+  position: relative;
+  display: flex;
+  box-shadow: inset 0 -1px 0 var(--line);
+}
+
+.tab {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  width: var(--tab-width);
+  min-height: 48px;
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: var(--fs-body);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--ink);
+  background: var(--surface-2);
+}
+
+.tab[aria-selected="true"] {
+  color: var(--ink);
+  font-weight: var(--fw-semibold);
+}
+
+.indicator {
+  width: var(--tab-width);
+}
+
+.panel {
+  min-width: 0;
+}

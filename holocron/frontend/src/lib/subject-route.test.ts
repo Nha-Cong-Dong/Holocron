@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { isSubjectCode, parseSubjectLocation, subjectConceptsHref, subjectHref } from "./subject-route";
+import {
+  isSubjectCode,
+  parseSubjectDocumentLocation,
+  parseSubjectLocation,
+  subjectConceptsHref,
+  subjectDocumentsHref,
+  subjectHref,
+} from "./subject-route";
 
 function params(query: string): URLSearchParams {
   return new URLSearchParams(query);
@@ -58,5 +65,45 @@ describe("parseSubjectLocation", () => {
     expect(isSubjectCode("vxl01")).toBe(false);
     expect(isSubjectCode("MAU")).toBe(false);
     expect(isSubjectCode("")).toBe(false);
+  });
+});
+
+describe("phần Tài liệu: danh sách và xem lại trang", () => {
+  it("dựng địa chỉ danh sách và xem lại trang; bỏ subject/tab của màn cũ", () => {
+    expect(subjectDocumentsHref("MAU101", {})).toBe("/subject?code=MAU101&tab=documents");
+    expect(subjectDocumentsHref("MAU101", { subject: "KHAC01", tab: "chunks" })).toBe(
+      "/subject?code=MAU101&tab=documents",
+    );
+    expect(subjectDocumentsHref("MAU101", { subject: "MAU101", doc: "doc_0123456789abcdef", page: 3 })).toBe(
+      "/subject?code=MAU101&tab=documents&doc=doc_0123456789abcdef&page=3",
+    );
+    expect(subjectDocumentsHref("MAU101", { doc: "doc_0123456789abcdef" })).toBe(
+      "/subject?code=MAU101&tab=documents&doc=doc_0123456789abcdef",
+    );
+  });
+
+  it("page không đi một mình khi không có doc", () => {
+    expect(subjectDocumentsHref("MAU101", { page: 2 })).toBe("/subject?code=MAU101&tab=documents");
+  });
+
+  it("dựng rồi đọc lại đúng tài liệu và trang", () => {
+    const href = subjectDocumentsHref("MAU101", { doc: "doc_0123456789abcdef", page: 12 });
+    const query = new URLSearchParams(href.slice(href.indexOf("?") + 1));
+    expect(parseSubjectLocation(query)).toEqual({ code: "MAU101", tab: "documents" });
+    expect(parseSubjectDocumentLocation(query)).toEqual({ doc: "doc_0123456789abcdef", page: 12 });
+  });
+
+  it("thiếu doc ⇒ danh sách (bỏ page); page sai mẫu ⇒ null", () => {
+    expect(parseSubjectDocumentLocation(params("code=MAU101"))).toEqual({ doc: null, page: null });
+    expect(parseSubjectDocumentLocation(params("page=3"))).toEqual({ doc: null, page: null });
+    expect(parseSubjectDocumentLocation(params("doc=..%2Fetc&page=3"))).toEqual({ doc: null, page: null });
+    expect(parseSubjectDocumentLocation(params("doc=doc_0123456789abcdef&page=0"))).toEqual({
+      doc: "doc_0123456789abcdef",
+      page: null,
+    });
+    expect(parseSubjectDocumentLocation(params("doc=doc_0123456789abcdef&page=abc"))).toEqual({
+      doc: "doc_0123456789abcdef",
+      page: null,
+    });
   });
 });

@@ -7,6 +7,7 @@
 import { SUBJECT_CODE_PATTERN } from "@/lib/limits";
 import type { PairsLocation } from "@/lib/pairs";
 import { parseSubjectTab, type SubjectTab } from "@/lib/tabs";
+import { parseVaultLocation, type VaultLocation } from "@/lib/vault";
 
 export const SUBJECT_PATH = "/subject";
 
@@ -59,4 +60,26 @@ export function subjectConceptsHref(code: string, location: Partial<PairsLocatio
     status: location.status,
     chunk: location.chunk,
   });
+}
+
+/** Tài liệu và trang đang xem lại trong phần Tài liệu (`?doc=&page=`); không có ⇒ danh sách tài liệu. */
+export interface SubjectDocumentLocation {
+  doc: string | null;
+  page: number | null;
+}
+
+/** Đọc `?doc=&page=` của phần Tài liệu theo đúng mẫu của màn `/vault`; giá trị sai mẫu bị bỏ, không ném lỗi. */
+export function parseSubjectDocumentLocation(params: SearchParamsLike): SubjectDocumentLocation {
+  const location = parseVaultLocation(params);
+  return { doc: location.doc, page: location.doc === null ? null : location.page };
+}
+
+/**
+ * Địa chỉ phần Tài liệu của một môn: danh sách tài liệu, hoặc xem lại một trang khi có `doc` (kèm `page`). Môn luôn
+ * là `code` của trang; `subject`/`tab` trong `location` bị bỏ qua.
+ */
+export function subjectDocumentsHref(code: string, location: Partial<VaultLocation>): string {
+  const doc = location.doc ?? null;
+  const page = doc === null || location.page === undefined || location.page === null ? null : String(location.page);
+  return subjectHref(code, "documents", { doc, page });
 }

@@ -11,7 +11,7 @@ import { DOCUMENT_STATUS_LABEL_VI, pageWarnings, sourceKindLabel } from "@/lib/d
 import type { DocumentStatusView, DocumentSummaryView, DocumentView, PageSummaryView } from "@/lib/documents-data";
 import type { UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
-import { vaultHref } from "@/lib/vault";
+import { type VaultHrefFor, vaultHref } from "@/lib/vault";
 
 import type { DocumentsSnapshot } from "./DocumentsPanel";
 import { PageStrip } from "./PageStrip";
@@ -36,10 +36,12 @@ function formatUploadedAt(value: string): string {
 interface DocumentListProps {
   snapshot: DocumentsSnapshot;
   onChanged: () => void;
+  /** Dựng địa chỉ xem lại trang; mặc định `vaultHref` (`/vault?doc=&page=`). */
+  hrefFor?: VaultHrefFor;
 }
 
 /** Danh sách tài liệu của môn (mới nhất trước, như backend trả), trạng thái bằng chữ và số đếm do backend đếm. */
-export function DocumentList({ snapshot, onChanged }: DocumentListProps) {
+export function DocumentList({ snapshot, onChanged, hrefFor = vaultHref }: DocumentListProps) {
   return (
     <ul className={styles.docList}>
       {snapshot.documents.map((document) => (
@@ -48,6 +50,7 @@ export function DocumentList({ snapshot, onChanged }: DocumentListProps) {
           summary={document}
           progress={snapshot.progress.get(document.docId) ?? null}
           onChanged={onChanged}
+          hrefFor={hrefFor}
         />
       ))}
     </ul>
@@ -58,9 +61,10 @@ interface DocumentItemProps {
   summary: DocumentSummaryView;
   progress: DocumentView | null;
   onChanged: () => void;
+  hrefFor: VaultHrefFor;
 }
 
-function DocumentItem({ summary, progress, onChanged }: DocumentItemProps) {
+function DocumentItem({ summary, progress, onChanged, hrefFor }: DocumentItemProps) {
   const ids = useId();
   const [warningsOpen, setWarningsOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -105,7 +109,7 @@ function DocumentItem({ summary, progress, onChanged }: DocumentItemProps) {
         {!processing && summary.status !== "failed" && (
           <Link
             className={`${styles.primary} ${styles.small}`}
-            href={vaultHref({ subject: summary.subjectCode, doc: summary.docId, page: 1 })}
+            href={hrefFor({ subject: summary.subjectCode, doc: summary.docId, page: 1 })}
           >
             Xem lại và xác nhận trang
           </Link>
@@ -132,7 +136,9 @@ function DocumentItem({ summary, progress, onChanged }: DocumentItemProps) {
         </button>
       </div>
       <div id={`${ids}-warnings`}>
-        {warningsOpen && <PageWarningsPanel documentId={summary.docId} subjectCode={summary.subjectCode} />}
+        {warningsOpen && (
+          <PageWarningsPanel documentId={summary.docId} subjectCode={summary.subjectCode} hrefFor={hrefFor} />
+        )}
       </div>
       <DeleteDialog
         open={deleting}
@@ -158,7 +164,15 @@ type WarningsState =
   | { kind: "ready"; document: DocumentView };
 
 /** Cảnh báo từng trang của một tài liệu đã đọc xong: tải `DocumentImport` khi người dùng mở. */
-function PageWarningsPanel({ documentId, subjectCode }: { documentId: string; subjectCode: string }) {
+function PageWarningsPanel({
+  documentId,
+  subjectCode,
+  hrefFor,
+}: {
+  documentId: string;
+  subjectCode: string;
+  hrefFor: VaultHrefFor;
+}) {
   const [state, setState] = useState<WarningsState>({ kind: "loading" });
   const calls = useRef(createLatestCounter());
 
@@ -190,7 +204,13 @@ function PageWarningsPanel({ documentId, subjectCode }: { documentId: string; su
   return (
     <ul className={styles.warningList}>
       {flagged.map((page) => (
-        <PageWarningItem key={page.pageNumber} page={page} documentId={documentId} subjectCode={subjectCode} />
+        <PageWarningItem
+          key={page.pageNumber}
+          page={page}
+          documentId={documentId}
+          subjectCode={subjectCode}
+          hrefFor={hrefFor}
+        />
       ))}
     </ul>
   );
@@ -200,14 +220,16 @@ function PageWarningItem({
   page,
   documentId,
   subjectCode,
+  hrefFor,
 }: {
   page: PageSummaryView;
   documentId: string;
   subjectCode: string;
+  hrefFor: VaultHrefFor;
 }) {
   return (
     <li className={styles.warningPage}>
-      <Link href={vaultHref({ subject: subjectCode, doc: documentId, page: page.pageNumber })}>
+      <Link href={hrefFor({ subject: subjectCode, doc: documentId, page: page.pageNumber })}>
         Trang {page.pageNumber}
         {page.confirmed ? " (đã xác nhận)" : ""}
       </Link>

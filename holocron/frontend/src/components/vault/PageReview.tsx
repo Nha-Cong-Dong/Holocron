@@ -34,7 +34,7 @@ import type { DocumentView, LineView, PageStatusView, PageView } from "@/lib/doc
 import type { UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
 import type { Poller } from "@/lib/poll";
-import { vaultHref } from "@/lib/vault";
+import { type VaultHrefFor, vaultHref } from "@/lib/vault";
 
 import { DeleteDialog } from "./DocumentList";
 import styles from "./Vault.module.css";
@@ -57,15 +57,20 @@ function rawNumber(value: number | null): string {
 interface PageReviewProps {
   documentId: string;
   pageNumber: number;
+  /**
+   * Dựng địa chỉ trang khác, danh sách tài liệu của môn và nơi quay lại; mặc định `vaultHref` (`/vault?…`). Trang môn
+   * truyền hàm giữ mọi liên kết trong phần Tài liệu của `/subject`.
+   */
+  hrefFor?: VaultHrefFor;
 }
 
 /**
- * Xem lại một trang (`/vault?doc=…&page=…`; §5.7, §6.5): danh sách trang bên trái, văn bản theo dòng bên phải. Dòng
- * có cờ conf thấp hoặc token lệch được tô theo dữ liệu backend; sửa dòng gửi `expected_version`, 409 lệch phiên bản
+ * Xem lại một trang (`/vault?doc=…&page=…` hoặc phần Tài liệu của `/subject`; §5.7, §6.5): danh sách trang bên
+ * trái, văn bản theo dòng bên phải. Dòng có cờ conf thấp hoặc token lệch được tô theo dữ liệu backend; sửa dòng gửi `expected_version`, 409 lệch phiên bản
  * thì có nút tải lại bản mới nhất; xác nhận từng trang (`ok`, `needs_review`) và xác nhận cả tài liệu (chỉ trang `ok`).
  * Chưa có ảnh trang vì chưa có cách lấy file gốc (kế hoạch UI M12).
  */
-export function PageReview({ documentId, pageNumber }: PageReviewProps) {
+export function PageReview({ documentId, pageNumber, hrefFor = vaultHref }: PageReviewProps) {
   const router = useRouter();
   const [document, setDocument] = useState<Loadable<DocumentView>>({ kind: "loading" });
   const [page, setPage] = useState<Loadable<PageView>>({ kind: "loading" });
@@ -208,14 +213,14 @@ export function PageReview({ documentId, pageNumber }: PageReviewProps) {
       <div className={styles.page}>
         <ErrorNotice error={document.error} onRetry={loadDocument} onReload={loadDocument} />
         <p>
-          <Link href="/vault">Về danh sách môn</Link>
+          <Link href={hrefFor({})}>Quay lại danh sách</Link>
         </p>
       </div>
     );
   }
   const doc = document.value;
   const docBlock = confirmDocumentBlock(doc);
-  const subjectHref = vaultHref({ subject: doc.subjectCode });
+  const subjectHref = hrefFor({ subject: doc.subjectCode });
 
   return (
     <div className={styles.page}>
@@ -262,7 +267,7 @@ export function PageReview({ documentId, pageNumber }: PageReviewProps) {
                 <Link
                   className={styles.pageLink}
                   data-status={item.status}
-                  href={vaultHref({ subject: doc.subjectCode, doc: doc.docId, page: item.pageNumber })}
+                  href={hrefFor({ subject: doc.subjectCode, doc: doc.docId, page: item.pageNumber })}
                   aria-current={item.pageNumber === pageNumber ? "page" : undefined}
                 >
                   <span>Trang {item.pageNumber}</span>
@@ -313,7 +318,7 @@ export function PageReview({ documentId, pageNumber }: PageReviewProps) {
               }
             />
           )}
-          <PageSteps doc={doc} pageNumber={pageNumber} />
+          <PageSteps doc={doc} pageNumber={pageNumber} hrefFor={hrefFor} />
         </div>
       </div>
 
@@ -335,19 +340,19 @@ export function PageReview({ documentId, pageNumber }: PageReviewProps) {
   );
 }
 
-function PageSteps({ doc, pageNumber }: { doc: DocumentView; pageNumber: number }) {
+function PageSteps({ doc, pageNumber, hrefFor }: { doc: DocumentView; pageNumber: number; hrefFor: VaultHrefFor }) {
   const index = doc.pages.findIndex((item) => item.pageNumber === pageNumber);
   const previous = index > 0 ? doc.pages[index - 1] : undefined;
   const next = index >= 0 ? doc.pages[index + 1] : undefined;
   return (
     <nav className={styles.pager} aria-label="Chuyển trang">
       {previous !== undefined && (
-        <Link href={vaultHref({ subject: doc.subjectCode, doc: doc.docId, page: previous.pageNumber })}>
+        <Link href={hrefFor({ subject: doc.subjectCode, doc: doc.docId, page: previous.pageNumber })}>
           ← Trang {previous.pageNumber}
         </Link>
       )}
       {next !== undefined && (
-        <Link href={vaultHref({ subject: doc.subjectCode, doc: doc.docId, page: next.pageNumber })}>
+        <Link href={hrefFor({ subject: doc.subjectCode, doc: doc.docId, page: next.pageNumber })}>
           Trang {next.pageNumber} →
         </Link>
       )}

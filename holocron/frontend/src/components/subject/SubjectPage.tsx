@@ -4,17 +4,26 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect } from "react";
 
-import { ErrorNotice } from "@/components/common/ErrorNotice";
 import { EmptyState } from "@/components/common/LoadState";
 import { type TabItem, Tabs } from "@/components/common/Tabs";
 import { PairsView } from "@/components/pairs/PairsView";
 import { PracticeView } from "@/components/practice/PracticeView";
 import { useShell } from "@/components/shell/ShellContext";
 import { DocumentsPanel } from "@/components/vault/DocumentsPanel";
+import { PageReview } from "@/components/vault/PageReview";
+import type { UiError } from "@/lib/errors";
 import type { PairsLocation } from "@/lib/pairs";
-import { parseSubjectLocation, subjectConceptsHref, subjectHref } from "@/lib/subject-route";
+import {
+  parseSubjectDocumentLocation,
+  parseSubjectLocation,
+  type SubjectDocumentLocation,
+  subjectConceptsHref,
+  subjectDocumentsHref,
+  subjectHref,
+} from "@/lib/subject-route";
 import { canShowPanes, subjectTitle, subjectViewOf } from "@/lib/subject-view";
 import type { SubjectTab } from "@/lib/tabs";
+import type { VaultLocation } from "@/lib/vault";
 
 import styles from "./SubjectPage.module.css";
 
@@ -27,10 +36,13 @@ const TAB_ITEMS: readonly TabItem<SubjectTab>[] = [
 /**
  * Trang môn `/subject?code=&tab=` (design-handoff/README.md màn 3): tiêu đề là tên môn (chưa tải ⇒ mã môn), rồi ba
  * phần Tài liệu · Khái niệm · Ôn tập. Mã môn đọc từ địa chỉ và truyền làm prop cho từng phần; khung được báo qua
- * `selectSubject` để thanh trên và hộp lệnh biết môn đang mở. Phải nằm trong `<Suspense>` vì đọc `useSearchParams()`.
+ * `selectSubject` để hộp lệnh và các route cũ biết môn mở gần nhất. Phần Tài liệu đọc thêm `?doc=&page=` để xem lại
+ * một trang ngay trong tab. Phải nằm trong `<Suspense>` vì đọc `useSearchParams()`.
  */
 export function SubjectPage() {
-  const location = parseSubjectLocation(useSearchParams());
+  const params = useSearchParams();
+  const location = parseSubjectLocation(params);
+  const documentLocation = parseSubjectDocumentLocation(params);
   const { subjects, reloadSubjects, selectSubject } = useShell();
   const code = location.code;
 
@@ -74,18 +86,37 @@ export function SubjectPage() {
         </h1>
         <p className={styles.meta}>Mã môn {view.code}</p>
       </header>
-      {view.kind === "list_unavailable" && view.error.kind !== "not_found" && (
-        <ErrorNotice error={view.error} onRetry={reloadSubjects} onReload={reloadSubjects} />
+      {canShowPanes(view) && (
+        <SubjectPanes
+          key={view.code}
+          code={view.code}
+          tab={location.tab}
+          documentLocation={documentLocation}
+          listError={view.kind === "list_unavailable" ? view.error : null}
+          onReloadSubjects={reloadSubjects}
+        />
       )}
-      {canShowPanes(view) && <SubjectPanes key={view.code} code={view.code} tab={location.tab} />}
     </section>
   );
 }
 
-function SubjectPanes({ code, tab }: { code: string; tab: SubjectTab }) {
+interface SubjectPanesProps {
+  code: string;
+  tab: SubjectTab;
+  documentLocation: SubjectDocumentLocation;
+  /** Lỗi tải danh sách môn; chỉ phần Ôn tập cần danh sách (hình thức thi của môn) nên chỉ phần đó báo. */
+  listError: UiError | null;
+  onReloadSubjects: () => void;
+}
+
+function SubjectPanes({ code, tab, documentLocation, listError, onReloadSubjects }: SubjectPanesProps) {
   const router = useRouter();
   const conceptsHref = useCallback(
     (pairsLocation: Partial<PairsLocation>) => subjectConceptsHref(code, pairsLocation),
+    [code],
+  );
+  const documentsHref = useCallback(
+    (vaultLocation: Partial<VaultLocation>) => subjectDocumentsHref(code, vaultLocation),
     [code],
   );
 
@@ -97,9 +128,46 @@ function SubjectPanes({ code, tab }: { code: string; tab: SubjectTab }) {
       selected={tab}
       onSelect={(next) => router.push(subjectHref(code, next))}
     >
-      {tab === "documents" && <DocumentsPanel subjectCode={code} />}
-      {tab === "concepts" && <PairsView subjectCode={code} hrefFor={conceptsHref} />}
-      {tab === "practice" && <PracticeView subjectCode={code} hrefFor={conceptsHref} />}
+      {tab === "documents" &&
+        (documentLocation.doc === null ? (
+          <DocumentsPanel subjectCode={code} hrefFor={documentsHref} />
+        ) : (
+          <PageReview
+            key={documentLocation.doc}
+            documentId={documentLocation.doc}
+            pageNumber={documentLocation.page ?? 1}
+            hrefFor={documentsHref}
+          />
+        ))}
+      {tab === "concepts" && <PairsView subjectCode={code} hrefFor={conceptsHref} documentsHrefFor={documentsHref} />}
+      {tab === "practice" &&
+        (listError === null ? (
+          <PracticeView subjectCode={code} hrefFor={conceptsHref} />
+        ) : (
+          <SubjectsListNotice error={listError} onRetry={onReloadSubjects} />
+        ))}
     </Tabs>
+  );
+}
+
+/**
+ * Phần Ôn tập khi chưa có danh sách môn: một hướng dẫn ngắn. Lỗi tạm thời có đúng một nút "Thử lại" (tải lại danh
+ * sách môn); bản đang chạy chưa có danh sách môn thì thử lại không giúp gì nên không có nút.
+ */
+function SubjectsListNotice({ error, onRetry }: { error: UiError; onRetry: () => void }) {
+  if (error.kind === "not_found") {
+    return (
+      <EmptyState title="Phần Ôn tập cần danh sách môn, mà bản Holocron đang chạy chưa có.">
+        Cập nhật Holocron lên bản mới hơn để tạo đề ôn tập. Phần Tài liệu và Khái niệm vẫn dùng được.
+      </EmptyState>
+    );
+  }
+  return (
+    <EmptyState title="Chưa tải được danh sách môn nên chưa tạo được đề ôn tập.">
+      <p>Kiểm tra kết nối ở thanh trạng thái phía dưới, rồi tải lại danh sách môn.</p>
+      <button type="button" className={`m-btn-secondary ${styles.retry}`} onClick={onRetry}>
+        Thử lại
+      </button>
+    </EmptyState>
   );
 }

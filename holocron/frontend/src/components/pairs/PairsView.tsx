@@ -25,7 +25,7 @@ import {
   statusAfterCreate,
   subjectEntryStep,
 } from "@/lib/pairs";
-import { type ChunkView, parseChapterFilter } from "@/lib/vault";
+import { type ChunkView, parseChapterFilter, type VaultHrefFor, vaultHref } from "@/lib/vault";
 import type { ConceptPair, ConceptPairStatus } from "@/types/holocron";
 
 import { ChunkPicker } from "./ChunkPicker";
@@ -53,7 +53,11 @@ function pairElement(attribute: string, pairId: string): HTMLElement | null {
  * Sau mỗi thao tác với cặp, danh sách được đọc lại từ backend (không vá tại chỗ); map chunk chỉ tải lại khi đổi môn
  * hoặc bấm "Tải lại".
  */
-export function PairsView({ subjectCode: fixedSubject, hrefFor = pairsHref }: PairsViewProps) {
+export function PairsView({
+  subjectCode: fixedSubject,
+  hrefFor = pairsHref,
+  documentsHrefFor = vaultHref,
+}: PairsViewProps) {
   const location = parsePairsLocation(useSearchParams());
   const router = useRouter();
   const { subjectCode, selectSubject } = useShell();
@@ -96,6 +100,7 @@ export function PairsView({ subjectCode: fixedSubject, hrefFor = pairsHref }: Pa
       subject={subject}
       location={location}
       hrefFor={hrefFor}
+      documentsHref={documentsHrefFor({ subject })}
       editingId={editingId}
       setEditingId={setEditingId}
     />
@@ -107,18 +112,21 @@ export interface PairsViewProps {
   subjectCode?: string;
   /** Dựng địa chỉ cho bộ lọc và đoạn đang mở; mặc định `pairsHref` (`/pairs?…`). */
   hrefFor?: (location: Partial<PairsLocation>) => string;
+  /** Dựng địa chỉ phần Tài liệu của môn (liên kết khi chưa có văn bản); mặc định `vaultHref` (`/vault?subject=`). */
+  documentsHrefFor?: VaultHrefFor;
 }
 
 interface PairsWorkspaceProps {
   subject: string;
   location: PairsLocation;
   hrefFor: (location: Partial<PairsLocation>) => string;
+  documentsHref: string;
   editingId: string | null;
   setEditingId: (pairId: string | null) => void;
 }
 
 /** Màn của một môn: tải map chunk và danh sách cặp; đổi môn thì dựng lại từ đầu (khoá theo môn). */
-function PairsWorkspace({ subject, location, hrefFor, editingId, setEditingId }: PairsWorkspaceProps) {
+function PairsWorkspace({ subject, location, hrefFor, documentsHref, editingId, setEditingId }: PairsWorkspaceProps) {
   const router = useRouter();
   const chapter = location.chapter;
   const status = location.status;
@@ -274,6 +282,7 @@ function PairsWorkspace({ subject, location, hrefFor, editingId, setEditingId }:
       <div className={styles.columns}>
         <PairList
           subjectCode={subject}
+          documentsHref={documentsHref}
           state={listState}
           filtered={chapter !== null || status !== null}
           mapStatus={mapState.status}
@@ -310,6 +319,7 @@ function PairsWorkspace({ subject, location, hrefFor, editingId, setEditingId }:
               location={location}
               subjectCode={subject}
               hrefFor={hrefFor}
+              documentsHref={documentsHref}
               map={mapState.map}
               partial={mapState.status === "partial"}
             />

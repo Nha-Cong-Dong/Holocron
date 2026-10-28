@@ -12,18 +12,18 @@ type CornerKey = (typeof TOP)[number] | (typeof BOTTOM)[number];
 
 function Corner({ k }: { k: CornerKey }) {
   return (
-    <div className={`${styles.pos} ${styles[k]}`}>
-      <div className={`${styles.open} ${styles[`o${k}`]}`}>
-        <div className={styles.cube}>
-          <div className={`${styles.face} ${styles.front}`} />
-          <div className={`${styles.face} ${styles.back}`} />
-          <div className={`${styles.face} ${styles.right}`} />
-          <div className={`${styles.face} ${styles.left}`} />
-          <div className={`${styles.face} ${styles.ft} ${styles.up}`} />
-          <div className={`${styles.face} ${styles.fb} ${styles.down}`} />
-        </div>
-      </div>
-    </div>
+    <span className={`${styles.pos} ${styles[k]}`}>
+      <span className={`${styles.open} ${styles[`o${k}`]}`}>
+        <span className={styles.cube}>
+          <span className={`${styles.face} ${styles.front}`} />
+          <span className={`${styles.face} ${styles.back}`} />
+          <span className={`${styles.face} ${styles.right}`} />
+          <span className={`${styles.face} ${styles.left}`} />
+          <span className={`${styles.face} ${styles.ft} ${styles.up}`} />
+          <span className={`${styles.face} ${styles.fb} ${styles.down}`} />
+        </span>
+      </span>
+    </span>
   );
 }
 
@@ -39,35 +39,35 @@ export function HolocronCube({ size = 220, label = "Xoay khối Holocron" }: { s
       onClick={() => setTurns((t) => t + 1)}
       style={{ width: size, height: size }}
     >
-      <div
+      <span
         className={styles.stage}
         style={{ position: "absolute", left: 0, top: 0, transform: `scale(${scale})`, transformOrigin: "0 0" }}
       >
-        <div className={styles.scale}>
-          <div className={styles.spin}>
-            <div className={styles.core}>
-              <div className={styles.glow} />
-              <div className={styles.ring} />
-              <div className={`${styles.ring} ${styles.r2}`} />
-              <div className={`${styles.ring} ${styles.r3}`} />
-            </div>
-            <div className={styles.layer} style={{ transform: `rotateY(${turns * 90}deg)` }}>
-              <div className={`${styles.layerAnim} ${styles.top}`}>
+        <span className={styles.scale}>
+          <span className={styles.spin}>
+            <span className={styles.core}>
+              <span className={styles.glow} />
+              <span className={styles.ring} />
+              <span className={`${styles.ring} ${styles.r2}`} />
+              <span className={`${styles.ring} ${styles.r3}`} />
+            </span>
+            <span className={styles.layer} style={{ transform: `rotateY(${turns * 90}deg)` }}>
+              <span className={`${styles.layerAnim} ${styles.top}`}>
                 {TOP.map((k) => (
                   <Corner key={k} k={k} />
                 ))}
-              </div>
-            </div>
-            <div className={styles.layer}>
-              <div className={styles.layerAnim}>
+              </span>
+            </span>
+            <span className={styles.layer}>
+              <span className={styles.layerAnim}>
                 {BOTTOM.map((k) => (
                   <Corner key={k} k={k} />
                 ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+              </span>
+            </span>
+          </span>
+        </span>
+      </span>
       {turns > 0 && (
         <span key={turns} className="m-burst" aria-hidden="true">
           {RAYS.map((a) => (

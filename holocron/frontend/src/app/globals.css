@@ -65,7 +65,12 @@
 }
 
 /* Cùng hai điều kiện tối như `tokens.css`: chọn "Tối", hoặc "Theo Windows" khi Windows đang tối. */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --danger-glow: rgba(255, 154, 154, 0.3);
   --gantt-1: #7c9cff;
   --gantt-2: #6fd39a;
@@ -78,6 +83,7 @@
 
 @media (prefers-color-scheme: dark) {
   :root[data-theme="auto"] {
+    color-scheme: dark;
     --danger-glow: rgba(255, 154, 154, 0.3);
     --gantt-1: #7c9cff;
     --gantt-2: #6fd39a;

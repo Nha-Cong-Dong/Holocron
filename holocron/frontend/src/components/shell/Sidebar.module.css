@@ -25,15 +25,17 @@
   font-weight: var(--fw-semibold);
 }
 
-/* Nút đổi theme: chữ nhỏ nói trạng thái hiện tại, vùng chạm tối thiểu theo `--tap-min`. */
+/* Nút icon đổi theme: trạng thái nói bằng `aria-label`/`title`, vùng chạm tối thiểu theo `--tap-min`. */
 .themeToggle {
-  min-height: var(--tap-min);
-  padding: 0 var(--space-3);
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: var(--tap-min);
+  height: var(--tap-min);
+  padding: 0;
   border: 1px solid var(--border);
-  border-radius: var(--r-pill);
   background: var(--surface);
   color: var(--text);
-  font-size: var(--text-sm);
   cursor: pointer;
 }
 
@@ -145,13 +147,17 @@
     white-space: nowrap;
   }
 
-  .brandShort,
   .short {
     display: inline;
   }
 
   .brand {
     text-align: center;
+  }
+
+  .brandRow {
+    justify-content: center;
+    padding: 0;
   }
 
   .item {

@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 
-import { nextTheme, readTheme, type ThemeChoice, themeLabel, themeToggleLabel, writeTheme } from "@/lib/theme";
+import { Icon } from "@/components/common/Icon";
+import { nextTheme, readTheme, type ThemeChoice, themeToggleLabel, writeTheme } from "@/lib/theme";
 
 import styles from "./Sidebar.module.css";
 
@@ -38,8 +39,9 @@ export function ThemeToggle() {
       className={`m-btn-icon ${styles.themeToggle}`}
       onClick={onClick}
       aria-label={themeToggleLabel(theme)}
+      title={themeToggleLabel(theme)}
     >
-      {themeLabel(theme)}
+      <Icon name="progress" size={20} />
     </button>
   );
 }

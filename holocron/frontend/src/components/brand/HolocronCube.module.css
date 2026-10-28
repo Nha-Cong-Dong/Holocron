@@ -386,3 +386,8 @@
     opacity: 1;
   }
 }
+
+/* Phần tử bên trong nút là <span> (HTML hợp lệ cho nội dung của <button>), hiển thị như khối. */
+.button span {
+  display: block;
+}

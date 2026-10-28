@@ -4,19 +4,23 @@ import { useRouter } from "next/navigation";
 import { type FormEvent, useId, useRef, useState } from "react";
 import { useShell } from "@/components/shell/ShellContext";
 import { Accordion, Button, Dialog, Field, useToast } from "@/components/ui";
-import { api, toUiError } from "@/lib/api";
+import { api } from "@/lib/api";
+import { createWithRetry } from "@/lib/create-subject";
 import type { UiError } from "@/lib/errors";
 import { writeRecentSubject } from "@/lib/recent-subject";
-import { nextSubjectCode, suggestSubjectCode } from "@/lib/subject-code";
+import { suggestSubjectCode } from "@/lib/subject-code";
 import { subjectHref } from "@/lib/subject-route";
 import { checkSubjectForm } from "@/lib/subjects";
 import { browserStorage } from "@/lib/theme";
-import type { ExamFormat, Subject, SubjectCreate } from "@/types/holocron";
+import type { ExamFormat } from "@/types/holocron";
 
 import styles from "./AddSubjectDialog.module.css";
 
 /** Hình thức thi gửi khi tạo môn: như form tạo môn hiện có (mặc định của backend khi bỏ trống cũng là `mixed`). */
 const DEFAULT_EXAM_FORMAT: ExamFormat = "mixed";
+
+/** Mẫu mã môn nói ngắn cho người mới (thay câu dài của bước kiểm form). */
+const CODE_FORMAT_HINT = "Mã môn cần có dạng như VXL01: vài chữ cái rồi 2–4 chữ số.";
 
 /** Câu lỗi khi tạo môn theo loại lỗi (không lộ mã HTTP; mã kỹ thuật nằm trong "Chi tiết kỹ thuật"). */
 function createErrorText(error: UiError): string {
@@ -28,7 +32,7 @@ function createErrorText(error: UiError): string {
       return "Bản Holocron đang chạy chưa tạo được môn riêng. Cập nhật Holocron lên bản mới hơn rồi thử lại.";
     case "validation":
     case "bad_request":
-      return "Tên môn hoặc mã môn chưa hợp lệ. Mã môn gồm 2–6 chữ cái in hoa rồi 2–4 chữ số, ví dụ VXL01.";
+      return `Tên môn hoặc mã môn chưa đúng. ${CODE_FORMAT_HINT}`;
     case "busy":
       return "Holocron đang bận ghi dữ liệu. Đợi vài giây rồi bấm Tạo môn lần nữa.";
     default:
@@ -74,18 +78,6 @@ export function AddSubjectDialog({ open, onClose, existingCodes }: AddSubjectDia
     document.getElementById(codeId)?.focus();
   }
 
-  async function createOnce(payload: SubjectCreate): Promise<Subject> {
-    try {
-      return await api.createSubject(payload);
-    } catch (caught) {
-      const info = toUiError(caught);
-      const next = info.kind === "duplicate" ? nextSubjectCode(payload.subject_code, existingCodes) : null;
-      if (next === null) throw caught;
-      setTypedCode(next);
-      return await api.createSubject({ ...payload, subject_code: next });
-    }
-  }
-
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     if (submitting) return;
@@ -98,31 +90,33 @@ export function AddSubjectDialog({ open, onClose, existingCodes }: AddSubjectDia
     const check = checkSubjectForm({ subjectCode: code, displayName: name, examFormat: DEFAULT_EXAM_FORMAT });
     if (!check.ok) {
       setNameError(check.errors.name);
-      setCodeError(check.errors.code);
+      setCodeError(check.errors.code === undefined ? undefined : CODE_FORMAT_HINT);
       if (check.errors.code !== undefined) revealCodeField();
       return;
     }
     setNameError(undefined);
     setCodeError(undefined);
     setSubmitting(true);
-    try {
-      const subject = await createOnce(check.payload);
+    const outcome = await createWithRetry(api.createSubject, check.payload, existingCodes);
+    if (outcome.ok) {
+      const { subject } = outcome;
       toast.show(`Đã tạo môn ${subject.display_name.trim() || subject.subject_code}`);
       reloadSubjects();
       selectSubject(subject.subject_code);
       writeRecentSubject(browserStorage(), subject.subject_code);
       router.push(subjectHref(subject.subject_code, "documents"));
-    } catch (caught) {
-      const info = toUiError(caught);
-      setSubmitting(false);
-      if (info.kind === "duplicate") {
-        setCodeError("Mã môn này đã có. Sửa mã môn rồi bấm Tạo môn.");
-        revealCodeField();
-        return;
-      }
-      if (info.kind === "validation" || info.kind === "bad_request") revealCodeField();
-      setError(info);
+      return;
     }
+    setSubmitting(false);
+    // Ô mã môn hiện mã của lần gửi cuối (có thể là mã đã tăng số).
+    if (outcome.code !== check.payload.subject_code) setTypedCode(outcome.code);
+    if (outcome.error.kind === "duplicate") {
+      setCodeError("Mã môn này đã có. Đổi số cuối rồi bấm Tạo môn.");
+      revealCodeField();
+      return;
+    }
+    if (outcome.error.kind === "validation" || outcome.error.kind === "bad_request") revealCodeField();
+    setError(outcome.error);
   }
 
   return (

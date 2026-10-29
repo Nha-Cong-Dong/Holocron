@@ -104,3 +104,11 @@ describe("reloadRetryHinted", () => {
     expect(reloadRetryHinted(null, true)).toBe(false);
   });
 });
+
+describe("rowErrorText thay mọi cụm Thử lại khi lỗi đổi tên", () => {
+  it("câu có hai cụm Thử lại đều đổi sang Lưu", () => {
+    const text = rowErrorText("Bấm Thử lại. Nếu vẫn lỗi, bấm Thử lại.", true, true);
+    expect(text).not.toContain("Thử lại");
+    expect(text.match(/Lưu/g)?.length).toBe(2);
+  });
+});

@@ -115,7 +115,7 @@ class RawOcrPage(_Frozen):
 class RawPdfPage(_Frozen):
     """Dữ liệu thô của một trang. Khổ trang tính bằng point, theo hướng hiển thị (đã áp `/Rotate`).
 
-    `ocr` chỉ có khi lớp chữ không đủ tốt (`text_score < TEXT_LAYER_MIN`) và worker có engine OCR.
+    `ocr` chỉ có khi trang cần OCR theo `text_layer.needs_ocr_page` và worker có engine OCR.
     """
 
     page_index: int = Field(ge=0)

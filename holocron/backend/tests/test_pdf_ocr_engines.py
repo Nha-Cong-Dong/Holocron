@@ -74,7 +74,7 @@ from holocron_core.infrastructure.document_readers.tesseract import (
     tsv_to_lines,
 )
 from holocron_core.infrastructure.llm_config import ConfigError
-from tests.pdf_samples import Page, text_lines, write_pdf
+from tests.pdf_samples import Box, Page, Raster, text_lines, write_pdf
 
 DOC_ID = "doc_00000000000000ff"
 CONFIG = PdfReaderConfig(ocr_dpi=36)  # ảnh nhỏ cho test nhanh
@@ -674,10 +674,17 @@ def test_real_tesseract_reads_a_page_without_text_layer(tmp_path: Path) -> None:
     settings = _real_tesseract()
     if settings is None:
         pytest.skip("máy không có Tesseract với gói `vie`")
-    # Trang ít chữ: `text_score` thấp (độ đủ chữ) nên được OCR dù chữ hiển thị rõ.
+    # Trang ẢNH (scan giả lập): chữ chỉ nằm trong ảnh nhúng, lớp chữ rỗng ⇒ luôn OCR (ADR-008 mục 6, 2026-10-29).
     lines = ["Process Arrival Burst", "P1 0 5", "P2 1 3"]
-    path = write_pdf(tmp_path / "short.pdf", [Page(texts=text_lines(lines, step=40.0))])
+    source = write_pdf(tmp_path / "source.pdf", [Page(texts=text_lines(lines, step=40.0))]).read_bytes()
+    document = PdfiumBackend.load().open(source)
+    assert not isinstance(document, str)
+    with document:
+        image = document.render_gray(0, 150, 25_000_000)
+    scan = Raster(box=Box(0.0, 0.0, 612.0, 792.0), width=image.width, height=image.height, pixels=image.pixels)
+    path = write_pdf(tmp_path / "scan.pdf", [Page(rasters=[scan])])
     [page] = list(WorkerPdfReader(PdfReaderConfig(), ocr=settings).read_pages(path, DOC_ID))
+    assert page.text_score == 0.0
     assert page.tier_used == "ocr" and all(line.engine == "tesseract" for line in page.lines)
     text = " ".join(line.text for line in page.lines)
     assert "Process" in text and "Burst" in text

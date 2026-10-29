@@ -1,7 +1,8 @@
 """Chọn tầng theo điểm và cờ trang, dựng `PageExtraction` (ADR-008 mục 6, 8–11; SPECIFICATION §5.7).
 
 Có tầng 1 (lớp chữ) và tầng 2 (OCR Tesseract, đối chiếu chéo bằng RapidOCR); chưa có tầng 3 và VLM.
-- Trang cần OCR (`text_score < TEXT_LAYER_MIN`) mà worker không gửi kết quả OCR (không có engine) thành `failed`
+- Trang cần OCR theo `text_layer.needs_ocr_page` (lớp chữ rỗng, lớp chữ rác `text_score < TEXT_LAYER_MIN`, hoặc
+  trang ảnh chỉ có ít chữ; cùng hàm worker dùng) mà worker không gửi kết quả OCR (không có engine) thành `failed`
   với `OCR_ENGINE_MISSING` (mục 8). Văn bản tầng 1 của trang đó không được trả ra, vì có thể là ký tự rác.
 - Trang lẽ ra lên tầng 3 nhận `TIER3_UNAVAILABLE` (mục 9): trang PDF số có bảng, công thức hoặc hình; trang scan
   có bảng (lưới toạ độ chữ OCR là việc của tầng 3).
@@ -29,7 +30,7 @@ from ...domain.documents import (
 from .config import PdfReaderConfig
 from .cross_check import CrossCheckLimitError, CrossCheckLimits, coverage_ratio, cross_check_lines
 from .protocol import RawOcrLine, RawOcrPage, RawPdfPage
-from .text_layer import has_figure, has_formula, has_table, page_text, text_score
+from .text_layer import has_figure, has_formula, has_table, needs_ocr_page, page_text, text_score
 
 NOT_APPLICABLE = CrossCheck(status="not_applicable", secondary_engine=None)
 
@@ -104,13 +105,16 @@ def _chunks(text: str) -> list[str]:
 def assemble_text_layer_page(raw: RawPdfPage, document_id: str, config: PdfReaderConfig) -> PageExtraction:
     """Dựng `PageExtraction` từ dữ liệu worker mà tiến trình cha đã validate (tầng 3 chưa có).
 
-    Trang đủ tốt dùng lớp chữ; trang cần OCR dùng `raw.ocr` khi có (`assemble_ocr_page`), không có thì `failed`
-    với `OCR_ENGINE_MISSING`.
+    Trang cần OCR theo `needs_ocr_page` (cùng hàm worker dùng để quyết định OCR) dùng `raw.ocr` khi có
+    (`assemble_ocr_page`), không có thì `failed` với `OCR_ENGINE_MISSING`; trang còn lại chọn tầng bằng `select_tier`.
     """
     text = page_text(raw.lines)
     score = text_score(text, config)
     flags = page_flags(raw, text, config)
-    decision = select_tier(score, flags, config, layout_available=False)
+    if needs_ocr_page(raw, config):
+        decision = TierDecision(tier="ocr")
+    else:
+        decision = select_tier(score, flags, config, layout_available=False)
     page_number = raw.page_index + 1
     if decision.tier == "ocr":
         if raw.ocr is not None:

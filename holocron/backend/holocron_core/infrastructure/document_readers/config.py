@@ -117,8 +117,13 @@ class PdfReaderConfig(BaseModel):
     figure_ink_min: float = Field(default=0.10, ge=0.0, le=1.0)
     cross_line_cer_warn: float = Field(default=0.05, ge=0.0, le=1.0)
 
-    # `text_score` (ADR-008 mục 6): độ đủ chữ = min(1, số ký tự không trắng / text_full_chars).
-    text_full_chars: int = Field(default=200, ge=1)
+    # Chọn tầng (ADR-008 mục 6; sửa đổi 2026-10-29): `text_score` chỉ đo lớp chữ có rác hay không, ít chữ không phải
+    # lý do bỏ lớp chữ. Ngoại lệ là trang ảnh: lớp chữ sạch nhưng có dưới `text_sparse_chars` ký tự không trắng
+    # (thường chỉ còn tiêu đề khung slide và số trang) trong khi ảnh nhúng phủ ít nhất `text_sparse_image_min` diện
+    # tích trang ⇒ OCR cả trang. Đo trên 3 chương slide thật: trang chỉ có tiêu đề khung + số trang có 21–29 ký tự và
+    # ảnh phủ 0,83–0,98; ảnh nền khung slide phủ ≤ 0,18. Giá trị khởi đầu, hiệu chỉnh tiếp bằng `scripts/eval_pdf_tiers`.
+    text_sparse_chars: int = Field(default=32, ge=1)
+    text_sparse_image_min: float = Field(default=0.40, gt=0.0, le=1.0)
 
     # `has_formula` (mục 6, 9): tỉ lệ ký hiệu toán trên số ký tự không trắng, kèm số ký hiệu tối thiểu.
     formula_density_min: float = Field(default=0.03, gt=0.0, le=1.0)

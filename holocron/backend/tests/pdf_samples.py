@@ -1,14 +1,15 @@
 """Bộ dựng PDF mẫu nhỏ, tự tạo lúc chạy test (ADR-008, "Hệ quả": test bằng file mẫu tự tạo).
 
 Viết tay cú pháp PDF tối thiểu, không dùng tài liệu thật nào (tài liệu môn học có bản quyền nằm ngoài repo).
-Hỗ trợ: chữ bằng font chuẩn Helvetica (WinAnsi, ký tự Latin-1) và Symbol, ảnh 1x1 kéo giãn, khung chữ nhật,
-xoay trang, và mã hoá RC4 40-bit (Standard Security Handler R2) để thử PDF có mật khẩu.
+Hỗ trợ: chữ bằng font chuẩn Helvetica (WinAnsi, ký tự Latin-1) và Symbol, ảnh 1x1 kéo giãn, ảnh xám tuỳ ý (nén
+Flate, dùng làm trang scan giả lập), khung chữ nhật, xoay trang, và mã hoá RC4 40-bit (Standard Security Handler R2) để thử PDF có mật khẩu.
 """
 
 from __future__ import annotations
 
 import hashlib
 import struct
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -34,10 +35,21 @@ class Box:
     height: float
 
 
+@dataclass(frozen=True)
+class Raster:
+    """Ảnh xám 8 bit `width` x `height` (các dòng điểm ảnh nối liền, không đệm) vẽ kéo giãn vào `box`."""
+
+    box: Box
+    width: int
+    height: int
+    pixels: bytes
+
+
 @dataclass
 class Page:
     texts: list[Text] = field(default_factory=list)
     images: list[Box] = field(default_factory=list)
+    rasters: list[Raster] = field(default_factory=list)
     rects: list[Box] = field(default_factory=list)
     width: float = 612.0
     height: float = 792.0
@@ -101,6 +113,9 @@ def _content(page: Page) -> bytes:
         parts.append(b"0.5 w %.2f %.2f %.2f %.2f re S" % (rect.x, rect.y, rect.width, rect.height))
     for image in page.images:
         parts.append(b"q %.2f 0 0 %.2f %.2f %.2f cm /Im1 Do Q" % (image.width, image.height, image.x, image.y))
+    for number, raster in enumerate(page.rasters):
+        box = raster.box
+        parts.append(b"q %.2f 0 0 %.2f %.2f %.2f cm /R%d Do Q" % (box.width, box.height, box.x, box.y, number))
     for text in page.texts:
         raw = text.value.encode("latin-1")
         font = text.font.encode("ascii")
@@ -114,6 +129,7 @@ def build_pdf(pages: list[Page], *, user_password: str | None = None, owner_pass
     font_helvetica, font_symbol, image = 3, 4, 5
     first_page = 6
     kids = [first_page + 2 * i for i in range(len(pages))]
+    next_number = first_page + 2 * len(pages)
     objects: dict[int, bytes] = {
         1: b"<< /Type /Catalog /Pages 2 0 R >>",
         2: b"<< /Type /Pages /Kids [%s] /Count %d >>" % (b" ".join(b"%d 0 R" % k for k in kids), len(pages)),
@@ -129,10 +145,21 @@ def build_pdf(pages: list[Page], *, user_password: str | None = None, owner_pass
     for index, page in enumerate(pages):
         page_number = first_page + 2 * index
         content_number = page_number + 1
+        raster_refs = b""
+        for raster_index, raster in enumerate(page.rasters):
+            if len(raster.pixels) != raster.width * raster.height:
+                raise ValueError("số điểm ảnh không khớp kích thước ảnh")
+            streams[next_number] = (
+                b"/Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceGray /BitsPerComponent 8 "
+                b"/Filter /FlateDecode" % (raster.width, raster.height),
+                zlib.compress(raster.pixels),
+            )
+            raster_refs += b" /R%d %d 0 R" % (raster_index, next_number)
+            next_number += 1
         objects[page_number] = (
             b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %.2f %.2f] /Rotate %d /Contents %d 0 R "
-            b"/Resources << /Font << /F1 %d 0 R /F2 %d 0 R >> /XObject << /Im1 %d 0 R >> >> >>"
-            % (page.width, page.height, page.rotate, content_number, font_helvetica, font_symbol, image)
+            b"/Resources << /Font << /F1 %d 0 R /F2 %d 0 R >> /XObject << /Im1 %d 0 R%s >> >> >>"
+            % (page.width, page.height, page.rotate, content_number, font_helvetica, font_symbol, image, raster_refs)
         )
         streams[content_number] = (b"", _content(page))
     for number, (extra, data) in streams.items():

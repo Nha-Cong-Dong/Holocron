@@ -6,8 +6,9 @@ viết sẵn trong bộ nhớ (`pdfium_adapter.WARMUP_PDF`, bỏ qua khi `page_b
 Tesseract (`--version`, `--list-langs`) và nạp RapidOCR, TỰ áp giới hạn OS (RAM, CPU, `RLIMIT_FSIZE` = 0 trên Unix;
 Job Object trên Windows), báo `ready`, mở file, báo `opened`, rồi đọc từng trang khi nhận `PageRequest`.
 
-Trang có lớp chữ kém (`text_score < TEXT_LAYER_MIN`) được OCR khi có engine: worker báo `ocr_started` (tiến trình
-cha chuyển sang hạn của tầng 2), render trang ra ảnh xám, chạy Tesseract (tiến trình con của worker, chịu cùng
+Trang cần OCR theo `text_layer.needs_ocr_page` (lớp chữ rỗng, lớp chữ rác `text_score < TEXT_LAYER_MIN`, hoặc trang
+ảnh chỉ có ít chữ; cùng hàm tiến trình cha dùng để dựng trang) được OCR khi có engine: worker báo `ocr_started` (tiến
+trình cha chuyển sang hạn của tầng 2), render trang ra ảnh xám, chạy Tesseract (tiến trình con của worker, chịu cùng
 giới hạn OS) rồi RapidOCR, và gửi kết quả trong `RawPdfPage.ocr`. Mỗi kết quả là một dòng stdout có tiền tố
 `MESSAGE_PREFIX`; tiến trình cha validate và giữ wall-clock timeout theo trang.
 """
@@ -45,7 +46,7 @@ from .protocol import (
 from .rapidocr_adapter import RapidOcrBackend
 from .raster import GrayImage, PixelBox, encode_png_gray, ink_outside_text_ratio
 from .tesseract import Runner, TesseractEngine, run_bounded
-from .text_layer import needs_ocr
+from .text_layer import needs_ocr_page
 
 Emit = Callable[[BaseModel], None]
 
@@ -154,7 +155,7 @@ def _read_one(
         return PageErrorMessage(page_index=index, message="trang ngoài phạm vi tài liệu")
     try:
         raw = document.read_page(index)
-        if ocr is not None and needs_ocr(raw.lines, config):
+        if ocr is not None and needs_ocr_page(raw, config):
             emit(OcrStartedMessage(page_index=index))
             image = document.render_gray(
                 index, config.ocr_dpi, config.ocr_max_pixels, shrink_factor=config.render_shrink_factor

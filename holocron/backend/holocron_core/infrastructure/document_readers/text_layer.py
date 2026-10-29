@@ -10,9 +10,10 @@ import itertools
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 from .config import PdfReaderConfig
-from .protocol import MAX_RAW_LINE_CHARS, RawTextLine, RawWord, UnitBBox
+from .protocol import MAX_RAW_LINE_CHARS, RawPdfPage, RawTextLine, RawWord, UnitBBox
 
 PdfBox = tuple[float, float, float, float]  # (left, bottom, right, top), toạ độ PDF gốc dưới-trái
 
@@ -191,14 +192,13 @@ def is_legacy_encoded_word(token: str) -> bool:
     return has_marker and has_other_letter
 
 
-def text_sufficiency(text: str, config: PdfReaderConfig) -> float:
-    """(a) min(1, số ký tự không trắng / `text_full_chars`)."""
-    non_ws = sum(1 for c in text if not c.isspace())
-    return min(1.0, non_ws / config.text_full_chars)
+def non_whitespace_count(text: str) -> int:
+    """Số ký tự không trắng của văn bản đã chuẩn hoá NFC."""
+    return sum(1 for c in unicodedata.normalize("NFC", text) if not c.isspace())
 
 
 def clean_char_ratio(text: str) -> float:
-    """(b) 1 − tỉ lệ ký tự rác trên số ký tự không trắng; trang không có chữ cho 1.0 (đã bị (a) chặn)."""
+    """(a) 1 − tỉ lệ ký tự rác trên số ký tự không trắng; trang không có chữ cho 1.0 (`text_score` tự xử lý)."""
     non_ws = [c for c in text if not c.isspace()]
     if not non_ws:
         return 1.0
@@ -206,7 +206,7 @@ def clean_char_ratio(text: str) -> float:
 
 
 def valid_word_ratio(text: str) -> float:
-    """(c) tỉ lệ từ hợp lệ; "từ" là cụm không trắng có ít nhất một chữ cái."""
+    """(b) tỉ lệ từ hợp lệ; "từ" là cụm không trắng có ít nhất một chữ cái."""
     words = [token for token in text.split() if any(c.isalpha() for c in token)]
     if not words:
         return 1.0
@@ -214,19 +214,50 @@ def valid_word_ratio(text: str) -> float:
 
 
 def text_score(text: str, config: PdfReaderConfig) -> float:
-    """Tích ba thành phần (a)·(b)·(c), ∈ [0, 1]; tính trên văn bản đã chuẩn hoá NFC."""
+    """Chất lượng lớp chữ: tích (a)·(b) ∈ [0, 1], tính trên văn bản đã chuẩn hoá NFC (ADR-008 mục 6).
+
+    Chỉ đo lớp chữ có rác hay không (ký tự rác, từ mã TCVN3/VNI), không đo lớp chữ nhiều hay ít: slide ít chữ mà
+    lớp chữ sạch vẫn được 1.0 (sửa đổi 2026-10-29). Trang không có ký tự không trắng nào được 0.0, nên luôn cần OCR.
+    `config` giữ trong chữ ký cho các nơi gọi; công thức hiện không dùng ngưỡng nào của nó.
+    """
     normalized = unicodedata.normalize("NFC", text)
-    score = text_sufficiency(normalized, config) * clean_char_ratio(normalized) * valid_word_ratio(normalized)
-    return _clamp(score)
+    if not any(not c.isspace() for c in normalized):
+        return 0.0
+    return _clamp(clean_char_ratio(normalized) * valid_word_ratio(normalized))
 
 
 def page_text(lines: Sequence[RawTextLine]) -> str:
     return "\n".join(line.text for line in lines)
 
 
-def needs_ocr(lines: Sequence[RawTextLine], config: PdfReaderConfig) -> bool:
-    """Lớp chữ không đủ tốt (`text_score < TEXT_LAYER_MIN`) ⇒ trang cần OCR (ADR-008 mục 6)."""
-    return text_score(page_text(lines), config) < config.text_layer_min
+OcrReason = Literal["empty_text_layer", "garbled_text_layer", "sparse_text_on_image"]
+
+
+def ocr_reason(raw: RawPdfPage, config: PdfReaderConfig) -> OcrReason | None:
+    """Lý do trang phải OCR cả trang, hoặc None khi dùng lớp chữ (ADR-008 mục 6; sửa đổi 2026-10-29).
+
+    Hàm duy nhất quyết định trang có đi tầng 2 hay không, dùng chung cho worker (có OCR trang hay không) và tiến
+    trình cha (dựng `PageExtraction`), để hai nơi không thể lệch nhau.
+    - `empty_text_layer`: lớp chữ không có ký tự không trắng nào (`text_score = 0.0`).
+    - `garbled_text_layer`: lớp chữ rác (`text_score < TEXT_LAYER_MIN`: ký tự rác, mã TCVN3/VNI).
+    - `sparse_text_on_image`: lớp chữ sạch nhưng chỉ có dưới `text_sparse_chars` ký tự không trắng trong khi ảnh
+      nhúng phủ ít nhất `text_sparse_image_min` diện tích trang: nội dung nằm trong ảnh, lớp chữ chỉ là phần khung.
+    Ít chữ trên trang không có ảnh lớn KHÔNG phải lý do bỏ lớp chữ.
+    """
+    text = page_text(raw.lines)
+    non_ws = non_whitespace_count(text)
+    if non_ws == 0:
+        return "empty_text_layer"
+    if text_score(text, config) < config.text_layer_min:
+        return "garbled_text_layer"
+    if non_ws < config.text_sparse_chars and raw.image_area_ratio >= config.text_sparse_image_min:
+        return "sparse_text_on_image"
+    return None
+
+
+def needs_ocr_page(raw: RawPdfPage, config: PdfReaderConfig) -> bool:
+    """Trang cần OCR cả trang (tầng 2) theo `ocr_reason`."""
+    return ocr_reason(raw, config) is not None
 
 
 # --------------------------------------------------------------------------- #

@@ -245,12 +245,23 @@ def test_trademark_and_quote_symbols_at_word_edges_are_valid() -> None:
     assert valid_word_ratio(page_text(title.lines)) == 1.0
     assert ocr_reason(title, CONFIG) is None
     assert assemble_text_layer_page(title, DOC_ID, CONFIG).tier_used == "text_layer"
-    assert valid_word_ratio("«trích dẫn» ©Holocron §Điều ¶Mục ARM®-based") == 1.0
-    for word in ("ARM®", "«trích", "dẫn»", "dẫn».", "©Holocron", "(ARM®)"):
+    assert valid_word_ratio("«trích dẫn» Windows© ARM®-based (ARM®).") == 1.0
+    for word in ("ARM®", "«trích", "dẫn»", "dẫn».", "Windows©", "(ARM®)", "ARM®-based", "Mục§", "Hình¶", "dẫn».Tiếp"):
         assert not is_legacy_encoded_word(word), word
-    # Kẹp giữa hai chữ cái thì vẫn là dấu TCVN3 (`«` = ô, `®` = đ), kể cả qua dấu TCVN3 khác.
-    for word in ("m«n", "x®y", "c«¬ng"):
+    # `«`, `»` kẹp giữa hai chữ cái vẫn là dấu TCVN3 (`«` = ô), kể cả qua dấu TCVN3 khác.
+    for word in ("m«n", "c«¬ng", "h»a"):
         assert is_legacy_encoded_word(word), word
+
+
+def test_tcvn3_letters_at_word_start_are_still_caught() -> None:
+    # `®` = đ, `§` = Đ, `©` = â, `¶` = ả của TCVN3 rất hay đứng ĐẦU từ.
+    for word in ("®a", "®iÒu", "®iÓm", "®Þa", "(®a)", "®­îc", "§iÒu", "©n", "¶nh", "x®y"):
+        assert is_legacy_encoded_word(word), word
+    short = _raw(["®a ®iÓm"])
+    assert valid_word_ratio(page_text(short.lines)) == 0.0
+    assert ocr_reason(short, CONFIG) == "garbled_text_layer"
+    page = assemble_text_layer_page(short, DOC_ID, CONFIG)
+    assert (page.status, page.failure_reason) == ("failed", "OCR_ENGINE_MISSING")
 
 
 def test_foreign_words_with_latin1_letters_are_valid() -> None:
@@ -297,7 +308,8 @@ def test_text_score_is_product_of_quality_ratios_on_nfc() -> None:
     legacy = "ViÖt Nam ®iÒu hµnh"
     nfd = unicodedata.normalize("NFD", legacy)
     assert nfd != legacy
-    assert text_score(nfd, CONFIG) == text_score(legacy, CONFIG) == pytest.approx(0.5)
+    # ViÖt, ®iÒu, hµnh không hợp lệ; Nam hợp lệ.
+    assert text_score(nfd, CONFIG) == text_score(legacy, CONFIG) == pytest.approx(0.25)
     assert text_score(legacy, CONFIG) < CONFIG.text_layer_min
     mixed = "hµnh Nam \ufffd ok"
     clean, valid = clean_char_ratio(mixed), valid_word_ratio(mixed)

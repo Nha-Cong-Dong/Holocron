@@ -74,3 +74,19 @@
 .labLink {
   font-weight: var(--fw-semibold);
 }
+
+/* Câu hỏi tự nhiên hơn: trạng thái chỉ đọc (không có công tắc). */
+.state {
+  justify-self: start;
+  padding: 4px 12px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  font-weight: var(--fw-semibold);
+}
+
+.state[data-on="true"] {
+  background: var(--ok-soft);
+  color: var(--ok);
+}

@@ -5,17 +5,9 @@ import { type ReactNode, useCallback, useEffect, useMemo, useReducer, useRef, us
 import { ImportQueueProvider } from "@/components/documents/ImportQueueProvider";
 import { ToastProvider } from "@/components/ui/Toast";
 import { api, toUiError } from "@/lib/api";
-import { USE_MOCKS } from "@/lib/config";
 import { createLatestCounter } from "@/lib/latest";
 import { shellHeadingForPath } from "@/lib/navigation";
-import {
-  buildLabel,
-  INITIAL_RUNTIME_STATE,
-  logDirOf,
-  runtimeReducer,
-  selectOfflineMode,
-  selectStatusItems,
-} from "@/lib/runtime";
+import { INITIAL_RUNTIME_STATE, runtimeReducer, selectOfflineMode } from "@/lib/runtime";
 import { GLOBAL_SCOPE, resolveShortcut, targetKindOf } from "@/lib/shortcuts";
 import { subjectHref } from "@/lib/subject-route";
 import type { SubjectsState } from "@/lib/subjects";
@@ -27,14 +19,14 @@ import { describeTarget } from "./keyboard";
 import { OfflineBanner } from "./OfflineBanner";
 import { ShellContext, type ShellContextValue } from "./ShellContext";
 import { ShortcutHelp } from "./ShortcutHelp";
-import { StatusBar } from "./StatusBar";
 import { TopBar } from "./TopBar";
 
 type Overlay = "none" | "palette" | "help";
 
 /**
- * Khung app desktop: thanh trên (logo, breadcrumb, theme, "Cài đặt"), vùng nội dung, thanh trạng thái khả năng, hộp
- * lệnh `Ctrl+K` và bảng phím tắt `?`. Khung không đọc `useSearchParams`: breadcrumb tự đọc `?code=` trong
+ * Khung app desktop: thanh trên (logo, breadcrumb, theme, "Cài đặt"), vùng nội dung, hộp lệnh `Ctrl+K` và bảng phím
+ * tắt `?`. Không còn thanh trạng thái dưới cùng: trạng thái kết nối, bản đang chạy và thư mục log nằm ở Cài đặt › Máy
+ * của bạn › "Chi tiết kỹ thuật". Khung không đọc `useSearchParams`: breadcrumb tự đọc `?code=` trong
  * `<Suspense>` riêng của thanh trên; trang môn báo môn đang mở qua `selectSubject` cho các màn dùng môn của khung. Trạng thái chạy đọc từ `GET /v1/runtime` một lần khi mở app và khi người dùng bấm "Kiểm tra lại".
  */
 export function AppShell({ children }: { children: ReactNode }) {
@@ -194,13 +186,6 @@ export function AppShell({ children }: { children: ReactNode }) {
                 </div>
               </main>
             </div>
-            <StatusBar
-              items={selectStatusItems(runtime, USE_MOCKS)}
-              buildLabel={buildLabel(runtime.runtime)}
-              logDir={logDirOf(runtime.runtime)}
-              canRetry={runtime.backend === "unreachable" || runtime.backend === "error"}
-              onRetry={refreshRuntime}
-            />
           </div>
           <CommandPalette open={overlay === "palette"} onClose={closeOverlay} commands={commands} />
           <ShortcutHelp open={overlay === "help"} onClose={closeOverlay} />

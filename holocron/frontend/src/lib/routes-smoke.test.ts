@@ -118,6 +118,12 @@ describe("không còn màn cũ", () => {
     expect(hits.map((file) => relative(SRC, file))).toEqual([]);
   });
 
+  it("thanh trạng thái dưới cùng đã bị gỡ, không file nào import nó", () => {
+    expect(existsSync(join(COMPONENTS, "shell", "StatusBar.tsx"))).toBe(false);
+    const hits = files.filter((file) => importsOf(file).some((specifier) => /(^|\/)StatusBar$/.test(specifier)));
+    expect(hits.map((file) => relative(SRC, file))).toEqual([]);
+  });
+
   it("màn Vault cũ đã bị xoá", () => {
     expect(existsSync(join(COMPONENTS, "vault", "VaultView.tsx"))).toBe(false);
     expect(existsSync(join(COMPONENTS, "vault", "ChunkBrowser.tsx"))).toBe(false);

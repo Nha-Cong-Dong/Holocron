@@ -11,17 +11,18 @@ ký tự không trắng (mặc định 170, để tập trang gần với tập 
 valid ≥ 0.85` và số liệu so được với các lần đo trước. Hai tập chỉ trùng nhau trên trang có lớp chữ sạch hoàn toàn
 (`clean × valid = 1`, khi đó công thức cũ cũng đòi `non_ws ≥ 170`); trang có `clean × valid` trong [0.85, 1) và
 `170 ≤ non_ws < 170 / (clean × valid)` nay được tính thêm, cũng như trang mà heuristic TCVN3/VNI sửa ngày
-2026-10-29 không còn bắt nhầm (ký hiệu ở mép từ, từ nước ngoài có chữ Latin-1)): lớp chữ làm đáp án; trang được render 300 DPI, làm mờ và thêm nhiễu (scan giả lập), rồi
-OCR bằng đúng đường của worker (Tesseract qua stdin/stdout, RapidOCR chỉ lấy token số và mã) và dựng
-`PageExtraction`. Chỉ số: CER sau chuẩn hoá NFC (gộp khoảng trắng), tỉ lệ chữ số đúng, `ocr_score`,
-`coverage_ratio`, kết quả đối chiếu chéo, lý do xem lại và thời gian.
+2026-10-29 không còn bắt nhầm (ký hiệu nhãn hiệu cuối tên Latin, từ nước ngoài có chữ Latin-1)): lớp chữ làm đáp
+án; trang được render 300 DPI, làm mờ và thêm nhiễu (scan giả lập), rồi OCR bằng đúng đường của worker (Tesseract
+qua stdin/stdout, RapidOCR chỉ lấy token số và mã) và dựng `PageExtraction`. Chỉ số: CER sau chuẩn hoá NFC (gộp
+khoảng trắng), tỉ lệ chữ số đúng, `ocr_score`, `coverage_ratio`, kết quả đối chiếu chéo, lý do xem lại và thời gian.
 
 Chữ số đúng: mỗi trang lấy dãy chữ số của đáp án và của kết quả OCR (theo thứ tự đọc), `digit_errors` là khoảng cách
 sửa giữa hai dãy; số chữ số đúng của trang là `max(0, truth_digits − digit_errors)` (`digit_correct`). Chỉ số tổng
 `digit_accuracy_micro` = tổng chữ số đúng / tổng chữ số của đáp án. Trước 2026-10-29 chỉ số tổng là
 `1 − Σ digit_errors / Σ truth_digits`, không kẹp từng trang: trang mà OCR đọc thêm nhiều chữ số không có trong lớp
 chữ (chữ số trong ảnh chụp màn hình, sơ đồ) kéo cả tài liệu về gần 0. Lưu ý: dãy chữ số so theo thứ tự đọc, nên thứ
-tự đọc khác lớp chữ (nhiều cột, bảng) cũng bị tính là lỗi; chữ số OCR đọc thêm từ ảnh cũng là lỗi chèn. Script cũng chạy kiểm bộ chữ (`missing_vietnamese_letters`) trên `vie.traineddata` thật.
+tự đọc khác lớp chữ (nhiều cột, bảng) cũng bị tính là lỗi; chữ số OCR đọc thêm từ ảnh cũng là lỗi chèn. Script cũng
+chạy kiểm bộ chữ (`missing_vietnamese_letters`) trên `vie.traineddata` thật.
 
 Kết quả chỉ gồm số liệu (không chép văn bản tài liệu), ghi ra `results.json` và `results.md` trong thư mục kết
 quả; script từ chối ghi vào trong repo. Script đọc PDF ngay trong tiến trình này, nên chỉ dùng cho tài liệu đánh giá
@@ -142,7 +143,10 @@ def digit_correct(truth_digits: int, digit_errors: int) -> int:
 
 
 def digit_accuracy_micro(pages: Sequence[tuple[int, int]]) -> float | None:
-    """Tổng chữ số đúng / tổng chữ số của đáp án trên các trang `(truth_digits, digit_errors)`; không có chữ số ⇒ None."""
+    """Tổng chữ số đúng / tổng chữ số của đáp án trên các trang `(truth_digits, digit_errors)`.
+
+    Không có chữ số nào ⇒ None.
+    """
     total = sum(truth for truth, _ in pages)
     if total == 0:
         return None

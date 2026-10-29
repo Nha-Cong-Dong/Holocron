@@ -176,20 +176,20 @@ def evaluate_file(backend: PdfiumBackend, path: Path, config: PdfReaderConfig) -
     Áp cùng trần của app (`config.max_bytes`, `config.max_pages`) trước khi đọc. PDF hỏng giữa chừng (PDFium báo
     lỗi, dữ liệu sai kiểu, trang vượt giới hạn của protocol) chỉ làm bỏ qua file đó, không dừng cả lượt đo.
     """
-    size = path.stat().st_size
-    if size > config.max_bytes:
-        return f"TOO_LARGE: {size} > {config.max_bytes} byte"
-    document = backend.open(path.read_bytes())
-    if isinstance(document, str):
-        return document
     try:
+        size = path.stat().st_size
+        if size > config.max_bytes:
+            return f"TOO_LARGE: {size} > {config.max_bytes} byte"
+        document = backend.open(path.read_bytes())
+        if isinstance(document, str):
+            return document
         with document:
             count = document.page_count()
             if count > config.max_pages:
                 return f"TOO_MANY_PAGES: {count} > {config.max_pages} trang"
             return [page_row(path.name, document.read_page(index), config) for index in range(count)]
     # `PdfiumError` và `PdfiumDataError` là `RuntimeError`; `ValidationError` của pydantic là `ValueError`.
-    except (RuntimeError, ValueError, OSError) as exc:
+    except (RuntimeError, ValueError, OSError, TypeError, KeyError, IndexError) as exc:
         return f"READ_FAILED: {type(exc).__name__}"
 
 

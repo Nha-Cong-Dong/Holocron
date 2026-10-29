@@ -3,30 +3,31 @@
 import { useEffect, useRef } from "react";
 
 import { selectionRange, selectionToQuote } from "@/lib/pairs";
+import { chapterLabel } from "@/lib/sky";
 import { type ChunkView, pageRangeLabel } from "@/lib/vault";
 
-import styles from "./Pairs.module.css";
+import styles from "./ConceptsTab.module.css";
 
-/** Câu báo khi vùng bôi không nằm trọn trong văn bản của chunk. */
-export const SELECTION_OUTSIDE_VI = "Chỉ bôi trong văn bản của chunk.";
+/** Câu báo khi vùng bôi không nằm trọn trong văn bản của đoạn. */
+export const SELECTION_OUTSIDE_VI = "Chỉ bôi trong văn bản của đoạn này.";
 
-interface ChunkHighlighterProps {
-  chunk: ChunkView;
+interface PassageTextProps {
+  passage: ChunkView;
   /** Đã bôi một đoạn hợp lệ: đúng lát của `raw_text`, chỉ bỏ khoảng trắng hai đầu. */
   onSelect: (quote: string) => void;
-  /** Vùng bôi tràn ra ngoài văn bản chunk. */
+  /** Vùng bôi tràn ra ngoài văn bản của đoạn. */
   onInvalid: (message: string) => void;
 }
 
 /**
- * Văn bản của chunk để bôi định nghĩa. `raw_text` nằm trong MỘT text node (`white-space: pre-wrap`), nên vị trí của
- * `Selection` là vị trí trong `raw_text`; không tô gì bên trong để giữ một text node. Thả chuột sau khi bôi (kể cả
- * khi thả ngoài khung) thì lấy đoạn; vùng bôi không chạm văn bản chunk thì bỏ qua. Không dùng chuột thì dùng ô
- * "Nhập hoặc dán định nghĩa" ở form.
+ * Văn bản của một đoạn để bôi định nghĩa (khung Đoạn văn của tab Khái niệm). `raw_text` nằm trong MỘT text node
+ * (`white-space: pre-wrap`), nên vị trí của `Selection` là vị trí trong `raw_text`; không tô gì bên trong để giữ một
+ * text node. Thả chuột sau khi bôi (kể cả khi thả ngoài khung) thì lấy đoạn; vùng bôi không chạm văn bản thì bỏ qua.
+ * Không dùng chuột thì dùng các chip chọn câu bên dưới. Chú thích chỉ có trang và chương, không có mã tài liệu.
  */
-export function ChunkHighlighter({ chunk, onSelect, onInvalid }: ChunkHighlighterProps) {
+export function PassageText({ passage, onSelect, onInvalid }: PassageTextProps) {
   const textRef = useRef<HTMLPreElement>(null);
-  const rawText = chunk.rawText;
+  const rawText = passage.rawText;
 
   useEffect(() => {
     function capture(event: MouseEvent): void {
@@ -56,13 +57,10 @@ export function ChunkHighlighter({ chunk, onSelect, onInvalid }: ChunkHighlighte
   return (
     <div className={styles.preview}>
       <p className={styles.meta}>
-        <span className={styles.pageLabel}>{pageRangeLabel(chunk)}</span>
-        <span>
-          Chương <span className={styles.code}>{chunk.chapterCode}</span>
-        </span>
-        <code>{chunk.docId}</code>
+        <span className={styles.pageLabel}>{pageRangeLabel(passage)}</span>
+        <span>{chapterLabel(passage.chapterCode)}</span>
       </p>
-      <pre ref={textRef} className={styles.chunkText}>
+      <pre ref={textRef} className={styles.passageText}>
         {rawText}
       </pre>
     </div>

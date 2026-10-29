@@ -34,6 +34,7 @@ import {
 import type { DocumentStatusView, DocumentView, LineView, PageStatusView, PageView } from "@/lib/documents-data";
 import type { UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
+import { vaultLocationTarget } from "@/lib/legacy-routes";
 import type { Poller } from "@/lib/poll";
 import {
   type ActiveOnShow,
@@ -76,7 +77,7 @@ import {
   reviewPageKey,
   reviewSessionFor,
 } from "@/lib/review-session";
-import { type VaultHrefFor, vaultHref } from "@/lib/vault";
+import type { VaultHrefFor } from "@/lib/vault";
 
 import { DeleteDialog } from "./DocumentList";
 import pageStyles from "./PageReview.module.css";
@@ -102,8 +103,8 @@ interface PageReviewProps {
   /** Trang đang xem; `null` ⇒ mở trang cần xem lại đầu tiên (không có thì trang đầu). */
   pageNumber: number | null;
   /**
-   * Dựng địa chỉ trang khác, danh sách tài liệu của môn và nơi quay lại; mặc định `vaultHref` (`/vault?…`). Trang môn
-   * truyền hàm giữ mọi liên kết trong phần Tài liệu của `/subject`.
+   * Dựng địa chỉ trang khác, danh sách tài liệu của môn và nơi quay lại; mặc định là tab Tài liệu của trang môn
+   * (`vaultLocationTarget`). Trang môn truyền hàm giữ mọi liên kết trong phần Tài liệu của `/subject`.
    */
   hrefFor?: VaultHrefFor;
   /** Môn của trang đang mở (`/subject?code=`): tài liệu thuộc môn khác thì không hiện dưới tiêu đề môn này. */
@@ -129,7 +130,7 @@ interface PageReviewProps {
 export function PageReview({
   documentId,
   pageNumber,
-  hrefFor = vaultHref,
+  hrefFor = vaultLocationTarget,
   expectedSubjectCode,
   onFinished,
 }: PageReviewProps) {

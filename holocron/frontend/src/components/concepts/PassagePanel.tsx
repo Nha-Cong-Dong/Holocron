@@ -2,7 +2,6 @@
 
 import { type FormEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
-import { ChunkHighlighter } from "@/components/pairs/ChunkHighlighter";
 import { Accordion, Button, Dropdown, Field, Skeleton, useToast } from "@/components/ui";
 import { api } from "@/lib/api";
 import { screenErrorText } from "@/lib/concept-board";
@@ -29,6 +28,7 @@ import { type ChunkView, checkSearchText } from "@/lib/vault";
 import type { ConceptPair } from "@/types/holocron";
 
 import styles from "./ConceptsTab.module.css";
+import { PassageText } from "./PassageText";
 import { SentenceChips } from "./SentenceChips";
 
 /** Số ký tự đầu của đoạn hiện trong một dòng kết quả tìm kiếm. */
@@ -49,7 +49,7 @@ interface PassagePanelProps {
 
 /**
  * Khung "Tự tạo khái niệm": chọn chương, đi tới đoạn trước/sau hoặc tìm trong tài liệu, rồi bôi một đoạn hoặc bấm chip
- * một câu để mở khung "Tạo khái niệm". Văn bản đoạn vẽ bằng `ChunkHighlighter` (một text node, không chèn đánh dấu).
+ * một câu để mở khung "Tạo khái niệm". Văn bản đoạn vẽ bằng `PassageText` (một text node, không chèn đánh dấu).
  */
 export function PassagePanel({
   subjectCode,
@@ -350,7 +350,7 @@ function PassageEditor({ chunk, onCreated }: { chunk: ChunkView; onCreated: (pai
   return (
     <>
       <div className={styles.passage}>
-        <ChunkHighlighter chunk={chunk} onSelect={onSelect} onInvalid={onInvalid} />
+        <PassageText passage={chunk} onSelect={onSelect} onInvalid={onInvalid} />
       </div>
       {selectNote !== null && <p className={styles.error}>{selectNote}</p>}
       <SentenceChips sentences={sentences} selection={selection} onPick={pick} />

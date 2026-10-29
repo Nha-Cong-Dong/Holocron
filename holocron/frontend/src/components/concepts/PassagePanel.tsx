@@ -3,7 +3,7 @@
 import { type FormEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { ChunkHighlighter } from "@/components/pairs/ChunkHighlighter";
-import { Button, Dropdown, Field, Skeleton, useToast } from "@/components/ui";
+import { Accordion, Button, Dropdown, Field, Skeleton, useToast } from "@/components/ui";
 import { api } from "@/lib/api";
 import { screenErrorText } from "@/lib/concept-board";
 import { toUiError } from "@/lib/errors";
@@ -17,8 +17,9 @@ import {
   type PassageSelection,
   passageNav,
   resolveOpenPassage,
+  type SearchFailure,
   type SentenceRange,
-  searchErrorText,
+  searchFailure,
   selectionOfQuote,
   sentenceLabel,
   sentenceRanges,
@@ -208,7 +209,7 @@ type SearchState =
   | { kind: "idle" }
   | { kind: "searching" }
   | { kind: "done"; hits: ChunkView[] }
-  | { kind: "failed"; message: string };
+  | { kind: "failed"; failure: SearchFailure };
 
 function PassageSearch({ subjectCode, onPick }: { subjectCode: string; onPick: (chunk: ChunkView) => void }) {
   const [text, setText] = useState("");
@@ -237,7 +238,7 @@ function PassageSearch({ subjectCode, onPick }: { subjectCode: string; onPick: (
         setState(
           outcome.ok
             ? { kind: "done", hits: outcome.value.hits.map((hit) => hit.chunk) }
-            : { kind: "failed", message: searchErrorText(outcome.error) },
+            : { kind: "failed", failure: searchFailure(outcome.error) },
         ),
     );
   }
@@ -257,7 +258,7 @@ function PassageSearch({ subjectCode, onPick }: { subjectCode: string; onPick: (
         </Button>
       </form>
       <div aria-live="polite">
-        {state.kind === "failed" && <p className={styles.error}>{state.message}</p>}
+        {state.kind === "failed" && <p className={styles.error}>{state.failure.message}</p>}
         {state.kind === "done" && state.hits.length === 0 && (
           <p className={styles.muted}>Không có đoạn nào chứa từ này. Thử từ khác hoặc chọn chương ở trên.</p>
         )}
@@ -274,6 +275,11 @@ function PassageSearch({ subjectCode, onPick }: { subjectCode: string; onPick: (
           </ul>
         )}
       </div>
+      {state.kind === "failed" && state.failure.diagnostic !== null && (
+        <Accordion summary="Chi tiết kỹ thuật">
+          <code className={styles.muted}>{state.failure.diagnostic}</code>
+        </Accordion>
+      )}
     </div>
   );
 }

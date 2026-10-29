@@ -229,7 +229,8 @@ export function selectionOfQuote(rawText: string, quote: string): PassageSelecti
 
 /**
  * Câu "vì sao + cách sửa" khi tìm trong tài liệu không thành. Khung tìm chỉ có nút "Tìm" nên mọi câu kết thúc bằng
- * "bấm Tìm lại." (không nói "Thử lại"); không lộ từ kỹ thuật, mã lỗi nằm ở "Chi tiết kỹ thuật" nơi khác.
+ * "bấm Tìm lại." (không nói "Thử lại"); không lộ từ kỹ thuật. Mã lỗi (`diagnostic`) hiện riêng ở mục "Chi tiết kỹ
+ * thuật" ngay dưới câu báo của khung tìm (xem `searchFailure`).
  */
 export function searchErrorText(error: UiError): string {
   switch (error.kind) {
@@ -248,4 +249,17 @@ export function searchErrorText(error: UiError): string {
     default:
       return "Holocron gặp trục trặc khi tìm trong tài liệu. Đợi một chút rồi bấm Tìm lại.";
   }
+}
+
+export interface SearchFailure {
+  /** Câu "vì sao + cách sửa" (`searchErrorText`). */
+  message: string;
+  /** Mã lỗi để chép khi báo lỗi, hiện trong "Chi tiết kỹ thuật"; `null` khi không có hoặc chỉ có khoảng trắng. */
+  diagnostic: string | null;
+}
+
+/** Câu báo và mã lỗi của một lần tìm không thành: câu cho người dùng tách khỏi mã kỹ thuật. */
+export function searchFailure(error: UiError): SearchFailure {
+  const diagnostic = error.diagnostic?.trim() ?? "";
+  return { message: searchErrorText(error), diagnostic: diagnostic === "" ? null : diagnostic };
 }

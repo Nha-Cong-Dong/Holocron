@@ -8,6 +8,7 @@ import {
   resolveOpenPassage,
   SENTENCE_LABEL_MAX_CHARS,
   searchErrorText,
+  searchFailure,
   selectionOfQuote,
   sentenceLabel,
   sentenceRanges,
@@ -364,5 +365,100 @@ describe("searchErrorText: lỗi tìm nói 'bấm Tìm lại', không nói 'Th�
     expect(searchErrorText(classifyHttpError(422, null))).toBe(
       "Holocron chưa tìm được với nội dung này. Sửa ô tìm rồi bấm Tìm lại.",
     );
+  });
+});
+
+describe("sentenceLabel: max rất nhỏ và ký tự ngoài BMP", () => {
+  it("max = 2 với câu 3 ký tự ⇒ giữ ít nhất một code point rồi …", () => {
+    expect(sentenceLabel("abc", 2)).toBe("a…");
+  });
+
+  it("câu đúng 44 code point có ký tự ngoài BMP (độ dài UTF-16 > 44) ⇒ nguyên câu", () => {
+    const sentence = `${"𝑥".repeat(4)}${"a".repeat(SENTENCE_LABEL_MAX_CHARS - 5)}.`;
+    expect([...sentence]).toHaveLength(SENTENCE_LABEL_MAX_CHARS);
+    expect(sentence.length).toBeGreaterThan(SENTENCE_LABEL_MAX_CHARS);
+    expect(sentenceLabel(sentence)).toBe(sentence);
+  });
+});
+
+describe("searchErrorText: câu nguyên văn của từng loại lỗi", () => {
+  const SERVER_SEARCH = "Holocron gặp trục trặc khi tìm trong tài liệu. Đợi một chút rồi bấm Tìm lại.";
+  const CAPABILITY_SEARCH =
+    "Tìm trong tài liệu chưa dùng được trên máy này. Mở Cài đặt để xem cần cài hay bật thêm gì, rồi bấm Tìm lại.";
+  const INPUT_SEARCH = "Holocron chưa tìm được với nội dung này. Sửa ô tìm rồi bấm Tìm lại.";
+  const expected = {
+    network: "Holocron chưa chạy xong hoặc đã tắt. Mở lại Holocron rồi bấm Tìm lại.",
+    server: SERVER_SEARCH,
+    capability: CAPABILITY_SEARCH,
+    llm_upstream: CAPABILITY_SEARCH,
+    blocking: SERVER_SEARCH,
+    version_conflict: SERVER_SEARCH,
+    state_conflict: SERVER_SEARCH,
+    duplicate: SERVER_SEARCH,
+    unapproved_source: SERVER_SEARCH,
+    too_large: SERVER_SEARCH,
+    unsupported_media: SERVER_SEARCH,
+    validation: INPUT_SEARCH,
+    not_found: SERVER_SEARCH,
+    forbidden: "Holocron từ chối yêu cầu từ cửa sổ này. Mở lại Holocron trên máy rồi bấm Tìm lại.",
+    bad_request: INPUT_SEARCH,
+    busy: "Thư mục dữ liệu của Holocron đang bận. Đợi vài giây rồi bấm Tìm lại.",
+    unknown: SERVER_SEARCH,
+  } satisfies Record<ErrorKind, string>;
+
+  function errorOf(kind: ErrorKind): UiError {
+    return { kind, message: "Thông điệp gốc.", action: "retry", issues: [], capability: null };
+  }
+
+  const kinds: readonly ErrorKind[] = [
+    "network",
+    "server",
+    "capability",
+    "llm_upstream",
+    "blocking",
+    "version_conflict",
+    "state_conflict",
+    "duplicate",
+    "unapproved_source",
+    "too_large",
+    "unsupported_media",
+    "validation",
+    "not_found",
+    "forbidden",
+    "bad_request",
+    "busy",
+    "unknown",
+  ];
+
+  it("danh sách kiểm phủ đúng mọi loại lỗi", () => {
+    expect([...kinds].sort()).toEqual(Object.keys(expected).sort());
+  });
+
+  for (const kind of kinds) {
+    it(`${kind} ⇒ câu riêng của khung tìm`, () => {
+      expect(searchErrorText(errorOf(kind))).toBe(expected[kind]);
+    });
+  }
+
+  it("mã HTTP thật đi đúng nhánh: 403 ⇒ từ chối, 400 ⇒ sửa ô tìm", () => {
+    expect(searchErrorText(classifyHttpError(403, null))).toBe(expected.forbidden);
+    expect(searchErrorText(classifyHttpError(400, null))).toBe(expected.bad_request);
+  });
+});
+
+describe("searchFailure: câu báo tách khỏi mã kỹ thuật", () => {
+  it("mã lỗi đi vào Chi tiết kỹ thuật, không vào câu báo", () => {
+    const failure = searchFailure(classifyNetworkError(""));
+    expect(failure).toEqual({
+      message: "Holocron chưa chạy xong hoặc đã tắt. Mở lại Holocron rồi bấm Tìm lại.",
+      diagnostic: "NETWORK · fetch_failed",
+    });
+  });
+
+  it("không có mã lỗi hay mã chỉ có khoảng trắng ⇒ không có Chi tiết kỹ thuật", () => {
+    const base: UiError = { kind: "unknown", message: "", action: "retry", issues: [], capability: null };
+    expect(searchFailure(base).diagnostic).toBeNull();
+    expect(searchFailure({ ...base, diagnostic: "   " }).diagnostic).toBeNull();
+    expect(searchFailure({ ...base, diagnostic: " HTTP 500 " }).diagnostic).toBe("HTTP 500");
   });
 });

@@ -2,6 +2,7 @@
 
 - Trạng thái: Chấp nhận (2026-10-23). Engine OCR của tầng 2 đã chốt ngày 2026-10-24, sau phép đo ở mục 5 của phần Quyết định (đo trên scan giả lập): Tesseract `vie` là engine chính, RapidOCR chỉ đối chiếu token số và mã (mục 8). Các mục 8–14 bổ sung ngày 2026-10-24. Bảy điểm từng ghi "đề xuất" trong các mục này được người dùng duyệt ngày 2026-10-24, ghi lại tại chỗ là "đã duyệt 2026-10-24". Contract chi tiết (mục 11, 13) nằm ở spec §5.7, §6.5 và §7.4. Sửa ngày 2026-10-25 theo quyết định của người dùng: câu chữ VLM và nhà cung cấp LLM (Bối cảnh, Phương án đã loại), pdfplumber đã duyệt (mục 1, Hệ quả), ghi chú `find_tables` (mục 6), lệnh Tesseract (mục 8), `page_number` (mục 13), chữ hiếm được phép thiếu (mục 14).
 - Sửa đổi 2026-10-27: bỏ nhà cung cấp mặc định DeepSeek, xem PR #61.
+- Sửa đổi 2026-10-29 (người dùng duyệt): luật chọn tầng 1/2 và công thức `text_score` ở mục 6, hai ngưỡng mới ở mục 12, mục "Việc kế tiếp: che đồ hoạ template lặp trước OCR/VLM". Trạng thái không đổi.
 - Sửa đổi 2026-10-27 (Q4): người dùng duyệt ngoại lệ GEOS (LGPL-2.1, liên kết động) cho bản zip portable Windows đủ có RapidOCR (`build_portable.py --ocr full`), xem phần Hệ quả (mục "Giấy phép đi kèm") và spec dòng "Bộ nhập PDF" ở bảng công nghệ. Điều kiện: kèm toàn văn LGPL-2.1 và mã nguồn GEOS 3.14.1; THIRD_PARTY_NOTICES của zip ghi DLL đã bị delvewheel sửa đổi; build dừng nếu GEOS ngoài `shapely.libs/` hoặc shapely không có ánh xạ GEOS (cưỡng chế ở `scripts/build_portable.py`, nhánh P4, chưa merge). Bản lite không có GEOS. Trạng thái không đổi.
 - Ngày: 2026-10-23; cập nhật 2026-10-24 (kết quả đo, engine OCR, chuyển tầng, đối chiếu chéo; duyệt các điểm đề xuất; contract ở spec); cập nhật 2026-10-25, 2026-10-27
 
@@ -104,11 +105,12 @@ Kết luận: không dùng cho MVP. Sau MVP có thể thêm Docling như một w
 
    | Bước | Điểm | Cách tính |
    |---|---|---|
-   | Tầng 1 | `text_score` ∈ [0, 1] | Tích của ba thành phần: (a) độ đủ chữ `min(1, số ký tự không trắng / 200)`; (b) `1 − tỉ lệ ký tự rác` (U+FFFD, vùng Private Use, ký tự điều khiển); (c) tỉ lệ từ hợp lệ, trong đó từ chứa ký tự đặc trưng của TCVN3/VNI (ví dụ `¬`, `−`, `®` lẫn giữa chữ) bị tính là không hợp lệ |
+   | Tầng 1 | `text_score` ∈ [0, 1] | `text_score = clean_char_ratio × valid_word_ratio` (Sửa đổi 2026-10-29, người dùng duyệt: bỏ thành phần độ đủ chữ `min(1, số ký tự không trắng / 200)` và field `text_full_chars`). (a) `clean_char_ratio = 1 − tỉ lệ ký tự rác` (U+FFFD, vùng Private Use, ký tự điều khiển); (b) `valid_word_ratio` = tỉ lệ từ hợp lệ, trong đó từ chứa ký tự đặc trưng của TCVN3/VNI (ví dụ `¬`, `−`, `®` lẫn giữa chữ) bị tính là không hợp lệ. Lớp chữ rỗng (`non_ws == 0`, số ký tự không trắng bằng 0) có `text_score = 0.0` |
    | Tầng 2 | `ocr_score` ∈ [0, 1] | Trung bình điểm nhận dạng các dòng của engine chính, có trọng số theo số ký tự. Với Tesseract, điểm dòng là trung bình cột `conf` (0–100, chia 100) của các từ trong dòng ở đầu ra TSV, có trọng số theo số ký tự. Dòng điểm thấp được tô trên màn hình xem lại. Điểm trung bình cao chưa đủ: phải kiểm thêm độ phủ dòng (mục 10) |
    | Cờ trang | `has_figure`, `has_table`, `has_formula` | `has_figure`: trên trang scan dùng `ink_outside_text_ratio` (mục 9); trên PDF số dùng diện tích đối tượng ảnh và đường vẽ, nhưng chỉ kết hợp với tín hiệu khác (mục 9). `has_table`: lưới toạ độ chữ (tầng 1–2), cộng lưới đường kẻ của pdfplumber khi có tầng 3. `has_formula`: mật độ ký hiệu toán (∑ ∫ √ ≤ ≥ ±, chữ Hy Lạp, chỉ số trên/dưới, và dải ký tự toán U+1D400–1D7FF) |
 
-   - Dùng lớp chữ khi `text_score ≥ 0.85`; ngược lại OCR trang đó.
+   - **Luật chọn tầng (Sửa đổi 2026-10-29, người dùng duyệt; thay luật cũ "dùng lớp chữ khi `text_score ≥ 0.85`, ngược lại OCR"):** OCR cả trang khi một trong ba điều kiện đúng: (a) lớp chữ rỗng (`non_ws == 0`, `text_score = 0.0`); (b) lớp chữ rác, `text_score < TEXT_LAYER_MIN = 0.85` (gồm font TCVN3/VNI); (c) trang ảnh: `non_ws < TEXT_SPARSE_CHARS = 32` VÀ `image_area_ratio ≥ TEXT_SPARSE_IMAGE_MIN = 0.40`. Các trường hợp còn lại giữ lớp chữ.
+   - Lý do sửa (2026-10-29): luật cũ nhân thêm độ đủ chữ nên slide ít chữ nhưng lớp chữ sạch bị đẩy sang OCR và ra rác; người dùng đếm số trang bị OCR ở ba chương: ch2 23/49, ch3 46/89, ch4 28/49. Đo sau sửa: OCR còn 5/49, 0/89, 5/49. Ngưỡng 32 ký tự chọn vì trang chỉ có header khung và số trang có 21–29 ký tự không trắng và ảnh phủ 0.83–0.98 diện tích trang, còn ảnh khung slide ≤ 0.18.
    - Trang có điểm của tầng đã dùng `< 0.80` được đánh dấu "cần xem kỹ". Cách chuyển tầng theo cờ trang ở mục 9. Nếu đã cấu hình VLM, các trang "cần xem kỹ" được gửi VLM.
    - Ngưỡng 0.85 và 0.80 là giá trị khởi đầu, hiệu chỉnh bằng phép đo ở mục 5. Chúng là cấu hình, không ghi cứng (mục 12).
    - Ghi chú `has_table` (đo 2026-10-25 trên slide thật): `find_tables` của pdfplumber báo bảng ở hầu hết các trang vì khung slide; `has_table` phải lọc thêm, không lấy thẳng kết quả `find_tables` (cách lọc đề xuất, chờ duyệt, ở spec §5.7).
@@ -154,7 +156,7 @@ Kết luận: không dùng cho MVP. Sau MVP có thể thêm Docling như một w
       | `HOLOCRON_TESSERACT_CMD` | `tesseract` (tìm trong PATH) | Đường dẫn binary Tesseract |
       | `HOLOCRON_TESSDATA_DIR` | thư mục mặc định của bản cài Tesseract | Thư mục chứa `vie.traineddata`, truyền qua `--tessdata-dir` |
 
-    - Ngưỡng, là field có giá trị mặc định của model cấu hình bộ nhập ở `infrastructure/`: `TEXT_SCORE_MIN=0.80`, `OCR_SCORE_MIN=0.80` (giữ ngưỡng 0.80 ở mục 6), `LINE_CONF_MIN=0.70`, `COVERAGE_MIN=0.85`, `FIGURE_INK_MIN=0.10`, `CROSS_LINE_CER_WARN=0.05`. Ngưỡng 0.85 chọn lớp chữ ở mục 6 cũng là cấu hình, tên `TEXT_LAYER_MIN=0.85` (đã duyệt 2026-10-24).
+    - Ngưỡng, là field có giá trị mặc định của model cấu hình bộ nhập ở `infrastructure/`: `TEXT_SCORE_MIN=0.80`, `OCR_SCORE_MIN=0.80` (giữ ngưỡng 0.80 ở mục 6), `LINE_CONF_MIN=0.70`, `COVERAGE_MIN=0.85`, `FIGURE_INK_MIN=0.10`, `CROSS_LINE_CER_WARN=0.05`. Ngưỡng 0.85 chọn lớp chữ ở mục 6 cũng là cấu hình, tên `TEXT_LAYER_MIN=0.85` (đã duyệt 2026-10-24). Sửa đổi 2026-10-29 (người dùng duyệt): thêm hai ngưỡng của luật trang ảnh ở mục 6, `TEXT_SPARSE_CHARS=32` (số ký tự không trắng tối đa để coi lớp chữ là thưa) và `TEXT_SPARSE_IMAGE_MIN=0.40` (tỉ lệ diện tích ảnh tối thiểu `image_area_ratio`); không còn ngưỡng độ đủ chữ (200 ký tự) vì thành phần này đã bỏ khỏi `text_score`.
     - Danh sách chữ được phép thiếu trong unicharset của engine chính, `OCR_CHARSET_ALLOWED_MISSING` (mặc định `Ỵ`, `ỵ`; mục 14, duyệt 2026-10-25), cũng là field có giá trị mặc định của model cấu hình OCR ở `infrastructure/`, không phải biến môi trường (theo quy tắc của mục này). Danh sách chỉ được chứa các chữ hiếm đã duyệt (hiện `Ỵ`, `ỵ`); mở rộng danh sách cần người dùng duyệt riêng.
     - Bảng biến môi trường ở spec §11.2 và `.env.example` (gốc repo) đã được cập nhật ở Đợt 2b (2026-10-24), trước khi có code.
 13. **Kết quả theo trang `PageExtraction`** (mô tả ở mức ADR; contract JSON chi tiết ở spec §5.7, viết ở Đợt 2b ngày 2026-10-24; `types/holocron.ts` cập nhật cùng nhánh triển khai):
@@ -221,6 +223,24 @@ Phát hiện:
 - **Tesseract bỏ sót chữ trong khung viền:** trang 3 và 4 có CER 50% và 33%, trong khi điểm tin cậy trung bình vẫn 0.88–0.94. Hai trang này kéo CER trung bình của Tesseract best trên trang render lên 9.5%, trong khi trung vị là 1.3%. Vì vậy không được dựa vào điểm trung bình, phải kiểm độ phủ dòng (mục 10).
 - **Tesseract đọc chữ số kém hơn RapidOCR** (93.0% so với 98.6%). Đây là lý do giữ RapidOCR làm lượt đọc thứ hai cho token số và mã (mục 11).
 - **Rủi ro giấy phép của wheel `tesserocr`:** bản Windows kèm libiconv (LGPL-2.1), bản manylinux kèm libjbig (GPL-2.0+). Hệ quả: không dùng wheel `tesserocr`. Tesseract được gọi bằng binary `tesseract` có sẵn trên máy, qua subprocess, đầu vào là ảnh PNG do pypdfium2 render chứ không phải file PDF (mục 8).
+
+### Đo ngày 2026-10-29 (luật chọn tầng mới)
+
+Đếm số trang đi OCR trên ba chương slide thật sau khi áp luật ở mục 6: ch2 5/49 (trước 23/49), ch3 0/89 (trước 46/89), ch4 5/49 (trước 28/49) (Sửa đổi 2026-10-29, người dùng duyệt).
+
+## Việc kế tiếp: che đồ hoạ template lặp trước OCR/VLM
+
+Sửa đổi 2026-10-29 (người dùng duyệt thiết kế; chưa làm, không thuộc nhánh sửa luật chọn tầng). Mục tiêu: header, logo và khung lặp của slide không còn làm OCR hoặc VLM ra rác. Thiết kế an toàn đã chốt:
+
+- **Định danh đồ hoạ lặp theo nội dung và vị trí** của đối tượng ảnh (băm nội dung kết hợp hộp bao quanh), không theo tên hay thứ tự đối tượng.
+- **Không che vùng chiếm từ 50% diện tích trang trở lên.**
+- **Không che phần giao với chữ:** vùng giao giữa hộp che và hộp chữ của lớp chữ được giữ nguyên.
+- **Điều kiện áp dụng:** đồ hoạ phải lặp ở ít nhất 5 trang VÀ ít nhất 60% số trang của tài liệu.
+- **Trần số hộp che** mỗi trang (con số cụ thể là cấu hình, chốt khi làm).
+- **Test phủ định cho scan:** trang scan (ảnh toàn trang, không có đối tượng ảnh lặp) không bị che gì; test này bắt buộc.
+- **Cùng đường render ảnh với khung VLM** (tầng 4): ảnh đã che là ảnh duy nhất đưa cho OCR và VLM, để hai đường thấy cùng một trang.
+
+Làm theo ADR hoặc PR riêng; đổi `tier_used`/contract (nếu có) phải cập nhật spec §5.7.
 
 ## Phương án đã loại
 

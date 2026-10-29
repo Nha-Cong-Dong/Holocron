@@ -51,10 +51,13 @@ class TierDecision:
 
 
 def select_tier(score: float, flags: PageFlags, config: PdfReaderConfig, *, layout_available: bool) -> TierDecision:
-    """Lớp chữ đủ tốt (`score ≥ TEXT_LAYER_MIN`) ⇒ PDF số; ngược lại cần OCR (tầng 2).
+    """Chọn tầng theo chất lượng lớp chữ và cờ trang (ADR-008 mục 6, 9; sửa đổi 2026-10-29).
 
-    Trên PDF số, `has_table`, `has_formula` hoặc `has_figure` đưa trang lên tầng 3; tầng 3 chưa có thì giữ lớp chữ
-    và đánh dấu `TIER3_UNAVAILABLE`. Cờ của trang scan do tầng 2 xử lý (ngoài phạm vi tầng 1).
+    `score` là `text_score`, chỉ đo lớp chữ có rác hay không (không đo nhiều hay ít chữ): `score < TEXT_LAYER_MIN`
+    ⇒ OCR (tầng 2). Hàm này KHÔNG xét luật lớp chữ rỗng hay trang ảnh ít chữ: luật chọn tầng đầy đủ là
+    `text_layer.ocr_reason` (`needs_ocr_page`), nơi gọi xét nó trước và chỉ gọi hàm này cho trang giữ lớp chữ
+    (`assemble_text_layer_page`). Trên PDF số, `has_table`, `has_formula` hoặc `has_figure` đưa trang lên tầng 3;
+    tầng 3 chưa có thì giữ lớp chữ và đánh dấu `TIER3_UNAVAILABLE`. Cờ của trang scan do tầng 2 xử lý.
     """
     if score < config.text_layer_min:
         return TierDecision(tier="ocr")

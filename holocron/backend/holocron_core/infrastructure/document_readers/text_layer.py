@@ -26,8 +26,21 @@ LEGACY_VIETNAMESE_MARKERS: frozenset[str] = frozenset(
 )
 
 # Các dấu trên cũng là ký hiệu toán hay đơn vị thông dụng (`x−1`, `a×b`, `2·3`, `a÷b`, `µs`), nên được xét theo
-# vị trí trong từ (xem `_legacy_marker_at`).
+# vị trí trong từ (xem `_counts_as_legacy_marker`).
 MATH_LIKE_MARKERS: frozenset[str] = frozenset("−×·÷µ")
+
+# Ký hiệu in ấn hay gắn vào mép từ (`ARM®`, `©Holocron`, `«trích`, `dẫn»`): chỉ được tính là dấu TCVN3/VNI khi
+# kẹp giữa hai chữ cái (`m«n` = môn), xem `_counts_as_legacy_marker`.
+EDGE_SYMBOL_MARKERS: frozenset[str] = frozenset("©«®»§¶")
+
+# Phụ âm đầu và phụ âm cuối (chữ Latin ASCII) của âm tiết tiếng Việt; dùng để phân biệt từ TCVN3/VNI (`häc`,
+# `ViÖt`, `Vieät`) với từ tiếng nước ngoài có chữ Latin-1 hợp lệ (`Müller`, `Größe`, `Köln`).
+_VIETNAMESE_INITIALS: frozenset[str] = frozenset(
+    {"", "b", "c", "ch", "d", "g", "gh", "h", "k", "kh", "l", "m", "n", "ng", "ngh", "nh", "p", "ph", "q", "r", "s"}
+    | {"t", "th", "tr", "v", "x"}
+)
+_VIETNAMESE_FINALS: frozenset[str] = frozenset({"", "c", "ch", "m", "n", "ng", "nh", "p", "t"})
+_ASCII_VOWELS: frozenset[str] = frozenset("aeiouy")
 
 _MATH_RANGES: tuple[tuple[int, int], ...] = (
     (0x0391, 0x03A9),  # chữ Hy Lạp hoa
@@ -153,22 +166,62 @@ def _is_plain_latin(run: str) -> bool:
     return run.isascii() and run.isalpha()
 
 
+def is_vietnamese_syllable_shape(run: str) -> bool:
+    """Cụm chữ có dạng một âm tiết tiếng Việt: phụ âm đầu ASCII + MỘT cụm nguyên âm liền nhau + phụ âm cuối ASCII.
+
+    Chữ ngoài ASCII (chữ có dấu, chữ Latin-1 của TCVN3/VNI) được coi là nguyên âm. `Müller` (hai cụm nguyên âm, phụ
+    âm cuối `r`), `Größe` (phụ âm đầu `gr`) và `Köln` (phụ âm cuối `ln`) không có dạng này; `häc`, `ViÖt`, `Vieät`,
+    `ñöôïc` thì có.
+    """
+    lowered = run.lower()
+    nucleus = [index for index, char in enumerate(lowered) if not char.isascii() or char in _ASCII_VOWELS]
+    if not nucleus:
+        return False
+    start, end = nucleus[0], nucleus[-1] + 1
+    if len(nucleus) != end - start:
+        return False
+    return lowered[:start] in _VIETNAMESE_INITIALS and lowered[end:] in _VIETNAMESE_FINALS
+
+
+def _alpha_run(token: str, index: int) -> str:
+    """Cụm chữ cái liền nhau chứa vị trí `index`."""
+    return token[index - _letter_run(token, index - 1, -1) : index + _letter_run(token, index, 1)]
+
+
+def _is_wedged_between_letters(token: str, index: int) -> bool:
+    """Cụm ký tự không phải chữ cái chứa `index` chỉ gồm dấu TCVN3/VNI và có chữ cái ở cả hai bên (`m«n`, `Ch­¬ng`)."""
+    start = index
+    while start > 0 and not token[start - 1].isalpha():
+        start -= 1
+    end = index + 1
+    while end < len(token) and not token[end].isalpha():
+        end += 1
+    run = token[start:end]
+    return start > 0 and end < len(token) and all(c in LEGACY_VIETNAMESE_MARKERS for c in run)
+
+
 def _counts_as_legacy_marker(token: str, index: int) -> bool:
     """Ký tự ở `index` có được tính là dấu TCVN3/VNI hay không.
 
-    Dấu thường (`®`, `¸`, `Ö`…) luôn được tính. Ký hiệu toán trùng mã TCVN3 (`MATH_LIKE_MARKERS`) được xét theo vị
-    trí: `µ` chỉ được tính khi đứng ngay sau một chữ cái (chữ `à` của TCVN3: `hµnh`, `vµ`); đứng đầu từ hay sau chữ
-    số là tiền tố đơn vị (`µs`, `10µs`). `−`, `×`, `·`, `÷` chỉ được tính khi nằm giữa hai chữ cái và một bên là
-    cụm từ hai chữ cái trở lên (`Tr−êng`, `tr×nh`). Toán hạng là số (`x−1`, `2·3`) hoặc biến một chữ (`a×b`) không
-    bị tính. Riêng `·` nằm giữa hai cụm chữ Latin không dấu là dấu nhân của đơn vị (`kg·m`, `kW·h`), không bị tính;
-    đổi lại, từ TCVN3 mà `·` (chữ `ã`) chỉ đứng cạnh chữ không dấu (`l·nh`) không được tính ở ký tự này, các dấu
-    khác của trang vẫn kéo `valid_word_ratio` xuống.
+    Dấu không phải chữ cái (`¸`, `¬`, `¹`…) luôn được tính, trừ ký hiệu in ấn `EDGE_SYMBOL_MARKERS` (`®`, `©`, `«`,
+    `»`…): chúng chỉ được tính khi kẹp giữa hai chữ cái (`m«n`); đứng đầu hoặc cuối từ (`ARM®`, `«trích`) thì không.
+    Chữ Latin-1 (`Ö`, `ä`, `ü`…) chỉ được tính khi cụm chữ chứa nó có dạng một âm tiết tiếng Việt
+    (`is_vietnamese_syllable_shape`: `ViÖt`, `häc`), không phải từ nước ngoài (`Müller`).
+    Ký hiệu toán trùng mã TCVN3 (`MATH_LIKE_MARKERS`) được xét theo vị trí: `µ` chỉ được tính khi đứng ngay sau một
+    chữ cái (chữ `à` của TCVN3: `hµnh`, `vµ`); đứng đầu từ hay sau chữ số là tiền tố đơn vị (`µs`, `10µs`). `−`,
+    `×`, `·`, `÷` chỉ được tính khi nằm giữa hai chữ cái và một bên là cụm từ hai chữ cái trở lên (`Tr−êng`,
+    `tr×nh`). Toán hạng là số (`x−1`, `2·3`) hoặc biến một chữ (`a×b`) không bị tính. Riêng `·` nằm giữa hai cụm
+    chữ Latin không dấu là dấu nhân của đơn vị (`kg·m`, `kW·h`), không bị tính; đổi lại, từ TCVN3 mà `·` (chữ `ã`)
+    chỉ đứng cạnh chữ không dấu (`l·nh`) không được tính ở ký tự này, các dấu khác của trang vẫn kéo
+    `valid_word_ratio` xuống.
     """
     char = token[index]
     if char not in LEGACY_VIETNAMESE_MARKERS:
         return False
+    if char in EDGE_SYMBOL_MARKERS:
+        return _is_wedged_between_letters(token, index)
     if char not in MATH_LIKE_MARKERS:
-        return True
+        return not char.isalpha() or is_vietnamese_syllable_shape(_alpha_run(token, index))
     if char == "µ":
         return index > 0 and token[index - 1].isalpha()
     left = _letter_run(token, index - 1, -1)
@@ -185,7 +238,8 @@ def _counts_as_legacy_marker(token: str, index: int) -> bool:
 def is_legacy_encoded_word(token: str) -> bool:
     """Từ có dấu TCVN3/VNI (theo `_counts_as_legacy_marker`) lẫn với chữ cái khác ⇒ không hợp lệ.
 
-    Một dấu đứng riêng (`®`) và biểu thức toán (`x−1`, `a×b`, `2·3`, `µs`, `P(A∩B)`) vẫn hợp lệ.
+    Một dấu đứng riêng (`®`), ký hiệu ở mép từ (`ARM®`, `«trích»`), từ nước ngoài có chữ Latin-1 (`Müller`) và
+    biểu thức toán (`x−1`, `a×b`, `2·3`, `µs`, `P(A∩B)`) vẫn hợp lệ.
     """
     has_marker = any(_counts_as_legacy_marker(token, index) for index in range(len(token)))
     has_other_letter = any(c.isalpha() and c not in LEGACY_VIETNAMESE_MARKERS for c in token)

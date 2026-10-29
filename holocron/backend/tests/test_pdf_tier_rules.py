@@ -8,6 +8,7 @@ hoặc trang ảnh: lớp chữ sạch nhưng có dưới `text_sparse_chars` k�
 
 from __future__ import annotations
 
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -17,25 +18,31 @@ from holocron_core.infrastructure.document_readers import _pdf_worker
 from holocron_core.infrastructure.document_readers._pdf_worker import OcrRunner
 from holocron_core.infrastructure.document_readers.config import OcrSettings, PdfReaderConfig
 from holocron_core.infrastructure.document_readers.pdf_reader import WorkerPdfReader
-from holocron_core.infrastructure.document_readers.pdfium_adapter import PdfiumBackend
+from holocron_core.infrastructure.document_readers.pdfium_adapter import PdfiumBackend, PdfiumDataError, PdfiumDocument
 from holocron_core.infrastructure.document_readers.protocol import (
     OcrStartedMessage,
     PageMessage,
     PageRequest,
     RawOcrLine,
+    RawOcrPage,
     RawPdfPage,
     RawTextLine,
     WorkerRequest,
 )
 from holocron_core.infrastructure.document_readers.raster import GrayImage, PixelBox
 from holocron_core.infrastructure.document_readers.text_layer import (
+    clean_char_ratio,
+    is_legacy_encoded_word,
+    is_vietnamese_syllable_shape,
     needs_ocr_page,
     non_whitespace_count,
     ocr_reason,
     page_text,
     text_score,
+    valid_word_ratio,
 )
 from holocron_core.infrastructure.document_readers.tiers import assemble_text_layer_page
+from scripts.eval_pdf_tiers import evaluate_file
 from tests.pdf_samples import Box, Page, Text, text_lines, write_pdf
 
 CONFIG = PdfReaderConfig()
@@ -226,3 +233,149 @@ def test_worker_and_parent_agree_at_boundaries(
     # Không có kết quả OCR thì tiến trình cha đánh dấu thiếu engine đúng cho những trang worker lẽ ra OCR.
     without_ocr = assemble_text_layer_page(raw.model_copy(update={"ocr": None}), DOC_ID, config)
     assert (without_ocr.failure_reason == "OCR_ENGINE_MISSING") == expect_ocr
+
+
+# --------------------------------------------------------------------------- #
+# Heuristic TCVN3/VNI: ký hiệu ở mép từ, chữ Latin-1 của từ nước ngoài
+# --------------------------------------------------------------------------- #
+
+
+def test_trademark_and_quote_symbols_at_word_edges_are_valid() -> None:
+    title = _raw(["Kiến trúc ARM® Cortex-M4"])
+    assert valid_word_ratio(page_text(title.lines)) == 1.0
+    assert ocr_reason(title, CONFIG) is None
+    assert assemble_text_layer_page(title, DOC_ID, CONFIG).tier_used == "text_layer"
+    assert valid_word_ratio("«trích dẫn» ©Holocron §Điều ¶Mục ARM®-based") == 1.0
+    for word in ("ARM®", "«trích", "dẫn»", "dẫn».", "©Holocron", "(ARM®)"):
+        assert not is_legacy_encoded_word(word), word
+    # Kẹp giữa hai chữ cái thì vẫn là dấu TCVN3 (`«` = ô, `®` = đ), kể cả qua dấu TCVN3 khác.
+    for word in ("m«n", "x®y", "c«¬ng"):
+        assert is_legacy_encoded_word(word), word
+
+
+def test_foreign_words_with_latin1_letters_are_valid() -> None:
+    # Hai cụm nguyên âm (Müller, Mädchen), phụ âm đầu (Grün, Größe) hoặc phụ âm cuối (Köln, Kür) không phải tiếng Việt.
+    for word in ("Müller", "Mädchen", "Grün", "Größe", "Köln", "Kür", "Zürich", "naïve", "España", "Noël"):
+        assert not is_legacy_encoded_word(word), word
+    assert valid_word_ratio("Định lý Müller–Gödel ở Köln") == 1.0
+    # Cùng chữ Latin-1 trong cụm có dạng âm tiết tiếng Việt vẫn bị bắt.
+    for word in ("häc", "ViÖt", "HÖ", "Vieät", "ñöôïc", "tö.", "ngöôøi", "chaïy", "khoäng", "quÖt", "Thöôøng"):
+        assert is_legacy_encoded_word(word), word
+
+
+@pytest.mark.parametrize(
+    ("run", "expected"),
+    [
+        ("tr", False),  # không có nguyên âm
+        ("ngh", False),
+        ("nghieâng", True),
+        ("Chaïy", True),  # `y` là nguyên âm
+        ("Müller", False),  # hai cụm nguyên âm
+        ("Grün", False),  # phụ âm đầu `gr`
+        ("Kür", False),  # phụ âm cuối `r`
+        ("ä", True),
+    ],
+)
+def test_vietnamese_syllable_shape(run: str, expected: bool) -> None:
+    assert is_vietnamese_syllable_shape(run) is expected
+
+
+def test_math_like_markers_at_word_edges_and_lone_letters() -> None:
+    for word in ("−log", "ab×", "÷x", "Ö", "ß", "ü"):
+        assert not is_legacy_encoded_word(word), word
+
+
+def test_garbled_short_layer_scores_zero_and_wins_over_sparse_rule() -> None:
+    text = "Ch­¬ng 1 2 3 4 5 6"
+    assert valid_word_ratio(text) == 0.0
+    assert ocr_reason(_raw([text]), CONFIG) == "garbled_text_layer"
+    # Lớp chữ rác được xét trước luật trang ảnh.
+    assert ocr_reason(_raw([TCVN3_SHORT], image=0.9), CONFIG) == "garbled_text_layer"
+
+
+def test_text_score_is_product_of_quality_ratios_on_nfc() -> None:
+    legacy = "ViÖt Nam ®iÒu hµnh"
+    nfd = unicodedata.normalize("NFD", legacy)
+    assert nfd != legacy
+    assert text_score(nfd, CONFIG) == text_score(legacy, CONFIG) == pytest.approx(0.5)
+    assert text_score(legacy, CONFIG) < CONFIG.text_layer_min
+    mixed = "hµnh Nam \ufffd ok"
+    clean, valid = clean_char_ratio(mixed), valid_word_ratio(mixed)
+    assert (clean, valid) == (pytest.approx(0.9), pytest.approx(2 / 3))
+    assert text_score(mixed, CONFIG) == pytest.approx(clean * valid) == pytest.approx(0.6)
+
+
+def test_lone_symbol_line_keeps_text_layer() -> None:
+    raw = _raw(["Mục", "®"])
+    assert page_text(raw.lines) == "Mục\n®"
+    assert ocr_reason(raw, CONFIG) is None
+
+
+def test_perfect_score_meets_strictest_threshold() -> None:
+    strict = PdfReaderConfig(text_layer_min=1.0)
+    title = _raw(["Chương 1"])
+    assert ocr_reason(title, strict) is None
+    assert assemble_text_layer_page(title, DOC_ID, strict).tier_used == "text_layer"
+
+
+def test_text_layer_lines_carry_the_page_score() -> None:
+    lenient = PdfReaderConfig(text_layer_min=0.3)
+    page = assemble_text_layer_page(_raw(["Nam hµnh"]), DOC_ID, lenient)
+    assert page.tier_used == "text_layer"
+    assert page.text_score == pytest.approx(0.5)
+    assert [line.conf for line in page.lines] == [page.text_score]
+
+
+SPARSE_ON_IMAGE = ["23", "CHƯƠNG 2-BỘ VI XỬ LÝ ARM"]
+
+
+def test_sparse_page_without_engine_keeps_figure_flag() -> None:
+    page = assemble_text_layer_page(_raw(SPARSE_ON_IMAGE, image=0.89), DOC_ID, CONFIG)
+    assert (page.status, page.failure_reason, page.has_figure) == ("failed", "OCR_ENGINE_MISSING", True)
+
+
+def test_sparse_page_with_ocr_uses_ocr_tier_and_keeps_text_score() -> None:
+    line = RawOcrLine(text="Bảng 1 thanh ghi", bbox=(0.1, 0.1, 0.5, 0.15), words=[], conf=0.95)
+    ocr = RawOcrPage(dpi=300.0, lines=[line], ink_outside_text_ratio=0.0, secondary=None)
+    raw = _raw(SPARSE_ON_IMAGE, image=0.89).model_copy(update={"ocr": ocr})
+    page = assemble_text_layer_page(raw, DOC_ID, CONFIG)
+    assert page.tier_used == "ocr"
+    assert page.text_score == pytest.approx(1.0)
+    assert [extracted.text for extracted in page.lines] == ["Bảng 1 thanh ghi"]
+
+
+def test_default_sparse_thresholds() -> None:
+    assert (CONFIG.text_sparse_chars, CONFIG.text_sparse_image_min) == (32, 0.40)
+    assert ocr_reason(_raw(["x" * 29], image=0.9), CONFIG) == "sparse_text_on_image"
+    assert ocr_reason(_raw(["x" * 31], image=0.40), CONFIG) == "sparse_text_on_image"
+    assert ocr_reason(_raw(["x" * 32], image=0.9), CONFIG) is None
+    assert ocr_reason(_raw(["Chương 1"], image=0.39), CONFIG) is None
+
+
+# --------------------------------------------------------------------------- #
+# Script đo `eval_pdf_tiers`: trần và PDF hỏng theo từng file
+# --------------------------------------------------------------------------- #
+
+
+def test_eval_tiers_skips_oversized_long_and_broken_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = PdfiumBackend.load()
+    good = write_pdf(tmp_path / "good.pdf", [Page(texts=[Text(x=72.0, y=400.0, value="Bai 1")])] * 2)
+    rows = evaluate_file(backend, good, CONFIG)
+    assert not isinstance(rows, str)
+    assert [(row.page_number, row.new_tier) for row in rows] == [(1, "text_layer"), (2, "text_layer")]
+    size = good.stat().st_size
+    assert evaluate_file(backend, good, CONFIG.model_copy(update={"max_bytes": size - 1})) == (
+        f"TOO_LARGE: {size} > {size - 1} byte"
+    )
+    assert not isinstance(evaluate_file(backend, good, CONFIG.model_copy(update={"max_bytes": size})), str)
+    assert evaluate_file(backend, good, CONFIG.model_copy(update={"max_pages": 1})) == "TOO_MANY_PAGES: 2 > 1 trang"
+    assert not isinstance(evaluate_file(backend, good, CONFIG.model_copy(update={"max_pages": 2})), str)
+    broken = tmp_path / "broken.pdf"
+    broken.write_bytes(b"%PDF-1.4 broken")
+    assert evaluate_file(backend, broken, CONFIG) == "OPEN_FAILED"
+
+    def fail(self: PdfiumDocument, index: int) -> RawPdfPage:
+        raise PdfiumDataError("hỏng")
+
+    monkeypatch.setattr(PdfiumDocument, "read_page", fail)
+    assert evaluate_file(backend, good, CONFIG) == "READ_FAILED: PdfiumDataError"

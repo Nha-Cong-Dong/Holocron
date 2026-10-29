@@ -114,17 +114,18 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     sau trong cùng tiến trình (test, `--reload`) mở lại kết nối mới thay vì dùng kết nối đã đóng. Kho in-memory
     không có gì để đóng.
 
-    Kiểm cục bộ của chế độ khả năng (Tesseract, gói `vie`, lượt đọc thứ hai; §5.12) chạy một lần ở đây, ngay sau khi
-    tạo bộ nhập và với đúng `reader_config` của bộ nhập (cùng giới hạn probe với worker), trước khi xếp lại tài liệu
-    đọc dở; kết quả gắn vào `app.state` cho `GET /v1/runtime` và các route cần khả năng; bỏ khi tắt app để lần khởi
-    động sau kiểm lại.
+    Kiểm cục bộ của chế độ khả năng (Tesseract, gói `vie`, lượt đọc thứ hai; §5.12) được khởi chạy NỀN một lần ở đây,
+    ngay sau khi tạo bộ nhập và với đúng `reader_config` của bộ nhập (cùng giới hạn probe với worker); app KHÔNG chờ
+    kiểm xong mà xếp lại tài liệu đọc dở và mở cổng ngay (duyệt 2026-10-30). Trong lúc kiểm, `ocr`/`ocr_cross_check`
+    báo `local_check_pending`; kết quả gắn vào `app.state` cho `GET /v1/runtime` và các route cần khả năng; bỏ khi tắt
+    app để lần khởi động sau kiểm lại.
     """
     store = get_store()
     import_runtime: ImportRuntime | None = None
     try:
         import_runtime = documents.create_import_runtime(data_dir_from_env())
         setattr(application.state, documents.RUNTIME_STATE_ATTR, import_runtime)
-        runtime.run_local_capability_check(application, import_runtime.reader_config)
+        runtime.start_local_capability_check(application, import_runtime.reader_config)
         documents.requeue_on_startup(store, import_runtime)
         yield
     finally:
@@ -143,6 +144,9 @@ async def _store_busy(_: Request, exc: Exception) -> JSONResponse:
 
 
 app = FastAPI(title="Holocron Ingestion Gate", version="0.2.0a0", lifespan=_lifespan)
+# Khoá và trạng thái kiểm cục bộ của app đặt ngay khi tạo app (ở `app.state`, không phải biến module), để request
+# đầu tiên của app chạy không qua `lifespan` cũng dùng đúng một khoá.
+runtime.install_local_check_state(app)
 # Kiểm `Host` và token (nếu bật) cho MỌI request, trước routing và trước khi đọc body (SPECIFICATION §6.0, §13.1):
 # gồm cả `/openapi.json`, `/docs`, `/redoc`, 404 và 405. Provider tra qua `app.dependency_overrides` để test override.
 app.add_middleware(LocalAccessMiddleware, overrides=lambda: app.dependency_overrides)

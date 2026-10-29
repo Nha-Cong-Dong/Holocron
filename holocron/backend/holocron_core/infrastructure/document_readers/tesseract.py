@@ -16,6 +16,12 @@ chạy tiến trình con thăm dò RapidOCR (`secondary_probe.py`); tiến trìn
 - TSV xin bằng `-c tessedit_create_tsv=1` thay vì file cấu hình `tsv`: khi `--tessdata-dir` trỏ tới thư mục chỉ có
   `vie.traineddata`, Tesseract không tìm thấy `configs/tsv` và lặng lẽ trả văn bản thường (đo 2026-10-25 với 5.4.0).
 - Hàm đọc unicharset của `.traineddata` (ADR-008 mục 14, test 1) là hàm thuần trên bytes.
+- `check_vie_charset` là hàm kiểm bộ chữ DÙNG CHUNG cho kiểm cục bộ lúc khởi động (tiến trình cha) và cho worker
+  khi dựng engine (`_pdf_worker.build_ocr`): dò `vie.traineddata` theo thứ tự `HOLOCRON_TESSDATA_DIR` →
+  `TESSDATA_PREFIX` → thư mục ở dòng đầu `--list-langs` → thư mục mặc định của bản cài
+  (`PdfReaderConfig.ocr_tessdata_default_dirs`, rồi `tessdata` cạnh file chạy trên Windows); thấy file thì đọc (có trần
+  byte) và kiểm unicharset, không thấy ở đâu thì báo "không xác định được" (ngoại lệ Tesseract 4.x, duyệt
+  2026-10-30: bỏ qua kiểm). Hàm không ghi log; nơi gọi tự ghi (không ghi đường dẫn).
 """
 
 from __future__ import annotations
@@ -28,8 +34,9 @@ import subprocess
 import sys
 import threading
 import unicodedata
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import IO, Literal
 
 from .config import (
@@ -239,6 +246,77 @@ def missing_vietnamese_letters(traineddata: bytes) -> list[str]:
     unicharset = read_unicharset(traineddata)
     present = unicharset_entries(unicharset) if unicharset is not None else frozenset()
     return sorted(vietnamese_letters() - present)
+
+
+VIE_TRAINEDDATA = f"{TESSERACT_LANGUAGE}.traineddata"
+# Kết quả kiểm bộ chữ: "ok" (đủ chữ, có thể thiếu chữ được phép thiếu), "unreadable" (thấy file mà không đọc được:
+# lỗi đọc hoặc vượt trần byte), "missing_letters" (thiếu chữ ngoài danh sách cho phép), "unknown_tessdata" (không
+# thấy `vie.traineddata` ở thư mục nào đã dò ⇒ bỏ qua kiểm).
+CharsetStatus = Literal["ok", "unreadable", "missing_letters", "unknown_tessdata"]
+
+
+@dataclass(frozen=True)
+class CharsetCheck:
+    """Kết quả `check_vie_charset`: `missing` là mọi chữ thiếu, `outside` là phần nằm ngoài danh sách cho phép."""
+
+    status: CharsetStatus
+    missing: frozenset[str] = frozenset()
+    outside: frozenset[str] = frozenset()
+
+    @property
+    def usable(self) -> bool:
+        """Engine dùng được: đủ chữ, hoặc không xác định được tessdata (bỏ qua kiểm, ngoại lệ đã duyệt)."""
+        return self.status in ("ok", "unknown_tessdata")
+
+
+def tessdata_candidates(
+    settings: OcrSettings, listed_dir: str | None, default_dirs: Iterable[str], *, platform: str
+) -> list[str]:
+    """Thư mục dò `vie.traineddata`, theo thứ tự: `HOLOCRON_TESSDATA_DIR`, `TESSDATA_PREFIX`, thư mục ở dòng đầu
+    `--list-langs`, `default_dirs`, rồi (chỉ Windows, khi file chạy là đường dẫn tuyệt đối) `tessdata` cạnh file chạy."""
+    candidates = [settings.tessdata_dir, settings.tessdata_prefix, listed_dir, *default_dirs]
+    if platform == "win32" and os.path.isabs(settings.tesseract_cmd):
+        candidates.append(os.path.join(os.path.dirname(settings.tesseract_cmd), "tessdata"))
+    return [candidate for candidate in candidates if candidate]
+
+
+def find_vie_traineddata(
+    settings: OcrSettings, listed_dir: str | None, default_dirs: Iterable[str], *, platform: str = sys.platform
+) -> Path | None:
+    """`vie.traineddata` ở thư mục đầu tiên (theo `tessdata_candidates`) có file đó; không thư mục nào có ⇒ None."""
+    for directory in tessdata_candidates(settings, listed_dir, default_dirs, platform=platform):
+        path = Path(directory) / VIE_TRAINEDDATA
+        if os.path.exists(path):  # lỗi quyền hay đường dẫn hỏng ⇒ False, dò tiếp
+            return path
+    return None
+
+
+def read_bounded(path: Path, max_bytes: int) -> bytes | None:
+    """Đọc tối đa `max_bytes` byte của `path`; file lớn hơn hoặc lỗi đọc ⇒ None."""
+    try:
+        with path.open("rb") as handle:
+            data = handle.read(max_bytes + 1)
+    except OSError:
+        return None
+    return data if len(data) <= max_bytes else None
+
+
+def check_vie_charset(
+    settings: OcrSettings, listed_dir: str | None, config: PdfReaderConfig, *, platform: str = sys.platform
+) -> CharsetCheck:
+    """Kiểm unicharset của `vie.traineddata` (ADR-008 mục 14); dùng chung cho tiến trình cha và worker.
+
+    Chữ trong `config.ocr_charset_allowed_missing` được phép thiếu; file đọc tối đa `config.ocr_traineddata_max_bytes`.
+    """
+    path = find_vie_traineddata(settings, listed_dir, config.ocr_tessdata_default_dirs, platform=platform)
+    if path is None:
+        return CharsetCheck(status="unknown_tessdata")
+    data = read_bounded(path, config.ocr_traineddata_max_bytes)
+    if data is None:
+        return CharsetCheck(status="unreadable")
+    missing = frozenset(missing_vietnamese_letters(data))
+    outside = missing - config.ocr_charset_allowed_missing
+    return CharsetCheck(status="missing_letters" if outside else "ok", missing=missing, outside=outside)
 
 
 # --------------------------------------------------------------------------- #

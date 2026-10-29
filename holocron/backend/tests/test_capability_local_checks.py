@@ -53,6 +53,7 @@ from holocron_core.infrastructure.document_readers.tesseract import (
     RunStatus,
     TesseractEngine,
     listed_tessdata_dir,
+    read_bounded,
     vietnamese_letters,
 )
 from holocron_core.infrastructure.document_readers.tesseract import run_bounded as real_run_bounded
@@ -60,11 +61,16 @@ from holocron_core.infrastructure.llm_config import ConfigError, RuntimeConfig, 
 from holocron_core.routers import blueprints, runtime
 from holocron_core.routers.api import app
 from holocron_core.routers.deps import get_runtime_config
-from holocron_core.routers.documents import RUNTIME_STATE_ATTR
+from holocron_core.routers.documents import RUNTIME_STATE_ATTR, create_import_runtime
 from holocron_core.routers.runtime import (
+    LOCAL_CHECK_STATE_ATTR,
+    LOCAL_CHECK_THREAD_NAME,
     LOCAL_FAILURES_STATE_ATTR,
     LocalCapabilityCheck,
+    LocalCheckLauncher,
+    LocalCheckState,
     get_local_capability_check,
+    get_local_check_launcher,
 )
 from holocron_core.services import capability_checks
 from holocron_core.services.capabilities import IMPLEMENTED_CAPABILITIES, REASON_DETAILS_VI
@@ -73,7 +79,6 @@ from holocron_core.services.capability_checks import (
     check_local_capabilities,
     local_capability_failures,
     probe_tesseract,
-    read_bounded,
     secondary_ocr_loads,
 )
 
@@ -82,7 +87,8 @@ WITHOUT_SECONDARY = OcrSettings(tesseract_cmd="/opt/tesseract", tessdata_dir=Non
 READY = OcrProbeResult(engine_runs=True, vie_available=True)
 NO_BINARY = OcrProbeResult(engine_runs=False, vie_available=False)
 NO_VIE = OcrProbeResult(engine_runs=True, vie_available=False)
-CONFIG = PdfReaderConfig()
+# Không dò thư mục tessdata mặc định của bản cài: kết quả không phụ thuộc máy chạy test có Tesseract hay không.
+CONFIG = PdfReaderConfig(ocr_tessdata_default_dirs=())
 LLM_ENV = {
     "HOLOCRON_LLM_BASE_URL": "https://gateway.example.test/v1",
     "HOLOCRON_LLM_API_KEY": "sk-test-0123456789-must-never-leak",
@@ -402,7 +408,9 @@ def test_traineddata_over_the_byte_cap_means_language_missing(full_tessdata: Pat
 
 
 def test_unreadable_traineddata_means_language_missing(tmp_path: Path) -> None:
-    assert _probe_with(_settings_in(tmp_path / "khong-co")) == NO_VIE
+    # Thư mục đã đặt không có `vie.traineddata` và không thư mục nào khác có: không xác định được ⇒ bỏ qua kiểm
+    # (dò theo thứ tự, duyệt 2026-10-30; trước đây là thiếu `vie`).
+    assert _probe_with(_settings_in(tmp_path / "khong-co")) == READY
     garbage = tmp_path / "rac"
     garbage.mkdir()
     (garbage / "vie.traineddata").write_bytes(b"\x00" * 2048)
@@ -425,8 +433,9 @@ def test_tessdata_dir_falls_back_to_the_list_langs_header(full_tessdata: Path, t
     )
     assert probe_tesseract(_settings_in(None), CONFIG, runner) == READY
     assert [args[1] for args, _, _ in runner.calls] == ["--version", "--list-langs"]
-    # Dòng đầu có ghi thư mục mà thư mục đó không có `vie.traineddata` thì vẫn là thiếu `vie`.
-    assert _probe_with(_settings_in(None), header_dir=str(tmp_path / "khong-co")) == NO_VIE
+    # Dòng đầu có ghi thư mục mà thư mục đó không có `vie.traineddata`, không thư mục nào khác có: bỏ qua kiểm (dò
+    # theo thứ tự, duyệt 2026-10-30; trước đây là thiếu `vie`).
+    assert _probe_with(_settings_in(None), header_dir=str(tmp_path / "khong-co")) == READY
 
 
 def test_unknown_tessdata_dir_skips_the_charset_check(caplog: pytest.LogCaptureFixture) -> None:
@@ -451,8 +460,12 @@ def test_tesseract_4_list_langs_without_directory_is_available() -> None:
 def test_configured_tessdata_dir_wins_over_the_header(full_tessdata: Path, tmp_path: Path) -> None:
     empty = tmp_path / "empty"
     empty.mkdir()
-    assert _probe_with(_settings_in(full_tessdata), header_dir=str(empty)) == READY
-    assert _probe_with(_settings_in(empty), header_dir=str(full_tessdata)) == NO_VIE
+    lacking = _tessdata(tmp_path / "lacking", [letter for letter in ALL_LETTERS if letter != "ơ"])
+    assert _probe_with(_settings_in(full_tessdata), header_dir=str(lacking)) == READY
+    assert _probe_with(_settings_in(lacking), header_dir=str(full_tessdata)) == NO_VIE
+    # Thư mục đã đặt không có file thì dò tiếp tới thư mục ở dòng đầu `--list-langs` (duyệt 2026-10-30).
+    assert _probe_with(_settings_in(empty), header_dir=str(lacking)) == NO_VIE
+    assert _probe_with(_settings_in(empty), header_dir=str(full_tessdata)) == READY
 
 
 def test_listed_tessdata_dir_parses_the_header() -> None:
@@ -786,7 +799,8 @@ def test_secondary_unavailable_detail_is_the_approved_sentence() -> None:
         "Không nạp được lượt đọc thứ hai (RapidOCR) trên máy này. Bản rút gọn không kèm RapidOCR: dùng bản đầy đủ. "
         "Nếu đang dùng bản đầy đủ, cài lại ứng dụng."
     )
-    assert get_args(CapabilityReason)[-1] == "secondary_ocr_unavailable"
+    # `local_check_pending` (duyệt 2026-10-30) thêm sau, ở cuối.
+    assert get_args(CapabilityReason)[-2:] == ("secondary_ocr_unavailable", "local_check_pending")
 
 
 FAKE_MODELS = (rapidocr_adapter.DET_MODEL, rapidocr_adapter.REC_MODEL, rapidocr_adapter.CLS_MODEL)
@@ -1262,7 +1276,8 @@ def test_charset_warning_counts_only_letters_outside_the_allowed_list(
 
 
 def test_unreadable_traineddata_warning_has_no_path(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    missing = tmp_path / "khong-co-tessdata"
+    missing = tmp_path / "khong-doc-duoc"
+    (missing / "vie.traineddata").mkdir(parents=True)  # thấy file nhưng đọc lỗi (là thư mục)
     with caplog.at_level(logging.WARNING):
         assert _probe_with(_settings_in(missing)) == NO_VIE
     messages = [record.getMessage() for record in caplog.records]
@@ -1308,3 +1323,365 @@ def test_allowed_missing_error_lists_the_approved_letters() -> None:
     with pytest.raises(ValidationError) as caught:
         PdfReaderConfig(ocr_charset_allowed_missing=frozenset({"ơ"}))
     assert all(letter in str(caught.value) for letter in OCR_CHARSET_APPROVED_MISSING)
+
+
+# --------------------------------------------------------------------------- #
+# Kiểm nền sau khi mở cổng (duyệt 2026-10-30): `local_check_pending` tới khi kiểm xong
+# --------------------------------------------------------------------------- #
+
+PENDING_PAIR = {"ocr": (False, "local_check_pending"), "ocr_cross_check": (False, "local_check_pending")}
+PENDING_DETAIL = "Holocron đang kiểm tra OCR trên máy này. Đợi vài giây rồi xem lại."
+
+
+class HeldLauncher:
+    """Cách chạy nền giả: giữ lại việc kiểm, test tự chạy khi muốn (mô phỏng kiểm chưa xong)."""
+
+    def __init__(self) -> None:
+        self.works: list[Callable[[], None]] = []
+
+    def __call__(self, work: Callable[[], None]) -> None:
+        self.works.append(work)
+
+
+@pytest.fixture
+def install_launcher() -> Iterator[Callable[[LocalCheckLauncher], None]]:
+    """Thay cách chạy kiểm lúc khởi động của `app` (mặc định của test là chạy ngay, `conftest.py`)."""
+    previous = app.dependency_overrides[get_local_check_launcher]
+
+    def install(launcher: LocalCheckLauncher) -> None:
+        app.dependency_overrides[get_local_check_launcher] = lambda: launcher
+
+    yield install
+    app.dependency_overrides[get_local_check_launcher] = previous
+
+
+def _without_ocr(body: dict[str, object]) -> list[object]:
+    capabilities = body["capabilities"]
+    assert isinstance(capabilities, list)
+    return [item for item in capabilities if item["name"] not in ("ocr", "ocr_cross_check")]
+
+
+def test_runtime_reports_pending_until_the_background_check_finishes(
+    install_check: Callable[[LocalCapabilityCheck], None],
+    install_launcher: Callable[[LocalCheckLauncher], None],
+) -> None:
+    check = CountingCheck(WITH_SECONDARY, NO_VIE)
+    install_check(check)
+    held = HeldLauncher()
+    install_launcher(held)
+    with TestClient(app) as client:
+        pending = client.get("/v1/runtime").json()
+        assert _ocr_pair(pending) == PENDING_PAIR
+        details = {item["name"]: item["detail_vi"] for item in pending["capabilities"]}
+        assert details["ocr"] == details["ocr_cross_check"] == PENDING_DETAIL
+        assert check.calls == 0, "lifespan không chờ kiểm"
+        [work] = held.works
+        work()
+        for _ in range(3):
+            done = client.get("/v1/runtime").json()
+            assert _ocr_pair(done)["ocr"] == (False, "ocr_language_missing")
+        assert check.calls == 1
+        # Trạng thái đang kiểm chỉ đổi hai khả năng OCR.
+        assert _without_ocr(pending) == _without_ocr(done)
+
+
+def test_lifespan_runs_the_check_once_in_a_real_daemon_thread(
+    install_check: Callable[[LocalCapabilityCheck], None],
+    install_launcher: Callable[[LocalCheckLauncher], None],
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    threads: list[threading.Thread] = []
+
+    def slow_check(config: PdfReaderConfig, /) -> Failures:
+        threads.append(threading.current_thread())
+        entered.set()
+        release.wait(10)
+        return {"ocr_cross_check": "secondary_ocr_unavailable"}
+
+    install_check(slow_check)
+    install_launcher(runtime.launch_daemon_thread)
+    try:
+        with TestClient(app) as client:
+            assert entered.wait(5)
+            assert _ocr_pair(client.get("/v1/runtime").json()) == PENDING_PAIR
+            release.set()
+            state = getattr(app.state, LOCAL_CHECK_STATE_ATTR)
+            assert isinstance(state, LocalCheckState) and state.done.wait(5)
+            for _ in range(2):
+                assert _ocr_pair(client.get("/v1/runtime").json()) == {
+                    "ocr": (True, None),
+                    "ocr_cross_check": (False, "secondary_ocr_unavailable"),
+                }
+    finally:
+        release.set()
+    [thread] = threads
+    assert thread.daemon and thread.name == LOCAL_CHECK_THREAD_NAME and thread is not threading.main_thread()
+
+
+def test_background_check_error_is_logged_and_reported_as_engine_missing(
+    install_check: Callable[[LocalCapabilityCheck], None],
+    install_launcher: Callable[[LocalCheckLauncher], None],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def broken(config: PdfReaderConfig, /) -> Failures:
+        raise RuntimeError("C:/Users/secret-user/tessdata")
+
+    install_check(broken)
+    held = HeldLauncher()
+    install_launcher(held)
+    with caplog.at_level(logging.WARNING), TestClient(app) as client:
+        [work] = held.works
+        work()
+        state = getattr(app.state, LOCAL_CHECK_STATE_ATTR)
+        assert isinstance(state, LocalCheckState) and state.done.is_set()
+        assert _ocr_pair(client.get("/v1/runtime").json()) == {
+            "ocr": (False, "ocr_engine_missing"),
+            "ocr_cross_check": (False, "ocr_engine_missing"),
+        }
+    assert "RuntimeError" in caplog.text
+    assert "secret-user" not in caplog.text
+
+
+class UnexpectedCheckError(Exception):
+    pass
+
+
+def test_background_check_unexpected_error_still_leaves_the_pending_state(
+    install_check: Callable[[LocalCapabilityCheck], None],
+    install_launcher: Callable[[LocalCheckLauncher], None],
+) -> None:
+    """Lỗi ngoài `CHECK_ERRORS` lan ra khỏi luồng nền nhưng kết quả vẫn là `ocr_engine_missing`, không treo pending."""
+
+    def broken(config: PdfReaderConfig, /) -> Failures:
+        raise UnexpectedCheckError()
+
+    install_check(broken)
+    held = HeldLauncher()
+    install_launcher(held)
+    with TestClient(app) as client:
+        [work] = held.works
+        with pytest.raises(UnexpectedCheckError):
+            work()
+        assert _ocr_pair(client.get("/v1/runtime").json())["ocr"] == (False, "ocr_engine_missing")
+
+
+def test_check_of_a_previous_startup_never_overwrites_the_next(
+    install_check: Callable[[LocalCapabilityCheck], None],
+    install_launcher: Callable[[LocalCheckLauncher], None],
+) -> None:
+    held = HeldLauncher()
+    install_launcher(held)
+    install_check(lambda _config: {"ocr": "ocr_language_missing", "ocr_cross_check": "ocr_language_missing"})
+    with TestClient(app):
+        pass  # tắt app khi lần kiểm thứ nhất chưa chạy xong
+    install_check(lambda _config: {})
+    with TestClient(app) as client:
+        stale, fresh = held.works
+        stale()
+        assert _ocr_pair(client.get("/v1/runtime").json()) == PENDING_PAIR
+        fresh()
+        assert _ocr_pair(client.get("/v1/runtime").json()) == {"ocr": (True, None), "ocr_cross_check": (True, None)}
+
+
+def test_local_check_lock_lives_in_app_state_not_in_the_module() -> None:
+    lock_type = type(threading.Lock())
+    assert not any(isinstance(value, lock_type) for value in vars(runtime).values())
+    state = getattr(app.state, LOCAL_CHECK_STATE_ATTR)
+    assert isinstance(state, LocalCheckState) and isinstance(state.lock, lock_type)
+
+
+def test_lazy_check_uses_the_reader_config_of_an_attached_import_runtime(
+    install_check: Callable[[LocalCapabilityCheck], None],
+) -> None:
+    """App chạy không qua `lifespan` mà đã có bộ nhập tài liệu: kiểm lười dùng `reader_config` của bộ nhập đó."""
+    check = CountingCheck(WITH_SECONDARY, READY)
+    install_check(check)
+    config = PdfReaderConfig(ocr_probe_timeout_s=4.5)
+    import_runtime = create_import_runtime(None, config)
+    setattr(app.state, RUNTIME_STATE_ATTR, import_runtime)
+    try:
+        TestClient(app).get("/v1/runtime")
+    finally:
+        delattr(app.state, RUNTIME_STATE_ATTR)
+        import_runtime.close()
+    assert len(check.configs) == 1 and check.configs[0] is config
+
+
+# --------------------------------------------------------------------------- #
+# Kiểm bổ sung (đột biến còn sống ở vòng review 3)
+# --------------------------------------------------------------------------- #
+
+
+def test_error_name_accepts_64_characters_and_rejects_65() -> None:
+    longest = type("E" * 64, (Exception,), {})
+    too_long = type("E" * 65, (Exception,), {})
+    assert secondary_probe.error_name(longest()) == "E" * 64
+    assert secondary_probe.error_name(too_long()) == secondary_probe.UNNAMED_ERROR
+    assert SecondaryProbeReport(loaded=False, error="E" * 64).error == "E" * 64
+    with pytest.raises(ValidationError):
+        SecondaryProbeReport(loaded=False, error="E" * 65)
+
+
+@pytest.mark.parametrize(
+    "request_line",
+    [
+        '{"mem_bytes": 0, "cpu_seconds": 9}\n',
+        '{"mem_bytes": 1073741824, "cpu_seconds": 0}\n',
+        '{"mem_bytes": 1073741824, "cpu_seconds": 9, "path": "/x"}\n',
+    ],
+    ids=["mem-zero", "cpu-zero", "extra-field"],
+)
+def test_run_probe_rejects_out_of_range_or_extra_fields_before_limits(request_line: str) -> None:
+    recorder = ProbeRecorder(_raising(AssertionError("không được nạp")))
+    recorder.run(request_line)
+    assert recorder.events == ["emit"]
+    assert recorder.reports == [SecondaryProbeReport(loaded=False, error=secondary_probe.INVALID_REQUEST)]
+
+
+def test_run_probe_accepts_the_smallest_limits() -> None:
+    recorder = ProbeRecorder(_outcome(BACKEND, None))
+    recorder.run('{"mem_bytes": 1, "cpu_seconds": 1}\n')
+    assert recorder.events == [("limit", 1, 1), "load", "emit"]
+
+
+def test_parse_report_rejects_stdout_with_a_non_utf8_line_before_the_report() -> None:
+    assert parse_report(b"\xff\xfe rac\n" + _report_line(LOADED)) == SecondaryProbeReport(
+        loaded=False, error=secondary_probe.INVALID_REPORT
+    )
+
+
+def test_parse_report_ignores_the_prefix_in_the_middle_of_a_line() -> None:
+    failed = SecondaryProbeReport(loaded=False, error="ImportError")
+    assert parse_report(_report_line(LOADED) + b"rac " + _report_line(failed)) == LOADED
+    assert parse_report(b"rac " + _report_line(LOADED)) == SecondaryProbeReport(
+        loaded=False, error=secondary_probe.INVALID_REPORT
+    )
+
+
+FAKE_MODEL_FAILS_THEN_HARD_EXITS = """
+import atexit
+import os
+
+# Thoát cứng khi tiến trình con kết thúc: bộ đệm stdout không được Python xả hộ.
+atexit.register(os._exit, 7)
+
+
+class ModelLoadFailure(Exception):
+    pass
+
+
+class RapidOCR:
+    def __init__(self, params):
+        raise ModelLoadFailure("/home/secret-user/models/PP-OCRv6_det_small.onnx")
+"""
+
+
+def test_child_probe_flushes_the_report_before_a_hard_exit(tmp_path: Path) -> None:
+    report = _child_probe(_fake_rapidocr(tmp_path, FAKE_MODEL_FAILS_THEN_HARD_EXITS))
+    assert report == SecondaryProbeReport(loaded=False, error="ModelLoadFailure")
+
+
+def test_secondary_prober_receives_the_given_reader_config() -> None:
+    seen: list[PdfReaderConfig] = []
+
+    def probe(config: PdfReaderConfig, /) -> SecondaryProbeReport:
+        seen.append(config)
+        return LOADED
+
+    config = PdfReaderConfig(worker_startup_timeout_s=7.5)
+    assert check_local_capabilities(lambda: WITH_SECONDARY, _probe_returning(READY), probe, config) == {}
+    assert len(seen) == 1 and seen[0] is config
+
+
+def test_list_langs_failed_with_a_listing_is_language_missing() -> None:
+    failed_with_listing = RunResult(status="failed", stdout=LANGS_WITH_VIE.stdout)
+    assert _probe_status_with(failed_with_listing).status == "language_missing"
+
+
+def test_list_langs_with_a_non_utf8_line_elsewhere_is_language_missing() -> None:
+    listing = RunResult(status="ok", stdout=b'List of available languages in "/x/" (2):\nvie\n\xff\xfe\n')
+    assert _probe_status_with(listing).status == "language_missing"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="tín hiệu POSIX")
+def test_run_bounded_reports_a_child_killed_by_a_signal_as_failed() -> None:
+    code = "import os, signal\nos.kill(os.getpid(), signal.SIGTERM)\n"
+    result = real_run_bounded([sys.executable, "-c", code], b"", 10.0, 1024)
+    assert result.status == "failed"
+
+
+FAKE_CHECKS_JOB_OBJECT = """
+import ctypes
+from ctypes import wintypes
+
+EXPECTED_MEMORY_LIMIT = {mem_bytes}
+
+
+class LimitsNotApplied(Exception):
+    pass
+
+
+class _Basic(ctypes.Structure):
+    _fields_ = [
+        ("PerProcessUserTimeLimit", ctypes.c_int64),
+        ("PerJobUserTimeLimit", ctypes.c_int64),
+        ("LimitFlags", wintypes.DWORD),
+        ("MinimumWorkingSetSize", ctypes.c_size_t),
+        ("MaximumWorkingSetSize", ctypes.c_size_t),
+        ("ActiveProcessLimit", wintypes.DWORD),
+        ("Affinity", ctypes.c_size_t),
+        ("PriorityClass", wintypes.DWORD),
+        ("SchedulingClass", wintypes.DWORD),
+    ]
+
+
+class _Io(ctypes.Structure):
+    _fields_ = [(n, ctypes.c_uint64) for n in ("R", "W", "O", "RB", "WB", "OB")]
+
+
+class _Extended(ctypes.Structure):
+    _fields_ = [
+        ("Basic", _Basic),
+        ("Io", _Io),
+        ("ProcessMemoryLimit", ctypes.c_size_t),
+        ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+        ("PeakJobMemoryUsed", ctypes.c_size_t),
+    ]
+
+
+def _memory_limit_of_own_job():
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.IsProcessInJob.argtypes = [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
+    in_job = wintypes.BOOL()
+    if not kernel32.IsProcessInJob(kernel32.GetCurrentProcess(), None, ctypes.byref(in_job)) or not in_job.value:
+        return None
+    kernel32.QueryInformationJobObject.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p
+    ]
+    info = _Extended()
+    if not kernel32.QueryInformationJobObject(None, 9, ctypes.byref(info), ctypes.sizeof(info), None):
+        return None
+    if not info.Basic.LimitFlags & 0x100:
+        return None
+    return info.ProcessMemoryLimit
+
+
+class RapidOCR:
+    def __init__(self, params):
+        if _memory_limit_of_own_job() != EXPECTED_MEMORY_LIMIT:
+            raise LimitsNotApplied()
+
+    def __call__(self, image):
+        return None
+"""
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Job Object chỉ có trên Windows")
+def test_child_probe_runs_inside_its_own_job_object_on_windows(tmp_path: Path) -> None:
+    """Tiến trình con thăm dò nằm trong Job Object (IsProcessInJob) có đúng giới hạn RAM đã yêu cầu, trước khi nạp."""
+    config = PdfReaderConfig(worker_mem_bytes=768 * 1024 * 1024)
+    source = FAKE_CHECKS_JOB_OBJECT.replace("{mem_bytes}", str(config.worker_mem_bytes))
+    assert _child_probe(_fake_rapidocr(tmp_path, source), config) == LOADED

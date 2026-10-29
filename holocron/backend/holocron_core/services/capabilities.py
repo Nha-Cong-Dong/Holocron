@@ -8,8 +8,8 @@ https…) được `routers/deps.get_runtime_config` nạp như chưa cấu hìn
 (`routers/runtime.py`, trường `capabilities`).
 
 Thứ tự xét lý do cho mỗi khả năng: chưa có code trong bản đang chạy (`not_implemented`) → thiếu cấu hình LLM/VLM →
-lỗi kiểm cục bộ do tầng gọi cấp (binary Tesseract, gói `vie`, lượt đọc thứ hai tắt hoặc không nạp được; `services/capability_checks.py`)
-→ khả dụng.
+lỗi kiểm cục bộ do tầng gọi cấp (binary Tesseract, gói `vie`, lượt đọc thứ hai tắt hoặc không nạp được; `services/capability_checks.py`;
+hoặc `local_check_pending` khi lần kiểm chạy nền sau khi mở cổng chưa xong) → khả dụng.
 """
 
 from __future__ import annotations
@@ -51,6 +51,7 @@ REASON_DETAILS_VI: dict[CapabilityReason, str] = {
         "Không nạp được lượt đọc thứ hai (RapidOCR) trên máy này. Bản rút gọn không kèm RapidOCR: dùng bản đầy đủ. "
         "Nếu đang dùng bản đầy đủ, cài lại ứng dụng."
     ),
+    "local_check_pending": "Holocron đang kiểm tra OCR trên máy này. Đợi vài giây rồi xem lại.",
 }
 
 

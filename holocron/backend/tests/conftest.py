@@ -24,8 +24,10 @@ from holocron_core.routers.access import DEFAULT_ALLOWED_HOSTS, ProviderOverride
 from holocron_core.routers.api import app
 from holocron_core.routers.runtime import (
     LocalCapabilityCheck,
+    LocalCheckLauncher,
     clear_local_capability_check,
     get_local_capability_check,
+    get_local_check_launcher,
 )
 from holocron_core.services.capability_checks import OcrProbeResult
 
@@ -170,6 +172,15 @@ def _fake_secondary_runner(
     return LOADED_REPORT
 
 
+def run_inline(work: Callable[[], None]) -> None:
+    """Cách chạy kiểm lúc khởi động cho test: chạy ngay trong `lifespan`, nên kết quả có sẵn trước request đầu tiên."""
+    work()
+
+
+def _inline_launcher() -> LocalCheckLauncher:
+    return run_inline
+
+
 @pytest.fixture(autouse=True)
 def fake_local_capability_check() -> Iterator[None]:
     """Mọi `TestClient` dùng bộ kiểm cục bộ giả, không chạy binary Tesseract hay đọc cấu hình OCR của máy chạy test.
@@ -180,10 +191,13 @@ def fake_local_capability_check() -> Iterator[None]:
     (tầng thấp nhất, `secondary_probe.run_bounded`) cũng là bản giả báo "nạp được" (không dựng tiến trình, không
     nạp model thật). Kết quả kiểm lưu ở `app.state` (một lần mỗi lần khởi động); bỏ trước và sau mỗi test để test sau không
     thấy kết quả của test trước. Test cần kết quả khác thì đặt override riêng cho `get_local_capability_check`.
+    Kiểm lúc khởi động của `app` chạy ngay trong `lifespan` (override `get_local_check_launcher`) thay vì luồng nền,
+    để test không thấy trạng thái `local_check_pending` thoáng qua; test của kiểm nền tự đặt override khác.
     """
     clear_local_capability_check(app)
     with pytest.MonkeyPatch.context() as patch:
         patch.setitem(app.dependency_overrides, get_local_capability_check, _fake_local_capability_check)
+        patch.setitem(app.dependency_overrides, get_local_check_launcher, _inline_launcher)
         patch.setattr(runtime, "load_ocr_settings", _fake_ocr_settings)
         patch.setattr(runtime, "probe_tesseract", _fake_probe)
         patch.setattr(secondary_probe, "run_bounded", _fake_secondary_runner)

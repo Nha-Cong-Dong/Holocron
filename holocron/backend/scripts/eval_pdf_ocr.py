@@ -7,8 +7,11 @@ Chạy NGOÀI pytest, không chạy trong CI hay pre-commit; cần Tesseract `vi
     python -m scripts.eval_pdf_ocr <thư mục PDF> <thư mục kết quả> [--max-pages 10]
 
 Với mỗi trang PDF mà app dùng lớp chữ (`text_layer.ocr_reason` là None) và lớp chữ có ít nhất `--min-truth-chars`
-ký tự không trắng (mặc định 170, giữ đúng tập trang của công thức chọn tầng cũ `min(1, non_ws/200) ≥ 0.85` để số liệu
-so được với các lần đo trước): lớp chữ làm đáp án; trang được render 300 DPI, làm mờ và thêm nhiễu (scan giả lập), rồi
+ký tự không trắng (mặc định 170, để tập trang gần với tập của công thức chọn tầng cũ `min(1, non_ws/200) × clean ×
+valid ≥ 0.85` và số liệu so được với các lần đo trước. Hai tập chỉ trùng nhau trên trang có lớp chữ sạch hoàn toàn
+(`clean × valid = 1`, khi đó công thức cũ cũng đòi `non_ws ≥ 170`); trang có `clean × valid` trong [0.85, 1) và
+`170 ≤ non_ws < 170 / (clean × valid)` nay được tính thêm, cũng như trang mà heuristic TCVN3/VNI sửa ngày
+2026-10-29 không còn bắt nhầm (ký hiệu ở mép từ, từ nước ngoài có chữ Latin-1)): lớp chữ làm đáp án; trang được render 300 DPI, làm mờ và thêm nhiễu (scan giả lập), rồi
 OCR bằng đúng đường của worker (Tesseract qua stdin/stdout, RapidOCR chỉ lấy token số và mã) và dựng
 `PageExtraction`. Chỉ số: CER sau chuẩn hoá NFC (gộp khoảng trắng), tỉ lệ chữ số đúng, `ocr_score`,
 `coverage_ratio`, kết quả đối chiếu chéo, lý do xem lại và thời gian.

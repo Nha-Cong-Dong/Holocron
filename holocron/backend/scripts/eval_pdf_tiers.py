@@ -14,7 +14,9 @@ riêng bảng "lớp chữ ít + ảnh phủ lớn" (lớp chữ sạch, có ch�
 
 Kết quả chỉ gồm số liệu (không chép văn bản tài liệu), ghi ra `results.json` và `results.md`; script từ chối ghi
 vào trong repo. Script đọc PDF ngay trong tiến trình này (không qua worker có giới hạn), nên chỉ dùng cho tài liệu
-đánh giá của chính người chạy.
+đánh giá của chính người chạy; vẫn áp trần kích thước và số trang của app (`max_bytes`, `max_pages`), và PDF hỏng chỉ
+làm bỏ qua file đó (ghi vào danh sách file bỏ qua). Cột "cũ" dùng `clean`, `valid` và `image_area_ratio` của code
+hiện tại (heuristic TCVN3/VNI và diện tích hợp của ảnh, sửa 2026-10-29), chỉ thay luật chọn tầng.
 """
 
 from __future__ import annotations
@@ -168,17 +170,38 @@ def markdown(reports: list[DirReport], config: PdfReaderConfig, max_chars: int, 
     return "\n".join(lines) + "\n"
 
 
+def evaluate_file(backend: PdfiumBackend, path: Path, config: PdfReaderConfig) -> list[PageRow] | str:
+    """Các dòng của một PDF, hoặc lý do bỏ qua file.
+
+    Áp cùng trần của app (`config.max_bytes`, `config.max_pages`) trước khi đọc. PDF hỏng giữa chừng (PDFium báo
+    lỗi, dữ liệu sai kiểu, trang vượt giới hạn của protocol) chỉ làm bỏ qua file đó, không dừng cả lượt đo.
+    """
+    size = path.stat().st_size
+    if size > config.max_bytes:
+        return f"TOO_LARGE: {size} > {config.max_bytes} byte"
+    document = backend.open(path.read_bytes())
+    if isinstance(document, str):
+        return document
+    try:
+        with document:
+            count = document.page_count()
+            if count > config.max_pages:
+                return f"TOO_MANY_PAGES: {count} > {config.max_pages} trang"
+            return [page_row(path.name, document.read_page(index), config) for index in range(count)]
+    # `PdfiumError` và `PdfiumDataError` là `RuntimeError`; `ValidationError` của pydantic là `ValueError`.
+    except (RuntimeError, ValueError, OSError) as exc:
+        return f"READ_FAILED: {type(exc).__name__}"
+
+
 def evaluate_dir(backend: PdfiumBackend, pdf_dir: Path, config: PdfReaderConfig) -> DirReport:
     report = DirReport(pdf_dir=str(pdf_dir))
     for path in sorted(pdf_dir.glob("*.pdf")):
-        document = backend.open(path.read_bytes())
-        if isinstance(document, str):
-            report.skipped.append({"file": path.name, "reason": document})
+        rows = evaluate_file(backend, path, config)
+        if isinstance(rows, str):
+            report.skipped.append({"file": path.name, "reason": rows})
             continue
         report.files.append(path.name)
-        with document:
-            for index in range(document.page_count()):
-                report.pages.append(page_row(path.name, document.read_page(index), config))
+        report.pages.extend(rows)
     return report
 
 

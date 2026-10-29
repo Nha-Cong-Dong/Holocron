@@ -225,6 +225,61 @@ export function renameKeyAction(key: string, inInput: boolean): "cancel" | "save
   return key === "Enter" && inInput ? "save" : null;
 }
 
+/** Nơi focus tới khi khung sửa tên đóng vì khái niệm vừa ghi xong; `null` ⇒ không dời focus. */
+export type RenameCloseFocus = "edit" | "card" | null;
+
+/**
+ * Khung sửa tên đóng vì khái niệm vừa ghi xong: chỉ dời focus khi focus đang nằm trong khung (bấm "Nhận tất cả" hay
+ * thao tác ở chỗ khác thì không kéo focus về). Thẻ đang rời đi (chế độ chuyển động thường) ⇒ chính thẻ, để focus
+ * không rơi về trang trong lúc chờ danh sách mới; thẻ còn ở lại ⇒ nút "Sửa"/"Sửa tên" (đọc kèm lý do khoá).
+ */
+export function renameCloseFocus(focusInFrame: boolean, leaving: boolean): RenameCloseFocus {
+  if (!focusInFrame) return null;
+  return leaving ? "card" : "edit";
+}
+
+/** Lý do "Nhận tất cả" bỏ qua một thẻ đang mở khung sửa tên. */
+export const ACCEPT_ALL_EDITING_VI = "Khái niệm đang sửa tên chưa được nhận. Bấm Lưu và nhận, hoặc Huỷ rồi nhận lại.";
+
+/**
+ * Ứng viên "Nhận tất cả" của một thẻ đề xuất: thẻ đang mở khung sửa tên bị bỏ qua kèm lý do (không nhận hộ dưới tên
+ * cũ, nháp đang gõ không mất); thẻ khác theo nút Nhận của thẻ.
+ */
+export function bulkCandidateOf(
+  pair: Pick<ConceptPair, "pair_id" | "version">,
+  confirm: ActionGate,
+  editing: boolean,
+): BulkCandidate {
+  if (editing) return { pairId: pair.pair_id, version: pair.version, allowed: false, reason: ACCEPT_ALL_EDITING_VI };
+  return {
+    pairId: pair.pair_id,
+    version: pair.version,
+    allowed: confirm.shown && confirm.enabled,
+    reason: confirm.shown && !confirm.enabled ? confirm.reason : null,
+  };
+}
+
+/** Thông báo sau khi bấm "Nhận tất cả" mà có thẻ bị bỏ qua vì đang sửa tên; không có ⇒ `null`. */
+export function editingSkippedToast(candidates: readonly BulkCandidate[]): string | null {
+  return candidates.some((candidate) => candidate.reason === ACCEPT_ALL_EDITING_VI) ? ACCEPT_ALL_EDITING_VI : null;
+}
+
+/**
+ * Câu lỗi trên một dòng "Đã nhận"/"Đã bỏ". Khung sửa tên đóng: dòng có nút "Thử lại" nên giữ nguyên câu. Khung đang mở
+ * (đổi tên lỗi, nháp còn giữ): không có nút "Thử lại", nút "Lưu" của khung gửi lại ⇒ "bấm Thử lại" thành "bấm Lưu".
+ */
+export function rowErrorText(text: string, editing: boolean): string {
+  return editing ? text.replace(/([Bb]ấm) Thử lại/g, "$1 Lưu") : text;
+}
+
+/**
+ * Câu khoá chỉ nhắc "Bấm Thử lại ở dòng báo" khi dòng báo tải lại lỗi đang hiện VÀ không có lượt tải lại nào đang chạy
+ * (lúc đang tải lại, nút đó đang bận).
+ */
+export function reloadRetryHinted(note: ReloadNote | null, reloading: boolean): boolean {
+  return note !== null && !reloading;
+}
+
 // ------------------------------------------------------------------------------------ sau một thao tác
 
 /** Nơi đặt focus sau khi danh sách tải lại: một khái niệm, tiêu đề khối "Đề xuất" hoặc tiêu đề cột "Đã nhận". */

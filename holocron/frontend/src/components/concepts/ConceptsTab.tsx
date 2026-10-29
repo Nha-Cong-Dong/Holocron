@@ -11,6 +11,7 @@ import { api } from "@/lib/api";
 import {
   acceptAllGate,
   type BulkCandidate,
+  bulkCandidateOf,
   bulkMessageOf,
   bulkReducer,
   type ChangeNote,
@@ -20,6 +21,7 @@ import {
   conceptErrorText,
   conceptsScreen,
   conceptView,
+  editingSkippedToast,
   failedReloadEffects,
   focusAfterRemoval,
   groupPairs,
@@ -31,6 +33,7 @@ import {
   type ReloadNote,
   reloadedFocus,
   reloadNoteText,
+  reloadRetryHinted,
   screenErrorText,
   sendQueued,
   staleReducer,
@@ -51,7 +54,7 @@ import type { ConceptPair } from "@/types/holocron";
 import { type AcceptedEntry, AcceptedList } from "./AcceptedList";
 import styles from "./ConceptsTab.module.css";
 import { PassagePanel } from "./PassagePanel";
-import type { CardLeaving } from "./ProposalCard";
+import { type CardLeaving, EditingConceptsContext } from "./ProposalCard";
 import { type ProposalEntry, ProposalList } from "./ProposalList";
 
 /**
@@ -307,6 +310,12 @@ export function ConceptsTab({
   const [cardErrors, setCardErrors] = useState<ReadonlyMap<string, CardError>>(new Map());
   const [bulk, dispatchBulk] = useReducer(bulkReducer, IDLE_BULK);
   const bulkActive = useRef(false);
+  // Thẻ đề xuất đang mở khung sửa tên (thẻ tự báo qua `EditingConceptsContext`): "Nhận tất cả" bỏ qua các thẻ này.
+  const editingIds = useRef(new Set<string>());
+  const reportEditing = useCallback((pairId: string, editing: boolean) => {
+    if (editing) editingIds.current.add(pairId);
+    else editingIds.current.delete(pairId);
+  }, []);
 
   function setBusy(pairId: string, on: boolean): void {
     setBusyIds((previous) => {
@@ -331,10 +340,13 @@ export function ConceptsTab({
   const mapStatus = mapState.status;
   const map = mapState.status === "loading" ? EMPTY_MAP : mapState.map;
 
+  // Câu khoá chỉ nhắc "Bấm Thử lại ở dòng báo" khi dòng báo đang hiện và nút đó không đang tải lại.
+  const retryHinted = reloadRetryHinted(reloadNote, reloading);
+
   /** Cách hiện một thẻ đề xuất: thẻ đã ghi mà chờ cập nhật danh sách thì khoá mọi nút kèm lý do (như `toAccepted`). */
   function proposalView(pair: ConceptPair): ConceptView {
     const view = conceptView(pair, mapStatus, map);
-    return stale.has(pair.pair_id) ? staleView(view, reloadNote !== null) : view;
+    return stale.has(pair.pair_id) ? staleView(view, retryHinted) : view;
   }
 
   function retryReload(): void {
@@ -393,18 +405,12 @@ export function ConceptsTab({
 
   function acceptAll(): void {
     if (bulkActive.current || bulk.running || !allGate.enabled) return;
+    // Thẻ đang mở khung sửa tên bị bỏ qua kèm lý do: không nhận hộ dưới tên cũ, nháp đang gõ không mất.
     const candidates: BulkCandidate[] = groups.proposed
       .filter((pair) => !busyIds.has(pair.pair_id))
-      .map((pair) => {
-        const gate = proposalView(pair).actions.confirm;
-        const allowed = gate.shown && gate.enabled;
-        return {
-          pairId: pair.pair_id,
-          version: pair.version,
-          allowed,
-          reason: gate.shown && !gate.enabled ? gate.reason : null,
-        };
-      });
+      .map((pair) => bulkCandidateOf(pair, proposalView(pair).actions.confirm, editingIds.current.has(pair.pair_id)));
+    const skippedText = editingSkippedToast(candidates);
+    if (skippedText !== null) toastRef.current.show(skippedText);
     const started = bulkReducer(bulk, { type: "start", candidates });
     dispatchBulk({ type: "start", candidates });
     if (!started.running) return;
@@ -487,7 +493,7 @@ export function ConceptsTab({
   });
   const toAccepted = (pair: ConceptPair): AcceptedEntry => {
     const base = conceptView(pair, mapStatus, map);
-    const view = stale.has(pair.pair_id) ? staleView(base, reloadNote !== null) : base;
+    const view = stale.has(pair.pair_id) ? staleView(base, retryHinted) : base;
     return {
       pair,
       view,
@@ -499,7 +505,7 @@ export function ConceptsTab({
   };
   const allGate = acceptAllGate(
     proposalEntries.map((entry) => ({ view: entry.view, busy: entry.busy, stale: stale.has(entry.pair.pair_id) })),
-    reloadNote !== null,
+    retryHinted,
   );
   const entrances = visibleConceptEntrances({ autoProposalAvailable: AUTO_PROPOSAL_AVAILABLE });
   const searchAvailable = !isCapabilityBlocked(freshRuntime(runtime), "vault_search");
@@ -528,17 +534,19 @@ export function ConceptsTab({
       <div className={styles.grid}>
         <div className={styles.main}>
           {proposalEntries.length > 0 && (
-            <ProposalList
-              entries={proposalEntries}
-              headingRef={proposalsHeading}
-              bulkRunning={bulk.running}
-              acceptAllReason={!bulk.running && !allGate.enabled ? allGate.reason : null}
-              onAcceptAll={acceptAll}
-              onAccept={(pair, term) => void run(pair, "accept", term)}
-              onReject={(pair) => void run(pair, "reject", null)}
-              onRetry={retry}
-              onLeft={(pair) => finishLeave(pair.pair_id)}
-            />
+            <EditingConceptsContext value={reportEditing}>
+              <ProposalList
+                entries={proposalEntries}
+                headingRef={proposalsHeading}
+                bulkRunning={bulk.running}
+                acceptAllReason={!bulk.running && !allGate.enabled ? allGate.reason : null}
+                onAcceptAll={acceptAll}
+                onAccept={(pair, term) => void run(pair, "accept", term)}
+                onReject={(pair) => void run(pair, "reject", null)}
+                onRetry={retry}
+                onLeft={(pair) => finishLeave(pair.pair_id)}
+              />
+            </EditingConceptsContext>
           )}
           {proposalEntries.length === 0 && groups.confirmed.length > 0 && (
             <div ref={inviteRef} className={styles.invite} tabIndex={-1}>
@@ -570,6 +578,7 @@ export function ConceptsTab({
           onRename={(pair, term) => void run(pair, "rename", term)}
           onReject={(pair) => void run(pair, "reject", null)}
           onRestore={(pair) => void run(pair, "restore", null)}
+          onRetry={retry}
         />
       </div>
     </div>

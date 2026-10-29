@@ -1,10 +1,20 @@
 "use client";
 
-import { type AnimationEvent, type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
+import {
+  type AnimationEvent,
+  createContext,
+  type KeyboardEvent,
+  type Ref,
+  useContext,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 
 import { VerbatimQuote } from "@/components/common/VerbatimQuote";
 import { Button, Field } from "@/components/ui";
-import { type ConceptView, renameKeyAction } from "@/lib/concept-board";
+import { type ConceptView, renameCloseFocus, renameKeyAction } from "@/lib/concept-board";
 import { type ActionGate, pairCitation, termLengthOk, termSegments } from "@/lib/pairs";
 import { pageRangeLabel } from "@/lib/vault";
 import type { ConceptPair } from "@/types/holocron";
@@ -20,6 +30,12 @@ export const CONCEPT_EDIT_ATTR = "data-concept-edit";
 export const RENAME_HINT_VI = "Muốn đổi đoạn trích thì bỏ khái niệm này rồi tạo lại.";
 
 export type CardLeaving = "accept" | "reject" | null;
+
+/**
+ * Thẻ đề xuất báo lên tab Khái niệm khi mở/đóng khung sửa tên (`pairId`, `editing`), để "Nhận tất cả" bỏ qua thẻ đang
+ * sửa thay vì nhận hộ dưới tên cũ. Không có nơi nhận (`null`) thì thẻ không báo.
+ */
+export const EditingConceptsContext = createContext<((pairId: string, editing: boolean) => void) | null>(null);
 
 interface ProposalCardProps {
   pair: ConceptPair;
@@ -77,13 +93,23 @@ interface RenameFormProps {
   lockedReasonId: string | null;
   onSave: (term: string) => void;
   onCancel: () => void;
+  /** Khung (`fieldset`): để biết focus còn nằm trong khung khi khung phải đóng. */
+  frameRef?: Ref<HTMLFieldSetElement>;
 }
 
 /**
  * Khung sửa tên tại chỗ: Enter ở ô nhập lưu, Esc ở bất kỳ đâu trong khung huỷ (focus trở về nút đã mở khung). Nút lưu
  * khoá (`lockedReasonId`) thì vẫn nhận focus, đọc kèm lý do, và cả nút lẫn Enter đều không lưu.
  */
-export function RenameForm({ initial, submitLabel, busy, lockedReasonId, onSave, onCancel }: RenameFormProps) {
+export function RenameForm({
+  initial,
+  submitLabel,
+  busy,
+  lockedReasonId,
+  onSave,
+  onCancel,
+  frameRef,
+}: RenameFormProps) {
   const id = useId();
   const [draft, setDraft] = useState(initial);
   const [error, setError] = useState<string | undefined>(undefined);
@@ -114,7 +140,7 @@ export function RenameForm({ initial, submitLabel, busy, lockedReasonId, onSave,
   }
 
   return (
-    <fieldset className={styles.renameFrame} aria-label="Sửa tên khái niệm" onKeyDown={onKeyDown}>
+    <fieldset ref={frameRef} className={styles.renameFrame} aria-label="Sửa tên khái niệm" onKeyDown={onKeyDown}>
       <Field
         id={`${id}-term`}
         label="Tên khái niệm"
@@ -161,19 +187,32 @@ export function ProposalCard({
 }: ProposalCardProps) {
   const ids = useId();
   const [editing, setEditing] = useState(false);
-  const returnFocus = useRef(false);
+  const returnFocus = useRef<"edit" | "card" | null>(null);
   const editRef = useRef<HTMLButtonElement>(null);
+  const cardRef = useRef<HTMLElement>(null);
+  const frameRef = useRef<HTMLFieldSetElement>(null);
+  const reportEditing = useContext(EditingConceptsContext);
 
   useEffect(() => {
-    if (editing || !returnFocus.current) return;
-    returnFocus.current = false;
-    editRef.current?.focus();
+    if (editing || returnFocus.current === null) return;
+    const target = returnFocus.current;
+    returnFocus.current = null;
+    (target === "card" ? cardRef.current : editRef.current)?.focus();
   }, [editing]);
 
-  // "Lưu và nhận" ghi xong thì thẻ khoá chờ ngay: đóng khung sửa, focus về "Sửa" (đọc kèm lý do khoá).
+  // Báo tab Khái niệm thẻ này đang mở khung sửa tên, để "Nhận tất cả" bỏ qua thẻ (nháp đang gõ không mất).
+  useEffect(() => {
+    if (!editing || reportEditing === null) return;
+    reportEditing(pair.pair_id, true);
+    return () => reportEditing(pair.pair_id, false);
+  }, [editing, reportEditing, pair.pair_id]);
+
+  // "Lưu và nhận" ghi xong thì thẻ khoá chờ ngay: đóng khung sửa. Focus chỉ dời khi đang nằm trong khung: thẻ đang rời
+  // đi ⇒ chính thẻ (không rơi về trang), thẻ ở lại (giảm chuyển động) ⇒ "Sửa" (đọc kèm lý do khoá).
   useEffect(() => {
     if (!view.stale || !editing) return;
-    returnFocus.current = leaving === null;
+    const focusInFrame = frameRef.current?.contains(document.activeElement) === true;
+    returnFocus.current = renameCloseFocus(focusInFrame, leaving !== null);
     setEditing(false);
   }, [view.stale, editing, leaving]);
 
@@ -189,13 +228,14 @@ export function ProposalCard({
   }
 
   function cancelEdit(): void {
-    returnFocus.current = true;
+    returnFocus.current = "edit";
     setEditing(false);
   }
 
   return (
     <li>
       <article
+        ref={cardRef}
         className={[styles.card, leavingClass].filter((name) => name !== "").join(" ")}
         aria-label={pair.term}
         tabIndex={-1}
@@ -214,6 +254,7 @@ export function ProposalCard({
             lockedReasonId={acceptReason !== null ? reasonId : null}
             onSave={(term) => onAccept(term)}
             onCancel={cancelEdit}
+            frameRef={frameRef}
           />
         )}
         <ConceptQuote pair={pair} view={view} docTitle={docTitle} />

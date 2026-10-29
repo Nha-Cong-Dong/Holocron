@@ -73,12 +73,17 @@ interface RenameFormProps {
   initial: string;
   submitLabel: string;
   busy: boolean;
+  /** Mã đoạn lý do khoá khi nút lưu đang khoá (ví dụ khái niệm đã ghi, chờ cập nhật danh sách); `null` khi lưu được. */
+  lockedReasonId: string | null;
   onSave: (term: string) => void;
   onCancel: () => void;
 }
 
-/** Khung sửa tên tại chỗ: Enter ở ô nhập lưu, Esc ở bất kỳ đâu trong khung huỷ (focus trở về nút đã mở khung). */
-export function RenameForm({ initial, submitLabel, busy, onSave, onCancel }: RenameFormProps) {
+/**
+ * Khung sửa tên tại chỗ: Enter ở ô nhập lưu, Esc ở bất kỳ đâu trong khung huỷ (focus trở về nút đã mở khung). Nút lưu
+ * khoá (`lockedReasonId`) thì vẫn nhận focus, đọc kèm lý do, và cả nút lẫn Enter đều không lưu.
+ */
+export function RenameForm({ initial, submitLabel, busy, lockedReasonId, onSave, onCancel }: RenameFormProps) {
   const id = useId();
   const [draft, setDraft] = useState(initial);
   const [error, setError] = useState<string | undefined>(undefined);
@@ -89,6 +94,7 @@ export function RenameForm({ initial, submitLabel, busy, onSave, onCancel }: Ren
   }, [id]);
 
   function save(): void {
+    if (busy || lockedReasonId !== null) return;
     const check = termLengthOk(draft);
     if (!check.ok) {
       setError(check.message);
@@ -121,7 +127,14 @@ export function RenameForm({ initial, submitLabel, busy, onSave, onCancel }: Ren
         <button type="button" className={styles.textButton} onClick={onCancel}>
           Huỷ
         </button>
-        <Button variant="secondary" busy={busy} busyLabel="Đang lưu" onClick={save}>
+        <Button
+          variant="secondary"
+          busy={busy}
+          busyLabel="Đang lưu"
+          aria-disabled={lockedReasonId !== null || undefined}
+          aria-describedby={lockedReasonId ?? undefined}
+          onClick={save}
+        >
           {submitLabel}
         </Button>
       </div>
@@ -157,6 +170,13 @@ export function ProposalCard({
     editRef.current?.focus();
   }, [editing]);
 
+  // "Lưu và nhận" ghi xong thì thẻ khoá chờ ngay: đóng khung sửa, focus về "Sửa" (đọc kèm lý do khoá).
+  useEffect(() => {
+    if (!view.stale || !editing) return;
+    returnFocus.current = leaving === null;
+    setEditing(false);
+  }, [view.stale, editing, leaving]);
+
   const acceptReason = gateReason(view.actions.confirm);
   const editReason = gateReason(view.actions.edit);
   const rejectReason = gateReason(view.actions.reject);
@@ -191,6 +211,7 @@ export function ProposalCard({
             initial={pair.term}
             submitLabel="Lưu và nhận"
             busy={busy}
+            lockedReasonId={acceptReason !== null ? reasonId : null}
             onSave={(term) => onAccept(term)}
             onCancel={cancelEdit}
           />
@@ -243,7 +264,9 @@ export function ProposalCard({
               busyLabel="Đang nhận"
               aria-disabled={acceptReason !== null || undefined}
               aria-describedby={acceptReason !== null ? reasonId : undefined}
-              onClick={() => onAccept(null)}
+              onClick={() => {
+                if (!busy && acceptReason === null) onAccept(null);
+              }}
             >
               Nhận
             </Button>

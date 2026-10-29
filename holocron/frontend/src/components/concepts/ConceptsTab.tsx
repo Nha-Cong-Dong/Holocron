@@ -25,6 +25,7 @@ import {
   groupPairs,
   IDLE_BULK,
   mergeChange,
+  NO_STALE,
   newlyConfirmed,
   nextReloadNote,
   type ReloadNote,
@@ -32,10 +33,10 @@ import {
   reloadNoteText,
   screenErrorText,
   sendQueued,
+  staleReducer,
   staleView,
   visibleConceptEntrances,
   withoutIds,
-  withStale,
 } from "@/lib/concept-board";
 import { toUiError, type UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
@@ -77,7 +78,7 @@ type Operation = "accept" | "reject" | "rename" | "restore";
 interface Settled {
   /** Thẻ đề xuất đã cho rời đi bằng animation (chỉ khi không giảm chuyển động): tải lại lỗi thì hiện lại. */
   left?: readonly string[];
-  /** Thẻ đề xuất đã ghi thành công: tải lại lỗi thì khoá kèm lý do tới khi danh sách đọc lại được. */
+  /** Khái niệm đã ghi thành công (đã khoá chờ): lượt tải lại này thành công thì mở khoá. */
   done?: readonly string[];
   /** Lượt tải này do bấm "Thử lại" ở dòng báo tải lại lỗi. */
   retry?: boolean;
@@ -169,8 +170,9 @@ export function ConceptsTab({
   const [listState, setListState] = useState<ListState>({ kind: "loading" });
   const [reloadNote, setReloadNote] = useState<ReloadNote | null>(null);
   const [reloading, setReloading] = useState(false);
-  // Thẻ đề xuất đã ghi thành công mà danh sách chưa đọc lại được: khoá Nhận/Bỏ/Sửa tới lượt tải thành công.
-  const [stale, setStale] = useState<ReadonlySet<string>>(new Set());
+  // Khái niệm đã ghi thành công mà danh sách chưa đọc lại được: khoá mọi nút ngay lúc ghi xong, mở khi tải lại thành công.
+  const [staleLocks, dispatchStale] = useReducer(staleReducer, NO_STALE);
+  const stale = staleLocks.locked;
   const [fresh, setFresh] = useState<ReadonlySet<string>>(new Set());
   const [leaving, setLeaving] = useState<ReadonlyMap<string, CardLeaving>>(new Map());
   const previousPairs = useRef<ConceptPair[] | null>(null);
@@ -180,7 +182,6 @@ export function ConceptsTab({
   const pendingChange = useRef<ChangeNote | null>(null);
   // Thẻ đề xuất đã cho rời đi mà danh sách mới chưa về: lượt tải lại lỗi thì các thẻ này hiện lại.
   const pendingLeft = useRef<string[]>([]);
-  const pendingDone = useRef<string[]>([]);
   const pendingRetry = useRef(false);
   const listCalls = useRef(createLatestCounter());
 
@@ -207,7 +208,7 @@ export function ConceptsTab({
       if (!keepCurrent) setListState({ kind: "loading" });
       pendingChange.current = mergeChange(pendingChange.current, change);
       pendingLeft.current = [...pendingLeft.current, ...(settled.left ?? [])];
-      pendingDone.current = [...pendingDone.current, ...(settled.done ?? [])];
+      dispatchStale({ type: "requested", ids: settled.done ?? [] });
       pendingRetry.current = pendingRetry.current || settled.retry === true;
       void runLatest(
         listCalls.current,
@@ -215,11 +216,9 @@ export function ConceptsTab({
         (outcome) => {
           const pending = pendingChange.current;
           const left = pendingLeft.current;
-          const done = pendingDone.current;
           const retried = pendingRetry.current;
           pendingChange.current = null;
           pendingLeft.current = [];
-          pendingDone.current = [];
           pendingRetry.current = false;
           setReloading(false);
           if (!outcome.ok) {
@@ -228,10 +227,9 @@ export function ConceptsTab({
             for (const text of effects.toasts) toastRef.current.show(text);
             if (effects.reloadSky) changedRef.current();
             if (keepCurrent && previousPairs.current !== null) {
-              // Danh sách cũ còn hiện: thẻ đã rời đi hiện lại, focus rời thẻ đang ẩn về tiêu đề khối.
-              // Thẻ đã ghi hiện lại với dữ liệu cũ: khoá kèm lý do tới khi đọc lại được danh sách.
+              // Danh sách cũ còn hiện: thẻ đã rời đi hiện lại (vẫn khoá chờ từ lúc ghi xong), focus rời thẻ đang ẩn
+              // về tiêu đề khối.
               setLeaving((previous) => withoutIds(previous, effects.reveal));
-              setStale((previous) => withStale(previous, done));
               // Câu mới và vùng alert dựng lại ở mỗi lần lỗi để trình đọc màn hình đọc lại.
               const text = reloadNoteText(outcome.error, retried ? new Date() : null);
               setReloadNote((previous) => nextReloadNote(previous, text));
@@ -251,7 +249,7 @@ export function ConceptsTab({
           previousPairs.current = next;
           setFresh(newlyConfirmed(previous, next));
           setLeaving(new Map());
-          setStale(new Set());
+          dispatchStale({ type: "reloaded" });
           setReloadNote(null);
           setListState({ kind: "ready", pairs: next, hasSkipped: outcome.value.hasSkipped });
         },
@@ -333,10 +331,10 @@ export function ConceptsTab({
   const mapStatus = mapState.status;
   const map = mapState.status === "loading" ? EMPTY_MAP : mapState.map;
 
-  /** Cách hiện một thẻ đề xuất: thẻ đã ghi mà chờ cập nhật danh sách thì khoá mọi nút kèm lý do. */
+  /** Cách hiện một thẻ đề xuất: thẻ đã ghi mà chờ cập nhật danh sách thì khoá mọi nút kèm lý do (như `toAccepted`). */
   function proposalView(pair: ConceptPair): ConceptView {
     const view = conceptView(pair, mapStatus, map);
-    return stale.has(pair.pair_id) ? staleView(view) : view;
+    return stale.has(pair.pair_id) ? staleView(view, reloadNote !== null) : view;
   }
 
   function retryReload(): void {
@@ -364,6 +362,8 @@ export function ConceptsTab({
       return;
     }
     setBusy(pair.pair_id, false);
+    // Ghi xong: khoá ngay (bấm lại sẽ gửi phiên bản cũ), không chờ lượt tải lại.
+    dispatchStale({ type: "written", ids: [pair.pair_id] });
     const accepted = operation === "accept" || operation === "restore" ? 1 : 0;
     if (pair.status === "proposed") {
       const nextId = focusAfterRemoval(
@@ -383,7 +383,7 @@ export function ConceptsTab({
     }
     const messages = operation === "rename" && term !== null ? [`Đã đổi tên thành “${term}”`] : [];
     const focus: ConceptFocus = operation === "reject" ? { kind: "accepted" } : { kind: "concept", id: pair.pair_id };
-    loadPairs(true, { accepted, messages, focus });
+    loadPairs(true, { accepted, messages, focus }, { done: [pair.pair_id] });
   }
 
   function retry(pair: ConceptPair): void {
@@ -416,6 +416,7 @@ export function ConceptsTab({
       async (pairId, version) => {
         await api.confirmConceptPair(pairId, version, {});
         acceptedIds.push(pairId);
+        dispatchStale({ type: "written", ids: [pairId] });
         if (!reduced) setLeaving((previous) => new Map(previous).set(pairId, "accept"));
       },
       dispatchBulk,
@@ -485,7 +486,8 @@ export function ConceptsTab({
     };
   });
   const toAccepted = (pair: ConceptPair): AcceptedEntry => {
-    const view = conceptView(pair, mapStatus, map);
+    const base = conceptView(pair, mapStatus, map);
+    const view = stale.has(pair.pair_id) ? staleView(base, reloadNote !== null) : base;
     return {
       pair,
       view,
@@ -497,6 +499,7 @@ export function ConceptsTab({
   };
   const allGate = acceptAllGate(
     proposalEntries.map((entry) => ({ view: entry.view, busy: entry.busy, stale: stale.has(entry.pair.pair_id) })),
+    reloadNote !== null,
   );
   const entrances = visibleConceptEntrances({ autoProposalAvailable: AUTO_PROPOSAL_AVAILABLE });
   const searchAvailable = !isCapabilityBlocked(freshRuntime(runtime), "vault_search");

@@ -85,6 +85,8 @@ export interface ConceptView {
   unverified: string | null;
   actions: PairActions;
   sourceLabel: string;
+  /** Đã ghi thành công mà danh sách chưa đọc lại được: mọi nút khoá kèm `STALE_REASON_VI` (xem `staleView`). */
+  stale: boolean;
 }
 
 /** Câu trên thẻ khi đoạn văn của môn còn đang tải (chưa phải lỗi). */
@@ -124,6 +126,7 @@ export function conceptView(
       ? { edit: loadingGate(actions.edit), confirm: loadingGate(actions.confirm), reject: actions.reject }
       : actions,
     sourceLabel: SOURCE_LABEL_VI[pair.proposed_by],
+    stale: false,
   };
 }
 
@@ -134,8 +137,8 @@ export const ACCEPT_ALL_LOADING_VI = "Đang tải đoạn nguồn của các kh�
 export const ACCEPT_ALL_BLOCKED_VI =
   "Chưa kiểm chứng được đoạn nguồn của khái niệm nào ở đây nên chưa nhận được. Xem lý do trên từng thẻ.";
 export const ACCEPT_ALL_BUSY_VI = "Các khái niệm đang được gửi. Đợi một chút.";
-export const ACCEPT_ALL_STALE_VI =
-  "Các khái niệm ở đây đã ghi, đang chờ cập nhật danh sách. Bấm Thử lại ở dòng báo phía trên.";
+export const ACCEPT_ALL_STALE_VI = "Các khái niệm ở đây đã ghi, đang cập nhật danh sách…";
+export const ACCEPT_ALL_STALE_RETRY_VI = `${ACCEPT_ALL_STALE_VI} Bấm Thử lại ở dòng báo phía trên.`;
 
 /**
  * "Nhận tất cả" bật khi ít nhất một thẻ không đang bận nhận được. Mọi thẻ đều khoá ⇒ khoá kèm lý do: đoạn văn còn
@@ -144,12 +147,15 @@ export const ACCEPT_ALL_STALE_VI =
  */
 export function acceptAllGate(
   entries: readonly { view: ConceptView; busy: boolean; stale?: boolean }[],
+  reloadFailed = false,
 ): AcceptAllGate {
   const idle = entries.filter((entry) => !entry.busy);
   const confirmable = idle.some((entry) => entry.view.actions.confirm.shown && entry.view.actions.confirm.enabled);
   if (confirmable) return { enabled: true };
   if (idle.length === 0) return { enabled: false, reason: ACCEPT_ALL_BUSY_VI };
-  if (idle.every((entry) => entry.stale === true)) return { enabled: false, reason: ACCEPT_ALL_STALE_VI };
+  if (idle.every((entry) => entry.stale === true)) {
+    return { enabled: false, reason: reloadFailed ? ACCEPT_ALL_STALE_RETRY_VI : ACCEPT_ALL_STALE_VI };
+  }
   const loading = idle.some((entry) => entry.view.sourceLoading);
   return { enabled: false, reason: loading ? ACCEPT_ALL_LOADING_VI : ACCEPT_ALL_BLOCKED_VI };
 }
@@ -321,32 +327,83 @@ export function reloadedFocus(pending: ConceptFocus | null, retried: boolean): C
   return retried ? { kind: "proposals" } : null;
 }
 
-/** Lý do khoá trên thẻ đề xuất đã ghi xong mà danh sách chưa đọc lại được (thẻ hiện lại với dữ liệu cũ). */
-export const STALE_REASON_VI = "Đã ghi, chờ cập nhật danh sách. Bấm Thử lại ở dòng báo phía trên.";
+/** Lý do khoá trên khái niệm đã ghi xong mà danh sách chưa đọc lại được (thẻ, dòng còn hiện dữ liệu cũ). */
+export const STALE_REASON_VI = "Đã ghi, đang cập nhật danh sách…";
+export const STALE_REASON_RETRY_VI = `${STALE_REASON_VI} Bấm Thử lại ở dòng báo phía trên.`;
 
-function staleGate(gate: ActionGate): ActionGate {
-  return gate.shown ? { shown: true, enabled: false, reason: STALE_REASON_VI } : gate;
+/** Câu lý do khoá: chỉ nhắc nút Thử lại khi dòng báo tải lỗi đang hiện (`reloadFailed`). */
+export function staleReason(reloadFailed: boolean): string {
+  return reloadFailed ? STALE_REASON_RETRY_VI : STALE_REASON_VI;
+}
+
+function staleGate(gate: ActionGate, reloadFailed: boolean): ActionGate {
+  return gate.shown ? { shown: true, enabled: false, reason: staleReason(reloadFailed) } : gate;
 }
 
 /**
- * Thẻ đề xuất đã ghi thành công nhưng danh sách chưa đọc lại được: Nhận, Bỏ, Sửa đều khoá kèm `STALE_REASON_VI` (bấm
- * lại sẽ gửi phiên bản cũ). Nút đang ẩn vẫn ẩn. Mở lại khi danh sách tải lại thành công.
+ * Khái niệm đã ghi thành công nhưng danh sách chưa đọc lại được: mọi nút (Nhận, Bỏ, Sửa, Sửa tên, Nhận lại) đều khoá
+ * kèm `STALE_REASON_VI` (bấm lại sẽ gửi phiên bản cũ). Nút đang ẩn vẫn ẩn. Mở lại khi danh sách tải lại thành công.
  */
-export function staleView(view: ConceptView): ConceptView {
+export function staleView(view: ConceptView, reloadFailed = false): ConceptView {
   return {
     ...view,
+    stale: true,
     actions: {
-      edit: staleGate(view.actions.edit),
-      confirm: staleGate(view.actions.confirm),
-      reject: staleGate(view.actions.reject),
+      edit: staleGate(view.actions.edit, reloadFailed),
+      confirm: staleGate(view.actions.confirm, reloadFailed),
+      reject: staleGate(view.actions.reject, reloadFailed),
     },
   };
 }
 
-/** Tập thẻ đang chờ cập nhật sau một lượt tải lại lỗi nữa: giữ thẻ cũ, thêm thẻ vừa ghi (trả đúng `previous` khi không đổi). */
+/** Tập khái niệm đang chờ cập nhật: giữ khái niệm cũ, thêm khái niệm vừa ghi (trả đúng `previous` khi không đổi). */
 export function withStale(previous: ReadonlySet<string>, doneIds: readonly string[]): ReadonlySet<string> {
   if (doneIds.every((id) => previous.has(id))) return previous;
   return new Set([...previous, ...doneIds]);
+}
+
+/**
+ * Khoá chờ của các khái niệm vừa ghi. `locked`: khái niệm đang khoá trên giao diện (mọi nút kèm `STALE_REASON_VI`).
+ * `unrequested`: khái niệm đã ghi mà lượt tải lại của nó chưa được gửi (thẻ còn đang rời đi, "Nhận tất cả" còn đang
+ * gửi), nên một lượt tải lại gửi trước đó có về thành công cũng không mở khoá nó (danh sách đó đọc trước khi ghi).
+ */
+export interface StaleLocks {
+  locked: ReadonlySet<string>;
+  unrequested: ReadonlySet<string>;
+}
+
+export const NO_STALE: StaleLocks = { locked: new Set(), unrequested: new Set() };
+
+export type StaleEvent =
+  /** Ghi thành công (200): khoá ngay, không chờ lượt tải lại. */
+  | { type: "written"; ids: readonly string[] }
+  /** Đã gửi lượt tải lại cho các khái niệm này. */
+  | { type: "requested"; ids: readonly string[] }
+  /** Lượt tải lại mới nhất thành công: mở khoá mọi khái niệm đã có lượt tải lại được gửi. */
+  | { type: "reloaded" };
+
+/**
+ * Khoá chờ theo thao tác: ghi xong ⇒ khoá ngay; tải lại thành công ⇒ mở khoá, trừ khái niệm chưa được gửi lượt tải lại
+ * của nó. Tải lại lỗi không phát sự kiện nào nên khái niệm vẫn khoá tới lượt tải lại thành công kế tiếp. Không đổi thì
+ * trả đúng `state` (React không vẽ lại).
+ */
+export function staleReducer(state: StaleLocks, event: StaleEvent): StaleLocks {
+  switch (event.type) {
+    case "written": {
+      const locked = withStale(state.locked, event.ids);
+      const unrequested = withStale(state.unrequested, event.ids);
+      return locked === state.locked && unrequested === state.unrequested ? state : { locked, unrequested };
+    }
+    case "requested": {
+      if (!event.ids.some((id) => state.unrequested.has(id))) return state;
+      const requested = new Set(event.ids);
+      return { ...state, unrequested: new Set([...state.unrequested].filter((id) => !requested.has(id))) };
+    }
+    case "reloaded": {
+      const kept = [...state.locked].filter((id) => state.unrequested.has(id));
+      return kept.length === state.locked.size ? state : { ...state, locked: new Set(kept) };
+    }
+  }
 }
 
 /** Bản sao của `map` đã bỏ các khoá trong `ids` (trả đúng `map` khi không bỏ khoá nào, để React không vẽ lại). */

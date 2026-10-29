@@ -130,7 +130,8 @@ export function PracticeSession({ questions, blueprint, subjectCode, onExit, onP
   const twinId = question?.twinId;
   const kind = question?.kind;
 
-  // Sang câu mới: câu trắc nghiệm đưa focus về khung câu (câu tự luận thì ô trả lời tự nhận focus).
+  // Sang câu mới: câu trắc nghiệm đưa focus về khung câu (câu tự luận thì ô trả lời tự nhận focus và bỏ các lần lặp
+  // của phím đang giữ từ "Câu tiếp", xem `answerHeldKey`).
   useEffect(() => {
     if (state.finished || twinId === undefined) return;
     if (kind === "mcq") boxRef.current?.focus();

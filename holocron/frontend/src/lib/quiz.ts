@@ -32,7 +32,8 @@ import type { OptionKey } from "@/types/holocron";
 
 /**
  * Thao tác của màn Làm bài. `pick` chọn và khoá ngay một phương án (một bước, không còn nút "Nộp"); `next` chỉ sang
- * câu khi câu đang mở đã trả lời; `skip_essay` bỏ qua câu tự luận chấm lỗi (câu đó tính "Chưa làm").
+ * câu khi câu đang mở đã trả lời; `skip_essay` bỏ qua câu tự luận chấm lỗi (câu đó tính "Chưa làm"), chỉ khi lỗi hiện ở
+ * khung lỗi (`essayErrorPlacement` = "screen").
  */
 export type QuizAction =
   | { type: "pick"; key: OptionKey }
@@ -61,7 +62,10 @@ export function quizReducer(state: PracticeState, action: QuizAction): PracticeS
       if (state.finished || entry === undefined || !isAnswered(entry)) return state;
       return practiceReducer(state, { type: "next" });
     case "skip_essay":
+      // Chỉ bỏ qua khi khung lỗi "Không chấm được câu này" đang hiện (lỗi không phải dữ liệu nhập, như `quizHint`);
+      // lỗi dữ liệu nhập (trống, quá dài) thì sửa ở ô trả lời rồi chấm lại.
       if (state.finished || entry?.kind !== "essay" || entry.status !== "editing" || entry.error === null) return state;
+      if (essayErrorPlacement(entry.error) !== "screen") return state;
       return practiceReducer(state, { type: "next" });
     default:
       return practiceReducer(state, action);
@@ -91,6 +95,22 @@ export function quizKeyEffect(action: ShortcutAction): QuizKeyEffect | null {
     case "close":
       return null;
   }
+}
+
+/** Kết quả của một lần nhấn phím trong ô trả lời tự luận: chặn phím hay không, và ô còn "vừa mở" không. */
+export interface HeldKeyGuard {
+  block: boolean;
+  armed: boolean;
+}
+
+/**
+ * Ô trả lời tự luận tự nhận focus khi câu mở; nếu câu được mở bằng phím đang giữ (giữ Enter trên "Câu tiếp"), các lần
+ * lặp của phím đó rơi vào ô và ghi dòng trống vào nháp. `armed` = ô vừa mở, chưa có lần nhấn mới nào: phím lặp
+ * (`repeat`) bị chặn và ô vẫn "vừa mở"; lần nhấn mới đầu tiên (không lặp) gỡ chặn và đi qua bình thường.
+ */
+export function answerHeldKey(armed: boolean, repeat: boolean): HeldKeyGuard {
+  if (!armed) return { block: false, armed: false };
+  return repeat ? { block: true, armed: true } : { block: false, armed: false };
 }
 
 // ------------------------------------------------------------------------------------------ phương án

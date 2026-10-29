@@ -165,3 +165,21 @@ describe("canShowSky", () => {
     expect(canShowSky(subjectViewOf("VXL01", { kind: "error", error: ERROR }))).toBe(false);
   });
 });
+
+describe("breadcrumb khi đang làm bài: tên môn không thêm mục lịch sử", () => {
+  it("tên môn trỏ về tab Ôn tập không kèm session và thay mục lịch sử hiện tại", () => {
+    const items = breadcrumbForLocation("/subject", new URLSearchParams("code=VXL01&tab=practice&session=quiz"), READY);
+    const crumb = items[1];
+    expect(crumb).toEqual({ label: "Vi xử lý", href: "/subject?code=VXL01&tab=practice", replace: true });
+    expect(crumb?.href).not.toContain("session");
+  });
+
+  it("ngoài lúc làm bài: không có mục nào thay lịch sử", () => {
+    const items = [
+      ...breadcrumbForLocation("/subject", new URLSearchParams("code=VXL01&tab=practice"), READY),
+      ...breadcrumbForPath("/settings", null, READY),
+      HOME_CRUMB,
+    ];
+    expect(items.every((item) => item.replace === undefined)).toBe(true);
+  });
+});

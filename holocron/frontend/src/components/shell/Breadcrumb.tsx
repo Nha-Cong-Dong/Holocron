@@ -16,7 +16,10 @@ function Chevron() {
   );
 }
 
-/** Breadcrumb của thanh trên: mục có `href` là liên kết, mục cuối luôn mang `aria-current="page"`. */
+/**
+ * Breadcrumb của thanh trên: mục có `href` là liên kết (mục có `replace` thay mục lịch sử hiện tại thay vì thêm mục
+ * mới), mục cuối luôn mang `aria-current="page"`.
+ */
 export function Breadcrumb({ items }: { items: readonly BreadcrumbItem[] }) {
   if (items.length === 0) return null;
   const lastIndex = items.length - 1;
@@ -29,7 +32,7 @@ export function Breadcrumb({ items }: { items: readonly BreadcrumbItem[] }) {
             <li key={`${item.href ?? "current"}:${item.label}`} className={styles.crumbItem}>
               {index > 0 && <Chevron />}
               {item.href !== null && !isLast ? (
-                <Link className={styles.crumbLink} href={item.href}>
+                <Link className={styles.crumbLink} href={item.href} replace={item.replace === true}>
                   {item.label}
                 </Link>
               ) : item.href !== null ? (

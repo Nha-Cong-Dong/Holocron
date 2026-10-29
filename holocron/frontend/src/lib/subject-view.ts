@@ -53,6 +53,11 @@ export interface BreadcrumbItem {
   label: string;
   /** `null` ⇒ không phải liên kết (mục cuối, trang đang mở). */
   href: string | null;
+  /**
+   * `true` ⇒ liên kết thay mục lịch sử hiện tại (`router.replace`) thay vì thêm mục mới: tên môn khi đang làm bài, để
+   * Back sau đó rời trang môn chứ không quay lại đề đang làm. Vắng ⇒ thêm mục lịch sử như liên kết thường.
+   */
+  replace?: true;
 }
 
 export const HOME_CRUMB: BreadcrumbItem = { label: "Môn học", href: "/" };
@@ -65,14 +70,15 @@ export const SESSION_CRUMB_LABEL: Record<PracticeSessionKind, string> = { quiz: 
 
 /**
  * Breadcrumb của trang môn: "Môn học" (về trang chủ) › tên môn (trang đang mở). Đang làm đề hoặc xem kết quả
- * (`session` khác `null`, cần biết mã môn): tên môn thành liên kết về tab Ôn tập, thêm mục "Đang ôn" hoặc "Kết quả".
+ * (`session` khác `null`, cần biết mã môn): tên môn thành liên kết về tab Ôn tập (không kèm `session`, thay mục lịch
+ * sử hiện tại chứ không thêm mục mới), thêm mục "Đang ôn" hoặc "Kết quả".
  */
 export function subjectBreadcrumb(view: SubjectView, session: PracticeSessionKind | null = null): BreadcrumbItem[] {
   const label = subjectTitle(view) ?? UNKNOWN_SUBJECT_LABEL;
   if (session === null || view.kind === "invalid_code") return [HOME_CRUMB, { label, href: null }];
   return [
     HOME_CRUMB,
-    { label, href: subjectHref(view.code, "practice") },
+    { label, href: subjectHref(view.code, "practice"), replace: true },
     { label: SESSION_CRUMB_LABEL[session], href: null },
   ];
 }

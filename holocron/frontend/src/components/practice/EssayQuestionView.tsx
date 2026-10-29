@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { type KeyboardEvent, useCallback, useRef } from "react";
 
 import { Icon } from "@/components/common/Icon";
 import { Button, ErrorState } from "@/components/ui";
@@ -9,7 +9,7 @@ import { USE_MOCKS } from "@/lib/config";
 import { ESSAY_LIMITATION_VI, essayHeadline } from "@/lib/essay";
 import type { AnswerEntry } from "@/lib/practice";
 import type { EssayPointView, EssayQuestion } from "@/lib/practice-data";
-import { essayErrorPlacement } from "@/lib/quiz";
+import { answerHeldKey, essayErrorPlacement } from "@/lib/quiz";
 
 import styles from "./Quiz.module.css";
 
@@ -54,6 +54,15 @@ export function EssayQuestionView({ question, entry, onEdit, onRetry, onSkip }: 
     element?.focus();
   }, []);
 
+  // Câu mở bằng phím đang giữ (giữ Enter trên "Câu tiếp"): bỏ các lần lặp của phím đó cho tới lần nhấn mới đầu tiên,
+  // để nháp không bị ghi dòng trống. Khung câu gắn `key` theo câu nên mỗi câu bắt đầu ở trạng thái "vừa mở".
+  const heldKeyArmed = useRef(true);
+  function onAnswerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
+    const guard = answerHeldKey(heldKeyArmed.current, event.repeat);
+    heldKeyArmed.current = guard.armed;
+    if (guard.block) event.preventDefault();
+  }
+
   return (
     <>
       <div className={styles.field}>
@@ -66,6 +75,7 @@ export function EssayQuestionView({ question, entry, onEdit, onRetry, onSkip }: 
           className={styles.answer}
           value={entry.draft}
           onChange={(event) => onEdit(event.target.value)}
+          onKeyDown={onAnswerKeyDown}
           readOnly={entry.status !== "editing"}
           aria-describedby={`${answerId}-hint`}
           aria-invalid={placement === "field" || undefined}

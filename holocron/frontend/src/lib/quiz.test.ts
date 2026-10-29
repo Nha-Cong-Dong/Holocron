@@ -5,6 +5,7 @@ import { initialPracticeState, type PracticeState } from "./practice";
 import type { EssayGradeView, EssayQuestion, McqQuestion, PracticeCitation, PracticeQuestion } from "./practice-data";
 import {
   answerAnnouncement,
+  answerHeldKey,
   distractorNotes,
   essayErrorPlacement,
   nextLabel,
@@ -124,7 +125,7 @@ describe("quizReducer", () => {
       state,
       { type: "edit_essay", text: "x" },
       { type: "essay_started", twinId: "e1", submission: 1 },
-      { type: "essay_failed", twinId: "e1", submission: 1, error: localError("mất kết nối") },
+      { type: "essay_failed", twinId: "e1", submission: 1, error: { ...localError("mất kết nối"), kind: "network" } },
     );
     expect(quizReducer(failed, { type: "next" })).toBe(failed);
     const skipped = quizReducer(failed, { type: "skip_essay" });
@@ -374,7 +375,7 @@ describe("breadcrumb khi đang làm bài", () => {
   it("Môn học › {môn} (liên kết về tab Ôn tập) › Đang ôn | Kết quả", () => {
     expect(breadcrumbForPath("/subject", "VXL01", READY, "quiz")).toEqual([
       HOME_CRUMB,
-      { label: "Vi xử lý", href: "/subject?code=VXL01&tab=practice" },
+      { label: "Vi xử lý", href: "/subject?code=VXL01&tab=practice", replace: true },
       { label: "Đang ôn", href: null },
     ]);
     expect(
@@ -388,5 +389,39 @@ describe("breadcrumb khi đang làm bài", () => {
       HOME_CRUMB,
       { label: "Chưa rõ môn", href: null },
     ]);
+  });
+});
+
+describe("lượt sửa PR 7", () => {
+  it("skip_essay chỉ nhận khi lỗi hiện ở khung lỗi (đồng bộ quizHint); lỗi dữ liệu nhập thì sửa ở ô trả lời", () => {
+    const base = run(start(essay("e1"), mcq("q2")), { type: "edit_essay", text: "" });
+    const rejected = quizReducer(base, { type: "essay_rejected", error: localError("Câu trả lời đang trống.") });
+    const entry = rejected.entries[0];
+    if (entry === undefined) throw new Error("thiếu câu");
+    expect(quizHint(entry)).toBe("Viết xong thì bấm Chấm ý.");
+    expect(quizReducer(rejected, { type: "skip_essay" })).toBe(rejected);
+    const failed = run(
+      base,
+      { type: "edit_essay", text: "x" },
+      { type: "essay_started", twinId: "e1", submission: 1 },
+      { type: "essay_failed", twinId: "e1", submission: 1, error: { ...localError("x"), kind: "server" } },
+    );
+    expect(quizReducer(failed, { type: "skip_essay" }).index).toBe(1);
+  });
+
+  it("ô trả lời vừa mở bỏ các lần lặp của phím đang giữ, lần nhấn mới đầu tiên gỡ chặn", () => {
+    expect(answerHeldKey(true, true)).toEqual({ block: true, armed: true });
+    expect(answerHeldKey(true, false)).toEqual({ block: false, armed: false });
+    expect(answerHeldKey(false, true)).toEqual({ block: false, armed: false });
+    expect(answerHeldKey(false, false)).toEqual({ block: false, armed: false });
+    // Giữ Enter: ba lần lặp đều bị chặn; nhả rồi nhấn lại thì đi qua, các lần lặp sau đó cũng đi qua (gõ bình thường).
+    let armed = true;
+    const blocked: boolean[] = [];
+    for (const repeat of [true, true, true, false, true]) {
+      const guard = answerHeldKey(armed, repeat);
+      armed = guard.armed;
+      blocked.push(guard.block);
+    }
+    expect(blocked).toEqual([true, true, true, false, false]);
   });
 });

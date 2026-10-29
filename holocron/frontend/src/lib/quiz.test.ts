@@ -425,3 +425,31 @@ describe("lượt sửa PR 7", () => {
     expect(blocked).toEqual([true, true, true, false, false]);
   });
 });
+
+describe("đột biến sống (quiz)", () => {
+  it("optionStates: đã chọn nhưng chưa nộp ⇒ không khoá, không lộ đáp án", () => {
+    const states = optionStates(mcq("q1"), { kind: "mcq", selected: "C", submitted: false });
+    expect(states.map((option) => option.tone)).toEqual(["idle", "idle", "idle", "idle"]);
+    expect(states.map((option) => option.verdict)).toEqual([null, null, null, null]);
+    expect(states.map((option) => option.locked)).toEqual([false, false, false, false]);
+  });
+
+  it("optionStates: phím số 1–4 theo vị trí", () => {
+    const states = optionStates(mcq("q1"), { kind: "mcq", selected: null, submitted: false });
+    expect(states.map((option) => option.digit)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("quizHint: câu tự luận đang chấm", () => {
+    const editing = start(essay("e1")).entries[0];
+    if (editing?.kind !== "essay") throw new Error("phải là câu tự luận");
+    expect(quizHint({ ...editing, status: "grading" })).toBe("Đang chấm câu trả lời…");
+  });
+
+  it("resultRows: câu trắc nghiệm đã chọn mà chưa nộp ⇒ Chưa làm", () => {
+    const state = {
+      ...start(mcq("q1")),
+      entries: [{ kind: "mcq" as const, selected: "C" as const, submitted: false }],
+    };
+    expect(resultRows(state)[0]).toMatchObject({ status: "unanswered", statusLabel: "Chưa làm" });
+  });
+});

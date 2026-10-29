@@ -91,3 +91,14 @@ describe("vaultLocationTarget (mặc định của danh sách tài liệu)", () 
     expect(vaultLocationTarget({ subject: "sai" })).toBe("/");
   });
 });
+
+describe("đột biến sống (legacy-routes)", () => {
+  it("bỏ mọi / cuối của đường dẫn cũ", () => {
+    expect(legacyRedirectTarget("/practice//", query(""), "VXL01")).toBe("/subject?code=VXL01&tab=practice");
+  });
+
+  it("môn gần nhất sai mẫu bị bỏ ⇒ trang chủ", () => {
+    expect(vaultLocationTarget({}, "vxl01")).toBe("/");
+    expect(vaultLocationTarget({}, "VXL01&tab=x")).toBe("/");
+  });
+});

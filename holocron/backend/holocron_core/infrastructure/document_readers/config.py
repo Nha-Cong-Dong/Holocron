@@ -120,8 +120,9 @@ class PdfReaderConfig(BaseModel):
     # Chọn tầng (ADR-008 mục 6; sửa đổi 2026-10-29): `text_score` chỉ đo lớp chữ có rác hay không, ít chữ không phải
     # lý do bỏ lớp chữ. Ngoại lệ là trang ảnh: lớp chữ sạch nhưng có dưới `text_sparse_chars` ký tự không trắng
     # (thường chỉ còn tiêu đề khung slide và số trang) trong khi ảnh nhúng phủ ít nhất `text_sparse_image_min` diện
-    # tích trang ⇒ OCR cả trang. Đo trên 3 chương slide thật: trang chỉ có tiêu đề khung + số trang có 21–29 ký tự và
-    # ảnh phủ 0,83–0,98; ảnh nền khung slide phủ ≤ 0,18. Giá trị khởi đầu, hiệu chỉnh tiếp bằng `scripts/eval_pdf_tiers`.
+    # tích trang (diện tích hợp) ⇒ OCR cả trang; "dưới" là so sánh `<`. Đo trên 3 chương slide thật (ADR-008 mục 6):
+    # trang ảnh có 2–31 ký tự, ảnh phủ 0,434–0,86 (ch2 tr.32: 31 ký tự / 0,558; tr.46: 2 ký tự / 0,434); trang giữ
+    # lớp chữ gần biên nhất có 34 ký tự / 0,542. Giá trị khởi đầu, hiệu chỉnh tiếp bằng `scripts/eval_pdf_tiers`.
     text_sparse_chars: int = Field(default=32, ge=1)
     text_sparse_image_min: float = Field(default=0.40, gt=0.0, le=1.0)
 

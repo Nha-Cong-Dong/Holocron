@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -42,12 +43,20 @@ TSV_WORD_LEVEL = 5
 RunStatus = Literal["ok", "timeout", "overflow", "failed"]
 # Kết quả kiểm Tesseract khi khởi động (`TesseractEngine.probe_status`).
 ProbeStatus = Literal["ok", "engine_missing", "language_missing"]
+# Dòng đầu của `tesseract --list-langs` (4.x, 5.x): `List of available languages in "<thư mục>" (<số>):`.
+_LIST_LANGS_DIR = re.compile(r'"(?P<dir>[^"]+)"')
 
 
 @dataclass(frozen=True)
 class RunResult:
     status: RunStatus
     stdout: bytes = b""
+
+
+def listed_tessdata_dir(header: str) -> str | None:
+    """Thư mục tessdata ghi trong dòng đầu của `--list-langs`; dòng không có thư mục trong ngoặc kép ⇒ None."""
+    match = _LIST_LANGS_DIR.search(header)
+    return match.group("dir") if match is not None else None
 
 
 Runner = Callable[[Sequence[str], bytes, float, int], RunResult]
@@ -354,8 +363,8 @@ class TesseractEngine:
 
         Đầu ra của mỗi lệnh kiểm đọc tối đa `max_output_bytes` (`PdfReaderConfig.ocr_probe_max_bytes`).
         """
-        engine, status = cls.probe_status(settings, timeout_s, run, max_output_bytes=max_output_bytes)
-        return engine if status == "ok" else None
+        outcome = cls.probe_status(settings, timeout_s, run, max_output_bytes=max_output_bytes)
+        return outcome.engine if outcome.status == "ok" else None
 
     @classmethod
     def probe_status(
@@ -365,26 +374,28 @@ class TesseractEngine:
         run: Runner = run_bounded,
         *,
         max_output_bytes: int = DEFAULT_OCR_PROBE_MAX_BYTES,
-    ) -> tuple[TesseractEngine, ProbeStatus]:
+    ) -> ProbeOutcome:
         """Như `probe` (cùng lệnh, cùng thứ tự, mỗi lệnh chạy đúng một lần) nhưng nói rõ lý do.
 
         `--version` không chạy được ⇒ "engine_missing"; `--list-langs` lỗi, sai UTF-8 hoặc không có `vie` ⇒
-        "language_missing".
+        "language_missing". Khi "ok", `listed_tessdata_dir` là thư mục tessdata Tesseract ghi ở dòng đầu của
+        `--list-langs` (None nếu dòng đó không ghi thư mục).
         """
         engine = cls(command=settings.tesseract_cmd, tessdata_dir=settings.tessdata_dir, run=run)
         limit = max_output_bytes
         if run([engine.command, "--version"], b"", timeout_s, limit).status != "ok":
-            return engine, "engine_missing"
+            return ProbeOutcome(engine, "engine_missing")
         listing = run([engine.command, "--list-langs", *engine._tessdata_args()], b"", timeout_s, limit)
         if listing.status != "ok":
-            return engine, "language_missing"
+            return ProbeOutcome(engine, "language_missing")
         try:
-            languages = listing.stdout.decode("utf-8").splitlines()[1:]
+            lines = listing.stdout.decode("utf-8").splitlines()
         except UnicodeDecodeError:
-            return engine, "language_missing"
+            return ProbeOutcome(engine, "language_missing")
+        languages = lines[1:]
         if TESSERACT_LANGUAGE not in {language.strip() for language in languages}:
-            return engine, "language_missing"
-        return engine, "ok"
+            return ProbeOutcome(engine, "language_missing")
+        return ProbeOutcome(engine, "ok", listed_tessdata_dir(lines[0]))
 
     def recognize(
         self, png: bytes, image: GrayImage, config: PdfReaderConfig
@@ -400,3 +411,12 @@ class TesseractEngine:
         except UnicodeDecodeError as exc:
             raise TesseractError("Tesseract ghi byte không phải UTF-8") from exc
         return tsv_to_lines(tsv, image.width, image.height)
+
+
+@dataclass(frozen=True)
+class ProbeOutcome:
+    """Kết quả `TesseractEngine.probe_status`: engine (đã dựng, dùng được khi "ok"), lý do và thư mục tessdata."""
+
+    engine: TesseractEngine
+    status: ProbeStatus
+    listed_tessdata_dir: str | None = None

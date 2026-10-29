@@ -7,11 +7,14 @@ kết quả không phụ thuộc máy chạy test.
 from __future__ import annotations
 
 import logging
+import struct
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from pathlib import Path
 from types import MappingProxyType
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from holocron_core.domain.capabilities import Capability, CapabilityName, CapabilityReason
 from holocron_core.infrastructure.document_readers.config import (
@@ -20,7 +23,12 @@ from holocron_core.infrastructure.document_readers.config import (
     OcrSettings,
     PdfReaderConfig,
 )
-from holocron_core.infrastructure.document_readers.tesseract import RunResult
+from holocron_core.infrastructure.document_readers.tesseract import (
+    TESSDATA_LSTM_UNICHARSET,
+    RunResult,
+    listed_tessdata_dir,
+    vietnamese_letters,
+)
 from holocron_core.infrastructure.llm_config import ConfigError, RuntimeConfig, load_runtime_config
 from holocron_core.routers import blueprints, runtime
 from holocron_core.routers.api import app
@@ -38,6 +46,7 @@ from holocron_core.services.capability_checks import (
     check_local_capabilities,
     local_capability_failures,
     probe_tesseract,
+    read_bounded,
     secondary_ocr_loads,
 )
 
@@ -279,6 +288,163 @@ LANGS_WITHOUT_VIE = RunResult(status="ok", stdout=b'List of available languages 
 FAILED = RunResult(status="failed")
 
 
+# --------------------------------------------------------------------------- #
+# Unicharset của vie.traineddata (ADR-008 mục 14; spec §5.7, §5.12)
+# --------------------------------------------------------------------------- #
+
+
+def _traineddata(letters: Sequence[str], count: int = 24) -> bytes:
+    """File `.traineddata` tối thiểu chỉ có unicharset của LSTM chứa `letters` (cùng định dạng test_pdf_ocr.py)."""
+    entries = ["NULL 0 Common 0", *[f"{c} 3 0,255 Latin 5 0 5 {c}" for c in letters]]
+    unicharset = (f"{len(entries)}\n" + "\n".join(entries) + "\n").encode("utf-8")
+    offsets = [-1] * count
+    offsets[TESSDATA_LSTM_UNICHARSET] = 4 + 8 * count
+    return struct.pack(f"<i{count}q", count, *offsets) + unicharset
+
+
+ALL_LETTERS = sorted(vietnamese_letters())
+
+
+def _tessdata(root: Path, letters: Sequence[str]) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "vie.traineddata").write_bytes(_traineddata(letters))
+    return root
+
+
+def _settings_in(tessdata: Path | None) -> OcrSettings:
+    return OcrSettings(
+        tesseract_cmd="/opt/tesseract",
+        tessdata_dir=None if tessdata is None else str(tessdata),
+        secondary="rapidocr",
+    )
+
+
+@pytest.fixture
+def full_tessdata(tmp_path: Path) -> Path:
+    return _tessdata(tmp_path / "tessdata", ALL_LETTERS)
+
+
+def _probe_with(
+    settings: OcrSettings, config: PdfReaderConfig = CONFIG, header_dir: str | None = None
+) -> OcrProbeResult:
+    header = f'List of available languages in "{header_dir}" (2):' if header_dir is not None else "List of languages:"
+    listing = RunResult(status="ok", stdout=f"{header}\neng\nvie\n".encode())
+    return probe_tesseract(settings, config, FakeRunner({"--version": OK_VERSION, "--list-langs": listing}))
+
+
+def test_full_charset_is_available(full_tessdata: Path) -> None:
+    assert _probe_with(_settings_in(full_tessdata)) == READY
+
+
+def test_letter_outside_allowed_list_means_language_missing(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    lacking = [letter for letter in ALL_LETTERS if letter not in {"ơ"}]
+    tessdata = _tessdata(tmp_path / "td", lacking)
+    with caplog.at_level(logging.WARNING):
+        assert _probe_with(_settings_in(tessdata)) == NO_VIE
+    assert str(tmp_path) not in caplog.text
+
+
+def test_only_allowed_letters_missing_is_available(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """`vie.traineddata` bản best thiếu đúng `Ỵ`, `ỵ`: vẫn khả dụng, kèm cảnh báo."""
+    tessdata = _tessdata(tmp_path / "td", [letter for letter in ALL_LETTERS if letter not in {"Ỵ", "ỵ"}])
+    with caplog.at_level(logging.WARNING):
+        assert _probe_with(_settings_in(tessdata)) == READY
+    assert "Ỵ" in caplog.text
+
+
+def test_allowed_list_comes_from_reader_config(tmp_path: Path) -> None:
+    tessdata = _tessdata(tmp_path / "td", [letter for letter in ALL_LETTERS if letter != "Ỵ"])
+    strict = PdfReaderConfig(ocr_charset_allowed_missing=frozenset())
+    assert _probe_with(_settings_in(tessdata), strict) == NO_VIE
+    assert _probe_with(_settings_in(tessdata), CONFIG) == READY
+
+
+def test_traineddata_over_the_byte_cap_means_language_missing(full_tessdata: Path) -> None:
+    size = (full_tessdata / "vie.traineddata").stat().st_size
+    assert size > 1024
+    assert _probe_with(_settings_in(full_tessdata), PdfReaderConfig(ocr_traineddata_max_bytes=size - 1)) == NO_VIE
+    assert _probe_with(_settings_in(full_tessdata), PdfReaderConfig(ocr_traineddata_max_bytes=size)) == READY
+
+
+def test_unreadable_traineddata_means_language_missing(tmp_path: Path) -> None:
+    assert _probe_with(_settings_in(tmp_path / "khong-co")) == NO_VIE
+    garbage = tmp_path / "rac"
+    garbage.mkdir()
+    (garbage / "vie.traineddata").write_bytes(b"\x00" * 2048)
+    assert _probe_with(_settings_in(garbage)) == NO_VIE
+    # Đường dẫn là thư mục (lỗi đọc OSError) cũng là không đọc được.
+    as_dir = tmp_path / "la-thu-muc"
+    (as_dir / "vie.traineddata").mkdir(parents=True)
+    assert _probe_with(_settings_in(as_dir)) == NO_VIE
+
+
+def test_tessdata_dir_falls_back_to_the_list_langs_header(full_tessdata: Path, tmp_path: Path) -> None:
+    """Không đặt `HOLOCRON_TESSDATA_DIR`: thư mục lấy từ dòng đầu của đúng lần `--list-langs` đã chạy."""
+    runner = FakeRunner(
+        {
+            "--version": OK_VERSION,
+            "--list-langs": RunResult(
+                status="ok", stdout=f'List of available languages in "{full_tessdata}/" (2):\neng\nvie\n'.encode()
+            ),
+        }
+    )
+    assert probe_tesseract(_settings_in(None), CONFIG, runner) == READY
+    assert [args[1] for args, _, _ in runner.calls] == ["--version", "--list-langs"]
+    assert _probe_with(_settings_in(None), header_dir=None) == NO_VIE
+    assert _probe_with(_settings_in(None), header_dir=str(tmp_path / "khong-co")) == NO_VIE
+
+
+def test_configured_tessdata_dir_wins_over_the_header(full_tessdata: Path, tmp_path: Path) -> None:
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert _probe_with(_settings_in(full_tessdata), header_dir=str(empty)) == READY
+    assert _probe_with(_settings_in(empty), header_dir=str(full_tessdata)) == NO_VIE
+
+
+def test_listed_tessdata_dir_parses_the_header() -> None:
+    assert listed_tessdata_dir('List of available languages in "/usr/share/tessdata/" (3):') == "/usr/share/tessdata/"
+    assert listed_tessdata_dir('List of available languages in "C:\\Tesseract\\tessdata/" (1):') == (
+        "C:\\Tesseract\\tessdata/"
+    )
+    assert listed_tessdata_dir("List of available languages (3):") is None
+
+
+def test_read_bounded_respects_the_cap(tmp_path: Path) -> None:
+    path = tmp_path / "f.bin"
+    path.write_bytes(b"x" * 10)
+    assert read_bounded(path, 10) == b"x" * 10
+    assert read_bounded(path, 9) is None
+    assert read_bounded(tmp_path / "missing", 10) is None
+
+
+def test_default_check_end_to_end_reports_language_missing_on_bad_charset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bộ kiểm thật với probe thật (chỉ bộ chạy lệnh giả): unicharset thiếu chữ ⇒ `ocr_language_missing`."""
+    tessdata = _tessdata(tmp_path / "td", [letter for letter in ALL_LETTERS if letter != "đ"])
+    runner = FakeRunner({"--version": OK_VERSION, "--list-langs": LANGS_WITH_VIE})
+
+    def probe(settings: OcrSettings, config: PdfReaderConfig, /) -> OcrProbeResult:
+        return probe_tesseract(settings, config, runner)
+
+    monkeypatch.setattr(runtime, "load_ocr_settings", lambda: _settings_in(tessdata))
+    monkeypatch.setattr(runtime, "probe_tesseract", probe)
+    monkeypatch.setattr(runtime, "load_secondary_ocr", _must_not_load)
+    assert get_local_capability_check()(CONFIG) == {
+        "ocr": "ocr_language_missing",
+        "ocr_cross_check": "ocr_language_missing",
+    }
+
+
+def test_allowed_missing_defaults_to_the_approved_letters_only() -> None:
+    assert PdfReaderConfig().ocr_charset_allowed_missing == frozenset({"Ỵ", "ỵ"})
+    assert PdfReaderConfig(ocr_charset_allowed_missing=frozenset({"ỵ"})).ocr_charset_allowed_missing == {"ỵ"}
+    with pytest.raises(ValidationError):
+        PdfReaderConfig(ocr_charset_allowed_missing=frozenset({"Ỵ", "ỵ", "ơ"}))
+    with pytest.raises(ValidationError):
+        PdfReaderConfig(ocr_traineddata_max_bytes=0)
+
+
 @pytest.mark.parametrize(
     ("results", "expected"),
     [
@@ -291,9 +457,9 @@ FAILED = RunResult(status="failed")
     ids=["ready", "binary-fails", "binary-hangs", "no-vie", "list-langs-fails"],
 )
 def test_probe_tesseract_tells_missing_binary_from_missing_vie(
-    results: dict[str, RunResult], expected: OcrProbeResult
+    results: dict[str, RunResult], expected: OcrProbeResult, full_tessdata: Path
 ) -> None:
-    assert probe_tesseract(WITH_SECONDARY, CONFIG, run=FakeRunner(results)) == expected
+    assert probe_tesseract(_settings_in(full_tessdata), CONFIG, run=FakeRunner(results)) == expected
 
 
 @pytest.mark.parametrize(
@@ -312,7 +478,9 @@ def test_probe_tesseract_runs_each_command_once(results: dict[str, RunResult], e
     assert [args[1] for args, _, _ in runner.calls] == expected_flags
 
 
-def test_probe_tesseract_default_runner_uses_reader_config(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_probe_tesseract_default_runner_uses_reader_config(
+    monkeypatch: pytest.MonkeyPatch, full_tessdata: Path
+) -> None:
     """`run=None` ⇒ `run_bounded` với `kill_grace_s`, timeout và giới hạn byte lấy từ cấu hình của app."""
     config = PdfReaderConfig(ocr_probe_timeout_s=3.25, ocr_probe_max_bytes=2048, ocr_kill_grace_s=1.75)
     recorded: list[tuple[str, float, int, float]] = []
@@ -324,7 +492,7 @@ def test_probe_tesseract_default_runner_uses_reader_config(monkeypatch: pytest.M
         return {"--version": OK_VERSION, "--list-langs": LANGS_WITH_VIE}[args[1]]
 
     monkeypatch.setattr(capability_checks, "run_bounded", fake_run_bounded)
-    assert probe_tesseract(WITH_SECONDARY, config) == READY
+    assert probe_tesseract(_settings_in(full_tessdata), config) == READY
     assert recorded == [("--version", 3.25, 2048, 1.75), ("--list-langs", 3.25, 2048, 1.75)]
 
 

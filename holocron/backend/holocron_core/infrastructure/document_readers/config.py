@@ -48,6 +48,11 @@ DEFAULT_CROSS_CHECK_MAX_LINE_TOKENS = 512
 DEFAULT_CROSS_CHECK_MAX_LINE_PAIRS = 200_000
 DEFAULT_CROSS_CHECK_MAX_TOKEN_CELLS = 250_000
 
+# Chữ tiếng Việt hiếm đã duyệt (2026-10-25, ADR-008 mục 14) được phép thiếu trong unicharset của engine chính:
+# `vie.traineddata` bản best thiếu đúng hai chữ này. Mở rộng tập này cần người dùng duyệt riêng, nên field
+# `ocr_charset_allowed_missing` chỉ nhận tập con của nó.
+OCR_CHARSET_APPROVED_MISSING: frozenset[str] = frozenset({"Ỵ", "ỵ"})
+
 
 class PdfReaderConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
@@ -90,6 +95,12 @@ class PdfReaderConfig(BaseModel):
     # Sau khi kill Tesseract (quá hạn, đầu ra quá lớn), thời gian chờ tối đa để pipe đóng và tiến trình thoát hẳn;
     # quá mức này thì worker thôi chờ (luồng đọc là daemon), nên một tiến trình con treo không giữ worker mãi.
     ocr_kill_grace_s: float = Field(default=DEFAULT_OCR_KILL_GRACE_S, gt=0)
+    # `OCR_CHARSET_ALLOWED_MISSING` (spec §5.7; ADR-008 mục 14): chữ được phép thiếu trong unicharset của
+    # `vie.traineddata`, kèm cảnh báo; thiếu chữ ngoài tập này thì coi như thiếu gói `vie`.
+    ocr_charset_allowed_missing: frozenset[str] = OCR_CHARSET_APPROVED_MISSING
+    # Trần byte khi đọc `vie.traineddata` để kiểm unicharset lúc khởi động (bản best khoảng 12 MiB); file lớn hơn
+    # coi như không đọc được.
+    ocr_traineddata_max_bytes: int = Field(default=64 * MIB, ge=1024)
     # Hệ số giảm dần tỉ lệ render khi ảnh làm tròn lên vẫn vượt `ocr_max_pixels` (mục 4).
     render_shrink_factor: float = Field(default=DEFAULT_RENDER_SHRINK_FACTOR, gt=0.0, lt=1.0)
     # Nhị phân hoá ảnh xám để đếm điểm ảnh mực (`ink_outside_text_ratio`, mục 9): điểm ảnh tối hơn ngưỡng là mực.
@@ -140,6 +151,13 @@ class PdfReaderConfig(BaseModel):
         """Hạn của một lần chạy Tesseract phải nhỏ hơn hạn của cả trang OCR, để còn thời gian cho lượt thứ hai."""
         if self.tesseract_timeout_s >= self.ocr_page_timeout_s:
             raise ValueError("tesseract_timeout_s phải nhỏ hơn ocr_page_timeout_s")
+        return self
+
+    @model_validator(mode="after")
+    def _only_approved_missing_letters(self) -> PdfReaderConfig:
+        """Danh sách chữ được phép thiếu chỉ gồm các chữ hiếm đã duyệt (spec §5.7)."""
+        if not self.ocr_charset_allowed_missing <= OCR_CHARSET_APPROVED_MISSING:
+            raise ValueError("ocr_charset_allowed_missing chỉ được chứa các chữ đã duyệt (Ỵ, ỵ)")
         return self
 
 

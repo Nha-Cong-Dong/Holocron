@@ -5,7 +5,8 @@ Chạy MỘT LẦN lúc khởi động app (tầng router gắn kết quả vào
 
 - `probe_tesseract`: chạy binary Tesseract qua cơ chế probe của worker (`TesseractEngine.probe_status`: `--version`
   rồi `--list-langs`, mỗi lệnh một lần, không qua shell, timeout, giới hạn byte đầu ra và thời gian chờ sau khi kill
-  lấy từ `PdfReaderConfig` của app). Lý do của probe phân biệt "không chạy được binary" với "thiếu `vie`".
+  lấy từ `PdfReaderConfig` của app). Lý do của probe phân biệt "không chạy được binary" với "thiếu `vie`". Có `vie`
+  thì đọc `vie.traineddata` (có trần byte) và kiểm unicharset đủ chữ tiếng Việt (ADR-008 mục 14).
 - `secondary_ocr_loads`: nạp lượt đọc thứ hai bằng đúng bộ nạp worker dùng (`RapidOcrBackend.load`), một lần, có
   bắt lỗi; đối tượng đã nạp không được giữ lại.
 - `local_capability_failures`: hàm thuần từ kết quả kiểm và `OcrSettings` sang lý do không khả dụng.
@@ -18,6 +19,7 @@ from __future__ import annotations
 import functools
 import logging
 from collections.abc import Callable
+from pathlib import Path
 from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict
@@ -26,11 +28,17 @@ from ..domain.capabilities import CapabilityName, CapabilityReason
 from ..infrastructure.document_readers.config import (
     ENV_PDF_OCR_PRIMARY,
     ENV_PDF_OCR_SECONDARY,
+    TESSERACT_LANGUAGE,
     OcrSettings,
     PdfReaderConfig,
 )
 from ..infrastructure.document_readers.rapidocr_adapter import BUILTIN_ERRORS
-from ..infrastructure.document_readers.tesseract import Runner, TesseractEngine, run_bounded
+from ..infrastructure.document_readers.tesseract import (
+    Runner,
+    TesseractEngine,
+    missing_vietnamese_letters,
+    run_bounded,
+)
 from ..infrastructure.llm_config import ConfigError
 
 _LOGGER = logging.getLogger(__name__)
@@ -43,7 +51,8 @@ INVALID_OCR_CONFIG_LOG = (
 
 
 class OcrProbeResult(BaseModel):
-    """Kết quả kiểm Tesseract: `engine_runs` khi `--version` chạy được, `vie_available` khi `--list-langs` có `vie`."""
+    """Kết quả kiểm Tesseract: `engine_runs` khi `--version` chạy được; `vie_available` khi `--list-langs` có `vie`
+    VÀ unicharset của `vie.traineddata` không thiếu chữ nào ngoài `ocr_charset_allowed_missing`."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -71,10 +80,49 @@ def probe_tesseract(settings: OcrSettings, config: PdfReaderConfig, run: Runner 
     hạn byte đầu ra lấy từ `config.ocr_probe_timeout_s`, `config.ocr_probe_max_bytes`.
     """
     runner: Runner = run if run is not None else functools.partial(run_bounded, kill_grace_s=config.ocr_kill_grace_s)
-    _, status = TesseractEngine.probe_status(
+    outcome = TesseractEngine.probe_status(
         settings, config.ocr_probe_timeout_s, runner, max_output_bytes=config.ocr_probe_max_bytes
     )
-    return OcrProbeResult(engine_runs=status != "engine_missing", vie_available=status == "ok")
+    if outcome.status != "ok":
+        return OcrProbeResult(engine_runs=outcome.status != "engine_missing", vie_available=False)
+    tessdata_dir = settings.tessdata_dir if settings.tessdata_dir is not None else outcome.listed_tessdata_dir
+    return OcrProbeResult(engine_runs=True, vie_available=vie_charset_ok(tessdata_dir, config))
+
+
+def read_bounded(path: Path, max_bytes: int) -> bytes | None:
+    """Đọc tối đa `max_bytes` byte của `path`; file lớn hơn hoặc lỗi đọc ⇒ None."""
+    try:
+        with path.open("rb") as handle:
+            data = handle.read(max_bytes + 1)
+    except OSError:
+        return None
+    return data if len(data) <= max_bytes else None
+
+
+def vie_charset_ok(tessdata_dir: str | None, config: PdfReaderConfig) -> bool:
+    """Unicharset của `<tessdata_dir>/vie.traineddata` đủ chữ tiếng Việt, trừ các chữ trong
+    `config.ocr_charset_allowed_missing` (thiếu những chữ này thì vẫn đạt, kèm cảnh báo).
+
+    Không biết thư mục, không đọc được file (vắng, lỗi đọc, vượt `config.ocr_traineddata_max_bytes`) hoặc thiếu chữ
+    ngoài danh sách cho phép ⇒ False. Cảnh báo không ghi đường dẫn (có thể chứa tên người dùng).
+    """
+    if tessdata_dir is None:
+        _LOGGER.warning("không xác định được thư mục tessdata để kiểm %s.traineddata", TESSERACT_LANGUAGE)
+        return False
+    data = read_bounded(Path(tessdata_dir) / f"{TESSERACT_LANGUAGE}.traineddata", config.ocr_traineddata_max_bytes)
+    if data is None:
+        _LOGGER.warning("không đọc được %s.traineddata (vắng, lỗi đọc hoặc quá lớn)", TESSERACT_LANGUAGE)
+        return False
+    missing = set(missing_vietnamese_letters(data))
+    outside = missing - config.ocr_charset_allowed_missing
+    if outside:
+        _LOGGER.warning(
+            "%s.traineddata thiếu %d chữ tiếng Việt ngoài danh sách cho phép", TESSERACT_LANGUAGE, len(outside)
+        )
+        return False
+    if missing:
+        _LOGGER.warning("%s.traineddata thiếu chữ được phép thiếu: %s", TESSERACT_LANGUAGE, " ".join(sorted(missing)))
+    return True
 
 
 def secondary_ocr_loads(load: SecondaryLoader) -> bool:

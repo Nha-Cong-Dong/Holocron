@@ -757,3 +757,40 @@ describe("khoá chờ ngay khi ghi thành công", () => {
     expect(staleReducer(written, { type: "reloaded" })).toBe(written);
   });
 });
+
+describe("khoá chờ: từng nút và thứ tự kiểm của Nhận tất cả", () => {
+  const ready = conceptView(pair("a", "proposed"), "complete", new Map([["chk_a", chunk("chk_a")]]));
+
+  it("Sửa và Bỏ cũng nhắc Thử lại khi dòng báo tải lỗi đang hiện", () => {
+    const retry = staleView(ready, true).actions;
+    expect(retry.edit).toEqual({ shown: true, enabled: false, reason: STALE_REASON_RETRY_VI });
+    expect(retry.reject).toEqual({ shown: true, enabled: false, reason: STALE_REASON_RETRY_VI });
+  });
+
+  it("mỗi nút giữ khoá của chính nó: Nhận ẩn vẫn ẩn, Bỏ hiện thì bị khoá", () => {
+    const view = {
+      ...ready,
+      actions: {
+        ...ready.actions,
+        confirm: { shown: false } as ActionGate,
+        reject: { shown: true, enabled: true } as ActionGate,
+      },
+    };
+    const locked = staleView(view).actions;
+    expect(locked.confirm).toEqual({ shown: false });
+    expect(locked.reject).toEqual({ shown: true, enabled: false, reason: STALE_REASON_VI });
+  });
+
+  it("Nhận tất cả: thẻ chờ cập nhật nhưng thẻ kia đang bận ⇒ khoá vì chờ cập nhật, không phải vì bận", () => {
+    expect(
+      acceptAllGate([
+        { view: staleView(ready), busy: false, stale: true },
+        { view: ready, busy: true },
+      ]),
+    ).toEqual({ enabled: false, reason: ACCEPT_ALL_STALE_VI });
+  });
+
+  it("Nhận tất cả: thẻ nhận được thì bật dù đã đánh dấu chờ (kiểm nhận được trước)", () => {
+    expect(acceptAllGate([{ view: ready, busy: false, stale: true }])).toEqual({ enabled: true });
+  });
+});

@@ -137,8 +137,8 @@ export const ACCEPT_ALL_LOADING_VI = "Đang tải đoạn nguồn của các kh�
 export const ACCEPT_ALL_BLOCKED_VI =
   "Chưa kiểm chứng được đoạn nguồn của khái niệm nào ở đây nên chưa nhận được. Xem lý do trên từng thẻ.";
 export const ACCEPT_ALL_BUSY_VI = "Các khái niệm đang được gửi. Đợi một chút.";
-export const ACCEPT_ALL_STALE_VI =
-  "Các khái niệm ở đây đã ghi, đang chờ cập nhật danh sách. Bấm Thử lại ở dòng báo phía trên.";
+export const ACCEPT_ALL_STALE_VI = "Các khái niệm ở đây đã ghi, đang cập nhật danh sách…";
+export const ACCEPT_ALL_STALE_RETRY_VI = `${ACCEPT_ALL_STALE_VI} Bấm Thử lại ở dòng báo phía trên.`;
 
 /**
  * "Nhận tất cả" bật khi ít nhất một thẻ không đang bận nhận được. Mọi thẻ đều khoá ⇒ khoá kèm lý do: đoạn văn còn
@@ -147,12 +147,15 @@ export const ACCEPT_ALL_STALE_VI =
  */
 export function acceptAllGate(
   entries: readonly { view: ConceptView; busy: boolean; stale?: boolean }[],
+  reloadFailed = false,
 ): AcceptAllGate {
   const idle = entries.filter((entry) => !entry.busy);
   const confirmable = idle.some((entry) => entry.view.actions.confirm.shown && entry.view.actions.confirm.enabled);
   if (confirmable) return { enabled: true };
   if (idle.length === 0) return { enabled: false, reason: ACCEPT_ALL_BUSY_VI };
-  if (idle.every((entry) => entry.stale === true)) return { enabled: false, reason: ACCEPT_ALL_STALE_VI };
+  if (idle.every((entry) => entry.stale === true)) {
+    return { enabled: false, reason: reloadFailed ? ACCEPT_ALL_STALE_RETRY_VI : ACCEPT_ALL_STALE_VI };
+  }
   const loading = idle.some((entry) => entry.view.sourceLoading);
   return { enabled: false, reason: loading ? ACCEPT_ALL_LOADING_VI : ACCEPT_ALL_BLOCKED_VI };
 }
@@ -325,24 +328,30 @@ export function reloadedFocus(pending: ConceptFocus | null, retried: boolean): C
 }
 
 /** Lý do khoá trên khái niệm đã ghi xong mà danh sách chưa đọc lại được (thẻ, dòng còn hiện dữ liệu cũ). */
-export const STALE_REASON_VI = "Đã ghi, chờ cập nhật danh sách. Bấm Thử lại ở dòng báo phía trên.";
+export const STALE_REASON_VI = "Đã ghi, đang cập nhật danh sách…";
+export const STALE_REASON_RETRY_VI = `${STALE_REASON_VI} Bấm Thử lại ở dòng báo phía trên.`;
 
-function staleGate(gate: ActionGate): ActionGate {
-  return gate.shown ? { shown: true, enabled: false, reason: STALE_REASON_VI } : gate;
+/** Câu lý do khoá: chỉ nhắc nút Thử lại khi dòng báo tải lỗi đang hiện (`reloadFailed`). */
+export function staleReason(reloadFailed: boolean): string {
+  return reloadFailed ? STALE_REASON_RETRY_VI : STALE_REASON_VI;
+}
+
+function staleGate(gate: ActionGate, reloadFailed: boolean): ActionGate {
+  return gate.shown ? { shown: true, enabled: false, reason: staleReason(reloadFailed) } : gate;
 }
 
 /**
  * Khái niệm đã ghi thành công nhưng danh sách chưa đọc lại được: mọi nút (Nhận, Bỏ, Sửa, Sửa tên, Nhận lại) đều khoá
  * kèm `STALE_REASON_VI` (bấm lại sẽ gửi phiên bản cũ). Nút đang ẩn vẫn ẩn. Mở lại khi danh sách tải lại thành công.
  */
-export function staleView(view: ConceptView): ConceptView {
+export function staleView(view: ConceptView, reloadFailed = false): ConceptView {
   return {
     ...view,
     stale: true,
     actions: {
-      edit: staleGate(view.actions.edit),
-      confirm: staleGate(view.actions.confirm),
-      reject: staleGate(view.actions.reject),
+      edit: staleGate(view.actions.edit, reloadFailed),
+      confirm: staleGate(view.actions.confirm, reloadFailed),
+      reject: staleGate(view.actions.reject, reloadFailed),
     },
   };
 }

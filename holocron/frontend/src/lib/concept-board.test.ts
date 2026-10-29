@@ -4,6 +4,7 @@ import {
   ACCEPT_ALL_BLOCKED_VI,
   ACCEPT_ALL_BUSY_VI,
   ACCEPT_ALL_LOADING_VI,
+  ACCEPT_ALL_STALE_RETRY_VI,
   ACCEPT_ALL_STALE_VI,
   acceptAllGate,
   acceptToast,
@@ -33,10 +34,12 @@ import {
   renameKeyAction,
   SOURCE_LOADING_REASON_VI,
   SOURCE_LOADING_VI,
+  STALE_REASON_RETRY_VI,
   STALE_REASON_VI,
   type StaleLocks,
   screenErrorText,
   sendQueued,
+  staleReason,
   staleReducer,
   staleView,
   visibleConceptEntrances,
@@ -577,8 +580,9 @@ describe("dòng báo tải lại lỗi và nút Thử lại", () => {
 describe("thẻ đã ghi mà danh sách chưa đọc lại được", () => {
   const ready = conceptView(pair("a", "proposed"), "complete", new Map([["chk_a", chunk("chk_a")]]));
 
-  it("khoá Nhận, Bỏ, Sửa kèm lý do 'Đã ghi, chờ cập nhật danh sách'", () => {
-    expect(STALE_REASON_VI.startsWith("Đã ghi, chờ cập nhật danh sách")).toBe(true);
+  it("khoá Nhận, Bỏ, Sửa kèm lý do 'Đã ghi, đang cập nhật danh sách'", () => {
+    expect(STALE_REASON_VI.startsWith("Đã ghi, đang cập nhật danh sách")).toBe(true);
+    expect(STALE_REASON_VI).not.toContain("Thử lại");
     const locked = staleView(ready);
     const gate = { shown: true, enabled: false, reason: STALE_REASON_VI };
     expect(locked.actions).toEqual({ edit: gate, confirm: gate, reject: gate });
@@ -614,6 +618,41 @@ describe("thẻ đã ghi mà danh sách chưa đọc lại được", () => {
       ]),
     ).toEqual({
       enabled: true,
+    });
+  });
+});
+
+describe("câu lý do khoá theo dòng báo tải lỗi", () => {
+  const ready = conceptView(pair("a", "proposed"), "complete", new Map([["chk_a", chunk("chk_a")]]));
+
+  it("chưa có dòng báo ⇒ không nhắc Thử lại; có dòng báo ⇒ nhắc Thử lại", () => {
+    expect(staleReason(false)).toBe(STALE_REASON_VI);
+    expect(staleReason(true)).toBe(STALE_REASON_RETRY_VI);
+    expect(STALE_REASON_RETRY_VI).toContain("Bấm Thử lại ở dòng báo phía trên.");
+    expect(staleView(ready, true).actions.confirm).toEqual({
+      shown: true,
+      enabled: false,
+      reason: STALE_REASON_RETRY_VI,
+    });
+    expect(staleView(ready, false).actions.confirm).toEqual({ shown: true, enabled: false, reason: STALE_REASON_VI });
+  });
+
+  it("Nhận tất cả: hai nhánh câu lý do", () => {
+    const entries = [{ view: staleView(ready), busy: false, stale: true }];
+    expect(acceptAllGate(entries)).toEqual({ enabled: false, reason: ACCEPT_ALL_STALE_VI });
+    expect(acceptAllGate(entries, true)).toEqual({ enabled: false, reason: ACCEPT_ALL_STALE_RETRY_VI });
+    expect(ACCEPT_ALL_STALE_VI).not.toContain("Thử lại");
+  });
+
+  it("thẻ thiếu đoạn nguồn không qua staleView mà đã ghi vẫn tính là chờ cập nhật", () => {
+    const missing = conceptView(pair("a", "proposed"), "complete", new Map());
+    expect(acceptAllGate([{ view: missing, busy: false, stale: true }])).toEqual({
+      enabled: false,
+      reason: ACCEPT_ALL_STALE_VI,
+    });
+    expect(acceptAllGate([{ view: missing, busy: false, stale: false }])).toEqual({
+      enabled: false,
+      reason: ACCEPT_ALL_BLOCKED_VI,
     });
   });
 });
@@ -683,6 +722,31 @@ describe("khoá chờ ngay khi ghi thành công", () => {
     locks = staleReducer(locks, { type: "requested", ids: [] });
     locks = staleReducer(locks, { type: "reloaded" });
     expect(ids(locks)).toEqual([]);
+  });
+
+  it("ghi, gửi lượt tải lại, ghi lại cùng khái niệm, tải lại ⇒ vẫn khoá (lượt tải sau không bỏ khoá khái niệm đã ghi lại)", () => {
+    let locks = staleReducer(NO_STALE, { type: "written", ids: ["a"] });
+    locks = staleReducer(locks, { type: "requested", ids: ["a"] });
+    locks = staleReducer(locks, { type: "written", ids: ["a"] });
+    locks = staleReducer(locks, { type: "reloaded" });
+    expect(ids(locks)).toEqual(["a"]);
+  });
+
+  it("lượt tải lại của khái niệm khác không gửi cho 'a' ⇒ tải lại mở khoá cả hai khi đã gửi đủ; thiếu thì giữ", () => {
+    let locks = staleReducer(NO_STALE, { type: "written", ids: ["a"] });
+    locks = staleReducer(locks, { type: "requested", ids: ["a", "c"] });
+    locks = staleReducer(locks, { type: "reloaded" });
+    expect(ids(locks)).toEqual([]);
+    expect(staleReducer(NO_STALE, { type: "requested", ids: [] })).toBe(NO_STALE);
+  });
+
+  it("khái niệm ghi sau lượt gửi trước vẫn khoá qua hai lượt tải lại liên tiếp nếu chưa được gửi", () => {
+    let locks = staleReducer(NO_STALE, { type: "written", ids: ["a"] });
+    locks = staleReducer(locks, { type: "requested", ids: ["a"] });
+    locks = staleReducer(locks, { type: "written", ids: ["b"] });
+    locks = staleReducer(locks, { type: "reloaded" });
+    locks = staleReducer(locks, { type: "reloaded" });
+    expect(ids(locks)).toEqual(["b"]);
   });
 
   it("không đổi thì trả đúng trạng thái cũ", () => {

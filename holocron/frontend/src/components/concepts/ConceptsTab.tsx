@@ -334,7 +334,7 @@ export function ConceptsTab({
   /** Cách hiện một thẻ đề xuất: thẻ đã ghi mà chờ cập nhật danh sách thì khoá mọi nút kèm lý do (như `toAccepted`). */
   function proposalView(pair: ConceptPair): ConceptView {
     const view = conceptView(pair, mapStatus, map);
-    return stale.has(pair.pair_id) ? staleView(view) : view;
+    return stale.has(pair.pair_id) ? staleView(view, reloadNote !== null) : view;
   }
 
   function retryReload(): void {
@@ -487,7 +487,7 @@ export function ConceptsTab({
   });
   const toAccepted = (pair: ConceptPair): AcceptedEntry => {
     const base = conceptView(pair, mapStatus, map);
-    const view = stale.has(pair.pair_id) ? staleView(base) : base;
+    const view = stale.has(pair.pair_id) ? staleView(base, reloadNote !== null) : base;
     return {
       pair,
       view,
@@ -499,6 +499,7 @@ export function ConceptsTab({
   };
   const allGate = acceptAllGate(
     proposalEntries.map((entry) => ({ view: entry.view, busy: entry.busy, stale: stale.has(entry.pair.pair_id) })),
+    reloadNote !== null,
   );
   const entrances = visibleConceptEntrances({ autoProposalAvailable: AUTO_PROPOSAL_AVAILABLE });
   const searchAvailable = !isCapabilityBlocked(freshRuntime(runtime), "vault_search");

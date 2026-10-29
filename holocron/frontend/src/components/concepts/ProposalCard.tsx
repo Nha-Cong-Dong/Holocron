@@ -173,9 +173,9 @@ export function ProposalCard({
   // "Lưu và nhận" ghi xong thì thẻ khoá chờ ngay: đóng khung sửa, focus về "Sửa" (đọc kèm lý do khoá).
   useEffect(() => {
     if (!view.stale || !editing) return;
-    returnFocus.current = true;
+    returnFocus.current = leaving === null;
     setEditing(false);
-  }, [view.stale, editing]);
+  }, [view.stale, editing, leaving]);
 
   const acceptReason = gateReason(view.actions.confirm);
   const editReason = gateReason(view.actions.edit);

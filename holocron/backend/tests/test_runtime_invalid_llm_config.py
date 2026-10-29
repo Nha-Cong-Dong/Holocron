@@ -125,8 +125,8 @@ _LLM_DETAIL = (
 )
 
 CAPS_LLM_ONLY: list[dict[str, str | bool | None]] = [
-    {"name": "ocr", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
-    {"name": "ocr_cross_check", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "ocr", "available": True, "reason": None, "detail_vi": None},
+    {"name": "ocr_cross_check", "available": True, "reason": None, "detail_vi": None},
     {"name": "vault_search", "available": True, "reason": None, "detail_vi": None},
     {"name": "theory_generation", "available": True, "reason": None, "detail_vi": None},
     {"name": "concept_pair_llm_proposal", "available": True, "reason": None, "detail_vi": None},
@@ -140,8 +140,8 @@ CAPS_LLM_ONLY: list[dict[str, str | bool | None]] = [
 ]
 
 CAPS_NO_LLM: list[dict[str, str | bool | None]] = [
-    {"name": "ocr", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
-    {"name": "ocr_cross_check", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "ocr", "available": True, "reason": None, "detail_vi": None},
+    {"name": "ocr_cross_check", "available": True, "reason": None, "detail_vi": None},
     {"name": "vault_search", "available": True, "reason": None, "detail_vi": None},
     {"name": "theory_generation", "available": True, "reason": None, "detail_vi": None},
     {"name": "concept_pair_llm_proposal", "available": False, "reason": "llm_not_configured", "detail_vi": _LLM_DETAIL},

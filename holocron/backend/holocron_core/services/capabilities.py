@@ -8,7 +8,8 @@ https…) được `routers/deps.get_runtime_config` nạp như chưa cấu hìn
 (`routers/runtime.py`, trường `capabilities`).
 
 Thứ tự xét lý do cho mỗi khả năng: chưa có code trong bản đang chạy (`not_implemented`) → thiếu cấu hình LLM/VLM →
-lỗi kiểm cục bộ do tầng gọi cấp (binary Tesseract, unicharset, lượt đọc thứ hai) → khả dụng.
+lỗi kiểm cục bộ do tầng gọi cấp (binary Tesseract, gói `vie`, lượt đọc thứ hai; `services/capability_checks.py`)
+→ khả dụng.
 """
 
 from __future__ import annotations
@@ -18,9 +19,12 @@ from collections.abc import Collection, Mapping
 from ..domain.capabilities import CAPABILITY_NAMES, Capability, CapabilityError, CapabilityName, CapabilityReason
 from ..infrastructure.llm_config import RuntimeConfig
 
-# Khả năng đã có code trên nhánh này. Bộ nhập PDF (OCR), chấm tự luận, `TemplateAuthor` thật và adapter VLM chưa có.
+# Khả năng đã có code trên nhánh này. OCR đã có: bộ nhập PDF đọc bằng Tesseract (`ocr`) và lượt đọc thứ hai RapidOCR
+# (`ocr_cross_check`); máy thiếu binary, thiếu `vie` hay tắt lượt thứ hai được báo qua `local_failures`
+# (`services/capability_checks.py`, kiểm một lần lúc khởi động). Chấm tự luận, `TemplateAuthor` thật và adapter VLM
+# chưa có.
 IMPLEMENTED_CAPABILITIES: frozenset[CapabilityName] = frozenset(
-    {"vault_search", "theory_generation", "concept_pair_llm_proposal"}
+    {"ocr", "ocr_cross_check", "vault_search", "theory_generation", "concept_pair_llm_proposal"}
 )
 LLM_CAPABILITIES: frozenset[CapabilityName] = frozenset(
     {"concept_pair_llm_proposal", "essay_grading_llm", "template_authoring_llm"}

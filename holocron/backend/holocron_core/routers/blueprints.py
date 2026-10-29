@@ -31,6 +31,7 @@ from ..domain.vault import SUBJECT_CODE_PATTERN
 from ..services.capabilities import compute_capabilities, unavailable_error
 from ..services.twin_batch import generate_twin_batch
 from .deps import REGISTRY, AuthorDep, CitationDep, ClockDep, RuntimeConfigDep, StoreDep, VaultDep
+from .runtime import LocalFailuresDep
 
 router = APIRouter()
 
@@ -67,6 +68,7 @@ def create_blueprint(
     vault: VaultDep,
     clock: ClockDep,
     config: RuntimeConfigDep,
+    local_failures: LocalFailuresDep,
     body: BlueprintCreate,
     response: Response,
 ) -> ExamBlueprint:
@@ -82,7 +84,7 @@ def create_blueprint(
     exam_format = subject.exam_format if subject is not None else ExamFormat.MIXED
     formats = [_slot_format(spec, exam_format) for spec in body.theory_slots]
     if QuestionFormat.ESSAY in formats:
-        error = unavailable_error(compute_capabilities(config), "essay_grading_offline")
+        error = unavailable_error(compute_capabilities(config, local_failures=local_failures), "essay_grading_offline")
         if error is not None:
             raise HTTPException(status_code=409, detail=error.model_dump(mode="json"))
     now = clock()

@@ -40,6 +40,8 @@ TSV_COLUMNS = 12
 TSV_WORD_LEVEL = 5
 
 RunStatus = Literal["ok", "timeout", "overflow", "failed"]
+# Kết quả kiểm Tesseract khi khởi động (`TesseractEngine.probe_status`).
+ProbeStatus = Literal["ok", "engine_missing", "language_missing"]
 
 
 @dataclass(frozen=True)
@@ -352,20 +354,37 @@ class TesseractEngine:
 
         Đầu ra của mỗi lệnh kiểm đọc tối đa `max_output_bytes` (`PdfReaderConfig.ocr_probe_max_bytes`).
         """
+        engine, status = cls.probe_status(settings, timeout_s, run, max_output_bytes=max_output_bytes)
+        return engine if status == "ok" else None
+
+    @classmethod
+    def probe_status(
+        cls,
+        settings: OcrSettings,
+        timeout_s: float,
+        run: Runner = run_bounded,
+        *,
+        max_output_bytes: int = DEFAULT_OCR_PROBE_MAX_BYTES,
+    ) -> tuple[TesseractEngine, ProbeStatus]:
+        """Như `probe` (cùng lệnh, cùng thứ tự, mỗi lệnh chạy đúng một lần) nhưng nói rõ lý do.
+
+        `--version` không chạy được ⇒ "engine_missing"; `--list-langs` lỗi, sai UTF-8 hoặc không có `vie` ⇒
+        "language_missing".
+        """
         engine = cls(command=settings.tesseract_cmd, tessdata_dir=settings.tessdata_dir, run=run)
         limit = max_output_bytes
         if run([engine.command, "--version"], b"", timeout_s, limit).status != "ok":
-            return None
+            return engine, "engine_missing"
         listing = run([engine.command, "--list-langs", *engine._tessdata_args()], b"", timeout_s, limit)
         if listing.status != "ok":
-            return None
+            return engine, "language_missing"
         try:
             languages = listing.stdout.decode("utf-8").splitlines()[1:]
         except UnicodeDecodeError:
-            return None
+            return engine, "language_missing"
         if TESSERACT_LANGUAGE not in {language.strip() for language in languages}:
-            return None
-        return engine
+            return engine, "language_missing"
+        return engine, "ok"
 
     def recognize(
         self, png: bytes, image: GrayImage, config: PdfReaderConfig

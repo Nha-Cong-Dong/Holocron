@@ -3,11 +3,14 @@
 Chạy MỘT LẦN lúc khởi động app (tầng router gắn kết quả vào `app.state`); không gọi mạng. Kết quả là đối số
 `local_failures` của `services.capabilities.compute_capabilities`.
 
-- `probe_tesseract`: chạy binary Tesseract qua cơ chế probe sẵn có (`TesseractEngine.probe`, `--version` rồi
-  `--list-langs`, không qua shell, có timeout và giới hạn byte đầu ra theo `PdfReaderConfig`). Probe đó gộp "không
-  chạy được binary" và "thiếu `vie`" thành `None`; khi đó chạy lại `--version` để phân biệt hai lý do.
-- `local_capability_failures`: hàm thuần từ kết quả probe và `OcrSettings` sang lý do không khả dụng.
-- `check_local_capabilities`: nạp cấu hình OCR rồi probe; probe và bộ nạp cấu hình là tham số để test thay được.
+- `probe_tesseract`: chạy binary Tesseract qua cơ chế probe của worker (`TesseractEngine.probe_status`: `--version`
+  rồi `--list-langs`, mỗi lệnh một lần, không qua shell, timeout, giới hạn byte đầu ra và thời gian chờ sau khi kill
+  lấy từ `PdfReaderConfig` của app). Lý do của probe phân biệt "không chạy được binary" với "thiếu `vie`".
+- `secondary_ocr_loads`: nạp lượt đọc thứ hai bằng đúng bộ nạp worker dùng (`RapidOcrBackend.load`), một lần, có
+  bắt lỗi; đối tượng đã nạp không được giữ lại.
+- `local_capability_failures`: hàm thuần từ kết quả kiểm và `OcrSettings` sang lý do không khả dụng.
+- `check_local_capabilities`: nạp cấu hình OCR, probe, rồi nạp lượt thứ hai khi cần; bộ nạp cấu hình, probe và bộ
+  nạp lượt thứ hai là tham số để test thay được.
 """
 
 from __future__ import annotations
@@ -20,11 +23,23 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict
 
 from ..domain.capabilities import CapabilityName, CapabilityReason
-from ..infrastructure.document_readers.config import OcrSettings, PdfReaderConfig
+from ..infrastructure.document_readers.config import (
+    ENV_PDF_OCR_PRIMARY,
+    ENV_PDF_OCR_SECONDARY,
+    OcrSettings,
+    PdfReaderConfig,
+)
+from ..infrastructure.document_readers.rapidocr_adapter import BUILTIN_ERRORS
 from ..infrastructure.document_readers.tesseract import Runner, TesseractEngine, run_bounded
 from ..infrastructure.llm_config import ConfigError
 
 _LOGGER = logging.getLogger(__name__)
+
+# Thông điệp cố định khi cấu hình OCR sai: chỉ nêu tên biến, KHÔNG chép thông điệp của `ConfigError` (có thể chứa
+# giá trị người dùng đặt).
+INVALID_OCR_CONFIG_LOG = (
+    f"không kiểm được OCR lúc khởi động: cấu hình OCR không hợp lệ (xem {ENV_PDF_OCR_PRIMARY}, {ENV_PDF_OCR_SECONDARY})"
+)
 
 
 class OcrProbeResult(BaseModel):
@@ -39,35 +54,53 @@ class OcrProbeResult(BaseModel):
 class OcrProber(Protocol):
     """Kiểm engine OCR chính theo cấu hình; test thay bằng probe giả để không phụ thuộc máy chạy test."""
 
-    def __call__(self, settings: OcrSettings, /) -> OcrProbeResult: ...
+    def __call__(self, settings: OcrSettings, config: PdfReaderConfig, /) -> OcrProbeResult: ...
 
 
-def probe_tesseract(
-    settings: OcrSettings, config: PdfReaderConfig | None = None, run: Runner | None = None
-) -> OcrProbeResult:
-    """Kiểm binary Tesseract và gói `vie` bằng `TesseractEngine.probe` (cùng timeout, giới hạn byte của bộ đọc PDF).
+# Bộ nạp lượt đọc thứ hai: trả đối tượng engine, hoặc None khi thiếu gói/model hay khởi tạo lỗi.
+SecondaryLoader = Callable[[], object | None]
+# Lỗi khi nạp lượt thứ hai được tính là "nạp hỏng" thay vì làm app thôi khởi động: lỗi chuẩn mà adapter RapidOCR
+# cũng bắt (gồm `OSError` khi thiếu DLL, `MemoryError`) và `ImportError` (gói nhị phân hỏng giữa chừng import).
+SECONDARY_LOAD_ERRORS: tuple[type[Exception], ...] = (*BUILTIN_ERRORS, ImportError)
 
-    `run` mặc định là `run_bounded` với thời gian chờ sau khi kill lấy từ `config.ocr_kill_grace_s`.
+
+def probe_tesseract(settings: OcrSettings, config: PdfReaderConfig, run: Runner | None = None) -> OcrProbeResult:
+    """Kiểm binary Tesseract và gói `vie` bằng `TesseractEngine.probe_status` (cùng giới hạn với worker).
+
+    `run` mặc định là `run_bounded` với thời gian chờ sau khi kill lấy từ `config.ocr_kill_grace_s`; timeout và giới
+    hạn byte đầu ra lấy từ `config.ocr_probe_timeout_s`, `config.ocr_probe_max_bytes`.
     """
-    reader_config = PdfReaderConfig() if config is None else config
-    runner: Runner = (
-        run if run is not None else functools.partial(run_bounded, kill_grace_s=reader_config.ocr_kill_grace_s)
+    runner: Runner = run if run is not None else functools.partial(run_bounded, kill_grace_s=config.ocr_kill_grace_s)
+    _, status = TesseractEngine.probe_status(
+        settings, config.ocr_probe_timeout_s, runner, max_output_bytes=config.ocr_probe_max_bytes
     )
-    timeout_s = reader_config.ocr_probe_timeout_s
-    limit = reader_config.ocr_probe_max_bytes
-    if TesseractEngine.probe(settings, timeout_s, runner, max_output_bytes=limit) is not None:
-        return OcrProbeResult(engine_runs=True, vie_available=True)
-    version = runner([settings.tesseract_cmd, "--version"], b"", timeout_s, limit)
-    return OcrProbeResult(engine_runs=version.status == "ok", vie_available=False)
+    return OcrProbeResult(engine_runs=status != "engine_missing", vie_available=status == "ok")
+
+
+def secondary_ocr_loads(load: SecondaryLoader) -> bool:
+    """Nạp lượt đọc thứ hai một lần; trả về nạp được hay không.
+
+    `RapidOcrBackend.load` tự trả None khi thiếu gói, thiếu model hoặc khởi tạo lỗi; lỗi thuộc
+    `SECONDARY_LOAD_ERRORS` lọt ra (thiếu DLL khi import, hết bộ nhớ) cũng tính là nạp hỏng. Cảnh báo chỉ ghi tên
+    lớp lỗi, không ghi thông điệp.
+    """
+    try:
+        engine = load()
+    except SECONDARY_LOAD_ERRORS as exc:
+        _LOGGER.warning("không nạp được lượt đọc thứ hai lúc khởi động (%s)", type(exc).__name__)
+        return False
+    return engine is not None
 
 
 def local_capability_failures(
-    probe_result: OcrProbeResult, settings: OcrSettings
+    probe_result: OcrProbeResult, settings: OcrSettings, *, secondary_loaded: bool
 ) -> dict[CapabilityName, CapabilityReason]:
     """Lý do không khả dụng của `ocr` và `ocr_cross_check`; khả năng không có trong kết quả là khả dụng.
 
-    OCR chính hỏng thì `ocr_cross_check` mang cùng lý do (lượt thứ hai chỉ chạy khi có lượt chính); OCR chính chạy
-    được mà `settings.secondary` để trống ⇒ `secondary_ocr_disabled`.
+    OCR chính hỏng thì `ocr_cross_check` mang cùng lý do (lượt thứ hai chỉ chạy khi có lượt chính). OCR chính chạy
+    được mà `settings.secondary` để trống, hoặc lượt thứ hai không nạp được (`secondary_loaded` sai) ⇒
+    `secondary_ocr_disabled`: `CapabilityReason` chưa có mã riêng cho "nạp hỏng", và với worker hai trường hợp như
+    nhau (trang không có lượt đối chiếu, `cross_check = unavailable`).
     """
     primary: CapabilityReason | None = None
     if not probe_result.engine_runs:
@@ -76,23 +109,29 @@ def local_capability_failures(
         primary = "ocr_language_missing"
     if primary is not None:
         return {"ocr": primary, "ocr_cross_check": primary}
-    if settings.secondary is None:
+    if settings.secondary is None or not secondary_loaded:
         return {"ocr_cross_check": "secondary_ocr_disabled"}
     return {}
 
 
 def check_local_capabilities(
-    load_settings: Callable[[], OcrSettings], prober: OcrProber
+    load_settings: Callable[[], OcrSettings],
+    prober: OcrProber,
+    load_secondary: SecondaryLoader,
+    config: PdfReaderConfig,
 ) -> dict[CapabilityName, CapabilityReason]:
-    """Nạp cấu hình OCR rồi probe một lần.
+    """Nạp cấu hình OCR, probe Tesseract một lần với `config` của app, rồi nạp lượt thứ hai khi cần.
 
     Cấu hình OCR sai (`ConfigError`) ⇒ bộ đọc PDF chạy không có OCR (trang cần OCR thành `OCR_ENGINE_MISSING`),
-    nên cả hai khả năng OCR báo `ocr_engine_missing`; ghi cảnh báo chỉ gồm thông điệp lỗi (tên biến, không nêu giá
-    trị) và không probe.
+    nên cả hai khả năng OCR báo `ocr_engine_missing`; ghi cảnh báo cố định (chỉ tên biến) và không probe. Lượt thứ
+    hai chỉ được nạp khi OCR chính dùng được và `settings.secondary` bật (cùng điều kiện worker dùng nó).
     """
     try:
         settings = load_settings()
-    except ConfigError as exc:
-        _LOGGER.warning("không kiểm được OCR lúc khởi động: %s", exc)
+    except ConfigError:
+        _LOGGER.warning(INVALID_OCR_CONFIG_LOG)
         return {"ocr": "ocr_engine_missing", "ocr_cross_check": "ocr_engine_missing"}
-    return local_capability_failures(prober(settings), settings)
+    probe_result = prober(settings, config)
+    primary_ready = probe_result.engine_runs and probe_result.vie_available
+    secondary_loaded = primary_ready and settings.secondary is not None and secondary_ocr_loads(load_secondary)
+    return local_capability_failures(probe_result, settings, secondary_loaded=secondary_loaded)

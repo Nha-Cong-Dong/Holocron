@@ -15,7 +15,7 @@ from holocron_core.domain.schemas import (
     QuestionFormat,
     SelfSolveResult,
 )
-from holocron_core.infrastructure.document_readers.config import OcrSettings
+from holocron_core.infrastructure.document_readers.config import OcrSettings, PdfReaderConfig
 from holocron_core.routers import access, runtime
 from holocron_core.routers.access import DEFAULT_ALLOWED_HOSTS, ProviderOverrides, get_allowed_hosts
 from holocron_core.routers.api import app
@@ -131,8 +131,8 @@ def allow_testserver_host() -> Iterator[None]:
         yield
 
 
-def _no_local_failures() -> dict[CapabilityName, CapabilityReason]:
-    """Bộ kiểm cục bộ giả: máy có Tesseract, có `vie`, lượt đọc thứ hai bật."""
+def _no_local_failures(config: PdfReaderConfig, /) -> dict[CapabilityName, CapabilityReason]:
+    """Bộ kiểm cục bộ giả: máy có Tesseract, có `vie`, lượt đọc thứ hai bật và nạp được."""
     return {}
 
 
@@ -144,8 +144,12 @@ def _fake_ocr_settings() -> OcrSettings:
     return OcrSettings(tesseract_cmd="tesseract", tessdata_dir=None, secondary="rapidocr")
 
 
-def _fake_probe(settings: OcrSettings, /) -> OcrProbeResult:
+def _fake_probe(settings: OcrSettings, config: PdfReaderConfig, /) -> OcrProbeResult:
     return OcrProbeResult(engine_runs=True, vie_available=True)
+
+
+def _fake_load_secondary() -> object:
+    return object()
 
 
 @pytest.fixture(autouse=True)
@@ -154,14 +158,15 @@ def fake_local_capability_check() -> Iterator[None]:
 
     `app` nhận override `get_local_capability_check`. App dựng mới trong test (chỉ gắn vài router, không có override
     của `app`) dùng bộ kiểm mặc định, nên bộ nạp cấu hình OCR và probe mà bộ kiểm mặc định gọi cũng được thay bằng
-    bản giả (máy có Tesseract, có `vie`, lượt đọc thứ hai bật). Kết quả kiểm lưu ở `app.state` (một lần mỗi lần khởi
-    động); bỏ trước và sau mỗi test để test sau không thấy kết quả của test trước. Test cần kết quả khác thì đặt
-    override riêng cho `get_local_capability_check`.
+    bản giả (máy có Tesseract, có `vie`, lượt đọc thứ hai bật); bộ nạp RapidOCR cũng là bản giả (không nạp model
+    thật). Kết quả kiểm lưu ở `app.state` (một lần mỗi lần khởi động); bỏ trước và sau mỗi test để test sau không
+    thấy kết quả của test trước. Test cần kết quả khác thì đặt override riêng cho `get_local_capability_check`.
     """
     clear_local_capability_check(app)
     with pytest.MonkeyPatch.context() as patch:
         patch.setitem(app.dependency_overrides, get_local_capability_check, _fake_local_capability_check)
         patch.setattr(runtime, "load_ocr_settings", _fake_ocr_settings)
         patch.setattr(runtime, "probe_tesseract", _fake_probe)
+        patch.setattr(runtime, "load_secondary_ocr", _fake_load_secondary)
         yield
     clear_local_capability_check(app)

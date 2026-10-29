@@ -114,15 +114,17 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     sau trong cùng tiến trình (test, `--reload`) mở lại kết nối mới thay vì dùng kết nối đã đóng. Kho in-memory
     không có gì để đóng.
 
-    Kiểm cục bộ của chế độ khả năng (Tesseract, gói `vie`, lượt đọc thứ hai; §5.12) chạy một lần ở đây, kết quả gắn
-    vào `app.state` cho `GET /v1/runtime` và các route cần khả năng; bỏ khi tắt app để lần khởi động sau kiểm lại.
+    Kiểm cục bộ của chế độ khả năng (Tesseract, gói `vie`, lượt đọc thứ hai; §5.12) chạy một lần ở đây, ngay sau khi
+    tạo bộ nhập và với đúng `reader_config` của bộ nhập (cùng giới hạn probe với worker), trước khi xếp lại tài liệu
+    đọc dở; kết quả gắn vào `app.state` cho `GET /v1/runtime` và các route cần khả năng; bỏ khi tắt app để lần khởi
+    động sau kiểm lại.
     """
     store = get_store()
     import_runtime: ImportRuntime | None = None
     try:
-        runtime.run_local_capability_check(application)
         import_runtime = documents.create_import_runtime(data_dir_from_env())
         setattr(application.state, documents.RUNTIME_STATE_ATTR, import_runtime)
+        runtime.run_local_capability_check(application, import_runtime.reader_config)
         documents.requeue_on_startup(store, import_runtime)
         yield
     finally:

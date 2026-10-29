@@ -1155,9 +1155,14 @@ CapabilityReason = Literal[        # danh sách mã lý do: duyệt 2026-10-26 (
     "vlm_not_configured",           # thiếu một trong ba biến HOLOCRON_VLM_*
     "ocr_engine_missing",           # không chạy được binary Tesseract
     "ocr_language_missing",         # thiếu vie.traineddata hoặc unicharset thiếu chữ tiếng Việt ngoài OCR_CHARSET_ALLOWED_MISSING (ADR-008 mục 14)
-    "secondary_ocr_disabled",       # HOLOCRON_PDF_OCR_SECONDARY rỗng
+    "secondary_ocr_disabled",       # CHỈ khi HOLOCRON_PDF_OCR_SECONDARY để trống
     "not_implemented",              # code của khả năng này chưa có trong bản đang chạy
+    "secondary_ocr_unavailable",    # (duyệt 2026-10-29) muốn bật lượt đọc thứ hai nhưng không nạp được RapidOCR (bản rút gọn không kèm, thiếu gói, model hỏng); kiểm trong tiến trình con có giới hạn lúc khởi động
 ]
+# detail_vi của secondary_ocr_unavailable (duyệt 2026-10-29, nguyên văn): "Không nạp được lượt đọc thứ hai (RapidOCR) trên máy này.
+# Bản rút gọn không kèm RapidOCR: dùng bản đầy đủ. Nếu đang dùng bản đầy đủ, cài lại ứng dụng."
+# Kiểm khả năng `ocr` (duyệt 2026-10-29): không xác định được thư mục tessdata (Tesseract 4.x không in thư mục) ⇒ bỏ qua
+# kiểm unicharset, chỉ kiểm `vie` có trong danh sách ngôn ngữ.
 
 class Capability(StrictModel):
     name: CapabilityName            # code
@@ -2022,7 +2027,7 @@ Quy tắc "503 khi thiếu key" của v0.5 bị bỏ. Thay vào đó, `GET /v1/r
 | Khả năng | Cần | Endpoint hoặc luồng bị ảnh hưởng | Khi không khả dụng |
 |---|---|---|---|
 | `ocr` | Tesseract + `vie.traineddata` đủ chữ | Trang scan trong `POST /v1/documents` (§6.5) | Trang scan thành `failed` (`OCR_ENGINE_MISSING`). Trang `failed` không sửa và không xác nhận được trong MVP (duyệt 2026-10-26, §5.7, §6.5): người dùng cài Tesseract và `vie.traineddata`, rồi xoá tài liệu và nhập lại. Trang có lớp chữ vẫn đọc ở tầng 1 |
-| `ocr_cross_check` | RapidOCR, `HOLOCRON_PDF_OCR_SECONDARY` khác rỗng | Đối chiếu chéo trang OCR (§7.4) | `cross_check = unavailable` ⇒ WARNING `CROSS_CHECK_UNAVAILABLE`, ô số không AUTO_PASS |
+| `ocr_cross_check` | RapidOCR nạp được (kiểm trong tiến trình con có giới hạn lúc khởi động; không nạp được ⇒ `secondary_ocr_unavailable`), `HOLOCRON_PDF_OCR_SECONDARY` khác rỗng (để trống ⇒ `secondary_ocr_disabled`) (duyệt 2026-10-29) | Đối chiếu chéo trang OCR (§7.4) | `cross_check = unavailable` ⇒ WARNING `CROSS_CHECK_UNAVAILABLE`, ô số không AUTO_PASS |
 | `vault_search` | Không gì ngoài code (FTS5 hoặc BM25 tự cài) | `GET /v1/vault/search` (§6.6) | Luôn khả dụng khi đã có code |
 | `theory_generation` | Không gì ngoài code | Slot lý thuyết `MCQ4` trong `POST …/twins` | Luôn khả dụng khi đã có code; thiếu cặp đã xác nhận thì `ReviewTicket` như ADR-007 |
 | `concept_pair_llm_proposal` | LLM đã cấu hình | `POST /v1/vault/concept-pairs/propose` (§6.6) | 409 `CapabilityError`, không gọi mạng (duyệt 2026-10-27); người dùng tự tạo cặp bằng `POST /v1/vault/concept-pairs` |

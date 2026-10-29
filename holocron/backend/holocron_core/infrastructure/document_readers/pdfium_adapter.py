@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ctypes
 import importlib
+import itertools
 from collections.abc import Iterable
 from types import ModuleType
 from typing import Literal, Self
@@ -23,6 +24,10 @@ from .raster import POINTS_PER_INCH, GrayImage, pack_rows, render_scale
 from .text_layer import PdfBox, PdfChar, group_lines
 
 OpenFailure = Literal["PASSWORD_REQUIRED", "OPEN_FAILED"]
+
+# Trần số hộp ảnh của một trang khi tính diện tích hợp (`union_area_ratio`); vượt trần dùng cận trên là tổng diện
+# tích. Trang scan cắt thành dải vẫn đúng vì các dải không chồng nhau (tổng = hợp).
+MAX_UNION_BOXES = 256
 
 _HIGH_SURROGATES = range(0xD800, 0xDC00)
 _LOW_SURROGATES = range(0xDC00, 0xE000)
@@ -51,16 +56,60 @@ def _as_box(value: object) -> PdfBox:
     return (left, bottom, right, top)
 
 
-def _area_ratio(boxes: list[PdfBox], page_box: PdfBox) -> float:
-    """Tổng diện tích các hộp (cắt theo khổ trang) chia diện tích trang, chặn ở 1."""
+def _page_area(page_box: PdfBox) -> float:
     left, bottom, right, top = page_box
-    page_area = max((right - left) * (top - bottom), 1e-9)
-    total = 0.0
+    return max((right - left) * (top - bottom), 1e-9)
+
+
+def _clip_boxes(boxes: list[PdfBox], page_box: PdfBox) -> list[PdfBox]:
+    """Cắt các hộp theo khổ trang, bỏ hộp rỗng hoặc nằm hẳn ngoài trang."""
+    left, bottom, right, top = page_box
+    clipped: list[PdfBox] = []
     for bl, bb, br, bt in boxes:
-        width = max(0.0, min(br, right) - max(bl, left))
-        height = max(0.0, min(bt, top) - max(bb, bottom))
-        total += width * height
-    return min(1.0, total / page_area)
+        box = (max(bl, left), max(bb, bottom), min(br, right), min(bt, top))
+        if box[2] > box[0] and box[3] > box[1]:
+            clipped.append(box)
+    return clipped
+
+
+def _area_ratio(boxes: list[PdfBox], page_box: PdfBox) -> float:
+    """Tổng diện tích các hộp (cắt theo khổ trang) chia diện tích trang, chặn ở 1 (cận trên của độ phủ)."""
+    total = sum((br - bl) * (bt - bb) for bl, bb, br, bt in _clip_boxes(boxes, page_box))
+    return min(1.0, total / _page_area(page_box))
+
+
+def _covered_length(spans: list[tuple[float, float]]) -> float:
+    """Độ dài hợp của các đoạn `[low, high]` đã sắp theo `low`."""
+    covered = 0.0
+    current_low, current_high = spans[0]
+    for low, high in spans[1:]:
+        if low > current_high:
+            covered += current_high - current_low
+            current_low, current_high = low, high
+        else:
+            current_high = max(current_high, high)
+    return covered + current_high - current_low
+
+
+def union_area_ratio(boxes: list[PdfBox], page_box: PdfBox) -> float:
+    """Diện tích HỢP của các hộp (cắt theo khổ trang) chia diện tích trang, ∈ [0, 1] (ADR-008 mục 6).
+
+    Hai ảnh chồng lên nhau chỉ được tính một lần, nên độ phủ không bị thổi lên bởi ảnh xếp lớp (ảnh nền khung slide
+    vẽ hai lần, ảnh đè lên nền). Quét theo các dải dọc giữa hai mép trái/phải liên tiếp: O(n² log n) với n hộp. Quá
+    `MAX_UNION_BOXES` hộp thì trả tổng diện tích chặn ở 1 (`_area_ratio`), là cận trên: trang nhiều ảnh bị coi là
+    phủ nhiều hơn thực tế, nghiêng về OCR (có người xem lại) thay vì giữ lớp chữ. Không tính vùng cắt (clip path)
+    của ảnh: hộp là khung bao của đối tượng ảnh.
+    """
+    clipped = _clip_boxes(boxes, page_box)
+    if len(clipped) > MAX_UNION_BOXES:
+        return _area_ratio(clipped, page_box)
+    edges = sorted({x for box in clipped for x in (box[0], box[2])})
+    total = 0.0
+    for x_low, x_high in itertools.pairwise(edges):
+        spans = sorted((box[1], box[3]) for box in clipped if box[0] <= x_low and box[2] >= x_high)
+        if spans:
+            total += (x_high - x_low) * _covered_length(spans)
+    return min(1.0, total / _page_area(page_box))
 
 
 def decode_code_units(codes: list[int]) -> list[tuple[str, int]]:
@@ -119,7 +168,7 @@ class PdfiumDocument:
             width_pt=width_pt,
             height_pt=height_pt,
             lines=group_lines(chars, page_box, rotation),
-            image_area_ratio=_area_ratio(image_boxes, page_box),
+            image_area_ratio=union_area_ratio(image_boxes, page_box),
             path_area_ratio=_area_ratio(path_boxes, page_box),
         )
 

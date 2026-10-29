@@ -2,7 +2,8 @@
 
 Viết tay cú pháp PDF tối thiểu, không dùng tài liệu thật nào (tài liệu môn học có bản quyền nằm ngoài repo).
 Hỗ trợ: chữ bằng font chuẩn Helvetica (WinAnsi, ký tự Latin-1) và Symbol, ảnh 1x1 kéo giãn, ảnh xám tuỳ ý (nén
-Flate, dùng làm trang scan giả lập), khung chữ nhật, xoay trang, và mã hoá RC4 40-bit (Standard Security Handler R2) để thử PDF có mật khẩu.
+Flate, dùng làm trang scan giả lập), khung chữ nhật, xoay trang, và mã hoá RC4 40-bit (Standard Security Handler R2)
+để thử PDF có mật khẩu.
 """
 
 from __future__ import annotations

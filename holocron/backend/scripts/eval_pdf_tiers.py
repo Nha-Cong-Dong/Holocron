@@ -173,24 +173,31 @@ def markdown(reports: list[DirReport], config: PdfReaderConfig, max_chars: int, 
 def evaluate_file(backend: PdfiumBackend, path: Path, config: PdfReaderConfig) -> list[PageRow] | str:
     """Các dòng của một PDF, hoặc lý do bỏ qua file.
 
-    Áp cùng trần của app (`config.max_bytes`, `config.max_pages`) trước khi đọc. PDF hỏng giữa chừng (PDFium báo
-    lỗi, dữ liệu sai kiểu, trang vượt giới hạn của protocol) chỉ làm bỏ qua file đó, không dừng cả lượt đo.
+    Áp cùng trần của app (`config.max_bytes`, `config.max_pages`): file được đọc MỘT lần, tối đa `max_bytes + 1`
+    byte, rồi mới kiểm kích thước. File không đọc được hoặc PDF hỏng giữa chừng (PDFium báo lỗi, dữ liệu sai kiểu,
+    trang vượt giới hạn của protocol) chỉ làm bỏ qua file đó, không dừng cả lượt đo. Chỉ bắt lỗi quanh phần đọc và mở
+    PDF; lỗi khi tính dòng số liệu (`page_row`) là lỗi của script, không bị nuốt.
     """
     try:
-        size = path.stat().st_size
-        if size > config.max_bytes:
-            return f"TOO_LARGE: {size} > {config.max_bytes} byte"
-        document = backend.open(path.read_bytes())
+        with path.open("rb") as handle:
+            data = handle.read(config.max_bytes + 1)
+    except OSError as exc:
+        return f"READ_FAILED: {type(exc).__name__}"
+    if len(data) > config.max_bytes:
+        return f"TOO_LARGE: > {config.max_bytes} byte"
+    try:
+        document = backend.open(data)
         if isinstance(document, str):
             return document
         with document:
             count = document.page_count()
             if count > config.max_pages:
                 return f"TOO_MANY_PAGES: {count} > {config.max_pages} trang"
-            return [page_row(path.name, document.read_page(index), config) for index in range(count)]
+            raws = [document.read_page(index) for index in range(count)]
     # `PdfiumError` và `PdfiumDataError` là `RuntimeError`; `ValidationError` của pydantic là `ValueError`.
     except (RuntimeError, ValueError, OSError, TypeError, KeyError, IndexError) as exc:
         return f"READ_FAILED: {type(exc).__name__}"
+    return [page_row(path.name, raw, config) for raw in raws]
 
 
 def evaluate_dir(backend: PdfiumBackend, pdf_dir: Path, config: PdfReaderConfig) -> DirReport:

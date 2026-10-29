@@ -25,8 +25,9 @@ from .text_layer import PdfBox, PdfChar, group_lines
 
 OpenFailure = Literal["PASSWORD_REQUIRED", "OPEN_FAILED"]
 
-# Trần số hộp ảnh của một trang khi tính diện tích hợp (`union_area_ratio`); vượt trần dùng cận trên là tổng diện
-# tích. Trang scan cắt thành dải vẫn đúng vì các dải không chồng nhau (tổng = hợp).
+# Giới hạn hiệu năng: số hộp ảnh tối đa của một trang khi tính diện tích hợp (`union_area_ratio`, O(n² log n)).
+# Vượt trần thì dùng cận trên là tổng diện tích, nghiêng về OCR (có người xem lại). Trang scan cắt thành dải vẫn đúng
+# vì các dải không chồng nhau (tổng = hợp).
 MAX_UNION_BOXES = 256
 
 _HIGH_SURROGATES = range(0xD800, 0xDC00)

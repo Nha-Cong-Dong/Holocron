@@ -113,3 +113,17 @@ def test_image_overflowing_the_page_is_clipped() -> None:
     assert raw.image_area_ratio == pytest.approx(0.25, abs=1e-3)
     raw = _read(build_pdf([Page(images=[Box(-100.0, -100.0, 812.0, 992.0), Box(0.0, 0.0, 612.0, 792.0)])]))
     assert raw.image_area_ratio == pytest.approx(1.0)
+
+
+def test_horizontal_gap_between_boxes_is_empty_strip() -> None:
+    # Dải x trống giữa hai hộp rời nhau theo chiều ngang không đóng góp gì (và không gây lỗi).
+    assert union_area_ratio([(0.0, 0.0, 10.0, 10.0), (50.0, 0.0, 60.0, 10.0)], (0.0, 0.0, 100.0, 100.0)) == (
+        pytest.approx(0.02)
+    )
+
+
+def test_union_box_cap_is_pinned() -> None:
+    assert MAX_UNION_BOXES == 256
+    tiny = (0.0, 0.0, 1.0, 1.0)
+    assert union_area_ratio([tiny] * 256, PAGE) == pytest.approx(0.0001)  # vẫn tính diện tích hợp
+    assert union_area_ratio([tiny] * 257, PAGE) == pytest.approx(0.0257)  # vượt trần: cận trên là tổng

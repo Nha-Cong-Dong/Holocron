@@ -71,7 +71,15 @@ EXIT_USAGE = 2
 def input_tokens_upper_bound(messages: Sequence[ChatMessage]) -> int:
     """Cận trên token đầu vào: số byte UTF-8 của nội dung (mỗi token BPE theo byte phủ ít nhất 1 byte) cộng phần
     đầu của mỗi tin nhắn."""
-    return sum(len(message.content.encode("utf-8")) + MESSAGE_OVERHEAD_TOKENS for message in messages)
+    return sum(content_bytes(message) + MESSAGE_OVERHEAD_TOKENS for message in messages)
+
+
+def content_bytes(message: ChatMessage) -> int:
+    """Số byte UTF-8 của nội dung: chuỗi thì đếm thẳng; mảng phần nội dung thì đếm JSON của các phần (cận trên)."""
+    if isinstance(message.content, str):
+        return len(message.content.encode("utf-8"))
+    parts = [part.model_dump() for part in message.content]
+    return len(json.dumps(parts, ensure_ascii=False).encode("utf-8"))
 
 
 def worst_call_input_tokens(messages: Sequence[ChatMessage]) -> int:

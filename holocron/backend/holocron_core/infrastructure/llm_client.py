@@ -4,7 +4,14 @@
   `https://`, hoặc `http://` khi máy chủ là loopback (`check_base_url`; urllib còn mở được `file:` và `ftp:`).
 - Header: `Authorization: Bearer <key>`, `Content-Type: application/json`, `Accept: application/json` và
   `User-Agent` riêng (`Holocron/<version>`): gateway hiện tại chặn User-Agent mặc định của urllib bằng 403
-  "error code: 1010".
+  "error code: 1010". Khoá trống (chỉ được phép khi máy chủ là loopback, VLM chạy local, ADR-009 mục 4) ⇒ không gửi
+  header `Authorization`.
+- `messages[].content` là chuỗi (LLM văn bản; JSON gửi đi y như trước) hoặc mảng phần `text`/`image_url` kiểu OpenAI
+  (VLM). Mỗi ảnh (data URI PNG đã kiểm dạng ở `domain/llm.py`) phải ≤ trần byte cấu hình (`HOLOCRON_VLM_MAX_IMAGE_BYTES`)
+  TRƯỚC khi gửi; vượt ⇒ `ImageTooLargeError`, không request nào được gửi. Thu ảnh về cạnh dài ≤
+  `HOLOCRON_VLM_MAX_EDGE_PX` là việc của bước render, không phải của adapter.
+- Client VLM (`from_vlm_settings`) có cận tổng `HOLOCRON_VLM_TIMEOUT_S` cho MỖI lần gọi `complete`, tính từ lúc lần
+  gọi bắt đầu.
 - Body chỉ gồm `model`, `messages`, `max_tokens`. KHÔNG gửi `temperature`, `top_p` hay `response_format`: nơi gọi
   tự parse và kiểm JSON.
 - **Thời gian:** mỗi lần thử có cận TỔNG là `HOLOCRON_LLM_TIMEOUT_S` (không chỉ là timeout của từng thao tác socket):
@@ -41,15 +48,21 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field, SecretStr, ValidationError
 
-from ..domain.llm import ChatCompletionResult, ChatMessage, LlmUpstreamError, TokenUsage
+from ..domain.llm import ChatCompletionResult, ChatMessage, ImageTooLargeError, LlmUpstreamError, TokenUsage
 from .llm_config import (
+    DEFAULT_VLM_MAX_IMAGE_BYTES,
     ENV_LLM_API_KEY,
     ENV_LLM_BASE_URL,
     ENV_LLM_MODEL_EXTRACT,
+    ENV_VLM_API_KEY,
+    ENV_VLM_BASE_URL,
+    ENV_VLM_MAX_IMAGE_BYTES,
     ConfigError,
     LlmHttpLimits,
     LlmSettings,
+    VlmSettings,
     check_base_url,
+    is_loopback_url,
     is_valid_key,
 )
 
@@ -241,35 +254,56 @@ def _retryable(status: int) -> bool:
     return status == 429 or 500 <= status <= 599
 
 
+def _check_budget(value: float | None, name: str) -> None:
+    if value is not None and not (math.isfinite(value) and value > 0):
+        raise ValueError(f"{name} phải là số dương hữu hạn")
+
+
 class OpenAiChatClient:
     """`ChatCompletionClient` cho một endpoint tương thích OpenAI Chat Completions.
 
     `total_budget_s`: cận tổng thời gian cho mọi lần gọi `complete` của client này, tính từ lúc tạo (`None` = chỉ có cận
-    của từng lần thử). `monotonic` là đồng hồ đơn điệu đo cận đó (test dùng đồng hồ giả).
+    của từng lần thử). `call_budget_s`: cận tổng của MỖI lần gọi `complete` (gồm mọi lần thử và backoff), tính từ lúc
+    lần gọi bắt đầu (VLM, `HOLOCRON_VLM_TIMEOUT_S`). Có cả hai thì áp cận chặt hơn. `monotonic` là đồng hồ đơn điệu đo
+    các cận đó (test dùng đồng hồ giả).
+
+    `api_key = None` chỉ được phép khi máy chủ của `base_url` là loopback; khi đó request không có header
+    `Authorization` (ADR-009 mục 4). `base_url_variable`/`key_variable` là tên biến nêu trong `ConfigError` (LLM văn
+    bản hay VLM). Mỗi ảnh trong request phải ≤ `max_image_bytes` byte (sau giải mã), sai ⇒ `ImageTooLargeError`, không
+    gửi gì.
     """
 
     def __init__(
         self,
         *,
         base_url: str,
-        api_key: SecretStr,
+        api_key: SecretStr | None,
         model: str,
         timeout_s: float,
         retry_max: int = HTTP_RETRY_MAX,
         backoff_base_s: float = BACKOFF_BASE_S,
         total_budget_s: float | None = None,
+        call_budget_s: float | None = None,
+        max_image_bytes: int = DEFAULT_VLM_MAX_IMAGE_BYTES,
+        base_url_variable: str = ENV_LLM_BASE_URL,
+        key_variable: str = ENV_LLM_API_KEY,
         transport: Transport | None = None,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
-        check_base_url(base_url, ENV_LLM_BASE_URL)
-        if not is_valid_key(api_key.get_secret_value()):
+        check_base_url(base_url, base_url_variable)
+        if api_key is None:
+            if not is_loopback_url(base_url):
+                raise ConfigError(f"chưa đặt biến: {key_variable}")
+        elif not is_valid_key(api_key.get_secret_value()):
             raise ConfigError(
-                f"{ENV_LLM_API_KEY} không hợp lệ: chỉ được chứa ký tự ASCII in được, không có khoảng trắng, "
+                f"{key_variable} không hợp lệ: chỉ được chứa ký tự ASCII in được, không có khoảng trắng, "
                 "xuống dòng hay ký tự điều khiển"
             )
-        if total_budget_s is not None and not (math.isfinite(total_budget_s) and total_budget_s > 0):
-            raise ValueError("total_budget_s phải là số dương hữu hạn")
+        _check_budget(total_budget_s, "total_budget_s")
+        _check_budget(call_budget_s, "call_budget_s")
+        if max_image_bytes < 1:
+            raise ValueError("max_image_bytes phải là số nguyên dương")
         self._url = base_url.rstrip("/") + "/chat/completions"
         self._api_key = api_key
         self._model = model
@@ -281,6 +315,8 @@ class OpenAiChatClient:
         self._monotonic = monotonic
         self._total_budget_s = total_budget_s
         self._deadline = None if total_budget_s is None else monotonic() + total_budget_s
+        self._call_budget_s = call_budget_s
+        self._max_image_bytes = max_image_bytes
 
     @classmethod
     def from_settings(cls, settings: LlmSettings, *, model: str | None) -> OpenAiChatClient:
@@ -307,40 +343,91 @@ class OpenAiChatClient:
             transport=UrllibTransport(limits=limits),
         )
 
+    @classmethod
+    def from_vlm_settings(
+        cls,
+        settings: VlmSettings,
+        *,
+        transport: Transport | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> OpenAiChatClient:
+        """Client cho bộ đọc trang VLM (ADR-009 mục 4) từ cấu hình đã nạp.
+
+        `HOLOCRON_VLM_TIMEOUT_S` vừa là cận của từng lần thử vừa là cận tổng của MỖI lần gọi `complete` (tính từ lúc
+        lần gọi bắt đầu, không từ lúc dựng client); trần byte ảnh là `HOLOCRON_VLM_MAX_IMAGE_BYTES`. Khoá trống chỉ có
+        với endpoint loopback, khi đó không gửi `Authorization`. `ConfigError` nêu tên biến `HOLOCRON_VLM_*`.
+        `transport`, `sleep`, `monotonic` cấp cho test (không gọi mạng, đồng hồ giả); mặc định là urllib và đồng hồ thật.
+        """
+        limits = settings.http_limits
+        return cls(
+            base_url=settings.base_url,
+            api_key=settings.api_key,
+            model=settings.model,
+            timeout_s=settings.timeout_s,
+            retry_max=limits.retry_max,
+            backoff_base_s=limits.backoff_base_s,
+            call_budget_s=settings.timeout_s,
+            max_image_bytes=settings.max_image_bytes,
+            base_url_variable=ENV_VLM_BASE_URL,
+            key_variable=ENV_VLM_API_KEY,
+            transport=transport or UrllibTransport(limits=limits, monotonic=monotonic),
+            sleep=sleep,
+            monotonic=monotonic,
+        )
+
     def __repr__(self) -> str:
         return f"OpenAiChatClient(timeout_s={self._timeout_s}, retry_max={self._retry_max})"
 
+    def _check_images(self, messages: Sequence[ChatMessage]) -> None:
+        """Mỗi ảnh (sau giải mã) ≤ `max_image_bytes`; vượt ⇒ `ImageTooLargeError` (không nêu nội dung)."""
+        for message in messages:
+            for part in message.image_parts():
+                if part.image_url.decoded_size > self._max_image_bytes:
+                    raise ImageTooLargeError(f"ảnh gửi VLM vượt trần byte ({ENV_VLM_MAX_IMAGE_BYTES})")
+
     def build_request(self, messages: Sequence[ChatMessage], *, max_tokens: int) -> urllib.request.Request:
-        """Request POST đã dựng đủ header và body; không gửi gì."""
+        """Request POST đã dựng đủ header và body; không gửi gì. Ảnh vượt trần ⇒ `ImageTooLargeError`."""
+        self._check_images(messages)
         body = {
             "model": self._model,
             "messages": [message.model_dump() for message in messages],
             "max_tokens": max_tokens,
         }
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": USER_AGENT,
+        }
+        if self._api_key is not None:
+            headers = {"Authorization": f"Bearer {self._api_key.get_secret_value()}", **headers}
         return urllib.request.Request(
             self._url,
             data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
             method="POST",
-            headers={
-                "Authorization": f"Bearer {self._api_key.get_secret_value()}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "User-Agent": USER_AGENT,
-            },
+            headers=headers,
         )
 
-    def _remaining_s(self) -> float | None:
-        """Thời gian còn lại của cận tổng, không vượt cận tổng; `None` khi client không có cận tổng.
+    def _remaining_s(self, call_deadline: float | None = None) -> float | None:
+        """Thời gian còn lại của cận chặt nhất (cận tổng của client, cận của lần gọi), không vượt cận đó; `None` khi
+        không có cận nào.
 
         Kẹp bằng `min` vì `(t0 + cận) - t1` có thể lớn hơn cận vài ulp do làm tròn số thực khi `t1` gần `t0`.
         """
-        if self._deadline is None or self._total_budget_s is None:
-            return None
-        return min(self._total_budget_s, self._deadline - self._monotonic())
+        remaining: list[float] = []
+        now: float | None = None
+        if self._deadline is not None and self._total_budget_s is not None:
+            now = self._monotonic()
+            remaining.append(min(self._total_budget_s, self._deadline - now))
+        if call_deadline is not None and self._call_budget_s is not None:
+            now = self._monotonic() if now is None else now
+            remaining.append(min(self._call_budget_s, call_deadline - now))
+        return min(remaining) if remaining else None
 
     def complete(self, messages: Sequence[ChatMessage], *, max_tokens: int) -> ChatCompletionResult:
         # Lỗi được ghi lại thành chuỗi trong khối `except` rồi ném SAU khối đó, để exception mới không mang
         # `__context__` là lỗi gốc (lỗi của http.client có thể chứa nguyên giá trị header `Authorization`).
+        call_deadline = None if self._call_budget_s is None else self._monotonic() + self._call_budget_s
         request: urllib.request.Request | None = None
         failure = ""
         try:
@@ -353,11 +440,11 @@ class OpenAiChatClient:
         for attempt in range(1, self._retry_max + 2):
             if attempt > 1:
                 pause = self._backoff_base_s * 2 ** (attempt - 2)
-                remaining = self._remaining_s()
+                remaining = self._remaining_s(call_deadline)
                 if remaining is not None and remaining <= pause:
                     raise LlmUpstreamError(_deadline_message(last_failure), attempts=attempt - 1)
                 self._sleep(pause)
-            remaining = self._remaining_s()
+            remaining = self._remaining_s(call_deadline)
             if remaining is not None and remaining <= 0:
                 raise LlmUpstreamError(_deadline_message(last_failure), attempts=attempt - 1)
             budget = self._timeout_s if remaining is None else min(self._timeout_s, remaining)

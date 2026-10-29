@@ -42,6 +42,7 @@ from holocron_core.infrastructure.document_readers.text_layer import (
     valid_word_ratio,
 )
 from holocron_core.infrastructure.document_readers.tiers import assemble_text_layer_page
+from scripts import eval_pdf_tiers
 from scripts.eval_pdf_tiers import evaluate_file
 from tests.pdf_samples import Box, Page, Text, text_lines, write_pdf
 
@@ -256,7 +257,10 @@ def test_tcvn3_symbols_are_not_exempt_elsewhere() -> None:
         assert is_legacy_encoded_word(word), word
     # `®`, `©` chỉ được miễn ở cuối từ, ngay sau cụm chữ Latin ASCII: sau chữ có dấu, sau dấu câu hay trước chữ cái
     # thì vẫn bị tính.
-    for word in ("Hà®", "Hà©", "Ö®a", "Hà-®", "x®y", "ARM®x"):
+    for word in ("Hà®", "Hà©", "Ö®a", "Hà-®", "x®y", "ARM®x", "ARM®­x", "ab©¸y"):
+        assert is_legacy_encoded_word(word), word
+    # Chữ cái theo sau qua các dấu TCVN3 mà tự chúng không bị tính (`·` không kẹp giữa hai cụm chữ): chỉ `®` bị tính.
+    for word in ("ARM®·x", "ARM®··x"):
         assert is_legacy_encoded_word(word), word
     assert valid_word_ratio("c¶ hai") == pytest.approx(0.5)
     assert valid_word_ratio("«ng Êy") == pytest.approx(0.5)
@@ -389,7 +393,7 @@ def test_eval_tiers_skips_oversized_long_and_broken_files(tmp_path: Path, monkey
     assert [(row.page_number, row.new_tier) for row in rows] == [(1, "text_layer"), (2, "text_layer")]
     size = good.stat().st_size
     assert evaluate_file(backend, good, CONFIG.model_copy(update={"max_bytes": size - 1})) == (
-        f"TOO_LARGE: {size} > {size - 1} byte"
+        f"TOO_LARGE: > {size - 1} byte"
     )
     assert not isinstance(evaluate_file(backend, good, CONFIG.model_copy(update={"max_bytes": size})), str)
     assert evaluate_file(backend, good, CONFIG.model_copy(update={"max_pages": 1})) == "TOO_MANY_PAGES: 2 > 1 trang"
@@ -411,3 +415,14 @@ def test_eval_tiers_skips_oversized_long_and_broken_files(tmp_path: Path, monkey
 
     monkeypatch.setattr(PdfiumDocument, "read_page", bad_type)
     assert evaluate_file(backend, good, CONFIG) == "READ_FAILED: TypeError"
+
+
+def test_eval_tiers_does_not_swallow_row_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    good = write_pdf(tmp_path / "good.pdf", [Page(texts=[Text(x=72.0, y=400.0, value="Bai 1")])])
+
+    def broken_row(file_name: str, raw: RawPdfPage, config: PdfReaderConfig) -> object:
+        raise ValueError("lỗi của script")
+
+    monkeypatch.setattr(eval_pdf_tiers, "page_row", broken_row)
+    with pytest.raises(ValueError, match="lỗi của script"):
+        evaluate_file(PdfiumBackend.load(), good, CONFIG)

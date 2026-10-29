@@ -127,3 +127,18 @@ def test_union_box_cap_is_pinned() -> None:
     tiny = (0.0, 0.0, 1.0, 1.0)
     assert union_area_ratio([tiny] * 256, PAGE) == pytest.approx(0.0001)  # vẫn tính diện tích hợp
     assert union_area_ratio([tiny] * 257, PAGE) == pytest.approx(0.0257)  # vượt trần: cận trên là tổng
+
+
+@pytest.mark.parametrize(
+    ("boxes", "expected"),
+    [
+        ([(0.0, 40.0, 50.0, 60.0), (0.0, 0.0, 50.0, 10.0)], 0.15),  # rời nhau, y giảm dần
+        ([(0.0, 11.0, 100.0, 33.0), (0.0, 0.0, 100.0, 22.0)], 0.33),
+        ([(20.0, 20.0, 30.0, 30.0), (10.0, 10.0, 90.0, 90.0)], 0.64),
+        ([(0.0, 40.0, 100.0, 60.0), (40.0, 0.0, 60.0, 100.0)], 0.36),
+        ([(40.0, 0.0, 100.0, 100.0), (0.0, 0.0, 60.0, 100.0)], 1.0),
+    ],
+)
+def test_box_order_does_not_change_the_union(boxes: list[PdfBox], expected: float) -> None:
+    assert union_area_ratio(boxes, PAGE) == pytest.approx(expected)
+    assert union_area_ratio(boxes[::-1], PAGE) == pytest.approx(expected)

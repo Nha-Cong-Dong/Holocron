@@ -197,7 +197,7 @@ def _is_latin_trailing_symbol(token: str, index: int) -> bool:
 
 
 def _precedes_letter(token: str, index: int) -> bool:
-    """Ngay sau `index` là một chữ cái, có thể qua các dấu TCVN3/VNI khác (`®iÒu`, `®­îc`), không qua dấu câu."""
+    """Sau `index` có chữ cái, chỉ cách bởi các dấu TCVN3/VNI không phải chữ cái (không qua dấu câu, chữ số)."""
     end = index + 1
     while end < len(token) and not token[end].isalpha():
         if token[end] not in LEGACY_VIETNAMESE_MARKERS:

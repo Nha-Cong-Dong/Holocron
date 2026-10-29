@@ -9,7 +9,10 @@ import { createLatestCounter } from "@/lib/latest";
 import { shellHeadingForPath } from "@/lib/navigation";
 import {
   buildLabel,
+  freshRuntime,
+  hasPendingLocalCheck,
   INITIAL_RUNTIME_STATE,
+  LOCAL_CHECK_POLL_MS,
   logDirOf,
   runtimeReducer,
   selectOfflineMode,
@@ -59,6 +62,27 @@ export function AppShell({ children }: { children: ReactNode }) {
         if (runtimeCalls.current.isLatest(ticket)) dispatch({ type: "load_failed", error: toUiError(error) });
       });
   }, []);
+
+  // Backend còn kiểm OCR nền (`local_check_pending`): hỏi lại im lặng, không đổi sang "đang kết nối" để ô trạng thái
+  // không nhấp nháy.
+  const pollRuntime = useCallback(() => {
+    const ticket = runtimeCalls.current.begin();
+    api
+      .getRuntime()
+      .then((info) => {
+        if (runtimeCalls.current.isLatest(ticket)) dispatch({ type: "load_succeeded", runtime: info });
+      })
+      .catch((error: unknown) => {
+        if (runtimeCalls.current.isLatest(ticket)) dispatch({ type: "load_failed", error: toUiError(error) });
+      });
+  }, []);
+
+  const localCheckPending = hasPendingLocalCheck(freshRuntime(runtime));
+  useEffect(() => {
+    if (!localCheckPending) return;
+    const timer = window.setInterval(pollRuntime, LOCAL_CHECK_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [localCheckPending, pollRuntime]);
 
   const reloadSubjects = useCallback(() => {
     const ticket = subjectCalls.current.begin();

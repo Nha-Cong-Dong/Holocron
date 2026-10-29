@@ -22,6 +22,7 @@ export const REASON_DETAILS_VI: Record<CapabilityReason, string> = {
     "Không nạp được lượt đọc thứ hai (RapidOCR) trên máy này. Bản rút gọn không kèm RapidOCR: dùng bản đầy đủ. " +
     "Nếu đang dùng bản đầy đủ, cài lại ứng dụng.",
   not_implemented: "Bản đang chạy chưa có khả năng này.",
+  local_check_pending: "Holocron đang kiểm tra OCR trên máy này. Đợi vài giây rồi xem lại.",
 };
 
 function available(name: CapabilityName): Capability {

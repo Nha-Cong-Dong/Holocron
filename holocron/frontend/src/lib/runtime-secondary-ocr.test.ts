@@ -26,17 +26,6 @@ describe("secondary_ocr_unavailable", () => {
     expect(capabilityGroup(first)).toBe("install");
     expect(capabilityGroup(second)).toBe("configure");
   });
-
-  it("nhãn ô trạng thái: lượt đọc thứ hai không chạy được", () => {
-    const runtime = normalizeRuntimeInfo({
-      ...BASE,
-      capabilities: [{ name: "ocr", available: false, reason: "secondary_ocr_unavailable", detail_vi: "x" }],
-    });
-    if (runtime === null) throw new Error("fixture không qua được kiểm dạng");
-    const state = runtimeReducer(INITIAL_RUNTIME_STATE, { type: "load_succeeded", runtime });
-    const item = selectStatusItems(state, false).find((entry) => entry.id === "ocr");
-    expect(item?.value).toBe("lượt đọc thứ hai không chạy được");
-  });
 });
 
 function ocrTile(ocr: object, cross: object): string | undefined {

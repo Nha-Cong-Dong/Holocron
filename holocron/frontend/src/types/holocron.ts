@@ -673,8 +673,9 @@ export type CapabilityReason =
   | "ocr_engine_missing"
   | "ocr_language_missing"
   | "secondary_ocr_disabled"
+  | "not_implemented"
   | "secondary_ocr_unavailable"
-  | "not_implemented";
+  | "local_check_pending";
 
 /** Mã lý do không khả dụng (§5.12). */
 export const CAPABILITY_REASONS = [
@@ -683,8 +684,9 @@ export const CAPABILITY_REASONS = [
   "ocr_engine_missing",
   "ocr_language_missing",
   "secondary_ocr_disabled",
-  "secondary_ocr_unavailable",
   "not_implemented",
+  "secondary_ocr_unavailable",
+  "local_check_pending",
 ] as const satisfies readonly CapabilityReason[];
 
 /** Một khả năng của app (spec §5.12, §11.4); `reason` là `null` khi và chỉ khi `available = true`. */

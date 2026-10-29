@@ -238,7 +238,14 @@ export function mayUseNetwork(entry: CapabilityEntry): boolean {
  * `offline`: khả dụng, chạy hoàn toàn trên máy; `online`: khả dụng nhưng gửi dữ liệu tới LLM/VLM đã cấu hình;
  * `unrecognized`: tên hoặc mã lý do mà giao diện này chưa biết, coi như có thể dùng mạng.
  */
-export type CapabilityGroup = "offline" | "online" | "install" | "configure" | "not_implemented" | "unrecognized";
+export type CapabilityGroup =
+  | "offline"
+  | "online"
+  | "pending"
+  | "install"
+  | "configure"
+  | "not_implemented"
+  | "unrecognized";
 
 export type UnavailableGroup = Exclude<CapabilityGroup, "offline" | "online">;
 
@@ -248,6 +255,7 @@ const REASON_GROUP: Record<CapabilityReason, UnavailableGroup> = {
   ocr_language_missing: "install",
   secondary_ocr_disabled: "configure",
   secondary_ocr_unavailable: "install",
+  local_check_pending: "pending",
   llm_not_configured: "configure",
   vlm_not_configured: "configure",
   not_implemented: "not_implemented",
@@ -265,6 +273,7 @@ export function groupCapabilities(capabilities: CapabilityEntry[]): Record<Capab
   const groups: Record<CapabilityGroup, CapabilityEntry[]> = {
     offline: [],
     online: [],
+    pending: [],
     install: [],
     configure: [],
     not_implemented: [],
@@ -314,6 +323,14 @@ export function mockExtractorNotice(runtime: RuntimeView | null): MockExtractorN
   if (runtime === null) return null;
   if (runtime.mock_extractor !== null) return runtime.mock_extractor ? "confirmed" : null;
   return runtime.demo_mode ? "assumed" : null;
+}
+
+/** Khoảng chờ (ms) giữa hai lần hỏi lại runtime khi backend còn kiểm OCR nền. */
+export const LOCAL_CHECK_POLL_MS = 3000;
+
+/** Backend còn đang kiểm OCR nền: có khả năng báo `local_check_pending`. */
+export function hasPendingLocalCheck(runtime: RuntimeView | null): boolean {
+  return (capabilitiesOf(runtime) ?? []).some((entry) => !entry.available && entry.reason === "local_check_pending");
 }
 
 /** Cần hiện hướng dẫn cài Tesseract và `vie.traineddata`. */
@@ -382,6 +399,7 @@ const OCR_REASON_VALUE: Record<CapabilityReasonView, string> = {
   ocr_language_missing: "thiếu vie.traineddata",
   secondary_ocr_disabled: "lượt đọc thứ hai tắt",
   secondary_ocr_unavailable: "lượt đọc thứ hai không chạy được",
+  local_check_pending: "đang kiểm tra…",
   llm_not_configured: "chưa cấu hình",
   vlm_not_configured: "chưa cấu hình",
   not_implemented: "chưa có trong bản này",
@@ -390,6 +408,9 @@ const OCR_REASON_VALUE: Record<CapabilityReasonView, string> = {
 
 function ocrItem(runtime: RuntimeView): Pick<StatusItem, "value" | "tone"> {
   const view = capabilityOf(runtime, "ocr");
+  if (view.state === "unavailable" && view.reason === "local_check_pending") {
+    return { value: OCR_REASON_VALUE.local_check_pending, tone: "info" };
+  }
   if (view.state === "unknown") return { value: "backend chưa báo", tone: "neutral" };
   if (view.state === "available") {
     const second = capabilityOf(runtime, "ocr_cross_check");

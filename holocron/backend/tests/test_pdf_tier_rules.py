@@ -236,21 +236,33 @@ def test_worker_and_parent_agree_at_boundaries(
 
 
 # --------------------------------------------------------------------------- #
-# Heuristic TCVN3/VNI: ký hiệu ở mép từ, chữ Latin-1 của từ nước ngoài
+# Heuristic TCVN3/VNI: ký hiệu nhãn hiệu cuối tên Latin, chữ Latin-1 của từ nước ngoài
 # --------------------------------------------------------------------------- #
 
 
-def test_trademark_and_quote_symbols_at_word_edges_are_valid() -> None:
+def test_trademark_symbol_after_latin_name_is_valid() -> None:
     title = _raw(["Kiến trúc ARM® Cortex-M4"])
     assert valid_word_ratio(page_text(title.lines)) == 1.0
     assert ocr_reason(title, CONFIG) is None
     assert assemble_text_layer_page(title, DOC_ID, CONFIG).tier_used == "text_layer"
-    assert valid_word_ratio("«trích dẫn» Windows© ARM®-based (ARM®).") == 1.0
-    for word in ("ARM®", "«trích", "dẫn»", "dẫn».", "Windows©", "(ARM®)", "ARM®-based", "Mục§", "Hình¶", "dẫn».Tiếp"):
+    assert valid_word_ratio("Intel© ARM®-based (ARM®). Holocron™") == 1.0
+    for word in ("ARM®", "Intel©", "(ARM®)", "ARM®.", "ARM®-based", "Holocron™"):
         assert not is_legacy_encoded_word(word), word
-    # `«`, `»` kẹp giữa hai chữ cái vẫn là dấu TCVN3 (`«` = ô), kể cả qua dấu TCVN3 khác.
-    for word in ("m«n", "c«¬ng", "h»a"):
+
+
+def test_tcvn3_symbols_are_not_exempt_elsewhere() -> None:
+    # `¶` = ả, `§` = Đ, `«` = ô, `»` = ằ: chữ TCVN3, không được miễn ở vị trí nào.
+    for word in ("qu¶", "c¶", "Hình¶", "Mục§", "«ng", "m«", "m«n", "c«¬ng", "h»a", "«trích", "dẫn»"):
         assert is_legacy_encoded_word(word), word
+    # `®`, `©` chỉ được miễn ở cuối từ, ngay sau cụm chữ Latin ASCII: sau chữ có dấu, sau dấu câu hay trước chữ cái
+    # thì vẫn bị tính.
+    for word in ("Hà®", "Hà©", "Ö®a", "Hà-®", "x®y", "ARM®x"):
+        assert is_legacy_encoded_word(word), word
+    assert valid_word_ratio("c¶ hai") == pytest.approx(0.5)
+    assert valid_word_ratio("«ng Êy") == pytest.approx(0.5)
+    result = _raw(["KÕt qu¶"])
+    assert ocr_reason(result, CONFIG) == "garbled_text_layer"
+    assert assemble_text_layer_page(result, DOC_ID, CONFIG).failure_reason == "OCR_ENGINE_MISSING"
 
 
 def test_tcvn3_letters_at_word_start_are_still_caught() -> None:
@@ -385,9 +397,17 @@ def test_eval_tiers_skips_oversized_long_and_broken_files(tmp_path: Path, monkey
     broken = tmp_path / "broken.pdf"
     broken.write_bytes(b"%PDF-1.4 broken")
     assert evaluate_file(backend, broken, CONFIG) == "OPEN_FAILED"
+    # File biến mất hoặc không đọc được giữa lúc liệt kê và lúc đọc: chỉ bỏ qua file đó.
+    assert evaluate_file(backend, tmp_path / "missing.pdf", CONFIG) == "READ_FAILED: FileNotFoundError"
 
     def fail(self: PdfiumDocument, index: int) -> RawPdfPage:
         raise PdfiumDataError("hỏng")
 
     monkeypatch.setattr(PdfiumDocument, "read_page", fail)
     assert evaluate_file(backend, good, CONFIG) == "READ_FAILED: PdfiumDataError"
+
+    def bad_type(self: PdfiumDocument, index: int) -> RawPdfPage:
+        raise TypeError("kiểu lạ")
+
+    monkeypatch.setattr(PdfiumDocument, "read_page", bad_type)
+    assert evaluate_file(backend, good, CONFIG) == "READ_FAILED: TypeError"

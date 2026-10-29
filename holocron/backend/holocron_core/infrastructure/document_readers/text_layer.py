@@ -29,12 +29,11 @@ LEGACY_VIETNAMESE_MARKERS: frozenset[str] = frozenset(
 # vị trí trong từ (xem `_counts_as_legacy_marker`).
 MATH_LIKE_MARKERS: frozenset[str] = frozenset("−×·÷µ")
 
-# Dấu ngoặc kép góc (`«trích`, `dẫn»`) là dấu câu ở mép từ: chỉ được tính là dấu TCVN3/VNI (`«` = ô) khi kẹp giữa hai
-# chữ cái (`m«n` = môn). Xem `_counts_as_legacy_marker`.
-QUOTE_MARKERS: frozenset[str] = frozenset("«»")
-# Ký hiệu hay đứng CUỐI từ (`ARM®`, `Windows©`) nhưng cũng là chữ TCVN3 (`®` = đ, `§` = Đ, `©` = â, `¶` = ả) hay
-# đứng ĐẦU từ (`®iÒu`, `®a`, `§¹i`): chỉ được miễn khi không có chữ cái theo sau, tức là đứng cuối từ.
-TRAILING_SYMBOL_MARKERS: frozenset[str] = frozenset("©®§¶")
+# Ký hiệu nhãn hiệu hay đứng CUỐI tên riêng Latin (`ARM®`, `Intel©`, `ARM®-based`) nhưng cũng là chữ TCVN3 (`®` = đ,
+# `©` = â), hay đứng ĐẦU từ (`®iÒu`, `®a`). Chỉ được miễn khi đứng cuối từ (không có chữ cái theo sau) VÀ cụm chữ ngay
+# trước nó toàn chữ Latin ASCII; mọi vị trí khác vẫn là dấu TCVN3 (`Hà®`, `x®y`). `™` không phải dấu TCVN3 nên không
+# cần miễn. Các chữ TCVN3 khác (`¶` = ả, `§` = Đ, `«` = ô, `»` = ằ) không được miễn ở vị trí nào (`qu¶`, `m«`).
+TRAILING_SYMBOL_MARKERS: frozenset[str] = frozenset("©®")
 
 # Phụ âm đầu và phụ âm cuối (chữ Latin ASCII) của âm tiết tiếng Việt; dùng để phân biệt từ TCVN3/VNI (`häc`,
 # `ViÖt`, `Vieät`) với từ tiếng nước ngoài có chữ Latin-1 hợp lệ (`Müller`, `Größe`, `Köln`).
@@ -191,6 +190,12 @@ def _alpha_run(token: str, index: int) -> str:
     return token[index - _letter_run(token, index - 1, -1) : index + _letter_run(token, index, 1)]
 
 
+def _is_latin_trailing_symbol(token: str, index: int) -> bool:
+    """Ký hiệu ở `index` đứng cuối một cụm chữ Latin ASCII (`ARM®`, `ARM®-based`): không có chữ cái theo sau."""
+    left = _letter_run(token, index - 1, -1)
+    return left > 0 and token[index - left : index].isascii() and not _precedes_letter(token, index)
+
+
 def _precedes_letter(token: str, index: int) -> bool:
     """Ngay sau `index` là một chữ cái, có thể qua các dấu TCVN3/VNI khác (`®iÒu`, `®­îc`), không qua dấu câu."""
     end = index + 1
@@ -201,25 +206,11 @@ def _precedes_letter(token: str, index: int) -> bool:
     return end < len(token)
 
 
-def _is_wedged_between_letters(token: str, index: int) -> bool:
-    """Cụm ký tự không phải chữ cái chứa `index` chỉ gồm dấu TCVN3/VNI và có chữ cái ở cả hai bên (`m«n`, `Ch­¬ng`)."""
-    start = index
-    while start > 0 and not token[start - 1].isalpha():
-        start -= 1
-    end = index + 1
-    while end < len(token) and not token[end].isalpha():
-        end += 1
-    run = token[start:end]
-    return start > 0 and end < len(token) and all(c in LEGACY_VIETNAMESE_MARKERS for c in run)
-
-
 def _counts_as_legacy_marker(token: str, index: int) -> bool:
     """Ký tự ở `index` có được tính là dấu TCVN3/VNI hay không.
 
-    Dấu không phải chữ cái (`¸`, `¬`, `¹`…) luôn được tính, trừ hai nhóm ký hiệu in ấn. `QUOTE_MARKERS` (`«`, `»`)
-    chỉ được tính khi kẹp giữa hai chữ cái (`m«n`); đứng đầu hoặc cuối từ (`«trích`, `dẫn»`) thì không.
-    `TRAILING_SYMBOL_MARKERS` (`®`, `©`, `§`, `¶`) được tính khi có chữ cái theo sau (`®iÒu`, `®a`, `x®y`); đứng
-    cuối từ hoặc trước dấu câu (`ARM®`, `ARM®-based`) thì không.
+    Dấu không phải chữ cái (`¸`, `¬`, `¹`, `¶`, `«`…) luôn được tính, trừ `TRAILING_SYMBOL_MARKERS` (`®`, `©`) đứng
+    cuối một cụm chữ Latin ASCII (`ARM®`, `Intel©`, `ARM®-based`); `®iÒu`, `®a`, `x®y`, `Hà®` vẫn bị tính.
     Chữ Latin-1 (`Ö`, `ä`, `ü`…) chỉ được tính khi cụm chữ chứa nó có dạng một âm tiết tiếng Việt
     (`is_vietnamese_syllable_shape`: `ViÖt`, `häc`), không phải từ nước ngoài (`Müller`).
     Ký hiệu toán trùng mã TCVN3 (`MATH_LIKE_MARKERS`) được xét theo vị trí: `µ` chỉ được tính khi đứng ngay sau một
@@ -233,10 +224,8 @@ def _counts_as_legacy_marker(token: str, index: int) -> bool:
     char = token[index]
     if char not in LEGACY_VIETNAMESE_MARKERS:
         return False
-    if char in QUOTE_MARKERS:
-        return _is_wedged_between_letters(token, index)
     if char in TRAILING_SYMBOL_MARKERS:
-        return _precedes_letter(token, index)
+        return not _is_latin_trailing_symbol(token, index)
     if char not in MATH_LIKE_MARKERS:
         return not char.isalpha() or is_vietnamese_syllable_shape(_alpha_run(token, index))
     if char == "µ":
@@ -255,8 +244,8 @@ def _counts_as_legacy_marker(token: str, index: int) -> bool:
 def is_legacy_encoded_word(token: str) -> bool:
     """Từ có dấu TCVN3/VNI (theo `_counts_as_legacy_marker`) lẫn với chữ cái khác ⇒ không hợp lệ.
 
-    Một dấu đứng riêng (`®`), ký hiệu ở cuối từ (`ARM®`), dấu ngoặc kép góc (`«trích»`), từ nước ngoài có chữ Latin-1 (`Müller`) và
-    biểu thức toán (`x−1`, `a×b`, `2·3`, `µs`, `P(A∩B)`) vẫn hợp lệ.
+    Một dấu đứng riêng (`®`), ký hiệu nhãn hiệu cuối tên Latin (`ARM®`), từ nước ngoài có chữ Latin-1 (`Müller`)
+    và biểu thức toán (`x−1`, `a×b`, `2·3`, `µs`, `P(A∩B)`) vẫn hợp lệ.
     """
     has_marker = any(_counts_as_legacy_marker(token, index) for index in range(len(token)))
     has_other_letter = any(c.isalpha() and c not in LEGACY_VIETNAMESE_MARKERS for c in token)

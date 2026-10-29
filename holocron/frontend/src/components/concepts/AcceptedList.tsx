@@ -44,7 +44,8 @@ function StarIcon() {
 /**
  * Cột phải "Đã nhận (N)": mỗi khái niệm đã nhận là một mục thu gọn (tên + "Chương N · tr. X"); mở ra có trích dẫn,
  * "Sửa tên" và "Bỏ". Khái niệm đã bỏ nằm trong mục thu gọn "Đã bỏ (k)" kèm "Nhận lại". Cùng luật I3 với thẻ đề xuất:
- * không tra được đoạn nguồn thì không hiện số trang, không hiện như trích dẫn đã kiểm chứng, nút khoá kèm lý do.
+ * không tra được đoạn nguồn thì không hiện số trang, không hiện như trích dẫn đã kiểm chứng, nút khoá kèm lý do. Dòng
+ * vừa ghi xong mà danh sách chưa đọc lại được thì mọi nút khoá kèm lý do chờ cập nhật.
  */
 export function AcceptedList({ confirmed, rejected, headingRef, onRename, onReject, onRestore }: AcceptedListProps) {
   return (
@@ -96,6 +97,8 @@ function AcceptedRow({
   }, [editing]);
 
   const editReason = gateReason(view.actions.edit);
+  const rejectReason = gateReason(view.actions.reject);
+  const reason = editReason ?? rejectReason;
   const reasonId = `${ids}-reason`;
 
   return (
@@ -121,6 +124,7 @@ function AcceptedRow({
               initial={pair.term}
               submitLabel="Lưu"
               busy={busy}
+              lockedReasonId={editReason !== null ? reasonId : null}
               onSave={(term) => {
                 setEditing(false);
                 onRename(pair, term);
@@ -145,14 +149,23 @@ function AcceptedRow({
               >
                 Sửa tên
               </button>
-              <Button variant="secondary" busy={busy} busyLabel="Đang bỏ" onClick={() => onReject(pair)}>
+              <Button
+                variant="secondary"
+                busy={busy}
+                busyLabel="Đang bỏ"
+                aria-disabled={rejectReason !== null || undefined}
+                aria-describedby={rejectReason !== null ? reasonId : undefined}
+                onClick={() => {
+                  if (!busy && rejectReason === null) onReject(pair);
+                }}
+              >
                 Bỏ
               </Button>
             </div>
           )}
-          {editReason !== null && (
+          {reason !== null && (
             <p id={reasonId} className={styles.reason}>
-              {editReason}
+              {reason}
             </p>
           )}
           {entry.error !== null && (
@@ -187,7 +200,9 @@ function RejectedRow({ entry, onRestore }: { entry: AcceptedEntry; onRestore: (p
             busyLabel="Đang nhận lại"
             aria-disabled={reason !== null || undefined}
             aria-describedby={reason !== null ? reasonId : undefined}
-            onClick={() => onRestore(pair)}
+            onClick={() => {
+              if (!busy && reason === null) onRestore(pair);
+            }}
           >
             Nhận lại
           </Button>

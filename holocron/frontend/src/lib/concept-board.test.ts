@@ -24,6 +24,7 @@ import {
   groupPairs,
   IDLE_BULK,
   mergeChange,
+  NO_STALE,
   newlyConfirmed,
   nextReloadNote,
   RELOAD_FAILED_VI,
@@ -33,8 +34,10 @@ import {
   SOURCE_LOADING_REASON_VI,
   SOURCE_LOADING_VI,
   STALE_REASON_VI,
+  type StaleLocks,
   screenErrorText,
   sendQueued,
+  staleReducer,
   staleView,
   visibleConceptEntrances,
   withoutIds,
@@ -612,5 +615,81 @@ describe("thẻ đã ghi mà danh sách chưa đọc lại được", () => {
     ).toEqual({
       enabled: true,
     });
+  });
+});
+
+describe("khoá chờ: thẻ đã ghi và Nhận tất cả", () => {
+  const map = new Map([["chk_a", chunk("chk_a")]]);
+  const ready = conceptView(pair("a", "proposed"), "complete", map);
+  const loading = conceptView(pair("c", "proposed"), "loading", new Map());
+
+  it("thẻ chờ cập nhật cùng thẻ khoá vì đang tải đoạn ⇒ lý do đang tải, không phải chờ cập nhật", () => {
+    expect(
+      acceptAllGate([
+        { view: staleView(ready), busy: false, stale: true },
+        { view: loading, busy: false, stale: false },
+      ]),
+    ).toEqual({ enabled: false, reason: ACCEPT_ALL_LOADING_VI });
+  });
+
+  it("thêm khái niệm vào tập đang có giữ khái niệm cũ", () => {
+    expect(withStale(new Set(["a"]), ["b"])).toEqual(new Set(["a", "b"]));
+  });
+
+  it("conceptView chưa khoá; staleView đánh dấu khoá chờ", () => {
+    expect(ready.stale).toBe(false);
+    expect(staleView(ready).stale).toBe(true);
+  });
+});
+
+describe("khoá chờ ngay khi ghi thành công", () => {
+  const ids = (locks: StaleLocks): string[] => [...locks.locked].sort();
+
+  it("ghi xong ⇒ khoá ngay, trước mọi lượt tải lại", () => {
+    const written = staleReducer(NO_STALE, { type: "written", ids: ["a"] });
+    expect(ids(written)).toEqual(["a"]);
+  });
+
+  it("tải lại thành công sau khi đã gửi lượt tải lại của khái niệm ⇒ mở khoá", () => {
+    let locks = staleReducer(NO_STALE, { type: "written", ids: ["a", "b"] });
+    locks = staleReducer(locks, { type: "requested", ids: ["a", "b"] });
+    locks = staleReducer(locks, { type: "reloaded" });
+    expect(ids(locks)).toEqual([]);
+  });
+
+  it("tải lại lỗi không phát sự kiện: khái niệm vẫn khoá tới lượt tải lại thành công kế tiếp", () => {
+    let locks = staleReducer(NO_STALE, { type: "written", ids: ["a"] });
+    locks = staleReducer(locks, { type: "requested", ids: ["a"] });
+    expect(ids(locks)).toEqual(["a"]);
+    locks = staleReducer(locks, { type: "reloaded" });
+    expect(ids(locks)).toEqual([]);
+  });
+
+  it("lượt tải lại gửi trước khi thẻ rời đi xong không mở khoá thẻ đó", () => {
+    // "a" ghi xong và đã gửi lượt tải lại; "b" ghi xong nhưng còn đang rời đi (chưa gửi lượt tải lại của nó).
+    let locks = staleReducer(NO_STALE, { type: "written", ids: ["a"] });
+    locks = staleReducer(locks, { type: "requested", ids: ["a"] });
+    locks = staleReducer(locks, { type: "written", ids: ["b"] });
+    locks = staleReducer(locks, { type: "reloaded" });
+    expect(ids(locks)).toEqual(["b"]);
+    locks = staleReducer(locks, { type: "requested", ids: ["b"] });
+    locks = staleReducer(locks, { type: "reloaded" });
+    expect(ids(locks)).toEqual([]);
+  });
+
+  it("lượt tải lại không kèm khái niệm nào (ví dụ đọc lại sau 409) vẫn mở khoá khái niệm đã gửi lượt tải lại", () => {
+    let locks = staleReducer(NO_STALE, { type: "written", ids: ["a"] });
+    locks = staleReducer(locks, { type: "requested", ids: ["a"] });
+    locks = staleReducer(locks, { type: "requested", ids: [] });
+    locks = staleReducer(locks, { type: "reloaded" });
+    expect(ids(locks)).toEqual([]);
+  });
+
+  it("không đổi thì trả đúng trạng thái cũ", () => {
+    const written = staleReducer(NO_STALE, { type: "written", ids: ["a"] });
+    expect(staleReducer(written, { type: "written", ids: ["a"] })).toBe(written);
+    expect(staleReducer(NO_STALE, { type: "requested", ids: ["a"] })).toBe(NO_STALE);
+    expect(staleReducer(NO_STALE, { type: "reloaded" })).toBe(NO_STALE);
+    expect(staleReducer(written, { type: "reloaded" })).toBe(written);
   });
 });

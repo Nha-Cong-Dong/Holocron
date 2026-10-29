@@ -159,7 +159,8 @@ export function ProposalCard({
 
   const acceptReason = gateReason(view.actions.confirm);
   const editReason = gateReason(view.actions.edit);
-  const reason = acceptReason ?? editReason;
+  const rejectReason = gateReason(view.actions.reject);
+  const reason = acceptReason ?? editReason ?? rejectReason;
   const reasonId = `${ids}-reason`;
   const leavingClass = leaving === "accept" ? "m-concept-accept" : leaving === "reject" ? "m-concept-reject" : "";
 
@@ -215,9 +216,10 @@ export function ProposalCard({
             <button
               type="button"
               className={styles.textButton}
-              aria-disabled={busy || undefined}
+              aria-disabled={busy || rejectReason !== null || undefined}
+              aria-describedby={rejectReason !== null ? reasonId : undefined}
               onClick={() => {
-                if (!busy) onReject();
+                if (!busy && rejectReason === null) onReject();
               }}
             >
               Bỏ

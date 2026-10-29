@@ -391,7 +391,13 @@ const OCR_REASON_VALUE: Record<CapabilityReasonView, string> = {
 function ocrItem(runtime: RuntimeView): Pick<StatusItem, "value" | "tone"> {
   const view = capabilityOf(runtime, "ocr");
   if (view.state === "unknown") return { value: "backend chưa báo", tone: "neutral" };
-  if (view.state === "available") return { value: "sẵn sàng", tone: "success" };
+  if (view.state === "available") {
+    const second = capabilityOf(runtime, "ocr_cross_check");
+    if (second.state === "unavailable" && second.reason === "secondary_ocr_unavailable") {
+      return { value: OCR_REASON_VALUE.secondary_ocr_unavailable, tone: "warning" };
+    }
+    return { value: "sẵn sàng", tone: "success" };
+  }
   return { value: OCR_REASON_VALUE[view.reason], tone: "warning" };
 }
 

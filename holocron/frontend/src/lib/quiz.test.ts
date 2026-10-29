@@ -242,6 +242,11 @@ describe("chữ của câu", () => {
     const editing = start(essay("e1")).entries[0];
     if (editing === undefined) throw new Error("thiếu câu");
     expect(quizHint(editing)).toBe("Viết xong thì bấm Chấm ý.");
+    if (editing.kind !== "essay") throw new Error("phải là câu tự luận");
+    expect(quizHint({ ...editing, error: { ...localError("x"), kind: "network" } })).toBe(
+      "Bấm Thử lại, hoặc sang câu tiếp.",
+    );
+    expect(quizHint({ ...editing, error: localError("Câu trả lời đang trống.") })).toBe("Viết xong thì bấm Chấm ý.");
     expect(nextLabel(start(mcq("q1"), mcq("q2")))).toBe("Câu tiếp");
     expect(nextLabel({ ...start(mcq("q1"), mcq("q2")), index: 1 })).toBe("Xem kết quả");
     expect(nextLabel(start(mcq("q1")))).toBe("Xem kết quả");

@@ -11,10 +11,11 @@ import { api, toUiError } from "@/lib/api";
 import { screenErrorText } from "@/lib/concept-board";
 import type { UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
-import { type PairsLocation, pairsHref } from "@/lib/pairs";
+import type { PairsLocation } from "@/lib/pairs";
 import type { PracticeBatch, PracticeBlueprint, PracticeTicket } from "@/lib/practice-data";
 import { failureTechnical, ticketTechnical, ticketText } from "@/lib/practice-setup";
 import { freshRuntime } from "@/lib/runtime";
+import type { PracticeSessionKind } from "@/lib/subject-route";
 import { selectedSubject } from "@/lib/subjects";
 import type { BlueprintCreate } from "@/types/holocron";
 
@@ -34,36 +35,49 @@ type Stage =
   | { kind: "ready"; blueprint: PracticeBlueprint; batch: PracticeBatch };
 
 export interface PracticeViewProps {
-  /** Môn cố định (trang môn); ưu tiên hơn môn của khung. Bỏ trống ⇒ môn của khung (route cũ `/practice`). */
-  subjectCode?: string;
+  /** Môn của trang môn. */
+  subjectCode: string;
   /**
-   * Dựng địa chỉ phần khái niệm (nút "Duyệt khái niệm", liên kết khi câu lý thuyết không soạn được); trang môn truyền
-   * địa chỉ tab Khái niệm của môn, mặc định `pairsHref` (`/pairs?…`, route cũ).
+   * Dựng địa chỉ phần khái niệm (nút "Duyệt khái niệm", liên kết khi câu lý thuyết không soạn được): tab Khái niệm
+   * của môn.
    */
-  hrefFor?: (location: Partial<PairsLocation>) => string;
+  hrefFor: (location: Partial<PairsLocation>) => string;
+  /** `&session=` trên địa chỉ. Đang làm đề mà địa chỉ bỏ `session` (ví dụ bấm tên môn ở breadcrumb) ⇒ về thiết lập. */
+  urlSession?: PracticeSessionKind | null;
+  /** Báo phần đang mở: `quiz` (làm đề), `result` (kết quả) hoặc `null` (thiết lập, đang soạn, lỗi). */
+  onSessionChange?: (session: PracticeSessionKind | null) => void;
 }
 
 /**
- * Tab Ôn tập (design-handoff/README.md màn 8; F4, lát cắt dọc §4): thiết lập đề (`PracticeSetup`; trang môn truyền môn
- * qua prop, route cũ `/practice` dùng môn của khung) → tạo đề (`POST /v1/blueprints`) → soạn câu
- * (`POST /v1/blueprints/{id}/twins`) → làm từng câu. Mọi con số và đáp án do backend trả; giao diện chỉ so khoá.
+ * Tab Ôn tập (design-handoff/README.md màn 8–10; F4, lát cắt dọc §4): thiết lập đề (`PracticeSetup`) → tạo đề
+ * (`POST /v1/blueprints`) → soạn câu (`POST /v1/blueprints/{id}/twins`) → làm từng câu → kết quả. State ở đây là nguồn
+ * chân lý của bài làm; trang môn chỉ phản chiếu phần đang mở lên địa chỉ. Mọi con số và đáp án do backend trả; giao
+ * diện chỉ so khoá.
  */
-export function PracticeView({ subjectCode: fixedSubject, hrefFor = pairsHref }: PracticeViewProps) {
+export function PracticeView({ subjectCode, hrefFor, urlSession = null, onSessionChange }: PracticeViewProps) {
   const router = useRouter();
-  const { runtime, subjects, reloadSubjects, subjectCode: shellSubject } = useShell();
-  const subjectCode = fixedSubject ?? shellSubject;
+  const { runtime, subjects } = useShell();
   const subject = selectedSubject(subjects, subjectCode);
   const [stage, setStage] = useState<Stage>({ kind: "setup" });
+  const [phase, setPhase] = useState<PracticeSessionKind>("quiz");
+  const session: PracticeSessionKind | null = stage.kind === "ready" && stage.batch.questions.length > 0 ? phase : null;
+
+  // Địa chỉ vừa bỏ `session` trong khi đang làm đề hoặc xem kết quả: người dùng rời bài làm (breadcrumb, hộp lệnh).
+  const [seenUrlSession, setSeenUrlSession] = useState(urlSession);
+  if (seenUrlSession !== urlSession) {
+    setSeenUrlSession(urlSession);
+    if (seenUrlSession !== null && urlSession === null && session !== null) {
+      setStage({ kind: "setup" });
+      setPhase("quiz");
+    }
+  }
+
+  useEffect(() => {
+    onSessionChange?.(session);
+  }, [session, onSessionChange]);
   const calls = useRef(createLatestCounter());
   // Một khoá cho mỗi bộ đề: "Thử lại" sau lỗi mạng gửi lại cùng body và nhận đúng lượt sinh cũ nếu backend đã sinh xong.
   const idempotencyKeys = useRef(new Map<string, string>());
-
-  // Đổi môn: bỏ đề đang làm của môn cũ và mọi lời gọi còn chờ.
-  useEffect(() => {
-    if (subjectCode === null) return;
-    calls.current.invalidate();
-    setStage({ kind: "setup" });
-  }, [subjectCode]);
 
   const generate = useCallback((blueprint: PracticeBlueprint) => {
     const ticket = calls.current.begin();
@@ -73,7 +87,9 @@ export function PracticeView({ subjectCode: fixedSubject, hrefFor = pairsHref }:
     api
       .generatePracticeBatch(blueprint.blueprintId, { count: TWINS_PER_SLOT }, key)
       .then((batch) => {
-        if (calls.current.isLatest(ticket)) setStage({ kind: "ready", blueprint, batch });
+        if (!calls.current.isLatest(ticket)) return;
+        setPhase("quiz");
+        setStage({ kind: "ready", blueprint, batch });
       })
       .catch((error: unknown) => {
         if (calls.current.isLatest(ticket)) setStage({ kind: "generate_failed", error: toUiError(error), blueprint });
@@ -99,6 +115,7 @@ export function PracticeView({ subjectCode: fixedSubject, hrefFor = pairsHref }:
   const restart = useCallback(() => {
     calls.current.invalidate();
     setStage({ kind: "setup" });
+    setPhase("quiz");
   }, []);
 
   if (subjects.kind === "loading") {
@@ -110,11 +127,8 @@ export function PracticeView({ subjectCode: fixedSubject, hrefFor = pairsHref }:
       </div>
     );
   }
-  if (subjects.kind === "error") {
-    // Trong trang môn, trang tự báo việc thiếu danh sách môn (mọi loại lỗi, kèm "Thử lại" khi hợp lý); không lặp lại.
-    if (fixedSubject !== undefined) return null;
-    return <SubjectsUnavailable error={subjects.error} onRetry={reloadSubjects} onHome={() => router.push("/")} />;
-  }
+  // Trang môn tự báo việc thiếu danh sách môn (mọi loại lỗi, kèm "Thử lại" khi hợp lý); không lặp lại.
+  if (subjects.kind === "error") return null;
   if (subjects.subjects.length === 0 || subject === null) {
     return (
       <EmptyState
@@ -137,10 +151,15 @@ export function PracticeView({ subjectCode: fixedSubject, hrefFor = pairsHref }:
         />
       )}
       {(stage.kind === "creating" || stage.kind === "generating") && (
-        <output className={styles.busy}>
-          <HolocronMark size={28} spinning />
-          Đang soạn đề…
-        </output>
+        <div className={styles.page} aria-busy="true">
+          <output className={styles.busy}>
+            <HolocronMark size={28} spinning />
+            Đang soạn đề…
+          </output>
+          <Skeleton width="60%" height={28} />
+          <Skeleton height={56} />
+          <Skeleton height={56} />
+        </div>
       )}
       {(stage.kind === "create_failed" || stage.kind === "generate_failed") && (
         <div className={styles.page}>
@@ -164,6 +183,7 @@ export function PracticeView({ subjectCode: fixedSubject, hrefFor = pairsHref }:
           batch={stage.batch}
           blueprint={stage.blueprint}
           onNewExam={restart}
+          onPhaseChange={setPhase}
           conceptsHref={hrefFor({})}
         />
       )}
@@ -171,48 +191,30 @@ export function PracticeView({ subjectCode: fixedSubject, hrefFor = pairsHref }:
   );
 }
 
-/** Route cũ `/practice` khi chưa có danh sách môn. */
-function SubjectsUnavailable({ error, onRetry, onHome }: { error: UiError; onRetry: () => void; onHome: () => void }) {
-  if (error.kind === "not_found") {
-    return (
-      <EmptyState
-        title="Bản Holocron đang chạy chưa có danh sách môn học"
-        description="Màn ôn tập cần biết môn và hình thức thi của môn. Cập nhật Holocron lên bản mới hơn rồi mở lại."
-        action={{ label: "Về trang chủ", onClick: onHome }}
-      />
-    );
-  }
-  return (
-    <ErrorState
-      title="Không tải được danh sách môn"
-      fix={screenErrorText(error)}
-      onRetry={onRetry}
-      technical={error.diagnostic}
-    />
-  );
-}
-
 interface ReadyBatchProps {
   batch: PracticeBatch;
   blueprint: PracticeBlueprint;
+  /** "Thoát" khi đang làm, "Làm đề mới" ở Kết quả, "Soạn đề mới" khi đề không có câu: về thiết lập đề. */
   onNewExam: () => void;
+  /** Bài làm chuyển giữa làm đề và kết quả. */
+  onPhaseChange: (phase: PracticeSessionKind) => void;
   /** Địa chỉ phần khái niệm của môn sinh ra đề. */
   conceptsHref: string;
 }
 
-function ReadyBatch({ batch, blueprint, onNewExam, conceptsHref }: ReadyBatchProps) {
+function ReadyBatch({ batch, blueprint, onNewExam, onPhaseChange, conceptsHref }: ReadyBatchProps) {
   const hasSkipped = batch.skipped.malformed > 0 || batch.skipped.unsupported > 0;
   if (batch.questions.length === 0) {
     return (
       <div className={styles.page}>
         <EmptyState
-          title="Lượt này chưa soạn được câu nào"
+          title="Đề này không còn câu nào"
           description={
             batch.tickets.length > 0
-              ? "Xem từng câu bên dưới, nhận thêm khái niệm ở chương đó rồi tạo đề lại, hoặc tạo đề với chương khác."
-              : "Tạo đề với chương khác, hoặc nhận thêm khái niệm rồi tạo đề lại."
+              ? "Xem từng câu bên dưới, nhận thêm khái niệm ở chương đó rồi soạn đề mới, hoặc chọn chương khác."
+              : "Quay lại để soạn đề mới với chương khác, hoặc nhận thêm khái niệm rồi soạn lại."
           }
-          action={{ label: "Tạo đề khác", onClick: onNewExam }}
+          action={{ label: "Soạn đề mới", onClick: onNewExam }}
         />
         <TicketNotice tickets={batch.tickets} blueprint={blueprint} conceptsHref={conceptsHref} />
         {hasSkipped && <SkippedNotice />}
@@ -221,15 +223,16 @@ function ReadyBatch({ batch, blueprint, onNewExam, conceptsHref }: ReadyBatchPro
   }
   return (
     <div className={styles.page}>
-      <TicketNotice tickets={batch.tickets} blueprint={blueprint} conceptsHref={conceptsHref} />
-      {hasSkipped && <SkippedNotice />}
       {/* Đoạn nguồn của trích dẫn tìm theo môn của blueprint sinh ra câu, không theo môn đang chọn (ADR-006). */}
       <PracticeSession
         questions={batch.questions}
         blueprint={blueprint}
         subjectCode={blueprint.subjectCode}
-        onNewExam={onNewExam}
+        onExit={onNewExam}
+        onPhaseChange={onPhaseChange}
       />
+      <TicketNotice tickets={batch.tickets} blueprint={blueprint} conceptsHref={conceptsHref} />
+      {hasSkipped && <SkippedNotice />}
     </div>
   );
 }

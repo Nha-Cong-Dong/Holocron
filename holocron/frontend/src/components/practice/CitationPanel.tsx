@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ErrorNotice } from "@/components/common/ErrorNotice";
 import { Loading } from "@/components/common/LoadState";
 import { VerbatimQuote } from "@/components/common/VerbatimQuote";
+import { Button } from "@/components/ui";
 import { api, toUiError } from "@/lib/api";
 import type { UiError } from "@/lib/errors";
 import type { PracticeCitation, VaultChunkView } from "@/lib/practice-data";
@@ -16,28 +17,39 @@ interface CitationPanelProps {
   citation: PracticeCitation;
   /** Môn của blueprint sinh ra câu (ADR-006 mục 6), không phải môn đang chọn ở thanh bên. */
   subjectCode: string;
-  /** Chương của câu (từ blueprint), để thu hẹp truy vấn chunk; `null` khi không biết. */
+  /** Chương của câu (từ đề), để thu hẹp truy vấn đoạn; `null` khi không biết. */
   chapterCode: string | null;
   open: boolean;
   onToggle: () => void;
+  /** Nhãn trang hiện dưới trích dẫn, ví dụ "Trang 14". */
+  pageLabel: string;
+  /** Tên tài liệu khi đã biết; không có thì chỉ hiện nhãn trang (không hiện mã tài liệu). */
+  sourceTitle: string | null;
 }
 
 /**
- * Trích dẫn nguyên văn kèm số trang (luôn hiện sau khi nộp), và nút mở đoạn nguồn: văn bản chunk chứa trích dẫn, đoạn
- * trích được tô đậm. Không render PDF (chưa có cách lấy file gốc, kế hoạch UI M12).
+ * Trích dẫn nguyên văn kèm số trang và tên tài liệu (chỉ hiện sau khi trả lời), và nút mở đoạn nguồn: văn bản của
+ * đoạn chứa trích dẫn, phần trích được tô đậm. Không render PDF (chưa có cách lấy file gốc, kế hoạch UI M12).
  */
-export function CitationPanel({ citation, subjectCode, chapterCode, open, onToggle }: CitationPanelProps) {
+export function CitationPanel({
+  citation,
+  subjectCode,
+  chapterCode,
+  open,
+  onToggle,
+  pageLabel,
+  sourceTitle,
+}: CitationPanelProps) {
   return (
-    <section className={styles.source} aria-label="Trích dẫn nguồn">
-      <h3 className={styles.sectionTitle}>Trích dẫn nguyên văn</h3>
-      <VerbatimQuote citation={citation} />
+    <div className={styles.citation}>
+      <VerbatimQuote citation={citation} pageLabel={pageLabel} sourceTitle={sourceTitle} />
       <div className={styles.actions}>
-        <button type="button" className={styles.secondary} onClick={onToggle} aria-expanded={open}>
+        <Button variant="secondary" onClick={onToggle} aria-expanded={open}>
           {open ? "Đóng đoạn nguồn (C)" : "Xem đoạn nguồn (C)"}
-        </button>
+        </Button>
       </div>
       {open && <SourceExcerpt citation={citation} subjectCode={subjectCode} chapterCode={chapterCode} />}
-    </section>
+    </div>
   );
 }
 
@@ -104,9 +116,7 @@ function SourceExcerpt({ citation, subjectCode, chapterCode }: SourceExcerptProp
 
   if (chunkId === null) {
     return (
-      <p className={styles.muted}>
-        Trích dẫn này không gắn với đoạn nào trong kho tri thức nên chưa xem được đoạn nguồn.
-      </p>
+      <p className={styles.muted}>Trích dẫn này không gắn với đoạn nào trong tài liệu nên chưa xem được đoạn nguồn.</p>
     );
   }
   if (state.kind === "loading") return <Loading label="Đang tải đoạn nguồn…" />;
@@ -115,8 +125,8 @@ function SourceExcerpt({ citation, subjectCode, chapterCode }: SourceExcerptProp
     return (
       <p className={styles.muted}>
         {state.truncated
-          ? "Chưa tìm thấy đoạn nguồn trong phần kho tri thức đã đọc (kho của môn này lớn, giao diện chỉ đọc một phần). Trích dẫn ở trên vẫn là nguyên văn."
-          : "Không tìm thấy đoạn nguồn trong kho tri thức của môn này (có thể tài liệu gốc đã bị xoá). Trích dẫn ở trên vẫn là nguyên văn."}
+          ? "Chưa tìm thấy đoạn nguồn trong phần tài liệu đã đọc (tài liệu của môn này nhiều, Holocron chỉ đọc một phần). Trích dẫn ở trên vẫn là nguyên văn."
+          : "Không tìm thấy đoạn nguồn trong tài liệu của môn này (có thể tài liệu gốc đã bị xoá). Trích dẫn ở trên vẫn là nguyên văn."}
       </p>
     );
   }

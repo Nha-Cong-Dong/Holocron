@@ -196,6 +196,7 @@ export function quizHint(entry: AnswerEntry): string {
   if (entry.kind === "mcq") return entry.submitted ? "Enter để đi tiếp." : "Bấm đáp án hoặc phím 1–4.";
   if (entry.status === "graded") return "Enter để đi tiếp.";
   if (entry.status === "grading") return "Đang chấm câu trả lời…";
+  if (entry.error !== null && essayErrorPlacement(entry.error) === "screen") return "Bấm Thử lại, hoặc sang câu tiếp.";
   return "Viết xong thì bấm Chấm ý.";
 }
 

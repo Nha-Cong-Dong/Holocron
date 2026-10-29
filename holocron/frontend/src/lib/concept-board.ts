@@ -266,10 +266,11 @@ export function editingSkippedToast(candidates: readonly BulkCandidate[]): strin
 
 /**
  * Câu lỗi trên một dòng "Đã nhận"/"Đã bỏ". Khung sửa tên đóng: dòng có nút "Thử lại" nên giữ nguyên câu. Khung đang mở
- * (đổi tên lỗi, nháp còn giữ): không có nút "Thử lại", nút "Lưu" của khung gửi lại ⇒ "bấm Thử lại" thành "bấm Lưu".
+ * VÀ lỗi thuộc thao tác đổi tên (nháp còn giữ): không có nút "Thử lại", nút "Lưu" của khung gửi lại ⇒ "bấm Thử lại"
+ * thành "bấm Lưu". Lỗi thao tác khác (Bỏ, Nhận lại) giữ câu và nút "Thử lại" dù khung đang mở.
  */
-export function rowErrorText(text: string, editing: boolean): string {
-  return editing ? text.replace(/([Bb]ấm) Thử lại/g, "$1 Lưu") : text;
+export function rowErrorText(text: string, editing: boolean, renameFailed: boolean): string {
+  return editing && renameFailed ? text.replace(/([Bb]ấm) Thử lại/g, "$1 Lưu") : text;
 }
 
 /**

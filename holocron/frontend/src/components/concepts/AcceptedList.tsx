@@ -18,6 +18,8 @@ export interface AcceptedEntry {
   /** Vừa thành "đã nhận" ở lần tải này: dòng vào bằng `m-accepted-in`. */
   fresh: boolean;
   error: string | null;
+  /** Lỗi hiện tại thuộc thao tác đổi tên (khung sửa tên gửi lại bằng "Lưu"). */
+  errorIsRename: boolean;
 }
 
 interface AcceptedListProps {
@@ -95,21 +97,21 @@ export function AcceptedList({
 function RowError({
   text,
   editing,
-  busy,
+  renameFailed,
   onRetry,
 }: {
   text: string;
   editing: boolean;
-  busy: boolean;
+  renameFailed: boolean;
   onRetry: () => void;
 }) {
   return (
     <div className={styles.actions}>
       <p className={styles.error} role="alert">
-        {rowErrorText(text, editing)}
+        {rowErrorText(text, editing, renameFailed)}
       </p>
-      {!editing && (
-        <Button variant="secondary" busy={busy} busyLabel="Đang thử lại" onClick={onRetry}>
+      {!(editing && renameFailed) && (
+        <Button variant="secondary" onClick={onRetry}>
           Thử lại
         </Button>
       )}
@@ -221,7 +223,12 @@ function AcceptedRow({
             </p>
           )}
           {entry.error !== null && (
-            <RowError text={entry.error} editing={editing} busy={busy} onRetry={() => onRetry(pair)} />
+            <RowError
+              text={entry.error}
+              editing={editing}
+              renameFailed={entry.errorIsRename}
+              onRetry={() => onRetry(pair)}
+            />
           )}
           <p className={styles.muted}>Sửa hoặc bỏ khái niệm đã nhận sẽ đổi câu ôn tập sinh sau đó.</p>
         </div>
@@ -272,7 +279,7 @@ function RejectedRow({
         </p>
       )}
       {entry.error !== null && (
-        <RowError text={entry.error} editing={false} busy={busy} onRetry={() => onRetry(pair)} />
+        <RowError text={entry.error} editing={false} renameFailed={false} onRetry={() => onRetry(pair)} />
       )}
     </li>
   );

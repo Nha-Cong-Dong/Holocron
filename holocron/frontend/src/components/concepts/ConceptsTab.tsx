@@ -501,6 +501,7 @@ export function ConceptsTab({
       busy: busyIds.has(pair.pair_id),
       fresh: fresh.has(pair.pair_id),
       error: cardErrors.get(pair.pair_id)?.text ?? null,
+      errorIsRename: cardErrors.get(pair.pair_id)?.operation === "rename",
     };
   };
   const allGate = acceptAllGate(

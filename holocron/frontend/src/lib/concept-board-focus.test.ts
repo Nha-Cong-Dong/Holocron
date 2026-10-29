@@ -70,20 +70,28 @@ describe("rowErrorText", () => {
   const network = screenErrorText(classifyNetworkError("http://127.0.0.1:8000"));
 
   it("khung sửa đóng: dòng có nút Thử lại nên giữ nguyên câu", () => {
-    expect(rowErrorText(network, false)).toBe(network);
-    expect(rowErrorText(CONCEPT_CONFLICT_VI, false)).toBe(CONCEPT_CONFLICT_VI);
+    expect(rowErrorText(network, false, true)).toBe(network);
+    expect(rowErrorText(CONCEPT_CONFLICT_VI, false, true)).toBe(CONCEPT_CONFLICT_VI);
   });
 
   it("khung sửa mở: không có nút Thử lại, câu nhắc nút Lưu của khung", () => {
     expect(network).toContain("bấm Thử lại");
-    expect(rowErrorText(network, true)).not.toContain("Thử lại");
-    expect(rowErrorText(network, true)).toContain("bấm Lưu");
-    expect(rowErrorText(CONCEPT_CONFLICT_VI, true)).toBe(
+    expect(rowErrorText(network, true, true)).not.toContain("Thử lại");
+    expect(rowErrorText(network, true, true)).toContain("bấm Lưu");
+    expect(rowErrorText(CONCEPT_CONFLICT_VI, true, true)).toBe(
       "Khái niệm này vừa đổi ở nơi khác nên chưa ghi được. Xem lại rồi bấm Lưu.",
     );
-    expect(rowErrorText("Holocron trả lời không như mong đợi. Bấm Thử lại; nếu vẫn lỗi, mở lại Holocron.", true)).toBe(
-      "Holocron trả lời không như mong đợi. Bấm Lưu; nếu vẫn lỗi, mở lại Holocron.",
-    );
+    expect(
+      rowErrorText("Holocron trả lời không như mong đợi. Bấm Thử lại; nếu vẫn lỗi, mở lại Holocron.", true, true),
+    ).toBe("Holocron trả lời không như mong đợi. Bấm Lưu; nếu vẫn lỗi, mở lại Holocron.");
+  });
+});
+
+describe("rowErrorText: lỗi không phải đổi tên", () => {
+  it("lỗi Bỏ hoặc Nhận lại khi khung sửa đang mở vẫn nhắc Thử lại", () => {
+    const network = screenErrorText(classifyNetworkError("http://127.0.0.1:8000"));
+    expect(rowErrorText(network, true, false)).toBe(network);
+    expect(rowErrorText(network, true, false)).toContain("bấm Thử lại");
   });
 });
 

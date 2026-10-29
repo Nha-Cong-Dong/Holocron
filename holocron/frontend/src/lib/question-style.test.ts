@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { localError } from "@/lib/errors";
-import { INITIAL_RUNTIME_STATE, type RuntimeState, type RuntimeView } from "@/lib/runtime";
-
-import { questionStyleStatus } from "./QuestionStyleSection";
+import { localError } from "./errors";
+import { questionStyleStatus } from "./question-style";
+import { INITIAL_RUNTIME_STATE, type RuntimeState, type RuntimeView } from "./runtime";
 
 function runtime(llm: boolean): RuntimeView {
   return {

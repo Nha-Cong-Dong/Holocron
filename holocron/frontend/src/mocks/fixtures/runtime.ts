@@ -18,6 +18,9 @@ export const REASON_DETAILS_VI: Record<CapabilityReason, string> = {
     "Thiếu dữ liệu tiếng Việt cho Tesseract: thêm vie.traineddata vào thư mục tessdata hoặc đặt " +
     "HOLOCRON_TESSDATA_DIR.",
   secondary_ocr_disabled: "Lượt đọc thứ hai đang tắt vì HOLOCRON_PDF_OCR_SECONDARY để trống.",
+  secondary_ocr_unavailable:
+    "Không nạp được lượt đọc thứ hai (RapidOCR) trên máy này. Bản rút gọn không kèm RapidOCR: dùng bản đầy đủ. " +
+    "Nếu đang dùng bản đầy đủ, cài lại ứng dụng.",
   not_implemented: "Bản đang chạy chưa có khả năng này.",
 };
 

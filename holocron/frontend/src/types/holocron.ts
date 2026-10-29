@@ -673,6 +673,7 @@ export type CapabilityReason =
   | "ocr_engine_missing"
   | "ocr_language_missing"
   | "secondary_ocr_disabled"
+  | "secondary_ocr_unavailable"
   | "not_implemented";
 
 /** Mã lý do không khả dụng (§5.12). */
@@ -682,6 +683,7 @@ export const CAPABILITY_REASONS = [
   "ocr_engine_missing",
   "ocr_language_missing",
   "secondary_ocr_disabled",
+  "secondary_ocr_unavailable",
   "not_implemented",
 ] as const satisfies readonly CapabilityReason[];
 

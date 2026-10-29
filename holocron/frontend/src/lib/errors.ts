@@ -111,6 +111,7 @@ const CAPABILITY_REASON_HINT_VI: Record<CapabilityReason, string> = {
   ocr_engine_missing: "cần Tesseract, mà máy chưa cài hoặc backend không chạy được Tesseract.",
   ocr_language_missing: "Tesseract còn thiếu dữ liệu tiếng Việt (vie.traineddata).",
   secondary_ocr_disabled: "lượt đọc thứ hai đang tắt trong cấu hình backend.",
+  secondary_ocr_unavailable: "không nạp được lượt đọc thứ hai (RapidOCR) trên máy này.",
   not_implemented: "bản đang chạy chưa có tính năng này.",
 };
 

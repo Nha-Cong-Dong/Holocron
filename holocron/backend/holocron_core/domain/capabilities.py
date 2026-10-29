@@ -35,6 +35,9 @@ CapabilityReason = Literal[
     "ocr_language_missing",
     "secondary_ocr_disabled",
     "not_implemented",
+    # Lượt đọc thứ hai được bật mà không nạp được RapidOCR (bản rút gọn không kèm, thiếu gói, model hỏng);
+    # duyệt 2026-10-29.
+    "secondary_ocr_unavailable",
 ]
 
 CAPABILITY_NAMES: tuple[CapabilityName, ...] = get_args(CapabilityName)

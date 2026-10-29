@@ -8,7 +8,7 @@ https…) được `routers/deps.get_runtime_config` nạp như chưa cấu hìn
 (`routers/runtime.py`, trường `capabilities`).
 
 Thứ tự xét lý do cho mỗi khả năng: chưa có code trong bản đang chạy (`not_implemented`) → thiếu cấu hình LLM/VLM →
-lỗi kiểm cục bộ do tầng gọi cấp (binary Tesseract, gói `vie`, lượt đọc thứ hai; `services/capability_checks.py`)
+lỗi kiểm cục bộ do tầng gọi cấp (binary Tesseract, gói `vie`, lượt đọc thứ hai tắt hoặc không nạp được; `services/capability_checks.py`)
 → khả dụng.
 """
 
@@ -20,8 +20,8 @@ from ..domain.capabilities import CAPABILITY_NAMES, Capability, CapabilityError,
 from ..infrastructure.llm_config import RuntimeConfig
 
 # Khả năng đã có code trên nhánh này. OCR đã có: bộ nhập PDF đọc bằng Tesseract (`ocr`) và lượt đọc thứ hai RapidOCR
-# (`ocr_cross_check`); máy thiếu binary, thiếu `vie` hay tắt lượt thứ hai được báo qua `local_failures`
-# (`services/capability_checks.py`, kiểm một lần lúc khởi động). Chấm tự luận, `TemplateAuthor` thật và adapter VLM
+# (`ocr_cross_check`); máy thiếu binary, thiếu `vie`, tắt lượt thứ hai hay không nạp được RapidOCR được báo qua
+# `local_failures` (`services/capability_checks.py`, kiểm một lần lúc khởi động). Chấm tự luận, `TemplateAuthor` thật và adapter VLM
 # chưa có.
 IMPLEMENTED_CAPABILITIES: frozenset[CapabilityName] = frozenset(
     {"ocr", "ocr_cross_check", "vault_search", "theory_generation", "concept_pair_llm_proposal"}
@@ -47,6 +47,10 @@ REASON_DETAILS_VI: dict[CapabilityReason, str] = {
     ),
     "secondary_ocr_disabled": "Lượt đọc thứ hai đang tắt vì HOLOCRON_PDF_OCR_SECONDARY để trống.",
     "not_implemented": "Bản đang chạy chưa có khả năng này.",
+    "secondary_ocr_unavailable": (
+        "Không nạp được lượt đọc thứ hai (RapidOCR) trên máy này. Bản rút gọn không kèm RapidOCR: dùng bản đầy đủ. "
+        "Nếu đang dùng bản đầy đủ, cài lại ứng dụng."
+    ),
 }
 
 

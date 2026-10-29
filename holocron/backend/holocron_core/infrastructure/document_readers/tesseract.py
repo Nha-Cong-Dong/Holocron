@@ -1,9 +1,15 @@
 """Engine chính của tầng 2: binary Tesseract `vie` gọi qua subprocess (ADR-008 mục 8).
 
-Chỉ chạy BÊN TRONG worker có giới hạn (`_pdf_worker.py`); Tesseract là tiến trình con của worker nên chịu cùng
-giới hạn OS (RLIMIT kế thừa trên Unix, Job Object bao cả tiến trình con trên Windows). Ảnh PNG do PDFium render
-đi vào qua stdin, kết quả TSV ra qua stdout, nên Tesseract không ghi file nào (giữ được `RLIMIT_FSIZE` 0) và không
-bao giờ đọc file PDF gốc.
+Nhận dạng trang (`TesseractEngine.recognize`) chỉ chạy BÊN TRONG worker có giới hạn (`_pdf_worker.py`); Tesseract
+là tiến trình con của worker nên chịu cùng giới hạn OS (RLIMIT kế thừa trên Unix, Job Object bao cả tiến trình con
+trên Windows). Ảnh PNG do PDFium render đi vào qua stdin, kết quả TSV ra qua stdout, nên Tesseract không ghi file
+nào (giữ được `RLIMIT_FSIZE` 0) và không bao giờ đọc file PDF gốc.
+
+Chạy ở TIẾN TRÌNH CHA (app), một lần lúc khởi động, cho kiểm cục bộ của chế độ khả năng
+(`services/capability_checks.py`): `TesseractEngine.probe_status` (chỉ `--version` và `--list-langs`, qua
+`run_bounded`: không qua shell, có timeout, có trần byte đầu ra, kill khi quá hạn), `listed_tessdata_dir` và các hàm
+thuần đọc unicharset trên bytes của `vie.traineddata` (file đọc có trần byte ở tầng gọi). `run_bounded` cũng là bộ
+chạy tiến trình con thăm dò RapidOCR (`secondary_probe.py`); tiến trình cha không nhận dạng ảnh nào.
 
 - Gọi bằng danh sách tham số (`shell=False`), môi trường tối thiểu (`SYSTEMROOT` trên Windows), timeout, stdout
   đọc có giới hạn byte; stdout giải mã UTF-8 strict.
@@ -22,7 +28,7 @@ import subprocess
 import sys
 import threading
 import unicodedata
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import IO, Literal
 
@@ -43,7 +49,8 @@ TSV_WORD_LEVEL = 5
 RunStatus = Literal["ok", "timeout", "overflow", "failed"]
 # Kết quả kiểm Tesseract khi khởi động (`TesseractEngine.probe_status`).
 ProbeStatus = Literal["ok", "engine_missing", "language_missing"]
-# Dòng đầu của `tesseract --list-langs` (4.x, 5.x): `List of available languages in "<thư mục>" (<số>):`.
+# Dòng đầu của `tesseract --list-langs`: bản 5.x ghi `List of available languages in "<thư mục>" (<số>):`; bản 4.x
+# ghi `List of available languages (<số>):`, không có thư mục (khi đó `listed_tessdata_dir` trả None).
 _LIST_LANGS_DIR = re.compile(r'"(?P<dir>[^"]+)"')
 
 
@@ -107,13 +114,16 @@ def run_bounded(
     max_output_bytes: int,
     *,
     kill_grace_s: float = DEFAULT_OCR_KILL_GRACE_S,
+    env: Mapping[str, str] | None = None,
 ) -> RunResult:
     """Chạy `args` (không qua shell), ghi `stdin_data` vào stdin, đọc stdout tối đa `max_output_bytes` byte.
 
-    Quá hạn ⇒ "timeout"; stdout vượt giới hạn ⇒ "overflow"; mã thoát khác 0 hoặc không chạy được ⇒ "failed".
+    Quá hạn ⇒ "timeout"; stdout vượt giới hạn ⇒ "overflow"; mã thoát khác 0 hoặc không chạy được ⇒ "failed" (mã
+    thoát khác 0 thì kèm stdout đã đọc, trong trần byte, để nơi gọi đọc được dòng báo lỗi cuối của tiến trình con).
     Trường hợp nào tiến trình con cũng bị kill trước khi hàm trả về; sau khi kill, mỗi lần chờ (luồng đọc/ghi, tiến
     trình thoát) tối đa `kill_grace_s` (`PdfReaderConfig.ocr_kill_grace_s`). Tiến trình không thoát trong hạn đó
-    cũng bị kill và kết quả là "timeout".
+    cũng bị kill và kết quả là "timeout". `env` là môi trường của tiến trình con (mặc định `tesseract_env()`, tối
+    thiểu); nơi gọi tự cấp môi trường tối thiểu của mình khi cần thêm biến.
     """
     try:
         process = subprocess.Popen(
@@ -121,7 +131,7 @@ def run_bounded(
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            env=tesseract_env(),
+            env=dict(env) if env is not None else tesseract_env(),
             shell=False,
             close_fds=True,
         )
@@ -172,7 +182,7 @@ def run_bounded(
     if timed_out or reader.is_alive() or returncode is None:
         return RunResult(status="timeout")
     if returncode != 0:
-        return RunResult(status="failed")
+        return RunResult(status="failed", stdout=b"".join(chunks))
     return RunResult(status="ok", stdout=b"".join(chunks))
 
 

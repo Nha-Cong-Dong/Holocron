@@ -1,6 +1,6 @@
 """Fixture dùng chung cho test; độc lập với thư mục scripts/."""
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping, Sequence
 
 import pytest
 from starlette.types import ASGIApp
@@ -15,7 +15,10 @@ from holocron_core.domain.schemas import (
     QuestionFormat,
     SelfSolveResult,
 )
+from holocron_core.infrastructure.document_readers import secondary_probe
 from holocron_core.infrastructure.document_readers.config import OcrSettings, PdfReaderConfig
+from holocron_core.infrastructure.document_readers.secondary_probe import REPORT_PREFIX, SecondaryProbeReport
+from holocron_core.infrastructure.document_readers.tesseract import RunResult
 from holocron_core.routers import access, runtime
 from holocron_core.routers.access import DEFAULT_ALLOWED_HOSTS, ProviderOverrides, get_allowed_hosts
 from holocron_core.routers.api import app
@@ -148,8 +151,23 @@ def _fake_probe(settings: OcrSettings, config: PdfReaderConfig, /) -> OcrProbeRe
     return OcrProbeResult(engine_runs=True, vie_available=True)
 
 
-def _fake_load_secondary() -> object:
-    return object()
+LOADED_REPORT = RunResult(
+    status="ok",
+    stdout=(REPORT_PREFIX + SecondaryProbeReport(loaded=True, error=None).model_dump_json() + "\n").encode("utf-8"),
+)
+
+
+def _fake_secondary_runner(
+    args: Sequence[str],
+    stdin_data: bytes,
+    timeout_s: float,
+    max_output_bytes: int,
+    *,
+    kill_grace_s: float,
+    env: Mapping[str, str] | None = None,
+) -> RunResult:
+    """Bộ chạy tiến trình con giả của bộ thăm dò RapidOCR: không dựng tiến trình, báo đã nạp được."""
+    return LOADED_REPORT
 
 
 @pytest.fixture(autouse=True)
@@ -158,8 +176,9 @@ def fake_local_capability_check() -> Iterator[None]:
 
     `app` nhận override `get_local_capability_check`. App dựng mới trong test (chỉ gắn vài router, không có override
     của `app`) dùng bộ kiểm mặc định, nên bộ nạp cấu hình OCR và probe mà bộ kiểm mặc định gọi cũng được thay bằng
-    bản giả (máy có Tesseract, có `vie`, lượt đọc thứ hai bật); bộ nạp RapidOCR cũng là bản giả (không nạp model
-    thật). Kết quả kiểm lưu ở `app.state` (một lần mỗi lần khởi động); bỏ trước và sau mỗi test để test sau không
+    bản giả (máy có Tesseract, có `vie`, lượt đọc thứ hai bật); bộ chạy tiến trình con của bộ thăm dò RapidOCR
+    (tầng thấp nhất, `secondary_probe.run_bounded`) cũng là bản giả báo "nạp được" (không dựng tiến trình, không
+    nạp model thật). Kết quả kiểm lưu ở `app.state` (một lần mỗi lần khởi động); bỏ trước và sau mỗi test để test sau không
     thấy kết quả của test trước. Test cần kết quả khác thì đặt override riêng cho `get_local_capability_check`.
     """
     clear_local_capability_check(app)
@@ -167,6 +186,6 @@ def fake_local_capability_check() -> Iterator[None]:
         patch.setitem(app.dependency_overrides, get_local_capability_check, _fake_local_capability_check)
         patch.setattr(runtime, "load_ocr_settings", _fake_ocr_settings)
         patch.setattr(runtime, "probe_tesseract", _fake_probe)
-        patch.setattr(runtime, "load_secondary_ocr", _fake_load_secondary)
+        patch.setattr(secondary_probe, "run_bounded", _fake_secondary_runner)
         yield
     clear_local_capability_check(app)

@@ -157,7 +157,8 @@ class PdfReaderConfig(BaseModel):
     def _only_approved_missing_letters(self) -> PdfReaderConfig:
         """Danh sách chữ được phép thiếu chỉ gồm các chữ hiếm đã duyệt (spec §5.7)."""
         if not self.ocr_charset_allowed_missing <= OCR_CHARSET_APPROVED_MISSING:
-            raise ValueError("ocr_charset_allowed_missing chỉ được chứa các chữ đã duyệt (Ỵ, ỵ)")
+            approved = ", ".join(sorted(OCR_CHARSET_APPROVED_MISSING))
+            raise ValueError(f"ocr_charset_allowed_missing chỉ được chứa các chữ đã duyệt ({approved})")
         return self
 
 

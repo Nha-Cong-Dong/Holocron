@@ -1,34 +1,61 @@
 """Kiểm cục bộ của chế độ khả năng (SPECIFICATION §5.12, §11.4): Tesseract, gói `vie`, lượt đọc thứ hai.
 
-Không chạy binary Tesseract hay nạp RapidOCR thật: probe, bộ chạy lệnh và bộ nạp lượt thứ hai đều là bản giả, nên
-kết quả không phụ thuộc máy chạy test.
+Không chạy binary Tesseract hay nạp RapidOCR thật: probe, bộ chạy lệnh và bộ thăm dò lượt thứ hai đều là bản giả,
+nên kết quả không phụ thuộc máy chạy test. Riêng các test tiến trình con thăm dò RapidOCR dựng tiến trình thật với
+gói `rapidocr` GIẢ (đặt trước trong `PYTHONPATH`), không nạp model thật.
 """
 
 from __future__ import annotations
 
+import functools
+import io
 import logging
+import os
 import struct
+import subprocess
+import sys
+import threading
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
+from typing import get_args
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from holocron_core.domain.capabilities import Capability, CapabilityName, CapabilityReason
+from holocron_core.infrastructure.document_readers import rapidocr_adapter, secondary_probe
 from holocron_core.infrastructure.document_readers.config import (
     ENV_PDF_OCR_PRIMARY,
     ENV_PDF_OCR_SECONDARY,
+    OCR_CHARSET_APPROVED_MISSING,
     OcrSettings,
     PdfReaderConfig,
+    load_ocr_settings,
+)
+from holocron_core.infrastructure.document_readers.rapidocr_adapter import RapidOcrBackend
+from holocron_core.infrastructure.document_readers.secondary_probe import (
+    REPORT_PREFIX,
+    SecondaryProbeReport,
+    SecondaryProbeRequest,
+    parse_report,
+    probe_env,
+    probe_secondary_ocr,
+    run_probe,
 )
 from holocron_core.infrastructure.document_readers.tesseract import (
     TESSDATA_LSTM_UNICHARSET,
+    ProbeOutcome,
     RunResult,
+    RunStatus,
+    TesseractEngine,
     listed_tessdata_dir,
     vietnamese_letters,
 )
+from holocron_core.infrastructure.document_readers.tesseract import run_bounded as real_run_bounded
 from holocron_core.infrastructure.llm_config import ConfigError, RuntimeConfig, load_runtime_config
 from holocron_core.routers import blueprints, runtime
 from holocron_core.routers.api import app
@@ -40,7 +67,7 @@ from holocron_core.routers.runtime import (
     get_local_capability_check,
 )
 from holocron_core.services import capability_checks
-from holocron_core.services.capabilities import IMPLEMENTED_CAPABILITIES
+from holocron_core.services.capabilities import IMPLEMENTED_CAPABILITIES, REASON_DETAILS_VI
 from holocron_core.services.capability_checks import (
     OcrProbeResult,
     check_local_capabilities,
@@ -65,15 +92,18 @@ LLM_ENV = {
 Failures = dict[CapabilityName, CapabilityReason]
 
 
-def _loaded() -> object | None:
-    return object()
+LOADED = SecondaryProbeReport(loaded=True, error=None)
 
 
-def _not_loaded() -> object | None:
-    return None
+def _loaded(config: PdfReaderConfig, /) -> SecondaryProbeReport:
+    return LOADED
 
 
-def _must_not_load() -> object | None:
+def _not_loaded(config: PdfReaderConfig, /) -> SecondaryProbeReport:
+    return SecondaryProbeReport(loaded=False, error="ModuleNotFoundError")
+
+
+def _must_not_load(config: PdfReaderConfig, /) -> SecondaryProbeReport:
     raise AssertionError("không được nạp lượt thứ hai")
 
 
@@ -155,54 +185,59 @@ def test_local_capability_failures(probe_result: OcrProbeResult, settings: OcrSe
 @pytest.mark.parametrize(
     ("probe_result", "expected"),
     [
-        (READY, {"ocr_cross_check": "secondary_ocr_disabled"}),
+        (READY, {"ocr_cross_check": "secondary_ocr_unavailable"}),
         (NO_BINARY, {"ocr": "ocr_engine_missing", "ocr_cross_check": "ocr_engine_missing"}),
         (NO_VIE, {"ocr": "ocr_language_missing", "ocr_cross_check": "ocr_language_missing"}),
     ],
     ids=["ready", "no-binary", "no-vie"],
 )
-def test_secondary_not_loaded_disables_cross_check(probe_result: OcrProbeResult, expected: Failures) -> None:
+def test_secondary_not_loaded_marks_cross_check_unavailable(probe_result: OcrProbeResult, expected: Failures) -> None:
     assert local_capability_failures(probe_result, WITH_SECONDARY, secondary_loaded=False) == expected
 
 
-class BrokenRapidOcr(OSError):
-    """Lỗi giả khi thiếu DLL lúc import gói nhị phân (lọt ra ngoài `RapidOcrBackend.load`)."""
+def _probe_reporting(error: str | None) -> Callable[[PdfReaderConfig], SecondaryProbeReport]:
+    def probe(config: PdfReaderConfig, /) -> SecondaryProbeReport:
+        return SecondaryProbeReport(loaded=error is None, error=error)
 
-
-def _raises_on_load() -> object | None:
-    raise BrokenRapidOcr("onnxruntime DLL hỏng")
-
-
-def _import_breaks() -> object | None:
-    raise ImportError("gói rapidocr hỏng giữa chừng")
+    return probe
 
 
 @pytest.mark.parametrize(
-    ("loader", "expected"),
+    ("error", "expected"),
     [
-        (_loaded, {}),
-        (_not_loaded, {"ocr_cross_check": "secondary_ocr_disabled"}),
-        (_raises_on_load, {"ocr_cross_check": "secondary_ocr_disabled"}),
-        (_import_breaks, {"ocr_cross_check": "secondary_ocr_disabled"}),
+        (None, {}),
+        ("ModuleNotFoundError", {"ocr_cross_check": "secondary_ocr_unavailable"}),
+        ("ImportError", {"ocr_cross_check": "secondary_ocr_unavailable"}),
+        ("ModelLoadFailure", {"ocr_cross_check": "secondary_ocr_unavailable"}),
+        ("ProbeTimeout", {"ocr_cross_check": "secondary_ocr_unavailable"}),
     ],
-    ids=["loads", "returns-none", "raises-oserror", "raises-importerror"],
+    ids=["loads", "no-package", "import-breaks", "model-load-fails", "probe-hangs"],
 )
-def test_rapidocr_must_load_for_cross_check(loader: Callable[[], object | None], expected: Failures) -> None:
-    calls: list[int] = []
+def test_rapidocr_must_load_for_cross_check(error: str | None, expected: Failures) -> None:
+    """Biến bật (`rapidocr`) mà không nạp được ⇒ `secondary_ocr_unavailable`, KHÔNG phải `secondary_ocr_disabled`."""
+    calls: list[PdfReaderConfig] = []
+    probe = _probe_reporting(error)
 
-    def counting_loader() -> object | None:
-        calls.append(1)
-        return loader()
+    def counting_probe(config: PdfReaderConfig, /) -> SecondaryProbeReport:
+        calls.append(config)
+        return probe(config)
 
-    failures = check_local_capabilities(lambda: WITH_SECONDARY, _probe_returning(READY), counting_loader, CONFIG)
+    failures = check_local_capabilities(lambda: WITH_SECONDARY, _probe_returning(READY), counting_probe, CONFIG)
     assert failures == expected
-    assert len(calls) == 1
+    assert calls == [CONFIG]
 
 
-def test_rapidocr_load_failure_logs_only_the_error_type(caplog: pytest.LogCaptureFixture) -> None:
+def test_rapidocr_load_failure_logs_the_error_type_once(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING):
-        assert secondary_ocr_loads(_raises_on_load) is False
-    assert "BrokenRapidOcr" in caplog.text and "DLL" not in caplog.text
+        assert secondary_ocr_loads(_probe_reporting("ModelLoadFailure"), CONFIG) is False
+    records = [record for record in caplog.records if "RapidOCR" in record.getMessage()]
+    assert len(records) == 1 and "ModelLoadFailure" in records[0].getMessage()
+
+
+def test_rapidocr_loaded_logs_nothing(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.DEBUG):
+        assert secondary_ocr_loads(_loaded, CONFIG) is True
+    assert not caplog.records
 
 
 @pytest.mark.parametrize(
@@ -390,8 +425,27 @@ def test_tessdata_dir_falls_back_to_the_list_langs_header(full_tessdata: Path, t
     )
     assert probe_tesseract(_settings_in(None), CONFIG, runner) == READY
     assert [args[1] for args, _, _ in runner.calls] == ["--version", "--list-langs"]
-    assert _probe_with(_settings_in(None), header_dir=None) == NO_VIE
+    # Dòng đầu có ghi thư mục mà thư mục đó không có `vie.traineddata` thì vẫn là thiếu `vie`.
     assert _probe_with(_settings_in(None), header_dir=str(tmp_path / "khong-co")) == NO_VIE
+
+
+def test_unknown_tessdata_dir_skips_the_charset_check(caplog: pytest.LogCaptureFixture) -> None:
+    """Không đặt `HOLOCRON_TESSDATA_DIR` và dòng đầu `--list-langs` không ghi thư mục ⇒ bỏ qua kiểm unicharset."""
+    with caplog.at_level(logging.WARNING):
+        assert _probe_with(_settings_in(None), header_dir=None) == READY
+    assert sum("bỏ qua kiểm unicharset" in record.getMessage() for record in caplog.records) == 1
+
+
+def test_tesseract_4_list_langs_without_directory_is_available() -> None:
+    """Tesseract 4.1.1 ghi `List of available languages (3):` (không có thư mục): có `vie` là khả dụng."""
+    listing = RunResult(status="ok", stdout=b"List of available languages (3):\neng\nosd\nvie\n")
+    version = RunResult(status="ok", stdout=b"tesseract 4.1.1\n")
+    assert probe_tesseract(_settings_in(None), CONFIG, FakeRunner({"--version": version, "--list-langs": listing})) == (
+        READY
+    )
+    without_vie = RunResult(status="ok", stdout=b"List of available languages (2):\neng\nosd\n")
+    runner = FakeRunner({"--version": version, "--list-langs": without_vie})
+    assert probe_tesseract(_settings_in(None), CONFIG, runner) == NO_VIE
 
 
 def test_configured_tessdata_dir_wins_over_the_header(full_tessdata: Path, tmp_path: Path) -> None:
@@ -429,7 +483,7 @@ def test_default_check_end_to_end_reports_language_missing_on_bad_charset(
 
     monkeypatch.setattr(runtime, "load_ocr_settings", lambda: _settings_in(tessdata))
     monkeypatch.setattr(runtime, "probe_tesseract", probe)
-    monkeypatch.setattr(runtime, "load_secondary_ocr", _must_not_load)
+    monkeypatch.setattr(runtime, "probe_secondary_ocr", _must_not_load)
     assert get_local_capability_check()(CONFIG) == {
         "ocr": "ocr_language_missing",
         "ocr_cross_check": "ocr_language_missing",
@@ -622,21 +676,19 @@ def test_default_check_reports_language_missing(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr(runtime, "load_ocr_settings", lambda: WITH_SECONDARY)
     monkeypatch.setattr(runtime, "probe_tesseract", probe)
-    monkeypatch.setattr(runtime, "load_secondary_ocr", _must_not_load)
+    monkeypatch.setattr(runtime, "probe_secondary_ocr", _must_not_load)
     config = PdfReaderConfig(ocr_probe_timeout_s=4.0)
     failures = get_local_capability_check()(config)
     assert failures == {"ocr": "ocr_language_missing", "ocr_cross_check": "ocr_language_missing"}
     assert len(seen) == 1 and seen[0] is config
 
 
-def test_default_check_loads_rapidocr_through_the_runtime_loader(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_check_probes_rapidocr_through_the_runtime_prober(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runtime, "load_ocr_settings", lambda: WITH_SECONDARY)
     monkeypatch.setattr(runtime, "probe_tesseract", _probe_returning(READY))
-    monkeypatch.setattr(runtime, "load_secondary_ocr", _not_loaded)
-    assert get_local_capability_check()(CONFIG) == {"ocr_cross_check": "secondary_ocr_disabled"}
-    monkeypatch.setattr(runtime, "load_secondary_ocr", _raises_on_load)
-    assert get_local_capability_check()(CONFIG) == {"ocr_cross_check": "secondary_ocr_disabled"}
-    monkeypatch.setattr(runtime, "load_secondary_ocr", _loaded)
+    monkeypatch.setattr(runtime, "probe_secondary_ocr", _not_loaded)
+    assert get_local_capability_check()(CONFIG) == {"ocr_cross_check": "secondary_ocr_unavailable"}
+    monkeypatch.setattr(runtime, "probe_secondary_ocr", _loaded)
     assert get_local_capability_check()(CONFIG) == {}
 
 
@@ -649,7 +701,7 @@ def test_default_check_reports_engine_missing_on_config_error(monkeypatch: pytes
 
     monkeypatch.setattr(runtime, "load_ocr_settings", load)
     monkeypatch.setattr(runtime, "probe_tesseract", probe)
-    monkeypatch.setattr(runtime, "load_secondary_ocr", _must_not_load)
+    monkeypatch.setattr(runtime, "probe_secondary_ocr", _must_not_load)
     assert get_local_capability_check()(CONFIG) == {
         "ocr": "ocr_engine_missing",
         "ocr_cross_check": "ocr_engine_missing",
@@ -682,3 +734,577 @@ def test_lazy_check_without_lifespan_stores_a_read_only_mapping(
     stored = getattr(app.state, LOCAL_FAILURES_STATE_ATTR)
     assert isinstance(stored, MappingProxyType)
     assert check.configs == [PdfReaderConfig()]
+
+
+def test_lazy_check_runs_once_under_concurrent_first_requests() -> None:
+    """Hai request đầu tiên đến cùng lúc (dependency đồng bộ chạy trong threadpool): bộ kiểm chỉ chạy một lần."""
+    application = FastAPI()
+    request = SimpleNamespace(app=application)
+    entered = threading.Event()
+    release = threading.Event()
+    calls: list[int] = []
+
+    def slow_check(config: PdfReaderConfig, /) -> Failures:
+        calls.append(1)
+        entered.set()
+        release.wait(5)
+        return {"ocr": "ocr_language_missing"}
+
+    results: list[Mapping[CapabilityName, CapabilityReason]] = []
+
+    def call() -> None:
+        results.append(runtime.get_local_failures(request, slow_check))
+
+    first = threading.Thread(target=call)
+    first.start()
+    assert entered.wait(5)
+    second = threading.Thread(target=call)
+    second.start()
+    time.sleep(0.2)  # lượt thứ hai đã chờ khoá (có khoá) hoặc đã vào bộ kiểm (không có khoá)
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert calls == [1]
+    assert len(results) == 2 and results[0] is results[1]
+
+
+# --------------------------------------------------------------------------- #
+# Mã lý do `secondary_ocr_unavailable` (duyệt 2026-10-29) và tiến trình con thăm dò RapidOCR
+# --------------------------------------------------------------------------- #
+
+
+def test_secondary_env_set_empty_means_disabled_without_probing() -> None:
+    """`HOLOCRON_PDF_OCR_SECONDARY` đặt rỗng ⇒ `secondary_ocr_disabled`, không thăm dò RapidOCR."""
+    settings = load_ocr_settings({ENV_PDF_OCR_SECONDARY: ""}, which=lambda _command: None)
+    assert settings.secondary is None
+    failures = check_local_capabilities(lambda: settings, _probe_returning(READY), _must_not_load, CONFIG)
+    assert failures == {"ocr_cross_check": "secondary_ocr_disabled"}
+
+
+def test_secondary_unavailable_detail_is_the_approved_sentence() -> None:
+    assert REASON_DETAILS_VI["secondary_ocr_unavailable"] == (
+        "Không nạp được lượt đọc thứ hai (RapidOCR) trên máy này. Bản rút gọn không kèm RapidOCR: dùng bản đầy đủ. "
+        "Nếu đang dùng bản đầy đủ, cài lại ứng dụng."
+    )
+    assert get_args(CapabilityReason)[-1] == "secondary_ocr_unavailable"
+
+
+FAKE_MODELS = (rapidocr_adapter.DET_MODEL, rapidocr_adapter.REC_MODEL, rapidocr_adapter.CLS_MODEL)
+
+FAKE_LOADS = """
+import sys
+
+
+class LimitsNotApplied(Exception):
+    pass
+
+
+class RapidOCR:
+    def __init__(self, params):
+        if sys.platform != "win32":
+            import resource
+
+            if resource.getrlimit(resource.RLIMIT_FSIZE) != (0, 0):
+                raise LimitsNotApplied()
+        print("rapidocr giả in ra stdout trong lúc nạp")
+
+    def __call__(self, image):
+        return None
+"""
+FAKE_IMPORT_BREAKS = 'raise ImportError("C:/Users/secret-user/onnxruntime_providers.dll")\n'
+FAKE_MODEL_FAILS = """
+class ModelLoadFailure(Exception):
+    pass
+
+
+class RapidOCR:
+    def __init__(self, params):
+        raise ModelLoadFailure("/home/secret-user/models/PP-OCRv6_det_small.onnx")
+"""
+FAKE_CRASHES = "import os\n\nos._exit(3)\n"
+FAKE_HANGS = "import time\n\ntime.sleep(10)\n"
+
+
+def _fake_rapidocr(root: Path, source: str, *, with_models: bool = True) -> Path:
+    """Gói `rapidocr` giả trong `root` (đặt trước trong `PYTHONPATH` của tiến trình con)."""
+    package = root / "rapidocr"
+    (package / "models").mkdir(parents=True)
+    (package / "__init__.py").write_text(source, encoding="utf-8")
+    if with_models:
+        for name in FAKE_MODELS:
+            (package / "models" / name).write_bytes(b"onnx")
+    return root
+
+
+def _env_with(root: Path) -> dict[str, str]:
+    env = probe_env()
+    env["PYTHONPATH"] = os.pathsep.join([str(root), env["PYTHONPATH"]])
+    return env
+
+
+def _child_probe(root: Path, config: PdfReaderConfig = CONFIG) -> SecondaryProbeReport:
+    runner = functools.partial(real_run_bounded, kill_grace_s=config.ocr_kill_grace_s, env=_env_with(root))
+    return probe_secondary_ocr(config, runner)
+
+
+def test_child_probe_loads_rapidocr_after_applying_limits(tmp_path: Path) -> None:
+    """Nạp được ⇒ `loaded`; trên Unix gói giả chỉ nạp được khi `RLIMIT_FSIZE` = 0 đã áp TRƯỚC khi nạp. Gói in ra
+    stdout trong lúc nạp mà báo cáo vẫn đọc được."""
+    assert _child_probe(_fake_rapidocr(tmp_path, FAKE_LOADS)) == LOADED
+
+
+def test_child_probe_import_error_is_unavailable(tmp_path: Path) -> None:
+    report = _child_probe(_fake_rapidocr(tmp_path, FAKE_IMPORT_BREAKS))
+    assert report == SecondaryProbeReport(loaded=False, error="ImportError")
+
+
+def test_child_probe_model_error_outside_builtin_errors_is_unavailable(tmp_path: Path) -> None:
+    """Lỗi nạp model không thuộc `BUILTIN_ERRORS` (lọt ra khỏi `load_outcome`) vẫn thành "không nạp được"."""
+    report = _child_probe(_fake_rapidocr(tmp_path, FAKE_MODEL_FAILS))
+    assert report == SecondaryProbeReport(loaded=False, error="ModelLoadFailure")
+
+
+def test_child_probe_missing_models_is_unavailable(tmp_path: Path) -> None:
+    report = _child_probe(_fake_rapidocr(tmp_path, FAKE_LOADS, with_models=False))
+    assert report == SecondaryProbeReport(loaded=False, error=rapidocr_adapter.MISSING_MODEL)
+
+
+def test_child_probe_crash_is_unavailable(tmp_path: Path) -> None:
+    report = _child_probe(_fake_rapidocr(tmp_path, FAKE_CRASHES))
+    assert report == SecondaryProbeReport(loaded=False, error=secondary_probe.CHILD_FAILED)
+
+
+def test_child_probe_hang_is_killed_at_the_startup_timeout(tmp_path: Path) -> None:
+    config = PdfReaderConfig(worker_startup_timeout_s=1.5, ocr_kill_grace_s=0.5)
+    started = time.monotonic()
+    report = _child_probe(_fake_rapidocr(tmp_path, FAKE_HANGS), config)
+    assert report == SecondaryProbeReport(loaded=False, error=secondary_probe.CHILD_TIMEOUT)
+    assert time.monotonic() - started < 8
+
+
+def test_child_probe_failure_log_has_only_the_error_type(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Log một lần: tên loại lỗi; không đường dẫn tuyệt đối (thông điệp lỗi chứa đường dẫn), không biến môi trường."""
+    monkeypatch.setenv("HOLOCRON_LLM_API_KEY", "sk-env-secret-must-not-leak")
+    root = _fake_rapidocr(tmp_path, FAKE_MODEL_FAILS)
+
+    def probe(config: PdfReaderConfig, /) -> SecondaryProbeReport:
+        return _child_probe(root, config)
+
+    with caplog.at_level(logging.DEBUG):
+        failures = check_local_capabilities(lambda: WITH_SECONDARY, _probe_returning(READY), probe, CONFIG)
+    assert failures == {"ocr_cross_check": "secondary_ocr_unavailable"}
+    messages = [record.getMessage() for record in caplog.records]
+    assert len([message for message in messages if "RapidOCR" in message]) == 1
+    text = caplog.text
+    assert "ModelLoadFailure" in text
+    for leaked in ("secret-user", str(tmp_path), tmp_path.name, "sk-env-secret-must-not-leak", "PYTHONPATH"):
+        assert leaked not in text
+
+
+def test_parent_never_calls_the_rapidocr_loader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tiến trình cha chỉ dựng tiến trình con: gọi bộ nạp RapidOCR ở đây là lỗi."""
+
+    def forbidden(cls: type[RapidOcrBackend]) -> rapidocr_adapter.RapidOcrLoad:
+        raise AssertionError("tiến trình cha không được nạp RapidOCR")
+
+    monkeypatch.setattr(RapidOcrBackend, "load_outcome", classmethod(forbidden))
+    assert _child_probe(_fake_rapidocr(tmp_path, FAKE_LOADS)) == LOADED
+
+
+def test_app_process_does_not_import_rapidocr_or_its_native_libraries() -> None:
+    """Nhập app và chạy bộ thăm dò thật trong một tiến trình Python sạch: không có `rapidocr`/`onnxruntime`/`cv2`."""
+    code = (
+        "import sys\n"
+        "import holocron_core.routers.api\n"
+        "from holocron_core.infrastructure.document_readers.config import PdfReaderConfig\n"
+        "from holocron_core.infrastructure.document_readers.secondary_probe import probe_secondary_ocr\n"
+        "probe_secondary_ocr(PdfReaderConfig())\n"
+        "print(sorted(name for name in ('rapidocr', 'onnxruntime', 'cv2') if name in sys.modules))\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        encoding="utf-8",
+        env=probe_env(),
+        timeout=120,
+        check=True,
+    )
+    assert completed.stdout.strip().splitlines()[-1] == "[]"
+
+
+def test_app_still_starts_when_rapidocr_model_load_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bộ kiểm mặc định của app (không override), tiến trình con thật với gói giả lỗi nạp model: app vẫn khởi động
+    và báo `secondary_ocr_unavailable`."""
+    root = _fake_rapidocr(tmp_path, FAKE_MODEL_FAILS)
+    monkeypatch.delitem(app.dependency_overrides, get_local_capability_check)
+    monkeypatch.setattr(secondary_probe, "run_bounded", real_run_bounded)
+    monkeypatch.setattr(secondary_probe, "probe_env", lambda: _env_with(root))
+    with TestClient(app) as client:
+        response = client.get("/v1/runtime")
+    assert response.status_code == 200
+    assert _ocr_pair(response.json()) == {"ocr": (True, None), "ocr_cross_check": (False, "secondary_ocr_unavailable")}
+
+
+def _runner_returning(result: RunResult) -> Callable[..., RunResult]:
+    def run(
+        args: Sequence[str],
+        stdin_data: bytes,
+        timeout_s: float,
+        max_output_bytes: int,
+        *,
+        kill_grace_s: float,
+        env: Mapping[str, str] | None = None,
+    ) -> RunResult:
+        return result
+
+    return run
+
+
+def test_default_check_wires_the_real_prober_down_to_the_child_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`get_local_capability_check` nối đúng bộ thăm dò thật: thay bộ chạy tiến trình con (tầng thấp nhất) là đổi
+    kết quả."""
+    monkeypatch.setattr(runtime, "load_ocr_settings", lambda: WITH_SECONDARY)
+    monkeypatch.setattr(runtime, "probe_tesseract", _probe_returning(READY))
+    monkeypatch.setattr(secondary_probe, "run_bounded", _runner_returning(RunResult(status="failed")))
+    assert get_local_capability_check()(CONFIG) == {"ocr_cross_check": "secondary_ocr_unavailable"}
+    loaded = RunResult(status="ok", stdout=f"{REPORT_PREFIX}{LOADED.model_dump_json()}\n".encode())
+    monkeypatch.setattr(secondary_probe, "run_bounded", _runner_returning(loaded))
+    assert get_local_capability_check()(CONFIG) == {}
+
+
+# --------------------------------------------------------------------------- #
+# Bộ thăm dò: phía tiến trình cha (bộ chạy giả) và phía tiến trình con (gọi trong tiến trình test)
+# --------------------------------------------------------------------------- #
+
+
+class RecordingRunner:
+    def __init__(self, result: RunResult) -> None:
+        self.result = result
+        self.calls: list[tuple[list[str], bytes, float, int]] = []
+
+    def __call__(self, args: Sequence[str], stdin_data: bytes, timeout_s: float, max_output_bytes: int) -> RunResult:
+        self.calls.append((list(args), stdin_data, timeout_s, max_output_bytes))
+        return self.result
+
+
+def _report_line(report: SecondaryProbeReport) -> bytes:
+    return f"{REPORT_PREFIX}{report.model_dump_json()}\n".encode()
+
+
+def test_probe_runs_the_child_module_with_the_worker_limits() -> None:
+    config = PdfReaderConfig(
+        worker_mem_bytes=512 * 1024 * 1024,
+        ocr_cpu_seconds_per_page=7,
+        worker_startup_timeout_s=12.5,
+        ocr_probe_max_bytes=4096,
+    )
+    runner = RecordingRunner(RunResult(status="ok", stdout=_report_line(LOADED)))
+    assert probe_secondary_ocr(config, runner) == LOADED
+    [(args, stdin_data, timeout_s, max_bytes)] = runner.calls
+    assert args == [sys.executable, "-P", "-s", "-m", secondary_probe.PROBE_MODULE]
+    request = SecondaryProbeRequest.model_validate_json(stdin_data)
+    assert request == SecondaryProbeRequest(mem_bytes=512 * 1024 * 1024, cpu_seconds=7)
+    assert (timeout_s, max_bytes) == (12.5, 4096)
+
+
+@pytest.mark.parametrize(
+    ("status", "error"),
+    [
+        ("timeout", secondary_probe.CHILD_TIMEOUT),
+        ("overflow", secondary_probe.CHILD_OVERFLOW),
+        ("failed", secondary_probe.CHILD_FAILED),
+    ],
+)
+def test_probe_maps_child_run_failures(status: RunStatus, error: str) -> None:
+    runner = RecordingRunner(RunResult(status=status))
+    assert probe_secondary_ocr(CONFIG, runner) == SecondaryProbeReport(loaded=False, error=error)
+
+
+def test_probe_default_runner_uses_kill_grace_and_the_minimal_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[tuple[float, Mapping[str, str] | None]] = []
+
+    def run(
+        args: Sequence[str],
+        stdin_data: bytes,
+        timeout_s: float,
+        max_output_bytes: int,
+        *,
+        kill_grace_s: float,
+        env: Mapping[str, str] | None = None,
+    ) -> RunResult:
+        seen.append((kill_grace_s, env))
+        return RunResult(status="ok", stdout=_report_line(LOADED))
+
+    monkeypatch.setattr(secondary_probe, "run_bounded", run)
+    assert probe_secondary_ocr(PdfReaderConfig(ocr_kill_grace_s=0.75)) == LOADED
+    assert seen == [(0.75, probe_env())]
+
+
+def test_probe_env_is_minimal(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOLOCRON_LLM_API_KEY", "sk-env-secret-must-not-leak")
+    env = probe_env()
+    allowed = {"PYTHONHASHSEED", "PYTHONIOENCODING", "PYTHONUTF8", "PYTHONPATH", "SYSTEMROOT"}
+    assert set(env) <= allowed
+    assert (Path(env["PYTHONPATH"]) / "holocron_core").is_dir()
+    assert ("SYSTEMROOT" in env) == (sys.platform == "win32")
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        b"\xff\xfe khong phai utf-8",
+        b"khong co dong bao cao\n",
+        f"{REPORT_PREFIX}{{khong phai json\n".encode(),
+        f'{REPORT_PREFIX}{{"loaded": false, "error": "C:/Users/secret-user/x.onnx"}}\n'.encode(),
+        f'{REPORT_PREFIX}{{"loaded": true, "error": "ImportError"}}\n'.encode(),
+        f'{REPORT_PREFIX}{{"loaded": false, "error": null}}\n'.encode(),
+        f'{REPORT_PREFIX}{{"loaded": true, "error": null, "path": "/x"}}\n'.encode(),
+    ],
+    ids=["not-utf8", "no-report", "not-json", "path-as-error", "loaded-with-error", "failed-without-error", "extra"],
+)
+def test_parse_report_rejects_malformed_reports(stdout: bytes) -> None:
+    assert parse_report(stdout) == SecondaryProbeReport(loaded=False, error=secondary_probe.INVALID_REPORT)
+
+
+def test_parse_report_takes_the_last_report_line_among_noise() -> None:
+    failed = SecondaryProbeReport(loaded=False, error="ImportError")
+    stdout = b"tieng on cua thu vien\n" + _report_line(failed) + b"them dong\n" + _report_line(LOADED)
+    assert parse_report(stdout) == LOADED
+
+
+class ExoticError(Exception):
+    pass
+
+
+NonAsciiError = type("LỗiNạp", (Exception,), {})
+
+
+def _outcome(backend: RapidOcrBackend | None, error: str | None) -> Callable[[], rapidocr_adapter.RapidOcrLoad]:
+    def load() -> rapidocr_adapter.RapidOcrLoad:
+        return rapidocr_adapter.RapidOcrLoad(backend, error)
+
+    return load
+
+
+def _raising(exc: BaseException) -> Callable[[], rapidocr_adapter.RapidOcrLoad]:
+    def load() -> rapidocr_adapter.RapidOcrLoad:
+        raise exc
+
+    return load
+
+
+REQUEST_LINE = SecondaryProbeRequest(mem_bytes=1 << 30, cpu_seconds=9).model_dump_json() + "\n"
+BACKEND = RapidOcrBackend(lambda image: None)
+
+
+class ProbeRecorder:
+    """Ghi lại thứ tự áp giới hạn, nạp và báo cáo của `run_probe`."""
+
+    def __init__(self, load: Callable[[], rapidocr_adapter.RapidOcrLoad]) -> None:
+        self._load = load
+        self.events: list[object] = []
+        self.reports: list[SecondaryProbeReport] = []
+
+    def limit(self, mem_bytes: int, cpu_seconds: int) -> None:
+        self.events.append(("limit", mem_bytes, cpu_seconds))
+
+    def load(self) -> rapidocr_adapter.RapidOcrLoad:
+        self.events.append("load")
+        return self._load()
+
+    def emit(self, report: SecondaryProbeReport) -> None:
+        self.events.append("emit")
+        self.reports.append(report)
+
+    def run(self, request_line: str = REQUEST_LINE) -> None:
+        run_probe(request_line, limit=self.limit, load=self.load, emit=self.emit)
+
+
+@pytest.mark.parametrize(
+    ("load", "expected"),
+    [
+        (_outcome(BACKEND, None), LOADED),
+        (_outcome(None, "ModuleNotFoundError"), SecondaryProbeReport(loaded=False, error="ModuleNotFoundError")),
+        (_outcome(None, "C:/Users/secret-user"), SecondaryProbeReport(loaded=False, error="UnnamedError")),
+        (_outcome(None, None), SecondaryProbeReport(loaded=False, error="UnnamedError")),
+    ],
+    ids=["loads", "none-with-error", "error-not-identifier", "none-without-error"],
+)
+def test_run_probe_applies_limits_then_loads(
+    load: Callable[[], rapidocr_adapter.RapidOcrLoad], expected: SecondaryProbeReport
+) -> None:
+    recorder = ProbeRecorder(load)
+    recorder.run()
+    assert recorder.events == [("limit", 1 << 30, 9), "load", "emit"]
+    assert recorder.reports == [expected]
+
+
+@pytest.mark.parametrize(
+    ("exc", "error"),
+    [
+        (ExoticError("/home/secret-user/x"), "ExoticError"),
+        (NonAsciiError("x"), "UnnamedError"),
+        (MemoryError(), "MemoryError"),
+        (SystemExit(4), "SystemExit"),
+    ],
+    ids=["exotic", "non-ascii", "memory", "system-exit"],
+)
+def test_run_probe_reports_then_reraises_errors_the_loader_lets_through(exc: BaseException, error: str) -> None:
+    """Lỗi lạ lúc nạp: báo một dòng "không nạp được" kèm tên lớp, rồi ném lại (tiến trình con thoát mã khác 0)."""
+    recorder = ProbeRecorder(_raising(exc))
+    with pytest.raises(type(exc)):
+        recorder.run()
+    assert recorder.reports == [SecondaryProbeReport(loaded=False, error=error)]
+    assert recorder.events == [("limit", 1 << 30, 9), "load", "emit"]
+
+
+def test_run_probe_rejects_a_bad_request_before_limits_or_loading() -> None:
+    recorder = ProbeRecorder(_raising(AssertionError("không được nạp")))
+    recorder.run('{"mem_bytes": 0}\n')
+    assert recorder.events == ["emit"]
+    assert recorder.reports == [SecondaryProbeReport(loaded=False, error=secondary_probe.INVALID_REQUEST)]
+
+
+@pytest.mark.parametrize(
+    ("stdout", "expected"),
+    [
+        (b"", secondary_probe.CHILD_FAILED),
+        (b"traceback rac\n", secondary_probe.CHILD_FAILED),
+        (_report_line(SecondaryProbeReport(loaded=False, error="ModelLoadFailure")), "ModelLoadFailure"),
+        # Thoát mã khác 0 thì không bao giờ là "nạp được", kể cả khi dòng báo cáo nói vậy.
+        (_report_line(LOADED), secondary_probe.CHILD_FAILED),
+    ],
+    ids=["no-output", "noise", "reported-error", "claims-loaded"],
+)
+def test_probe_reads_the_report_of_a_failed_child(stdout: bytes, expected: str) -> None:
+    runner = RecordingRunner(RunResult(status="failed", stdout=stdout))
+    assert probe_secondary_ocr(CONFIG, runner) == SecondaryProbeReport(loaded=False, error=expected)
+
+
+def test_child_main_writes_one_report_line_and_hides_library_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    stdout = io.StringIO()
+    limits: list[tuple[int, int]] = []
+
+    def noisy_load() -> rapidocr_adapter.RapidOcrLoad:
+        print("thư viện in ra stdout")
+        return rapidocr_adapter.RapidOcrLoad(BACKEND, None)
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO(REQUEST_LINE))
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+    monkeypatch.setattr(secondary_probe, "apply_limits", lambda mem, cpu: limits.append((mem, cpu)))
+    monkeypatch.setattr(secondary_probe, "RapidOcrBackend", SimpleNamespace(load_outcome=noisy_load))
+    secondary_probe.main()
+    assert stdout.getvalue() == _report_line(LOADED).decode()
+    assert limits == [(1 << 30, 9)]
+
+
+def test_load_outcome_names_each_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    package = tmp_path / "rapidocr"
+    (package / "models").mkdir(parents=True)
+
+    class Factory:
+        def __init__(self, params: dict[str, object]) -> None:
+            pass
+
+        def __call__(self, image: bytes) -> object:
+            return None
+
+    module = SimpleNamespace(__file__=str(package / "__init__.py"), RapidOCR=Factory)
+    real_import = rapidocr_adapter.importlib.import_module
+
+    def fake_import(name: str) -> object:
+        if name == "rapidocr":
+            return module
+        if name.startswith("rapidocr."):
+            raise ImportError(name)
+        return real_import(name)
+
+    monkeypatch.setattr(rapidocr_adapter.importlib, "import_module", fake_import)
+    assert RapidOcrBackend.load_outcome() == (None, rapidocr_adapter.MISSING_MODEL)
+    for name in FAKE_MODELS:
+        (package / "models" / name).write_bytes(b"onnx")
+    loaded = RapidOcrBackend.load_outcome()
+    assert loaded.backend is not None and loaded.error is None
+
+    class Broken:
+        def __init__(self, params: dict[str, object]) -> None:
+            raise RuntimeError("C:/Users/secret-user/model.onnx")
+
+    module.RapidOCR = Broken
+    assert RapidOcrBackend.load_outcome() == (None, "RuntimeError")
+    module.RapidOCR = None
+    assert RapidOcrBackend.load_outcome() == (None, rapidocr_adapter.MISSING_FACTORY)
+
+    def no_package(name: str) -> object:
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(rapidocr_adapter.importlib, "import_module", no_package)
+    assert RapidOcrBackend.load_outcome() == (None, "ModuleNotFoundError")
+
+
+# --------------------------------------------------------------------------- #
+# Kiểm bổ sung (đột biến còn sống ở vòng review 29/10)
+# --------------------------------------------------------------------------- #
+
+
+def test_charset_warning_counts_only_letters_outside_the_allowed_list(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Thiếu `ơ`, `Ỵ`, `ỵ`: chỉ `ơ` nằm ngoài danh sách cho phép ⇒ cảnh báo đếm đúng 1 chữ."""
+    tessdata = _tessdata(tmp_path / "td", [letter for letter in ALL_LETTERS if letter not in {"ơ", "Ỵ", "ỵ"}])
+    with caplog.at_level(logging.WARNING):
+        assert _probe_with(_settings_in(tessdata)) == NO_VIE
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("thiếu 1 chữ tiếng Việt ngoài danh sách cho phép" in message for message in messages)
+
+
+def test_unreadable_traineddata_warning_has_no_path(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    missing = tmp_path / "khong-co-tessdata"
+    with caplog.at_level(logging.WARNING):
+        assert _probe_with(_settings_in(missing)) == NO_VIE
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("không đọc được" in message for message in messages)
+    for leaked in (str(tmp_path), tmp_path.name, missing.name):
+        assert all(leaked not in message for message in messages)
+
+
+def _probe_status_with(listing: RunResult) -> ProbeOutcome:
+    runner = FakeRunner({"--version": OK_VERSION, "--list-langs": listing})
+    return TesseractEngine.probe_status(WITH_SECONDARY, 1.0, runner)
+
+
+def test_list_langs_not_utf8_means_language_missing_not_engine_missing() -> None:
+    listing = RunResult(status="ok", stdout=b'List of available languages in "/x/" (1):\n\xff\xfevie\n')
+    assert _probe_status_with(listing).status == "language_missing"
+    runner = FakeRunner({"--version": OK_VERSION, "--list-langs": listing})
+    assert probe_tesseract(WITH_SECONDARY, CONFIG, runner) == NO_VIE
+
+
+def test_list_langs_first_line_is_always_the_header() -> None:
+    assert _probe_status_with(RunResult(status="ok", stdout=b"vie\neng\n")).status == "language_missing"
+
+
+def test_list_langs_names_are_stripped(full_tessdata: Path) -> None:
+    listing = RunResult(status="ok", stdout=b'List of available languages in "/x/" (2):\n  eng \t\n\tvie  \n')
+    assert _probe_status_with(listing).status == "ok"
+    runner = FakeRunner({"--version": OK_VERSION, "--list-langs": listing})
+    assert probe_tesseract(_settings_in(full_tessdata), CONFIG, runner) == READY
+
+
+def test_listed_tessdata_dir_rejects_an_empty_directory() -> None:
+    assert listed_tessdata_dir('List of available languages in "" (2):') is None
+
+
+def test_traineddata_cap_has_a_floor_of_1024_bytes() -> None:
+    with pytest.raises(ValidationError):
+        PdfReaderConfig(ocr_traineddata_max_bytes=1023)
+    assert PdfReaderConfig(ocr_traineddata_max_bytes=1024).ocr_traineddata_max_bytes == 1024
+
+
+def test_allowed_missing_error_lists_the_approved_letters() -> None:
+    with pytest.raises(ValidationError) as caught:
+        PdfReaderConfig(ocr_charset_allowed_missing=frozenset({"ơ"}))
+    assert all(letter in str(caught.value) for letter in OCR_CHARSET_APPROVED_MISSING)

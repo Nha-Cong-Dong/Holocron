@@ -1,8 +1,11 @@
 """Adapter duy nhất gọi RapidOCR, lượt đọc thứ hai của tầng 2 (ADR-008 mục 8, 11).
 
-- Chỉ chạy trong worker có giới hạn (`_pdf_worker.py`). Module `rapidocr` được nạp bằng `importlib` khi cần, và mọi
-  giá trị lấy từ nó được kiểm bằng `isinstance` rồi chuyển sang kiểu của Holocron trước khi rời module này (cùng
-  cách với `pdfium_adapter`); RapidOCR là engine tuỳ chọn, thiếu gói thì lượt thứ hai coi như vắng mặt.
+- Nạp và đọc (`RapidOcrBackend.load`, `load_outcome`, `read`, `library_errors`) chỉ chạy trong tiến trình con có
+  giới hạn: worker đọc PDF (`_pdf_worker.py`) và tiến trình thăm dò lúc khởi động (`secondary_probe.py`). Tiến
+  trình cha (app) có import module này (hằng, kiểu dữ liệu) nhưng KHÔNG gọi các hàm đó, nên không bao giờ nạp
+  `rapidocr`, `onnxruntime` hay `cv2`. Module `rapidocr` được nạp bằng `importlib` khi cần, và mọi giá trị lấy từ nó
+  được kiểm bằng `isinstance` rồi chuyển sang kiểu của Holocron trước khi rời module này (cùng cách với
+  `pdfium_adapter`); RapidOCR là engine tuỳ chọn, thiếu gói thì lượt thứ hai coi như vắng mặt.
 - Model PP-OCRv6 small đóng sẵn trong wheel `rapidocr` 3.10.0 (đã duyệt 2026-10-24). Đường dẫn model được truyền
   tường minh nên RapidOCR không bao giờ tự tải model (chạy offline); thiếu file model thì coi như vắng mặt. Bỏ bước
   phân loại hướng dòng (`use_cls`), vì trang đã được render theo hướng hiển thị.
@@ -14,6 +17,7 @@ from __future__ import annotations
 import importlib
 from collections.abc import Callable
 from pathlib import Path
+from typing import NamedTuple
 
 from .cross_check import numeric_tokens
 from .protocol import MAX_PAGE_LINES, MAX_PAGE_WORDS, MAX_RAW_LINE_CHARS, RawSecondaryLine, RawSecondaryPass, UnitBBox
@@ -42,6 +46,11 @@ LIBRARY_ERRORS: tuple[tuple[str, str], ...] = (
     ("rapidocr.ch_ppocr_det.utils", "ResizeImgError"),
     ("rapidocr.utils.download_file", "DownloadFileException"),
 )
+
+
+# Tên lỗi của `RapidOcrBackend.load_outcome` khi không có exception để lấy tên lớp.
+MISSING_FACTORY = "MissingRapidOcrFactory"
+MISSING_MODEL = "MissingRapidOcrModel"
 
 
 class RapidOcrDataError(RuntimeError):
@@ -102,6 +111,13 @@ def _tolist(value: object) -> object:
     return value
 
 
+class RapidOcrLoad(NamedTuple):
+    """Kết quả nạp RapidOCR: `backend` khi nạp được; ngược lại None kèm `error` (tên loại lỗi, không có thông điệp)."""
+
+    backend: RapidOcrBackend | None
+    error: str | None
+
+
 class RapidOcrBackend:
     """Bọc một đối tượng `rapidocr.RapidOCR` đã khởi tạo (test thay bằng đối tượng giả cùng giao diện)."""
 
@@ -114,18 +130,28 @@ class RapidOcrBackend:
     @classmethod
     def load(cls) -> RapidOcrBackend | None:
         """Nạp RapidOCR với model đóng sẵn; thiếu gói, thiếu model hoặc khởi tạo lỗi ⇒ None (không có lượt thứ hai)."""
+        return cls.load_outcome().backend
+
+    @classmethod
+    def load_outcome(cls) -> RapidOcrLoad:
+        """Như `load`, kèm tên loại lỗi khi không nạp được (để tiến trình thăm dò ghi log; không kèm thông điệp).
+
+        Tên lỗi là tên lớp exception đã bắt (`ImportError`, `ModuleNotFoundError`, lớp lỗi riêng của RapidOCR…), hoặc
+        `MISSING_FACTORY` (gói không có `RapidOCR` hay `__file__`), `MISSING_MODEL` (thiếu file model đóng sẵn). Lỗi
+        không thuộc `BUILTIN_ERRORS` hay lớp lỗi riêng của gói lọt ra ngoài như trước.
+        """
         try:
             module = importlib.import_module("rapidocr")
-        except ImportError:
-            return None
+        except ImportError as exc:
+            return RapidOcrLoad(None, type(exc).__name__)
         package_file = getattr(module, "__file__", None)
         factory = getattr(module, "RapidOCR", None)
         if not isinstance(package_file, str) or not callable(factory):
-            return None
+            return RapidOcrLoad(None, MISSING_FACTORY)
         models = Path(package_file).parent / "models"
         paths = {name: models / name for name in (DET_MODEL, REC_MODEL, CLS_MODEL)}
         if not all(path.is_file() for path in paths.values()):
-            return None
+            return RapidOcrLoad(None, MISSING_MODEL)
         params: dict[str, object] = {
             "Global.use_cls": False,
             "Global.log_level": "critical",
@@ -136,9 +162,9 @@ class RapidOcrBackend:
         errors = BUILTIN_ERRORS + library_errors()
         try:
             engine: object = factory(params=params)
-        except errors:
-            return None
-        return cls(engine, errors)
+        except errors as exc:
+            return RapidOcrLoad(None, type(exc).__name__)
+        return RapidOcrLoad(cls(engine, errors), None)
 
     def read(self, png: bytes, width: int, height: int) -> RawSecondaryPass:
         """Đọc ảnh PNG của trang; trả hộp và token số/mã của từng dòng (`RapidOcrDataError` khi dữ liệu sai)."""

@@ -1158,11 +1158,21 @@ CapabilityReason = Literal[        # danh sách mã lý do: duyệt 2026-10-26 (
     "secondary_ocr_disabled",       # CHỈ khi HOLOCRON_PDF_OCR_SECONDARY để trống
     "not_implemented",              # code của khả năng này chưa có trong bản đang chạy
     "secondary_ocr_unavailable",    # (duyệt 2026-10-29) muốn bật lượt đọc thứ hai nhưng không nạp được RapidOCR (bản rút gọn không kèm, thiếu gói, model hỏng); kiểm trong tiến trình con có giới hạn lúc khởi động
+    "local_check_pending",          # (duyệt 2026-10-30) kiểm cục bộ nền (Tesseract, unicharset, RapidOCR) chưa xong sau khi server mở cổng; CHỈ áp cho `ocr` và `ocr_cross_check`; thêm CUỐI danh sách, sau secondary_ocr_unavailable
 ]
 # detail_vi của secondary_ocr_unavailable (duyệt 2026-10-29, nguyên văn): "Không nạp được lượt đọc thứ hai (RapidOCR) trên máy này.
 # Bản rút gọn không kèm RapidOCR: dùng bản đầy đủ. Nếu đang dùng bản đầy đủ, cài lại ứng dụng."
-# Kiểm khả năng `ocr` (duyệt 2026-10-29): không xác định được thư mục tessdata (Tesseract 4.x không in thư mục) ⇒ bỏ qua
-# kiểm unicharset, chỉ kiểm `vie` có trong danh sách ngôn ngữ.
+# detail_vi của local_check_pending (duyệt 2026-10-30, nguyên văn): "Holocron đang kiểm tra OCR trên máy này. Đợi vài giây rồi xem lại."
+# Thứ tự trong danh sách CapabilityReason: secondary_ocr_unavailable đứng cuối, trước local_check_pending (khớp domain/capabilities.py).
+# Kiểm nền sau khi mở cổng (duyệt 2026-10-30): lifespan KHÔNG chờ kiểm. Server mở cổng ngay; một luồng/tác vụ nền chạy kiểm một lần
+# (Tesseract, unicharset, RapidOCR trong tiến trình con) rồi lưu kết quả bất biến vào app.state. Trong lúc chưa xong, `ocr` và
+# `ocr_cross_check` có available = false, reason = "local_check_pending". Trạng thái pending chỉ để hiển thị: bộ nhập tài liệu
+# KHÔNG bị chặn và vẫn chạy như cũ. Luồng nền lỗi ⇒ ghi log và coi như ocr_engine_missing (không treo pending mãi).
+# Kiểm khả năng `ocr` (duyệt 2026-10-30; thay dòng duyệt 2026-10-29): dò `vie.traineddata` theo thứ tự (1) HOLOCRON_TESSDATA_DIR,
+# (2) TESSDATA_PREFIX trong môi trường tiến trình, (3) thư mục từ dòng đầu của `--list-langs` (nếu có), (4) đường dẫn mặc định
+# của bản cài (danh sách hằng trong config). Tìm thấy ⇒ kiểm unicharset bình thường. Không tìm thấy (ví dụ Tesseract 4.x không in
+# thư mục) ⇒ bỏ qua kiểm unicharset, cảnh báo một lần, chỉ kiểm `vie` có trong danh sách ngôn ngữ (ngoại lệ đã duyệt 2026-10-30,
+# ADR-008 mục 14). Không ghi đường dẫn tuyệt đối vào log.
 
 class Capability(StrictModel):
     name: CapabilityName            # code
@@ -2026,8 +2036,8 @@ Quy tắc "503 khi thiếu key" của v0.5 bị bỏ. Thay vào đó, `GET /v1/r
 
 | Khả năng | Cần | Endpoint hoặc luồng bị ảnh hưởng | Khi không khả dụng |
 |---|---|---|---|
-| `ocr` | Tesseract + `vie.traineddata` đủ chữ | Trang scan trong `POST /v1/documents` (§6.5) | Trang scan thành `failed` (`OCR_ENGINE_MISSING`). Trang `failed` không sửa và không xác nhận được trong MVP (duyệt 2026-10-26, §5.7, §6.5): người dùng cài Tesseract và `vie.traineddata`, rồi xoá tài liệu và nhập lại. Trang có lớp chữ vẫn đọc ở tầng 1 |
-| `ocr_cross_check` | RapidOCR nạp được (kiểm trong tiến trình con có giới hạn lúc khởi động; không nạp được ⇒ `secondary_ocr_unavailable`), `HOLOCRON_PDF_OCR_SECONDARY` khác rỗng (để trống ⇒ `secondary_ocr_disabled`) (duyệt 2026-10-29) | Đối chiếu chéo trang OCR (§7.4) | `cross_check = unavailable` ⇒ WARNING `CROSS_CHECK_UNAVAILABLE`, ô số không AUTO_PASS |
+| `ocr` | Tesseract + `vie.traineddata` đủ chữ. Dò tessdata theo thứ tự `HOLOCRON_TESSDATA_DIR` → `TESSDATA_PREFIX` → thư mục từ `--list-langs` → đường dẫn mặc định của bản cài; không xác định được thì bỏ qua kiểm unicharset, cảnh báo một lần (ngoại lệ Tesseract 4.x, duyệt 2026-10-30; ADR-008 mục 14). Worker gọi cùng hàm kiểm. Kiểm chạy nền sau khi mở cổng; chưa xong ⇒ `local_check_pending` (§5.12) | Trang scan trong `POST /v1/documents` (§6.5) | Trang scan thành `failed` (`OCR_ENGINE_MISSING`). Trang `failed` không sửa và không xác nhận được trong MVP (duyệt 2026-10-26, §5.7, §6.5): người dùng cài Tesseract và `vie.traineddata`, rồi xoá tài liệu và nhập lại. Trang có lớp chữ vẫn đọc ở tầng 1 |
+| `ocr_cross_check` | RapidOCR nạp được (kiểm trong tiến trình con có giới hạn lúc khởi động; không nạp được ⇒ `secondary_ocr_unavailable`), `HOLOCRON_PDF_OCR_SECONDARY` khác rỗng (để trống ⇒ `secondary_ocr_disabled`) (duyệt 2026-10-29); chưa kiểm xong ⇒ `local_check_pending` (duyệt 2026-10-30) | Đối chiếu chéo trang OCR (§7.4) | `cross_check = unavailable` ⇒ WARNING `CROSS_CHECK_UNAVAILABLE`, ô số không AUTO_PASS |
 | `vault_search` | Không gì ngoài code (FTS5 hoặc BM25 tự cài) | `GET /v1/vault/search` (§6.6) | Luôn khả dụng khi đã có code |
 | `theory_generation` | Không gì ngoài code | Slot lý thuyết `MCQ4` trong `POST …/twins` | Luôn khả dụng khi đã có code; thiếu cặp đã xác nhận thì `ReviewTicket` như ADR-007 |
 | `concept_pair_llm_proposal` | LLM đã cấu hình | `POST /v1/vault/concept-pairs/propose` (§6.6) | 409 `CapabilityError`, không gọi mạng (duyệt 2026-10-27); người dùng tự tạo cặp bằng `POST /v1/vault/concept-pairs` |
@@ -2040,7 +2050,7 @@ Quy tắc "503 khi thiếu key" của v0.5 bị bỏ. Thay vào đó, `GET /v1/r
 | `vlm` | Đủ ba biến `HOLOCRON_VLM_*` | Tầng 4, dual-pass VLM của §6.1 | Trang "cần xem kỹ" vẫn chờ người dùng xem lại; §6.1 dùng `MockDualPassExtractor` (`mock_extractor = true`; field đề xuất, chờ duyệt, §17 D8) |
 
 - Đề xuất nhãn bằng LLM (`chapter_code`, `cognitive_level`, nhãn chunk) không có khả năng riêng trong danh sách đã duyệt: thiếu LLM thì giữ mặc định và người dùng sửa, không trả lỗi (§5.4, §6.7). Đề xuất (chờ duyệt): thêm khả năng `label_suggestion_llm` để UI báo rõ (§17 D10).
-- Khả năng được tính một lần lúc khởi động, từ cấu hình và kiểm tra cục bộ (binary, unicharset, FTS5); không gọi mạng để kiểm, nên LLM đã cấu hình mà gateway đang lỗi vẫn là `available = true` và lỗi lúc gọi trả 502 (§6.0).
+- Khả năng được tính một lần lúc khởi động (kiểm OCR chạy nền sau khi mở cổng, §5.12, duyệt 2026-10-30), từ cấu hình và kiểm tra cục bộ (binary, unicharset, FTS5); không gọi mạng để kiểm, nên LLM đã cấu hình mà gateway đang lỗi vẫn là `available = true` và lỗi lúc gọi trả 502 (§6.0).
 
 ### 11.5 Adapter LLM qua gateway (đã duyệt 2026-10-25)
 

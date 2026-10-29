@@ -87,10 +87,6 @@ Trạng thái: đề xuất, chờ duyệt (2026-10-29; người dùng yêu cầ
 | CAP-002 | `line_review_queue` | UI mới cần hàng đợi duyệt theo dòng nghi ngờ; backend chưa có; khi làm thật cần ADR I5 riêng | Tên vào `IMPLEMENTED_CAPABILITIES` và có test endpoint |
 | CAP-003 | `page_progress_eta` | UI mới cần tiến độ theo trang và thời gian còn lại cho từng tài liệu đang đọc; backend chưa có | Tên vào `IMPLEMENTED_CAPABILITIES` và có test endpoint |
 
-### Nợ: worker OCR chưa kiểm unicharset lúc khởi động (ghi 2026-10-29)
-
-ADR-008 mục 14 quy định kiểm unicharset lúc khởi động. Bộ kiểm khả năng khởi động có kiểm, nhưng worker (`build_ocr`, `_pdf_worker.py`) thì chưa. Hệ quả: có thể báo OCR không khả dụng (`ocr_language_missing`) dù worker vẫn OCR được. Điều kiện xoá: worker gọi cùng hàm kiểm với bộ kiểm khởi động.
-
 ## Phương án đã loại
 
 - **Chỉ dựa vào CI, không pre-commit:** phản hồi chậm và dễ đẩy commit sai chuẩn lên nhánh chung.

@@ -134,16 +134,22 @@ export const ACCEPT_ALL_LOADING_VI = "Đang tải đoạn nguồn của các kh�
 export const ACCEPT_ALL_BLOCKED_VI =
   "Chưa kiểm chứng được đoạn nguồn của khái niệm nào ở đây nên chưa nhận được. Xem lý do trên từng thẻ.";
 export const ACCEPT_ALL_BUSY_VI = "Các khái niệm đang được gửi. Đợi một chút.";
+export const ACCEPT_ALL_STALE_VI =
+  "Các khái niệm ở đây đã ghi, đang chờ cập nhật danh sách. Bấm Thử lại ở dòng báo phía trên.";
 
 /**
  * "Nhận tất cả" bật khi ít nhất một thẻ không đang bận nhận được. Mọi thẻ đều khoá ⇒ khoá kèm lý do: đoạn văn còn
- * đang tải thì nói đang tải, không thì nói chưa kiểm chứng được. Mọi thẻ đang bận ⇒ khoá, chờ gửi xong.
+ * đang tải thì nói đang tải, không thì nói chưa kiểm chứng được. Mọi thẻ đang bận ⇒ khoá, chờ gửi xong. Mọi thẻ còn
+ * lại đều đã ghi mà chờ cập nhật danh sách (`stale`) ⇒ khoá, chờ tải lại.
  */
-export function acceptAllGate(entries: readonly { view: ConceptView; busy: boolean }[]): AcceptAllGate {
+export function acceptAllGate(
+  entries: readonly { view: ConceptView; busy: boolean; stale?: boolean }[],
+): AcceptAllGate {
   const idle = entries.filter((entry) => !entry.busy);
   const confirmable = idle.some((entry) => entry.view.actions.confirm.shown && entry.view.actions.confirm.enabled);
   if (confirmable) return { enabled: true };
   if (idle.length === 0) return { enabled: false, reason: ACCEPT_ALL_BUSY_VI };
+  if (idle.every((entry) => entry.stale === true)) return { enabled: false, reason: ACCEPT_ALL_STALE_VI };
   const loading = idle.some((entry) => entry.view.sourceLoading);
   return { enabled: false, reason: loading ? ACCEPT_ALL_LOADING_VI : ACCEPT_ALL_BLOCKED_VI };
 }
@@ -275,6 +281,72 @@ export function failedReloadEffects(pending: ChangeNote | null, leftIds: readonl
   const effects = changeEffects(pending, 0);
   const reveal = [...new Set(leftIds)];
   return { ...effects, focus: reveal.length > 0 ? { kind: "proposals" } : null, reveal };
+}
+
+/** Dòng báo đầu tab khi danh sách cũ còn hiện mà lượt tải lại lỗi. */
+export const RELOAD_FAILED_VI = "Chưa cập nhật được danh sách khái niệm.";
+
+/** Giờ:phút theo giờ máy, hai chữ số mỗi phần ("09:05"). */
+export function clockLabel(at: Date): string {
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return `${pad(at.getHours())}:${pad(at.getMinutes())}`;
+}
+
+/**
+ * Câu của dòng báo khi tải lại danh sách lỗi: câu chung + "vì sao + cách sửa" theo loại lỗi. Lỗi sau khi người dùng bấm
+ * "Thử lại" (`retriedAt`) thêm "Lần thử lúc HH:MM." để câu khác câu trước và người dùng biết lần thử đã chạy.
+ */
+export function reloadNoteText(error: UiError, retriedAt: Date | null): string {
+  const base = `${RELOAD_FAILED_VI} ${screenErrorText(error)}`;
+  return retriedAt === null ? base : `${base} Lần thử lúc ${clockLabel(retriedAt)}.`;
+}
+
+/** Dòng báo tải lại lỗi: `key` đổi ở mỗi lần lỗi để vùng `role="alert"` được dựng lại và trình đọc màn hình đọc lại. */
+export interface ReloadNote {
+  key: number;
+  text: string;
+}
+
+/** Dòng báo sau một lần tải lại lỗi nữa: luôn mang `key` mới, kể cả khi câu trùng câu trước (cùng phút). */
+export function nextReloadNote(previous: ReloadNote | null, text: string): ReloadNote {
+  return { key: previous === null ? 1 : previous.key + 1, text };
+}
+
+/**
+ * Focus khi danh sách tải lại thành công: theo thao tác đã chờ (nếu có); không có mà lượt này do bấm "Thử lại" ở dòng
+ * báo (nút đó biến mất cùng dòng báo) ⇒ tiêu đề khối "Đề xuất" (thiếu thì thẻ mời, rồi tiêu đề "Đã nhận").
+ */
+export function reloadedFocus(pending: ConceptFocus | null, retried: boolean): ConceptFocus | null {
+  if (pending !== null) return pending;
+  return retried ? { kind: "proposals" } : null;
+}
+
+/** Lý do khoá trên thẻ đề xuất đã ghi xong mà danh sách chưa đọc lại được (thẻ hiện lại với dữ liệu cũ). */
+export const STALE_REASON_VI = "Đã ghi, chờ cập nhật danh sách. Bấm Thử lại ở dòng báo phía trên.";
+
+function staleGate(gate: ActionGate): ActionGate {
+  return gate.shown ? { shown: true, enabled: false, reason: STALE_REASON_VI } : gate;
+}
+
+/**
+ * Thẻ đề xuất đã ghi thành công nhưng danh sách chưa đọc lại được: Nhận, Bỏ, Sửa đều khoá kèm `STALE_REASON_VI` (bấm
+ * lại sẽ gửi phiên bản cũ). Nút đang ẩn vẫn ẩn. Mở lại khi danh sách tải lại thành công.
+ */
+export function staleView(view: ConceptView): ConceptView {
+  return {
+    ...view,
+    actions: {
+      edit: staleGate(view.actions.edit),
+      confirm: staleGate(view.actions.confirm),
+      reject: staleGate(view.actions.reject),
+    },
+  };
+}
+
+/** Tập thẻ đang chờ cập nhật sau một lượt tải lại lỗi nữa: giữ thẻ cũ, thêm thẻ vừa ghi (trả đúng `previous` khi không đổi). */
+export function withStale(previous: ReadonlySet<string>, doneIds: readonly string[]): ReadonlySet<string> {
+  if (doneIds.every((id) => previous.has(id))) return previous;
+  return new Set([...previous, ...doneIds]);
 }
 
 /** Bản sao của `map` đã bỏ các khoá trong `ids` (trả đúng `map` khi không bỏ khoá nào, để React không vẽ lại). */

@@ -4,6 +4,7 @@ import {
   ACCEPT_ALL_BLOCKED_VI,
   ACCEPT_ALL_BUSY_VI,
   ACCEPT_ALL_LOADING_VI,
+  ACCEPT_ALL_STALE_VI,
   acceptAllGate,
   acceptToast,
   type BulkCandidate,
@@ -14,6 +15,7 @@ import {
   type ChangeNote,
   CONCEPT_CONFLICT_VI,
   changeEffects,
+  clockLabel,
   conceptErrorText,
   conceptsScreen,
   conceptView,
@@ -23,15 +25,23 @@ import {
   IDLE_BULK,
   mergeChange,
   newlyConfirmed,
+  nextReloadNote,
+  RELOAD_FAILED_VI,
+  reloadedFocus,
+  reloadNoteText,
   renameKeyAction,
   SOURCE_LOADING_REASON_VI,
   SOURCE_LOADING_VI,
+  STALE_REASON_VI,
   screenErrorText,
   sendQueued,
+  staleView,
   visibleConceptEntrances,
   withoutIds,
+  withStale,
 } from "./concept-board";
 import { ApiError, classifyHttpError, classifyNetworkError } from "./errors";
+import type { ActionGate } from "./pairs";
 import type { ChunkView } from "./vault";
 
 function pair(id: string, status: ConceptPairStatus, overrides: Partial<ConceptPair> = {}): ConceptPair {
@@ -519,5 +529,88 @@ describe("thao tác thành công mà lượt tải lại lỗi", () => {
     expect(leaving.size).toBe(3);
     expect(withoutIds(leaving, ["z"])).toBe(leaving);
     expect(withoutIds(leaving, [])).toBe(leaving);
+  });
+});
+
+describe("conceptsScreen: môn có đúng một đoạn văn", () => {
+  it("chưa có khái niệm, đã tải đủ một đoạn ⇒ thành công (tự tạo được), không phải rỗng", () => {
+    expect(conceptsScreen("ready", 0, "complete", 1)).toBe("ready");
+  });
+});
+
+describe("dòng báo tải lại lỗi và nút Thử lại", () => {
+  const failure = classifyHttpError(500, null);
+
+  it("giờ:phút hai chữ số mỗi phần", () => {
+    expect(clockLabel(new Date(2026, 9, 29, 9, 5))).toBe("09:05");
+    expect(clockLabel(new Date(2026, 9, 29, 14, 30))).toBe("14:30");
+  });
+
+  it("lần lỗi đầu: câu chung + cách sửa; lỗi sau khi bấm Thử lại thêm 'Lần thử lúc HH:MM.'", () => {
+    const base = `${RELOAD_FAILED_VI} ${screenErrorText(failure)}`;
+    expect(base).toBe(
+      "Chưa cập nhật được danh sách khái niệm. Holocron gặp trục trặc khi xử lý yêu cầu này. Bấm Thử lại; nếu vẫn chưa được, mở lại Holocron.",
+    );
+    expect(reloadNoteText(failure, null)).toBe(base);
+    expect(reloadNoteText(failure, new Date(2026, 9, 29, 8, 7))).toBe(`${base} Lần thử lúc 08:07.`);
+  });
+
+  it("mỗi lần lỗi có key mới kể cả khi câu trùng câu trước (vùng alert dựng lại để đọc lại)", () => {
+    const first = nextReloadNote(null, "A");
+    expect(first).toEqual({ key: 1, text: "A" });
+    const second = nextReloadNote(first, "A");
+    expect(second).toEqual({ key: 2, text: "A" });
+    expect(nextReloadNote(second, "B")).toEqual({ key: 3, text: "B" });
+  });
+
+  it("tải thành công sau khi bấm Thử lại ⇒ focus tiêu đề khối; thao tác chờ có focus riêng thì giữ focus đó", () => {
+    expect(reloadedFocus(null, true)).toEqual({ kind: "proposals" });
+    expect(reloadedFocus(null, false)).toBeNull();
+    expect(reloadedFocus({ kind: "accepted" }, true)).toEqual({ kind: "accepted" });
+    expect(reloadedFocus({ kind: "concept", id: "b" }, false)).toEqual({ kind: "concept", id: "b" });
+  });
+});
+
+describe("thẻ đã ghi mà danh sách chưa đọc lại được", () => {
+  const ready = conceptView(pair("a", "proposed"), "complete", new Map([["chk_a", chunk("chk_a")]]));
+
+  it("khoá Nhận, Bỏ, Sửa kèm lý do 'Đã ghi, chờ cập nhật danh sách'", () => {
+    expect(STALE_REASON_VI.startsWith("Đã ghi, chờ cập nhật danh sách")).toBe(true);
+    const locked = staleView(ready);
+    const gate = { shown: true, enabled: false, reason: STALE_REASON_VI };
+    expect(locked.actions).toEqual({ edit: gate, confirm: gate, reject: gate });
+    expect(locked.chunk).toBe(ready.chunk);
+    expect(locked.caption).toBe(ready.caption);
+  });
+
+  it("nút đang ẩn vẫn ẩn", () => {
+    const hiddenGate: ActionGate = { shown: false };
+    const hidden = { ...ready, actions: { ...ready.actions, edit: hiddenGate } };
+    expect(staleView(hidden).actions.edit).toEqual({ shown: false });
+  });
+
+  it("tập thẻ chờ cộng dồn qua các lần lỗi, không lặp; không đổi thì trả đúng tập cũ", () => {
+    const first = withStale(new Set(), ["a"]);
+    expect([...first]).toEqual(["a"]);
+    const second = withStale(first, ["a", "b"]);
+    expect([...second]).toEqual(["a", "b"]);
+    expect(withStale(second, ["b"])).toBe(second);
+    expect(withStale(second, [])).toBe(second);
+  });
+
+  it("Nhận tất cả: mọi thẻ còn lại đều chờ cập nhật ⇒ khoá kèm lý do chờ cập nhật", () => {
+    const locked = staleView(ready);
+    expect(acceptAllGate([{ view: locked, busy: false, stale: true }])).toEqual({
+      enabled: false,
+      reason: ACCEPT_ALL_STALE_VI,
+    });
+    expect(
+      acceptAllGate([
+        { view: locked, busy: false, stale: true },
+        { view: ready, busy: false },
+      ]),
+    ).toEqual({
+      enabled: true,
+    });
   });
 });

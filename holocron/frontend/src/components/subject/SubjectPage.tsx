@@ -352,7 +352,7 @@ function SubjectsListNotice({ error, onRetry }: { error: UiError; onRetry: () =>
   }
   return (
     <EmptyState title="Chưa tải được danh sách môn nên chưa tạo được đề ôn tập.">
-      <p>Kiểm tra kết nối ở thanh trạng thái phía dưới, rồi tải lại danh sách môn.</p>
+      <p>Kiểm tra kết nối ở Cài đặt › Máy của bạn, rồi tải lại danh sách môn.</p>
       <button type="button" className={`m-btn-secondary ${styles.retry}`} onClick={onRetry}>
         Thử lại
       </button>

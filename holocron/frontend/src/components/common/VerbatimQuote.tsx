@@ -5,7 +5,7 @@ import styles from "./VerbatimQuote.module.css";
 
 interface VerbatimQuoteProps {
   citation: Citation;
-  /** Tên tài liệu nếu màn hình đã có; không có thì chỉ hiện mã tài liệu. */
+  /** Tên tài liệu nếu màn hình đã có; không có thì chỉ hiện nhãn trang (không bao giờ hiện mã tài liệu). */
   sourceTitle?: string | null;
   /**
    * Khoảng cần tô `[start, end)` theo vị trí UTF-16 trong `verbatim_quote` (ví dụ vị trí `term` của cặp khái niệm).
@@ -40,9 +40,12 @@ export function VerbatimQuote({ citation, sourceTitle = null, highlights, pageLa
       </blockquote>
       <figcaption className={styles.caption}>
         <span className={styles.page}>{pageLabel ?? `tr. ${citation.page_number}`}</span>
-        <span aria-hidden="true"> · </span>
-        {sourceTitle !== null && <span>{sourceTitle} </span>}
-        <code className={styles.doc}>{citation.doc_id}</code>
+        {sourceTitle !== null && sourceTitle.trim() !== "" && (
+          <>
+            <span aria-hidden="true"> · </span>
+            <span>{sourceTitle}</span>
+          </>
+        )}
       </figcaption>
     </figure>
   );

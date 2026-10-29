@@ -3,13 +3,14 @@
 - Trạng thái: Chấp nhận (2026-10-23). Engine OCR của tầng 2 đã chốt ngày 2026-10-24, sau phép đo ở mục 5 của phần Quyết định (đo trên scan giả lập): Tesseract `vie` là engine chính, RapidOCR chỉ đối chiếu token số và mã (mục 8). Các mục 8–14 bổ sung ngày 2026-10-24. Bảy điểm từng ghi "đề xuất" trong các mục này được người dùng duyệt ngày 2026-10-24, ghi lại tại chỗ là "đã duyệt 2026-10-24". Contract chi tiết (mục 11, 13) nằm ở spec §5.7, §6.5 và §7.4. Sửa ngày 2026-10-25 theo quyết định của người dùng: câu chữ VLM và nhà cung cấp LLM (Bối cảnh, Phương án đã loại), pdfplumber đã duyệt (mục 1, Hệ quả), ghi chú `find_tables` (mục 6), lệnh Tesseract (mục 8), `page_number` (mục 13), chữ hiếm được phép thiếu (mục 14).
 - Sửa đổi 2026-10-27: bỏ nhà cung cấp mặc định DeepSeek, xem PR #61.
 - Sửa đổi 2026-10-27 (Q4): người dùng duyệt ngoại lệ GEOS (LGPL-2.1, liên kết động) cho bản zip portable Windows đủ có RapidOCR (`build_portable.py --ocr full`), xem phần Hệ quả (mục "Giấy phép đi kèm") và spec dòng "Bộ nhập PDF" ở bảng công nghệ. Điều kiện: kèm toàn văn LGPL-2.1 và mã nguồn GEOS 3.14.1; THIRD_PARTY_NOTICES của zip ghi DLL đã bị delvewheel sửa đổi; build dừng nếu GEOS ngoài `shapely.libs/` hoặc shapely không có ánh xạ GEOS (cưỡng chế ở `scripts/build_portable.py`, nhánh P4, chưa merge). Bản lite không có GEOS. Trạng thái không đổi.
-- Ngày: 2026-10-23; cập nhật 2026-10-24 (kết quả đo, engine OCR, chuyển tầng, đối chiếu chéo; duyệt các điểm đề xuất; contract ở spec); cập nhật 2026-10-25, 2026-10-27
+- Sửa đổi 2026-10-29 (ADR-009, người dùng duyệt): định tuyến tầng 4 (VLM) theo ADR-009 mục 1. VLM chỉ được gọi khi đủ ba điều kiện: khả năng `vlm` khả dụng (gồm `HOLOCRON_VLM_MODE = images_only`); tài liệu có đồng ý gửi ảnh; trang cần OCR hoặc trang có lớp chữ kèm bảng/công thức/hình. Câu "gửi VLM" ở mục 1, 6, 8, 9 và câu "VLM park" ở phần Bối cảnh, "Tầng 4: VLM", "Phương án đã loại" sửa theo. Dual-pass VLM của upload đề vẫn park. Trạng thái không đổi.
+- Ngày: 2026-10-23; cập nhật 2026-10-24 (kết quả đo, engine OCR, chuyển tầng, đối chiếu chéo; duyệt các điểm đề xuất; contract ở spec); cập nhật 2026-10-25, 2026-10-27, 2026-10-29
 
 ## Bối cảnh
 
 `SPECIFICATION.md` §1.5 (v0.4) yêu cầu một bộ nhập PDF dùng chung cho tài liệu học (đi vào Vault, ADR-006) và đề thi (đi vào Ingestion Gate). Bộ nhập chia bốn tầng: lớp chữ, OCR, bố cục bảng và công thức, VLM tuỳ chọn. Các ràng buộc:
 
-- **Không có VLM vẫn phải chạy đủ luồng** (G5). Nhà cung cấp LLM do cấu hình quyết định, không có nhà cung cấp mặc định (hiện là gateway kiểu OpenAI của ban tổ chức, model `claude-haiku-5-5`). Contract hiện chỉ có adapter kiểu OpenAI Chat Completions sau `Protocol` `ChatCompletionClient` (tên đề xuất, spec §11.5); DeepSeek hay server local tương thích OpenAI dùng được qua adapter này; Anthropic gốc (API không theo giao thức OpenAI) cần một adapter riêng cài cùng `Protocol`, chưa có. Chưa kiểm gateway của ban tổ chức có nhận ảnh không; VLM park (R4; duyệt 2026-10-25).
+- **Không có VLM vẫn phải chạy đủ luồng** (G5). Nhà cung cấp LLM do cấu hình quyết định, không có nhà cung cấp mặc định (hiện là gateway kiểu OpenAI của ban tổ chức, model `claude-haiku-5-5`). Contract hiện chỉ có adapter kiểu OpenAI Chat Completions sau `Protocol` `ChatCompletionClient` (tên đề xuất, spec §11.5); DeepSeek hay server local tương thích OpenAI dùng được qua adapter này; Anthropic gốc (API không theo giao thức OpenAI) cần một adapter riêng cài cùng `Protocol`, chưa có. Chưa kiểm gateway của ban tổ chức có nhận ảnh không; VLM park (R4; duyệt 2026-10-25). Sửa đổi 2026-10-29: bộ đọc trang VLM của bộ nhập tài liệu hết park theo ADR-009; dual-pass của upload đề vẫn park.
 - **Tiếng Việt có dấu** phải đọc tốt. PDF tiếng Việt cũ hay dùng font mã TCVN3/VNI, khiến lớp chữ là ký tự rác dù trang hiển thị bình thường (R8).
 - **Chạy offline** trong desktop app Tauri, backend là sidecar Python. Dung lượng gói là chi phí thật (R9).
 - **Giấy phép tương thích MIT**, không GPL/AGPL (CLAUDE.md §2.2), vì app sẽ được phát hành.
@@ -49,11 +50,11 @@ Giấy phép và ngày phát hành lấy ngày 2026-10-23 từ PyPI JSON API (`l
 | Marker / Surya | marker-pdf 2.0.0 (2026-07-20); surya-ocr 0.22.1 | Code Apache-2.0; **model weights theo OpenRAIL-M sửa đổi** (miễn phí cho nghiên cứu, cá nhân và startup dưới 5 triệu USD) | PyTorch, transformers | **Loại**: điều kiện giấy phép weights không tương thích phát hành tự do |
 | MinerU | 4.0.12, 2026-10-11 | Apache-2.0 **kèm điều khoản bổ sung** (bắt buộc ghi công khi cung cấp dịch vụ online; ngưỡng MAU/doanh thu cần giấy phép thương mại) | onnxruntime và nhiều model | **Loại**: điều khoản bổ sung, nặng; bản cũ `magic-pdf` 1.3.12 là AGPL-3.0 |
 
-Công thức: không có thư viện nhận dạng công thức offline nào vừa nhẹ vừa không cần PyTorch. MVP chỉ lấy công thức từ lớp chữ của PDF số. Công thức trên trang scan được đánh dấu "có công thức" để người dùng xem lại, hoặc gửi VLM nếu đã cấu hình.
+Công thức: không có thư viện nhận dạng công thức offline nào vừa nhẹ vừa không cần PyTorch. MVP chỉ lấy công thức từ lớp chữ của PDF số. Công thức trên trang scan được đánh dấu "có công thức" để người dùng xem lại, hoặc gửi VLM theo ADR-009 (sửa đổi 2026-10-29).
 
 ### Tầng 4: VLM
 
-Dùng cấu hình `HOLOCRON_VLM_*` sẵn có (spec §11.2): nhà cung cấp bất kỳ tương thích OpenAI nhận `image_url`, người dùng tự nhập key. Không thêm dependency.
+Dùng cấu hình `HOLOCRON_VLM_*` sẵn có (spec §11.2): nhà cung cấp bất kỳ tương thích OpenAI nhận `image_url`, người dùng tự nhập key. Không thêm dependency. Sửa đổi 2026-10-29: thiết kế đầy đủ của tầng 4 ở ADR-009 (định tuyến, cổng kiểm, ảnh qua stdout, đồng ý gửi ảnh, cache). Server local qua loopback được để trống key.
 
 ### Đánh đổi Docling với bộ thư viện nhẹ (đo 2026-10-24)
 
@@ -75,7 +76,7 @@ Kết luận: không dùng cho MVP. Sau MVP có thể thêm Docling như một w
 
 ## Quyết định
 
-1. **Thư viện:** tầng 1 dùng pypdfium2. Tầng 2 dùng Tesseract `vie` (tessdata_best) làm engine chính, gọi binary `tesseract` có sẵn trên máy qua subprocess (mục 8); RapidOCR với onnxruntime chỉ làm lượt đọc thứ hai để đối chiếu token số và mã (mục 11). Tầng 3 dùng pdfplumber cho PDF số và code lưới riêng cho PDF scan. Tầng 4 dùng VLM tuỳ chọn qua cấu hình hiện có. Model của RapidOCR đóng gói kèm app, tắt tính năng tự tải model để chạy offline. Tesseract và `vie.traineddata` do người dùng tự cài trong MVP.
+1. **Thư viện:** tầng 1 dùng pypdfium2. Tầng 2 dùng Tesseract `vie` (tessdata_best) làm engine chính, gọi binary `tesseract` có sẵn trên máy qua subprocess (mục 8); RapidOCR với onnxruntime chỉ làm lượt đọc thứ hai để đối chiếu token số và mã (mục 11). Tầng 3 dùng pdfplumber cho PDF số và code lưới riêng cho PDF scan. Tầng 4 dùng VLM tuỳ chọn qua cấu hình hiện có, theo ADR-009 (sửa đổi 2026-10-29). Model của RapidOCR đóng gói kèm app, tắt tính năng tự tải model để chạy offline. Tesseract và `vie.traineddata` do người dùng tự cài trong MVP.
    - **Đã duyệt ngày 2026-10-23, ghim chính xác:** `pypdfium2==5.14.0`, `rapidocr==3.10.0`, `onnxruntime==1.31.0`. `opencv-python-headless==5.0.0.93` là phụ thuộc bắc cầu của `rapidocr` và cũng được ghim, vì nó mang thành phần LGPL (xem phần Hệ quả). Các version này giữ nguyên sau quyết định ngày 2026-10-24.
    - **Không thêm gói Python nào cho Tesseract** (không `tesserocr`, không `pytesseract`), xem mục 8.
    - `pdfplumber==0.11.10` và `pdfminer.six==20260107` (MIT) duyệt 2026-10-25 (giấy phép kiểm trên PyPI cùng ngày). Chỉ thêm vào `pyproject.toml` khi bắt đầu làm tầng 3.
@@ -109,20 +110,21 @@ Kết luận: không dùng cho MVP. Sau MVP có thể thêm Docling như một w
    | Cờ trang | `has_figure`, `has_table`, `has_formula` | `has_figure`: trên trang scan dùng `ink_outside_text_ratio` (mục 9); trên PDF số dùng diện tích đối tượng ảnh và đường vẽ, nhưng chỉ kết hợp với tín hiệu khác (mục 9). `has_table`: lưới toạ độ chữ (tầng 1–2), cộng lưới đường kẻ của pdfplumber khi có tầng 3. `has_formula`: mật độ ký hiệu toán (∑ ∫ √ ≤ ≥ ±, chữ Hy Lạp, chỉ số trên/dưới, và dải ký tự toán U+1D400–1D7FF) |
 
    - Dùng lớp chữ khi `text_score ≥ 0.85`; ngược lại OCR trang đó.
-   - Trang có điểm của tầng đã dùng `< 0.80` được đánh dấu "cần xem kỹ". Cách chuyển tầng theo cờ trang ở mục 9. Nếu đã cấu hình VLM, các trang "cần xem kỹ" được gửi VLM.
+   - Trang có điểm của tầng đã dùng `< 0.80` được đánh dấu "cần xem kỹ". Cách chuyển tầng theo cờ trang ở mục 9. Sửa đổi 2026-10-29 (thay câu cũ "Nếu đã cấu hình VLM, các trang cần xem kỹ được gửi VLM"): trang được gửi VLM theo ADR-009 mục 1, tức trang cần OCR cả trang hoặc trang có lớp chữ kèm bảng/công thức/hình, chỉ khi khả năng `vlm` khả dụng và tài liệu có đồng ý gửi ảnh. "Cần xem kỹ" tự nó không phải điều kiện gửi VLM.
    - Ngưỡng 0.85 và 0.80 là giá trị khởi đầu, hiệu chỉnh bằng phép đo ở mục 5. Chúng là cấu hình, không ghi cứng (mục 12).
    - Ghi chú `has_table` (đo 2026-10-25 trên slide thật): `find_tables` của pdfplumber báo bảng ở hầu hết các trang vì khung slide; `has_table` phải lọc thêm, không lấy thẳng kết quả `find_tables` (cách lọc đề xuất, chờ duyệt, ở spec §5.7).
 7. **Xem lại trước khi lưu:** mọi kết quả, kể cả trang `text_score` cao, đều qua màn hình xem lại. Trang "cần xem kỹ" và dòng điểm thấp được làm nổi bật. Chỉ văn bản người dùng đã xác nhận mới vào Vault hoặc Ingestion Gate.
 8. **Engine OCR (người dùng chọn ngày 2026-10-24):**
    - **Engine chính của tầng 2 là Tesseract `vie` (tessdata_best).** App gọi binary `tesseract` do người dùng tự cài, qua subprocess. Không thêm gói Python nào: không dùng `tesserocr` (rủi ro giấy phép của wheel, mục "Kết quả đo"), không dùng `pytesseract`.
    - **Cách gọi:** đầu vào là ảnh PNG do pypdfium2 render, không phải file PDF, nên Tesseract không đọc file không tin cậy gốc. Subprocess dùng UTF-8 tường minh, môi trường tối thiểu (`SYSTEMROOT` trên Windows) và timeout (CLAUDE.md §4.4). Tesseract chạy như tiến trình con của worker ở mục 3, nên chịu giới hạn OS của worker (RLIMIT kế thừa trên Unix; Job Object bao cả tiến trình con trên Windows). Đã duyệt 2026-10-24: truyền ảnh qua stdin và đọc kết quả TSV qua stdout, để giữ được `RLIMIT_FSIZE` 0. Lệnh (sửa 2026-10-25): `tesseract stdin stdout -l vie -c tessedit_create_tsv=1`, vì file cấu hình `tsv` không có trong thư mục `--tessdata-dir` riêng (đo ngày 2026-10-25: dùng `tsv` thì ra văn bản thường); lệnh cũ `tesseract stdin stdout -l vie tsv` bị thay.
-   - **Thiếu engine:** worker kiểm có binary và có `vie.traineddata` khi khởi động (`tesseract --version`, `--list-langs` với `--tessdata-dir`, có timeout). Thiếu một trong hai thì trang scan được gửi VLM nếu có key; nếu không có key thì trang bị đánh dấu `failed`, kèm hướng dẫn cài Tesseract và `vie.traineddata`. Trang có lớp chữ tốt vẫn đọc bình thường ở tầng 1.
+   - **Thiếu engine:** worker kiểm có binary và có `vie.traineddata` khi khởi động (`tesseract --version`, `--list-langs` với `--tessdata-dir`, có timeout). Thiếu một trong hai thì trang scan được đọc bằng VLM nếu đủ điều kiện của ADR-009 mục 1 (khả năng `vlm` khả dụng và tài liệu có đồng ý gửi ảnh; sửa đổi 2026-10-29, thay "nếu có key"), kèm lý do `OCR_ENGINE_MISSING`. Nếu không đủ điều kiện thì trang bị đánh dấu `failed`, kèm hướng dẫn cài Tesseract và `vie.traineddata`. Trang có lớp chữ tốt vẫn đọc bình thường ở tầng 1.
    - **RapidOCR chỉ làm lượt đọc thứ hai**, đối chiếu token số và mã (mục 11). Các dependency đã duyệt giữ nguyên version ghim. Không dùng văn bản của RapidOCR cho nội dung. Đã duyệt 2026-10-24: lượt thứ hai dùng model PP-OCRv6 small đóng sẵn trong wheel `rapidocr` 3.10.0, vì có tỉ lệ chữ số đúng cao nhất (98.6%) và không cần tải thêm model `latin`.
    - **Sau MVP:** đóng gói Tesseract cùng app. Khi làm việc đó phải kiểm giấy phép của bản build Tesseract được đóng gói (thư viện ảnh và thư viện kèm theo).
    - PKG-001 (FFmpeg LGPL trong `opencv-python-headless`) vẫn còn, vì RapidOCR vẫn được dùng.
 9. **Chuyển tầng theo cờ trang:**
    - Trang có `has_table` lên tầng 3: pdfplumber trên PDF số, lưới toạ độ chữ OCR trên trang scan.
-   - Trang có `has_formula` hoặc `has_figure` lên tầng 3 nếu là PDF số. Trên trang scan, các trang này được đánh dấu "cần xem kỹ", và gửi VLM nếu đã có key.
+   - Trang có `has_formula` hoặc `has_figure` lên tầng 3 nếu là PDF số. Trên trang scan, các trang này được đánh dấu "cần xem kỹ".
+   - Sửa đổi 2026-10-29 (thay câu cũ "gửi VLM nếu đã có key"): việc gửi VLM theo ADR-009 mục 1. Trang scan (cần OCR) được đọc chữ và cấu trúc bằng VLM. Trang PDF số có `has_table`, `has_formula` hoặc `has_figure` chỉ nhận cấu trúc từ VLM; chữ giữ từ lớp chữ. Cả hai trường hợp chỉ xảy ra khi khả năng `vlm` khả dụng và tài liệu có đồng ý gửi ảnh.
    - Nếu tầng 3 bị cắt khỏi MVP thì các trang lẽ ra lên tầng 3 được đánh dấu "cần xem kỹ".
    - **`has_figure` trên trang scan:** đo bằng `ink_outside_text_ratio`, tức tỉ lệ mực nằm ngoài các hộp chữ của lượt OCR chính; bật cờ khi `≥ FIGURE_INK_MIN` (0.10). Số đo: trang thường ≤ 0.004, trang có sơ đồ 0.17. Mẫu số (đã duyệt 2026-10-24): tổng số điểm ảnh mực của trang sau khi nhị phân hoá.
    - **`has_figure` trên PDF số:** diện tích path vector do pypdfium2 báo nhầm khung viền quanh code (16–18% diện tích trang), nên tín hiệu này chỉ dùng cùng tín hiệu khác (ví dụ có đối tượng ảnh trên trang), không dùng một mình.
@@ -187,7 +189,7 @@ Kết luận: không dùng cho MVP. Sau MVP có thể thêm Docling như một w
 
 ## Hệ quả
 
-- PDF số đọc nhanh và chính xác ở tầng 1. PDF scan tiếng Việt chạy offline bằng Tesseract mà không cần PyTorch, **với điều kiện người dùng đã cài Tesseract và `vie.traineddata`**. Chưa cài thì trang scan đi VLM nếu có key, nếu không thì `failed` kèm hướng dẫn cài (mục 8). Vì vậy G5 (spec §1.5) với PDF scan cần Tesseract đã cài.
+- PDF số đọc nhanh và chính xác ở tầng 1. PDF scan tiếng Việt chạy offline bằng Tesseract mà không cần PyTorch, **với điều kiện người dùng đã cài Tesseract và `vie.traineddata`**. Chưa cài thì trang scan đi VLM nếu đủ điều kiện của ADR-009 mục 1 (sửa đổi 2026-10-29), nếu không thì `failed` kèm hướng dẫn cài (mục 8). Vì vậy G5 (spec §1.5) với PDF scan cần Tesseract đã cài.
 - Dung lượng gói MVP: phần tầng 1–2 (pypdfium2, rapidocr, onnxruntime, opencv-python-headless) khoảng 90 MB wheel Windows chưa giải nén, chưa tính numpy và shapely. Model PP-OCRv6 small đã nằm trong wheel `rapidocr`. Tesseract và `vie.traineddata` (12.4 MB) không nằm trong gói MVP. Con số chính xác đo khi đóng gói Tauri.
 - **Thêm dependency đọc file không tin cậy:** pypdfium2 (tầng 1), rapidocr và onnxruntime (lượt đọc thứ hai của tầng 2) đã được duyệt. Tesseract là chương trình ngoài, không phải dependency Python; nó chỉ đọc ảnh PNG do app render, chạy trong worker có giới hạn. pdfplumber (tầng 3) đã được duyệt ngày 2026-10-25 (mục 1) nhưng chỉ được thêm vào `pyproject.toml` khi làm tầng 3; nó mang theo parser PDF thứ hai (pdfminer.six), làm tăng bề mặt tấn công, nên cũng chạy trong worker có giới hạn. Nếu tầng 3 bị cắt (thứ tự cắt ở kế hoạch 24–25/10) thì không thêm.
 - **Giấy phép đi kèm (đã kiểm ngày 2026-10-23):**
@@ -224,7 +226,7 @@ Phát hiện:
 
 ## Phương án đã loại
 
-- **Dùng VLM làm đường đọc chính.** Trái G5; tốn tiền của người dùng cho mỗi trang; chưa kiểm gateway của ban tổ chức có nhận ảnh không, VLM park (duyệt 2026-10-25).
+- **Dùng VLM làm đường đọc chính.** Trái G5; tốn tiền của người dùng cho mỗi trang; chưa kiểm gateway của ban tổ chức có nhận ảnh không, VLM park (duyệt 2026-10-25). Sửa đổi 2026-10-29: VLM vẫn không phải đường đọc chính; ADR-009 chỉ dùng nó cho một số loại trang, khi người dùng bật.
 - **Gọi dịch vụ OCR đám mây.** Tài liệu rời máy, cần thêm key, không chạy offline.
 - **Đọc PDF ngay trong tiến trình FastAPI.** Lỗi hoặc bom bộ nhớ trong một file độc hại làm sập cả backend.
 - **RapidOCR làm engine chính (2026-10-24).** Từ điển model thiếu chữ có dấu thanh, CER trên scan giả lập 14.5–17.4% so với 1.9% của Tesseract `vie` best.

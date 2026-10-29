@@ -14,6 +14,12 @@ Quy tắc cứng:
     loopback (`127.0.0.1`, `::1`, `localhost`): khoá không bao giờ đi qua mạng dưới dạng rõ. Sai ⇒ `ConfigError` chỉ
     nêu tên biến.
   * Thiếu cấu hình VLM ⇒ `demo_mode = True`; hệ thống PHẢI dùng `MockDualPassExtractor` và UI hiển thị chế độ demo.
+  * VLM (ADR-009 mục 4, 6, 7): "đã cấu hình" khi có `HOLOCRON_VLM_BASE_URL` và `HOLOCRON_VLM_MODEL`, cộng
+    `HOLOCRON_VLM_API_KEY` khi endpoint không phải loopback (loopback được để trống khoá). Cloud mà trống khoá ⇒ VLM
+    chưa cấu hình (`vlm_missing` có tên biến khoá), không phải `ConfigError`. `HOLOCRON_VLM_MODE` (`off` mặc định |
+    `images_only`) lưu riêng ở `RuntimeConfig.vlm_mode`, không đổi việc VLM đã cấu hình hay chưa. Các biến
+    `HOLOCRON_VLM_TIMEOUT_S`, `HOLOCRON_VLM_CONCURRENCY` (mặc định theo loopback/cloud), `HOLOCRON_VLM_MAX_EDGE_PX`,
+    `HOLOCRON_VLM_MAX_IMAGE_BYTES`, `HOLOCRON_VLM_DATA_RECIPIENT` sai ⇒ `ConfigError` chỉ nêu tên biến, không kẹp giá trị.
   * Giới hạn của một việc gọi LLM (`LlmTaskLimits`) và của tầng HTTP (`LlmHttpLimits`) là field có giá trị mặc định,
     không phải biến môi trường (spec v0.6 §11.5).
   * `load_runtime_config` ném `ConfigError` khi một biến sai (dùng cho script và test). Tầng router dùng
@@ -26,8 +32,10 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
 import urllib.parse
 from collections.abc import Mapping
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
@@ -39,8 +47,34 @@ ENV_LLM_TIMEOUT_S = "HOLOCRON_LLM_TIMEOUT_S"
 ENV_VLM_BASE_URL = "HOLOCRON_VLM_BASE_URL"
 ENV_VLM_API_KEY = "HOLOCRON_VLM_API_KEY"
 ENV_VLM_MODEL = "HOLOCRON_VLM_MODEL"
+ENV_VLM_MODE = "HOLOCRON_VLM_MODE"
+ENV_VLM_TIMEOUT_S = "HOLOCRON_VLM_TIMEOUT_S"
+ENV_VLM_CONCURRENCY = "HOLOCRON_VLM_CONCURRENCY"
+ENV_VLM_MAX_EDGE_PX = "HOLOCRON_VLM_MAX_EDGE_PX"
+ENV_VLM_MAX_IMAGE_BYTES = "HOLOCRON_VLM_MAX_IMAGE_BYTES"
+ENV_VLM_DATA_RECIPIENT = "HOLOCRON_VLM_DATA_RECIPIENT"
 
 DEFAULT_TIMEOUT_S = 60.0
+
+# Mặc định của VLM theo loại endpoint (ADR-009 mục 6, người dùng chốt Q13).
+VLM_TIMEOUT_LOOPBACK_S = 120.0
+VLM_TIMEOUT_CLOUD_S = 60.0
+VLM_CONCURRENCY_LOOPBACK = 1
+VLM_CONCURRENCY_CLOUD = 2
+VLM_CONCURRENCY_MIN = 1
+VLM_CONCURRENCY_MAX = 8
+DEFAULT_VLM_MAX_EDGE_PX = 2048
+DEFAULT_VLM_MAX_IMAGE_BYTES = 4 * 1024 * 1024
+VLM_DATA_RECIPIENT_MAX_CHARS = 80
+
+VlmMode = Literal["off", "images_only"]
+VLM_MODES: tuple[VlmMode, ...] = ("off", "images_only")
+DEFAULT_VLM_MODE: VlmMode = "off"
+
+# Số nguyên thập phân chỉ gồm chữ số ASCII (`int()` còn nhận dấu, `_` và chữ số Unicode khác).
+ASCII_DIGITS = re.compile(r"[0-9]+")
+# Nhãn bên nhận dạng tên miền: không khoảng trắng và có dấu chấm nằm giữa hai ký tự khác dấu chấm (`api.example.com`).
+DOMAIN_LIKE = re.compile(r"\S*[^\s.]\.[^\s.]\S*")
 
 LLM_REQUIRED_VARIABLES = (ENV_LLM_BASE_URL, ENV_LLM_API_KEY, ENV_LLM_MODEL_EXTRACT)
 VLM_REQUIRED_VARIABLES = (ENV_VLM_BASE_URL, ENV_VLM_API_KEY, ENV_VLM_MODEL)
@@ -125,13 +159,30 @@ class LlmSettings(BaseModel):
 
 
 class VlmSettings(BaseModel):
-    """Model CÓ thị giác cho dual-pass (tương thích OpenAI, nhận `image_url`); cần đủ cả ba biến mới có."""
+    """Model CÓ thị giác (tương thích OpenAI, nhận `image_url`) cho bộ đọc trang VLM (ADR-009).
+
+    Chỉ có khi đủ `HOLOCRON_VLM_BASE_URL` và `HOLOCRON_VLM_MODEL`, cộng `HOLOCRON_VLM_API_KEY` khi endpoint không phải
+    loopback; với loopback khoá được trống (`api_key = None`, adapter không gửi `Authorization`). `timeout_s` là cận
+    tổng của một lần gọi VLM; `timeout_s` và `concurrency` không đặt thì lấy mặc định theo loopback/cloud.
+    Địa chỉ endpoint và tên model không có trong `repr`.
+    """
 
     model_config = ConfigDict(frozen=True)
 
-    base_url: str
-    api_key: SecretStr
-    model: str
+    base_url: str = Field(repr=False)
+    api_key: SecretStr | None = None
+    model: str = Field(repr=False)
+    timeout_s: float = Field(default=VLM_TIMEOUT_CLOUD_S, gt=0, allow_inf_nan=False)
+    concurrency: int = Field(default=VLM_CONCURRENCY_CLOUD, ge=VLM_CONCURRENCY_MIN, le=VLM_CONCURRENCY_MAX)
+    max_edge_px: int = Field(default=DEFAULT_VLM_MAX_EDGE_PX, ge=1)
+    max_image_bytes: int = Field(default=DEFAULT_VLM_MAX_IMAGE_BYTES, ge=1)
+    data_recipient: str | None = None
+    http_limits: LlmHttpLimits = Field(default_factory=LlmHttpLimits)
+
+    @property
+    def local(self) -> bool:
+        """Tên máy của `base_url` thuộc `LOOPBACK_HOSTS`: ảnh không rời máy."""
+        return is_loopback_url(self.base_url)
 
 
 class RuntimeConfig(BaseModel):
@@ -140,6 +191,7 @@ class RuntimeConfig(BaseModel):
     llm: LlmSettings
     vlm: VlmSettings | None = None
     vlm_missing: tuple[str, ...] = ()
+    vlm_mode: VlmMode = DEFAULT_VLM_MODE
 
     @property
     def demo_mode(self) -> bool:
@@ -150,6 +202,16 @@ class RuntimeConfig(BaseModel):
     def llm_configured(self) -> bool:
         """Đủ cả ba biến `HOLOCRON_LLM_BASE_URL`, `HOLOCRON_LLM_API_KEY`, `HOLOCRON_LLM_MODEL_EXTRACT`."""
         return not self.llm.missing
+
+    @property
+    def vlm_local(self) -> bool:
+        """VLM đã cấu hình và endpoint là loopback (ADR-009 mục 7)."""
+        return self.vlm is not None and self.vlm.local
+
+    @property
+    def vlm_data_recipient(self) -> str | None:
+        """Nhãn bên nhận ảnh (`HOLOCRON_VLM_DATA_RECIPIENT`) khi VLM đã cấu hình; ngược lại `None`."""
+        return None if self.vlm is None else self.vlm.data_recipient
 
 
 def is_valid_key(value: str) -> bool:
@@ -193,6 +255,15 @@ def check_base_url(value: str, name: str) -> None:
         )
 
 
+def is_loopback_url(value: str) -> bool:
+    """Tên máy của `value` thuộc `LOOPBACK_HOSTS`; URL không phân tích được thì `False`."""
+    try:
+        host = urllib.parse.urlsplit(value).hostname
+    except ValueError:
+        return False
+    return host in LOOPBACK_HOSTS
+
+
 def _read_base_url(env: Mapping[str, str], name: str) -> str | None:
     """Như `_read_plain`, cộng kiểm scheme và máy chủ của `check_base_url`."""
     value = _read_plain(env, name)
@@ -214,16 +285,76 @@ def _read_key(env: Mapping[str, str], name: str) -> SecretStr | None:
     return SecretStr(value)
 
 
-def _timeout(env: Mapping[str, str]) -> float:
-    raw = _read(env, ENV_LLM_TIMEOUT_S)
+def _read_seconds(env: Mapping[str, str], name: str) -> float | None:
+    """Số giây dương hữu hạn, hoặc `None` khi chưa đặt; sai ⇒ `ConfigError` chỉ nêu tên biến."""
+    raw = _read(env, name)
     if raw is None:
-        return DEFAULT_TIMEOUT_S
+        return None
     try:
         value = float(raw)
     except ValueError:
-        raise ConfigError(f"{ENV_LLM_TIMEOUT_S} không hợp lệ: cần một số dương (giây)") from None
+        raise ConfigError(f"{name} không hợp lệ: cần một số dương (giây)") from None
     if not math.isfinite(value) or value <= 0:
-        raise ConfigError(f"{ENV_LLM_TIMEOUT_S} không hợp lệ: cần một số dương hữu hạn (giây)")
+        raise ConfigError(f"{name} không hợp lệ: cần một số dương hữu hạn (giây)")
+    return value
+
+
+def _timeout(env: Mapping[str, str]) -> float:
+    value = _read_seconds(env, ENV_LLM_TIMEOUT_S)
+    return DEFAULT_TIMEOUT_S if value is None else value
+
+
+def _read_int(env: Mapping[str, str], name: str, *, low: int, high: int | None = None) -> int | None:
+    """Số nguyên thập phân (chỉ chữ số ASCII) trong `[low, high]`, hoặc `None` khi chưa đặt.
+
+    Sai dạng hay ngoài khoảng ⇒ `ConfigError` chỉ nêu tên biến (không kẹp giá trị, ADR-009 mục 6).
+    """
+    raw = _read(env, name)
+    if raw is None:
+        return None
+    bounds = f"từ {low} đến {high}" if high is not None else f"từ {low} trở lên"
+    if ASCII_DIGITS.fullmatch(raw) is None:
+        raise ConfigError(f"{name} không hợp lệ: cần một số nguyên {bounds}")
+    value = int(raw)
+    if value < low or (high is not None and value > high):
+        raise ConfigError(f"{name} không hợp lệ: cần một số nguyên {bounds}")
+    return value
+
+
+def _read_vlm_mode(env: Mapping[str, str]) -> VlmMode:
+    """`HOLOCRON_VLM_MODE`: `off` (mặc định) hoặc `images_only`; giá trị khác ⇒ `ConfigError` chỉ nêu tên biến."""
+    raw = _read(env, ENV_VLM_MODE)
+    if raw is None:
+        return DEFAULT_VLM_MODE
+    for mode in VLM_MODES:
+        if raw == mode:
+            return mode
+    raise ConfigError(f"{ENV_VLM_MODE} không hợp lệ: chỉ nhận off hoặc images_only")
+
+
+def is_url_like(value: str) -> bool:
+    """Chuỗi trông như URL hay tên miền: có `://`, bắt đầu bằng `www.`, hoặc không có khoảng trắng mà có dấu chấm
+    nằm giữa hai ký tự khác dấu chấm (`api.example.com`, `127.0.0.1`). Luật cố ý rộng: nhãn hợp lệ như "OpenAI" hay
+    "Máy chủ trường" không bị ảnh hưởng; nhãn có số phiên bản liền như "v1.5" bị từ chối, viết "v1 5" hay thêm
+    khoảng trắng nếu cần."""
+    lowered = value.lower()
+    return "://" in lowered or lowered.startswith("www.") or DOMAIN_LIKE.fullmatch(value) is not None
+
+
+def _read_data_recipient(env: Mapping[str, str], api_key: SecretStr | None) -> str | None:
+    """`HOLOCRON_VLM_DATA_RECIPIENT`: chữ thuần ≤ 80 ký tự, không dạng URL, không chứa khoá VLM.
+
+    Sai ⇒ `ConfigError` chỉ nêu tên biến (không nêu giá trị).
+    """
+    value = _read_plain(env, ENV_VLM_DATA_RECIPIENT)
+    if value is None:
+        return None
+    if len(value) > VLM_DATA_RECIPIENT_MAX_CHARS:
+        raise ConfigError(f"{ENV_VLM_DATA_RECIPIENT} không hợp lệ: tối đa {VLM_DATA_RECIPIENT_MAX_CHARS} ký tự")
+    if is_url_like(value):
+        raise ConfigError(f"{ENV_VLM_DATA_RECIPIENT} không hợp lệ: là nhãn chữ thuần, không phải địa chỉ hay URL")
+    if api_key is not None and api_key.get_secret_value() in value:
+        raise ConfigError(f"{ENV_VLM_DATA_RECIPIENT} không hợp lệ: không được chứa khoá")
     return value
 
 
@@ -238,16 +369,45 @@ def _load_llm(source: Mapping[str, str]) -> LlmSettings:
     )
 
 
-def _load_vlm(source: Mapping[str, str]) -> tuple[VlmSettings | None, tuple[str, ...]]:
-    """`(cấu hình VLM, tên các biến còn thiếu)`; thiếu một biến thì cấu hình là `None`."""
+def _load_vlm(source: Mapping[str, str]) -> tuple[VlmSettings | None, tuple[str, ...], VlmMode]:
+    """`(cấu hình VLM, tên các biến còn thiếu, HOLOCRON_VLM_MODE)`; thiếu biến bắt buộc thì cấu hình là `None`.
+
+    Khoá là bắt buộc trừ khi `HOLOCRON_VLM_BASE_URL` là loopback; chưa có base URL thì chưa biết loại endpoint nên
+    khoá vẫn tính là bắt buộc. Mọi biến VLM được kiểm cả khi VLM chưa đủ cấu hình. `HOLOCRON_VLM_MODE` không ảnh
+    hưởng việc VLM đã cấu hình hay chưa.
+    """
     vlm_base_url = _read_base_url(source, ENV_VLM_BASE_URL)
     vlm_key = _read_key(source, ENV_VLM_API_KEY)
     vlm_model = _read_plain(source, ENV_VLM_MODEL)
+    mode = _read_vlm_mode(source)
+    timeout_s = _read_seconds(source, ENV_VLM_TIMEOUT_S)
+    concurrency = _read_int(source, ENV_VLM_CONCURRENCY, low=VLM_CONCURRENCY_MIN, high=VLM_CONCURRENCY_MAX)
+    max_edge_px = _read_int(source, ENV_VLM_MAX_EDGE_PX, low=1)
+    max_image_bytes = _read_int(source, ENV_VLM_MAX_IMAGE_BYTES, low=1)
+    data_recipient = _read_data_recipient(source, vlm_key)
+    local = vlm_base_url is not None and is_loopback_url(vlm_base_url)
     values = (vlm_base_url, vlm_key, vlm_model)
-    missing = tuple(name for name, value in zip(VLM_REQUIRED_VARIABLES, values, strict=True) if value is None)
-    if vlm_base_url is None or vlm_key is None or vlm_model is None:
-        return None, missing
-    return VlmSettings(base_url=vlm_base_url, api_key=vlm_key, model=vlm_model), ()
+    required = (True, not local, True)
+    missing = tuple(
+        name
+        for name, value, needed in zip(VLM_REQUIRED_VARIABLES, values, required, strict=True)
+        if needed and value is None
+    )
+    if missing or vlm_base_url is None or vlm_model is None:
+        return None, missing, mode
+    settings = VlmSettings(
+        base_url=vlm_base_url,
+        api_key=vlm_key,
+        model=vlm_model,
+        timeout_s=timeout_s if timeout_s is not None else (VLM_TIMEOUT_LOOPBACK_S if local else VLM_TIMEOUT_CLOUD_S),
+        concurrency=concurrency
+        if concurrency is not None
+        else (VLM_CONCURRENCY_LOOPBACK if local else VLM_CONCURRENCY_CLOUD),
+        max_edge_px=DEFAULT_VLM_MAX_EDGE_PX if max_edge_px is None else max_edge_px,
+        max_image_bytes=DEFAULT_VLM_MAX_IMAGE_BYTES if max_image_bytes is None else max_image_bytes,
+        data_recipient=data_recipient,
+    )
+    return settings, (), mode
 
 
 def load_runtime_config(env: Mapping[str, str] | None = None) -> RuntimeConfig:
@@ -257,16 +417,16 @@ def load_runtime_config(env: Mapping[str, str] | None = None) -> RuntimeConfig:
     """
     source = os.environ if env is None else env
     llm = _load_llm(source)
-    vlm, missing = _load_vlm(source)
-    return RuntimeConfig(llm=llm, vlm=vlm, vlm_missing=missing)
+    vlm, missing, mode = _load_vlm(source)
+    return RuntimeConfig(llm=llm, vlm=vlm, vlm_missing=missing, vlm_mode=mode)
 
 
 def load_runtime_config_lenient(env: Mapping[str, str] | None = None) -> RuntimeConfig:
     """Như `load_runtime_config`, nhưng nhóm LLM hay VLM có biến sai thì coi như nhóm đó chưa cấu hình thay vì ném lỗi.
 
     Nhóm LLM sai ⇒ `LlmSettings()` (mọi biến coi như chưa đặt, `llm_configured = false`); nhóm VLM sai ⇒ `vlm = None`
-    và `vlm_missing` gồm cả ba biến VLM. Log một cảnh báo chỉ gồm thông điệp của `ConfigError` (tên biến, không bao
-    giờ có giá trị).
+    và `vlm_missing` gồm cả ba biến VLM, `vlm_mode = "off"` (mọi biến `HOLOCRON_VLM_*`, kể cả biến mới của ADR-009, thuộc
+    nhóm VLM). Log một cảnh báo chỉ gồm thông điệp của `ConfigError` (tên biến, không bao giờ có giá trị).
     """
     source = os.environ if env is None else env
     try:
@@ -274,9 +434,10 @@ def load_runtime_config_lenient(env: Mapping[str, str] | None = None) -> Runtime
     except ConfigError as exc:
         logger.warning("cấu hình LLM không hợp lệ, coi như chưa cấu hình: %s", exc)
         llm = LlmSettings()
+    mode: VlmMode = DEFAULT_VLM_MODE
     try:
-        vlm, missing = _load_vlm(source)
+        vlm, missing, mode = _load_vlm(source)
     except ConfigError as exc:
         logger.warning("cấu hình VLM không hợp lệ, coi như chưa cấu hình: %s", exc)
         vlm, missing = None, VLM_REQUIRED_VARIABLES
-    return RuntimeConfig(llm=llm, vlm=vlm, vlm_missing=missing)
+    return RuntimeConfig(llm=llm, vlm=vlm, vlm_missing=missing, vlm_mode=mode)

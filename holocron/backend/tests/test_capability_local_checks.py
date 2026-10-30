@@ -1329,6 +1329,74 @@ def test_startup_check_ignores_tessdata_prefix(
     assert check(lacking, full_tessdata) == {"ocr_cross_check": "secondary_ocr_disabled"}
 
 
+def _env_check(runner: FakeRunner) -> LocalCapabilityCheck:
+    """Bộ kiểm cục bộ thật đọc cấu hình OCR từ môi trường của tiến trình, với Tesseract giả, không tìm binary trong
+    PATH và không dò thư mục tessdata mặc định của máy chạy test (cấu hình bộ đọc cố định là `CONFIG`)."""
+
+    def check(config: PdfReaderConfig, /) -> Failures:
+        return check_local_capabilities(
+            lambda: load_ocr_settings(None, lambda name: None),
+            functools.partial(probe_tesseract, run=runner),
+            _loaded,
+            CONFIG,
+        )
+
+    return check
+
+
+@pytest.mark.parametrize("lists_vie", [True, False], ids=["list-langs-has-vie", "list-langs-without-vie"])
+def test_tessdata_dir_env_pointing_to_a_missing_directory_means_language_missing(
+    install_check: Callable[[LocalCapabilityCheck], None],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    lists_vie: bool,
+) -> None:
+    """Trường hợp cũ của `test_build_ocr_requires_tesseract_and_vie` (duyệt 2026-10-30): `HOLOCRON_TESSDATA_DIR` trỏ
+    tới thư mục KHÔNG tồn tại ⇒ thư mục đã xác định (truyền bằng `--tessdata-dir`) ⇒ `ocr_language_missing`, không
+    bỏ qua kiểm. `detail_vi` nêu tên biến `HOLOCRON_TESSDATA_DIR`, không nêu đường dẫn; log cũng không có đường dẫn."""
+    missing = tmp_path / "thu-muc-khong-ton-tai"
+    for name in ("HOLOCRON_TESSERACT_CMD", ENV_PDF_OCR_PRIMARY, "TESSDATA_PREFIX"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(ENV_PDF_OCR_SECONDARY, "")
+    monkeypatch.setenv("HOLOCRON_TESSDATA_DIR", str(missing))
+    languages = "eng\nvie\n" if lists_vie else "eng\n"
+    listing = RunResult(status="ok", stdout=f'List of available languages in "{missing}/" (2):\n{languages}'.encode())
+    runner = FakeRunner({"--version": OK_VERSION, "--list-langs": listing})
+    install_check(_env_check(runner))
+    with caplog.at_level(logging.WARNING), TestClient(app) as client:
+        response = client.get("/v1/runtime")
+    body = response.json()
+    assert _ocr_pair(body) == {
+        "ocr": (False, "ocr_language_missing"),
+        "ocr_cross_check": (False, "ocr_language_missing"),
+    }
+    [ocr] = [item for item in body["capabilities"] if item["name"] == "ocr"]
+    assert "HOLOCRON_TESSDATA_DIR" in ocr["detail_vi"]
+    for leaked in (str(tmp_path), tmp_path.name, missing.name):
+        assert leaked not in response.text
+        assert leaked not in caplog.text
+    assert ["--tessdata-dir", str(missing)] == runner.calls[1][0][2:]
+
+
+def test_unknown_tessdata_dir_warns_once_and_skips_the_check(
+    install_check: Callable[[LocalCapabilityCheck], None],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Đối chiếu với ca trên: KHÔNG xác định được thư mục (Tesseract 4.x không ghi thư mục, không đặt
+    `HOLOCRON_TESSDATA_DIR`, đường lùi rỗng) ⇒ bỏ qua kiểm, `ocr` khả dụng, đúng một cảnh báo."""
+    for name in ("HOLOCRON_TESSERACT_CMD", ENV_PDF_OCR_PRIMARY, "HOLOCRON_TESSDATA_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(ENV_PDF_OCR_SECONDARY, "")
+    listing = RunResult(status="ok", stdout=b"List of available languages (2):\neng\nvie\n")
+    runner = FakeRunner({"--version": OK_VERSION, "--list-langs": listing})
+    install_check(_env_check(runner))
+    with caplog.at_level(logging.WARNING), TestClient(app) as client:
+        assert _ocr_pair(client.get("/v1/runtime").json())["ocr"] == (True, None)
+    assert sum("bỏ qua kiểm unicharset" in record.getMessage() for record in caplog.records) == 1
+
+
 def _probe_status_with(listing: RunResult) -> ProbeOutcome:
     runner = FakeRunner({"--version": OK_VERSION, "--list-langs": listing})
     return TesseractEngine.probe_status(WITH_SECONDARY, 1.0, runner)

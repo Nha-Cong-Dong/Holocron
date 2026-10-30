@@ -166,13 +166,16 @@ def scan_template_images(
     source: ImageKeySource,
     page_count: int,
     config: PdfReaderConfig,
-    clock: Callable[[], float] = time.monotonic,
+    clock: Callable[[], float] = time.perf_counter,
 ) -> TemplateScan:
     """Lượt quét ảnh của cả tài liệu, trong hạn `template_scan_timeout_s` (tính từ lúc bắt đầu quét).
 
     Vượt trần số ảnh (một trang hay cả tài liệu), số byte đem băm của cả tài liệu, hay số khoá template ⇒
     `over_cap`; quá hạn ⇒ `timeout`; lỗi đọc trang hay ảnh ⇒ `error`. Mọi trạng thái đó không có khoá nào. Tiến
     trình cha giữ thêm hạn cứng của chính nó (một lời gọi PDFium treo không trả quyền về đây).
+
+    Đồng hồ mặc định là `time.perf_counter` (đơn điệu, độ phân giải cao trên mọi nền tảng): `time.monotonic` của
+    Python < 3.13 trên Windows chỉ nhích theo nhịp khoảng 15,6 ms, nên hạn ngắn hơn một nhịp không bao giờ bị vượt.
     """
     if page_count < config.template_image_min_pages:
         return TemplateScan(status="ok")

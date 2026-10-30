@@ -8,7 +8,9 @@ có lớp chữ rỗng hay rác thoát OCR (I5). PDF mẫu tự tạo (`tests/pd
 
 from __future__ import annotations
 
+import inspect
 import logging
+import time
 from pathlib import Path
 
 import pytest
@@ -826,6 +828,13 @@ def _recording_sessions(monkeypatch: pytest.MonkeyPatch) -> list[WorkerRequest]:
 
     monkeypatch.setattr(pdf_reader, "WorkerSession", Recording)
     return requests
+
+
+def test_scan_clock_defaults_to_high_resolution_counter() -> None:
+    # `time.monotonic` của Python < 3.13 trên Windows nhích theo nhịp ~15,6 ms: hạn quét ngắn không bao giờ bị vượt.
+    default = inspect.signature(scan_template_images).parameters["clock"].default
+    assert default is time.perf_counter
+    assert time.get_clock_info("perf_counter").monotonic
 
 
 def test_scan_timeout_reads_on_without_templates_and_without_failures(

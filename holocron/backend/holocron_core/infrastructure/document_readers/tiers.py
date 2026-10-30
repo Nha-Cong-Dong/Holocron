@@ -21,7 +21,6 @@ from dataclasses import dataclass
 from typing import Literal
 
 from ...domain.documents import (
-    MAX_LINE_CHARS,
     CrossCheck,
     ExtractedLine,
     FailureReason,
@@ -30,6 +29,7 @@ from ...domain.documents import (
     ReviewReason,
     TokenMismatch,
 )
+from ...domain.limits import MAX_LINE_CHARS
 from .config import PdfReaderConfig
 from .cross_check import CrossCheckLimitError, CrossCheckLimits, coverage_ratio, cross_check_lines
 from .protocol import RawOcrLine, RawOcrPage, RawPdfPage

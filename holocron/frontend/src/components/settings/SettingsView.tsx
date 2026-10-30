@@ -19,6 +19,7 @@ import {
 } from "@/lib/theme";
 
 import { MachineDiagnostics } from "./MachineDiagnostics";
+import { QuestionStyleSection } from "./QuestionStyleSection";
 import styles from "./SettingsView.module.css";
 
 const THEME_CHOICES: readonly ThemeChoice[] = ["auto", "light", "dark"];
@@ -31,8 +32,9 @@ function appliedChoices(): { theme: ThemeChoice; reduce: boolean } {
 
 /**
  * Cài đặt (design-handoff/README.md màn 11): Giao diện (3 chip chọn theme + công tắc Giảm chuyển động), Máy của bạn
- * (chẩn đoán máy, chuyển từ trang chủ sang; neo `#may-cua-ban`) và mục Thử nghiệm thu gọn chứa các màn đã gỡ khỏi
- * điều hướng chính. Đồng bộ hai chiều với nút theme trên thanh trên qua
+ * (chẩn đoán máy, chuyển từ trang chủ sang; neo `#may-cua-ban`; trạng thái kết nối, bản đang chạy và thư mục log nằm
+ * trong "Chi tiết kỹ thuật"), Câu hỏi tự nhiên hơn (chỉ đọc) và mục Thử nghiệm thu gọn chứa các màn đã gỡ khỏi điều
+ * hướng chính (nơi duy nhất trỏ tới `/ingestion`, `/twins`). Đồng bộ hai chiều với nút theme trên thanh trên qua
  * `THEME_CHANGE_EVENT`. Dùng `Chip` (radio), `Switch` và `Accordion` của bộ thành phần dùng chung.
  */
 export function SettingsView() {
@@ -114,6 +116,8 @@ export function SettingsView() {
       </section>
 
       <MachineDiagnostics />
+
+      <QuestionStyleSection />
 
       <Accordion
         className={styles.lab}

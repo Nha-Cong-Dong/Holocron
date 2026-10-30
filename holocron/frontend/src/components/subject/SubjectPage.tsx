@@ -6,20 +6,31 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { EmptyState } from "@/components/common/LoadState";
 import { type TabItem, Tabs } from "@/components/common/Tabs";
-import { PairsView } from "@/components/pairs/PairsView";
+import { ConceptsTab } from "@/components/concepts/ConceptsTab";
+import { DocumentsTab } from "@/components/documents/DocumentsTab";
 import { PracticeView } from "@/components/practice/PracticeView";
 import { useShell } from "@/components/shell/ShellContext";
 import { SkyView } from "@/components/sky/SkyView";
-import { DocumentsPanel } from "@/components/vault/DocumentsPanel";
-import { PageReview } from "@/components/vault/PageReview";
 import { api } from "@/lib/api";
 import type { UiError } from "@/lib/errors";
 import type { PairsLocation } from "@/lib/pairs";
+import { practiceFullscreen } from "@/lib/quiz";
 import { writeRecentSubject } from "@/lib/recent-subject";
-import { buildSkyLayout, type SkyPair } from "@/lib/sky";
+import { buildSkyLayout } from "@/lib/sky";
+import { EMPTY_SKY_TRACK, type SkyTrack, trackedGains, trackSkyLayout } from "@/lib/sky-gains";
 import {
+  INITIAL_SKY_LOAD,
+  SKY_LOAD_TIMEOUT_MS,
+  type SkyLoadEvent,
+  type SkyLoadState,
+  skyLoadReducer,
+} from "@/lib/sky-load";
+import {
+  type PracticeSessionKind,
+  parsePracticeSession,
   parseSubjectDocumentLocation,
   parseSubjectLocation,
+  practiceSessionHref,
   type SubjectDocumentLocation,
   subjectConceptsHref,
   subjectDocumentsHref,
@@ -32,6 +43,9 @@ import type { VaultLocation } from "@/lib/vault";
 
 import styles from "./SubjectPage.module.css";
 
+/** `idPrefix` của hàng tab môn. */
+const TABS_ID_PREFIX = "subject";
+
 const TAB_ITEMS: readonly TabItem<SubjectTab>[] = [
   { id: "documents", label: "Tài liệu", icon: "document" },
   { id: "concepts", label: "Khái niệm", icon: "concept" },
@@ -39,18 +53,41 @@ const TAB_ITEMS: readonly TabItem<SubjectTab>[] = [
 ];
 
 /**
+ * `id` của tab Khái niệm (`Tabs` đặt `${idPrefix}-tab-${chỉ số}`), tính từ vị trí tab trong `TAB_ITEMS`: xem lại xong
+ * thì focus vào đây.
+ */
+const CONCEPTS_TAB_ID = `${TABS_ID_PREFIX}-tab-${TAB_ITEMS.findIndex((item) => item.id === "concepts")}`;
+
+/**
  * Trang môn `/subject?code=&tab=` (design-handoff/README.md màn 3): tiêu đề là tên môn (chưa tải ⇒ mã môn), bầu trời
  * kiến thức của môn, rồi ba phần Tài liệu · Khái niệm · Ôn tập. Mã môn đọc từ địa chỉ và truyền làm prop cho từng
  * phần; khung được báo qua `selectSubject` (và mã được lưu làm môn gần nhất cho trang chủ) để hộp lệnh và các route cũ
- * biết môn mở gần nhất. Phần Tài liệu đọc thêm `?doc=&page=` để xem lại một trang ngay trong tab. Phải nằm trong
- * `<Suspense>` vì đọc `useSearchParams()`.
+ * biết môn mở gần nhất. Phần Tài liệu (`DocumentsTab`, màn 4–6) đọc thêm `?doc=&page=` để xem lại một tài liệu ngay
+ * trong tab; xem lại xong thì sang tab Khái niệm. Khi tab Ôn tập đang làm đề hoặc xem kết quả (màn 9–10), trang ẩn
+ * bầu trời và hàng tab (tab vẫn mounted) để bài làm chiếm cả màn; phần đó do tab Ôn tập báo lên (nguồn chân lý) và chỉ
+ * được phản chiếu lên địa chỉ bằng `&session=`. Phải nằm trong `<Suspense>` vì đọc `useSearchParams()`.
  */
 export function SubjectPage() {
   const params = useSearchParams();
   const location = parseSubjectLocation(params);
   const documentLocation = parseSubjectDocumentLocation(params);
+  const urlSession = parsePracticeSession(params);
   const { subjects, reloadSubjects, selectSubject } = useShell();
   const code = location.code;
+  // Lượt tải lại bầu trời do tab Khái niệm yêu cầu (nhận, bỏ, tạo khái niệm): nối `SubjectPanes` với `SubjectSky`.
+  const [skyReloads, setSkyReloads] = useState(0);
+  const onConceptsChanged = useCallback(() => setSkyReloads((count) => count + 1), []);
+  // Phần đang mở của tab Ôn tập (làm đề, xem kết quả) do tab đó báo lên. Đổi tab thì bỏ (tab Ôn tập mở lại từ đầu).
+  const [session, setSession] = useState<{ tab: SubjectTab; kind: PracticeSessionKind | null }>({
+    tab: location.tab,
+    kind: null,
+  });
+  if (session.tab !== location.tab) setSession({ tab: location.tab, kind: null });
+  const onSessionChange = useCallback(
+    (kind: PracticeSessionKind | null) => setSession((previous) => ({ ...previous, kind })),
+    [],
+  );
+  const fullscreen = practiceFullscreen(location.tab, session.tab === location.tab ? session.kind : null);
 
   useEffect(() => {
     if (code === null) return;
@@ -95,12 +132,13 @@ export function SubjectPage() {
         </h1>
         <p className={styles.meta}>Mã môn {view.code}</p>
       </header>
-      {canShowSky(view) && (
+      {canShowSky(view) && !fullscreen && (
         <SubjectSky
           key={`sky-${view.code}`}
           code={view.code}
           title={subjectTitle(view) ?? view.code}
           tab={location.tab}
+          reloads={skyReloads}
         />
       )}
       {canShowPanes(view) && (
@@ -111,37 +149,37 @@ export function SubjectPage() {
           documentLocation={documentLocation}
           listError={view.kind === "list_unavailable" ? view.error : null}
           onReloadSubjects={reloadSubjects}
+          onConceptsChanged={onConceptsChanged}
+          urlSession={urlSession}
+          onSessionChange={onSessionChange}
+          fullscreen={fullscreen}
         />
       )}
     </section>
   );
 }
 
-/** Thời gian chờ tối đa một lần tải bầu trời trước khi báo lỗi. */
-const SKY_LOAD_TIMEOUT_MS = 15_000;
-
-type SkyState =
-  | { kind: "loading" }
-  | { kind: "error" }
-  /** `stale`: lần tải lại gần nhất lỗi, đang giữ bầu trời của lần trước. */
-  | { kind: "ready"; pairs: readonly SkyPair[]; stale: boolean };
-
 interface SkyRequest {
   code: string;
   tab: SubjectTab;
+  /** Số lượt tải lại do tab Khái niệm yêu cầu, lần gần nhất đã áp. */
+  reloads: number;
   /** Tăng mỗi lần cần tải lại (bấm "Thử lại", cửa sổ lấy lại focus). */
   attempt: number;
 }
 
 /**
  * Bầu trời 790×200 dưới tiêu đề trang môn, từ cặp khái niệm của môn (`GET /v1/vault/concept-pairs`). Tải lại khi đổi
- * tab và khi cửa sổ lấy lại focus. Đang tải hay lỗi không chặn các tab ở dưới; lỗi khi đã có bầu trời thì giữ bầu
- * trời cũ kèm dòng "Chưa cập nhật được", chưa có thì hiện ô tối với một câu và nút "Thử lại".
+ * tab, khi cửa sổ lấy lại focus và khi tab Khái niệm báo danh sách vừa đổi (`reloads` tăng); sao vàng vừa sáng thêm so
+ * với lần vẽ trước được gắn `m-star-new`. Đang tải hay lỗi không chặn các tab ở dưới; lỗi khi đã có bầu trời thì giữ
+ * bầu trời cũ kèm dòng "Chưa cập nhật được", chưa có thì hiện ô tối với một câu và nút "Thử lại".
  */
-function SubjectSky({ code, title, tab }: { code: string; title: string; tab: SubjectTab }) {
-  const [state, setState] = useState<SkyState>({ kind: "loading" });
-  const [request, setRequest] = useState<SkyRequest>({ code, tab, attempt: 0 });
-  if (request.code !== code || request.tab !== tab) setRequest({ code, tab, attempt: request.attempt + 1 });
+function SubjectSky({ code, title, tab, reloads }: { code: string; title: string; tab: SubjectTab; reloads: number }) {
+  const [state, setState] = useState<SkyLoadState>(INITIAL_SKY_LOAD);
+  const [request, setRequest] = useState<SkyRequest>({ code, tab, reloads, attempt: 0 });
+  if (request.code !== code || request.tab !== tab || request.reloads !== reloads) {
+    setRequest({ code, tab, reloads, attempt: request.attempt + 1 });
+  }
 
   useEffect(() => {
     function reload(): void {
@@ -153,21 +191,22 @@ function SubjectSky({ code, title, tab }: { code: string; title: string; tab: Su
 
   useEffect(() => {
     let alive = true;
-    function fail(): void {
-      if (!alive) return;
-      setState((previous) => (previous.kind === "ready" ? { ...previous, stale: true } : { kind: "error" }));
+    function send(event: SkyLoadEvent): void {
+      if (alive) setState((previous) => skyLoadReducer(previous, event));
     }
-    // Lời gọi treo (không trả lời, không lỗi) không được giữ ô trời ở "Đang tải" mãi: hết giờ thì báo lỗi; nếu sau đó
-    // backend vẫn trả lời thì bầu trời hiện như thường.
-    const timer = window.setTimeout(fail, SKY_LOAD_TIMEOUT_MS);
+    // Chuyển trạng thái ở `lib/sky-load.ts`; ở đây chỉ nối sự kiện. Lời gọi treo thì hết giờ báo lỗi, trả lời đến muộn
+    // vẫn hiện bầu trời. `lib/api.ts` chưa nhận `AbortSignal` nên lời gọi hết giờ không huỷ được, chỉ bị bỏ qua khi rời
+    // màn hoặc khi có lần tải mới.
+    send({ type: "started" });
+    const timer = window.setTimeout(() => send({ type: "timedOut" }), SKY_LOAD_TIMEOUT_MS);
     api.listConceptPairs({ subjectCode: request.code, chapterCode: null, status: null }).then(
       (list) => {
         window.clearTimeout(timer);
-        if (alive) setState({ kind: "ready", pairs: list.pairs, stale: false });
+        send({ type: "succeeded", pairs: list.pairs });
       },
       () => {
         window.clearTimeout(timer);
-        fail();
+        send({ type: "failed" });
       },
     );
     return () => {
@@ -179,8 +218,17 @@ function SubjectSky({ code, title, tab }: { code: string; title: string; tab: Su
   const pairs = state.kind === "ready" ? state.pairs : null;
   const layout = useMemo(() => (pairs === null ? null : buildSkyLayout(title, pairs)), [title, pairs]);
 
+  // So với bố cục vẽ lần trước để biết sao nào vừa sáng thêm (lần vẽ đầu không có sao mới). Tính ngay trong render
+  // (cập nhật state khi bố cục đổi) để sao mới và bố cục mới luôn đi cùng một lần vẽ.
+  const [track, setTrack] = useState<SkyTrack>(EMPTY_SKY_TRACK);
+  const nextTrack = trackSkyLayout(track, layout);
+  if (nextTrack !== track) setTrack(nextTrack);
+  const gains = useMemo(() => trackedGains(nextTrack), [nextTrack]);
+
   if (layout !== null) {
-    return <SkyView size="full" status="ready" layout={layout} stale={state.kind === "ready" && state.stale} />;
+    return (
+      <SkyView size="full" status="ready" layout={layout} gains={gains} stale={state.kind === "ready" && state.stale} />
+    );
   }
   if (state.kind === "error") {
     return (
@@ -188,7 +236,7 @@ function SubjectSky({ code, title, tab }: { code: string; title: string; tab: Su
         size="full"
         status="error"
         onRetry={() => {
-          setState({ kind: "loading" });
+          setState((previous) => skyLoadReducer(previous, { type: "started" }));
           setRequest((previous) => ({ ...previous, attempt: previous.attempt + 1 }));
         }}
       />
@@ -204,10 +252,37 @@ interface SubjectPanesProps {
   /** Lỗi tải danh sách môn; chỉ phần Ôn tập cần danh sách (hình thức thi của môn) nên chỉ phần đó báo. */
   listError: UiError | null;
   onReloadSubjects: () => void;
+  /** Tab Khái niệm vừa đổi danh sách khái niệm: tải lại bầu trời. */
+  onConceptsChanged: () => void;
+  /** `&session=` trên địa chỉ (chỉ phản chiếu). */
+  urlSession: PracticeSessionKind | null;
+  /** Tab Ôn tập báo phần đang mở (làm đề, kết quả, hoặc `null` là thiết lập đề). */
+  onSessionChange: (session: PracticeSessionKind | null) => void;
+  /** Đang làm bài toàn màn: ẩn hàng tab, giữ nội dung. */
+  fullscreen: boolean;
 }
 
-function SubjectPanes({ code, tab, documentLocation, listError, onReloadSubjects }: SubjectPanesProps) {
+function SubjectPanes({
+  code,
+  tab,
+  documentLocation,
+  listError,
+  onReloadSubjects,
+  onConceptsChanged,
+  urlSession,
+  onSessionChange,
+  fullscreen,
+}: SubjectPanesProps) {
   const router = useRouter();
+  // Tab Ôn tập là nguồn chân lý; địa chỉ chỉ phản chiếu bằng `replace` (không thêm mục lịch sử, Back rời trang môn như
+  // trước). Mở lại địa chỉ có `session` mà đề không còn trong bộ nhớ: tab báo `null` ngay khi mở ⇒ bỏ `session`.
+  const onPracticeSession = useCallback(
+    (next: PracticeSessionKind | null) => {
+      onSessionChange(next);
+      if (next !== urlSession) router.replace(practiceSessionHref(code, next), { scroll: false });
+    },
+    [onSessionChange, urlSession, router, code],
+  );
   const conceptsHref = useCallback(
     (pairsLocation: Partial<PairsLocation>) => subjectConceptsHref(code, pairsLocation),
     [code],
@@ -216,31 +291,46 @@ function SubjectPanes({ code, tab, documentLocation, listError, onReloadSubjects
     (vaultLocation: Partial<VaultLocation>) => subjectDocumentsHref(code, vaultLocation),
     [code],
   );
+  // Xem lại xong một tài liệu: sang tab Khái niệm và đặt focus vào tab đó (design-handoff/README.md màn 6).
+  const onDocumentFinished = useCallback(() => {
+    router.push(subjectHref(code, "concepts"));
+    requestAnimationFrame(() => document.getElementById(CONCEPTS_TAB_ID)?.focus());
+  }, [router, code]);
 
   return (
     <Tabs
       label="Phần của môn"
-      idPrefix="subject"
+      idPrefix={TABS_ID_PREFIX}
       items={TAB_ITEMS}
       selected={tab}
       onSelect={(next) => router.push(subjectHref(code, next))}
+      hideList={fullscreen}
     >
-      {tab === "documents" &&
-        (documentLocation.doc === null ? (
-          <DocumentsPanel subjectCode={code} hrefFor={documentsHref} />
-        ) : (
-          <PageReview
-            key={documentLocation.doc}
-            documentId={documentLocation.doc}
-            pageNumber={documentLocation.page ?? 1}
-            hrefFor={documentsHref}
-            expectedSubjectCode={code}
-          />
-        ))}
-      {tab === "concepts" && <PairsView subjectCode={code} hrefFor={conceptsHref} documentsHrefFor={documentsHref} />}
+      {tab === "documents" && (
+        <DocumentsTab
+          subjectCode={code}
+          location={documentLocation}
+          hrefFor={documentsHref}
+          onFinished={onDocumentFinished}
+        />
+      )}
+      {tab === "concepts" && (
+        <ConceptsTab
+          subjectCode={code}
+          hrefFor={conceptsHref}
+          onOpenDocuments={() => router.push(subjectHref(code, "documents"))}
+          onOpenPractice={() => router.push(subjectHref(code, "practice"))}
+          onConceptsChanged={onConceptsChanged}
+        />
+      )}
       {tab === "practice" &&
         (listError === null ? (
-          <PracticeView subjectCode={code} hrefFor={conceptsHref} />
+          <PracticeView
+            subjectCode={code}
+            hrefFor={conceptsHref}
+            urlSession={urlSession}
+            onSessionChange={onPracticeSession}
+          />
         ) : (
           <SubjectsListNotice error={listError} onRetry={onReloadSubjects} />
         ))}
@@ -262,7 +352,7 @@ function SubjectsListNotice({ error, onRetry }: { error: UiError; onRetry: () =>
   }
   return (
     <EmptyState title="Chưa tải được danh sách môn nên chưa tạo được đề ôn tập.">
-      <p>Kiểm tra kết nối ở thanh trạng thái phía dưới, rồi tải lại danh sách môn.</p>
+      <p>Kiểm tra kết nối ở Cài đặt › Máy của bạn, rồi tải lại danh sách môn.</p>
       <button type="button" className={`m-btn-secondary ${styles.retry}`} onClick={onRetry}>
         Thử lại
       </button>

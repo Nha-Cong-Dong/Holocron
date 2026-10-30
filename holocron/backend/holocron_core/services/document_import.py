@@ -52,6 +52,7 @@ from ..domain.documents import (
     ReviewReason,
 )
 from ..domain.ingestion import UploadedDocument
+from ..domain.limits import MAX_LINE_CHARS
 from ..domain.repositories import (
     DocumentExistsError,
     DocumentRepository,
@@ -63,7 +64,7 @@ from ..domain.repositories import (
     VersionConflictError,
 )
 from ..domain.schemas import DocumentMeta, SourceKind
-from ..domain.vault import MAX_LINE_CHARS, MAX_PAGE_LINES, ConfirmedDocumentText, ConfirmedPage
+from ..domain.vault import MAX_PAGE_LINES, ConfirmedDocumentText, ConfirmedPage
 from ..infrastructure.document_readers.config import PdfReaderConfig
 from ..infrastructure.document_readers.pdf_reader import PDF_MAGIC, PdfInputError, PdfReader, PdfWorkerError
 from ..infrastructure.document_readers.tiers import failed_page

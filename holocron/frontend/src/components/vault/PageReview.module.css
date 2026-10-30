@@ -1,0 +1,30 @@
+/*
+ * Style riêng của hai nút ở màn Xem lại: nút "Sang trang cần xem kế tiếp" (vùng cố định cạnh tiêu đề trang, khác hẳn
+ * vùng nút xác nhận ở cuối trang) và dòng nhắc "còn dòng chưa lưu" cạnh nút xác nhận. Không có chuyển động.
+ */
+
+.titleGroup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.nextSlot {
+  display: flex;
+  align-items: center;
+  margin-inline-start: auto;
+}
+
+.nextTarget {
+  margin-inline-start: var(--space-1);
+  font-weight: 400;
+}
+
+.unsavedNote {
+  padding: var(--space-1) var(--space-2);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius);
+  background: var(--warning-soft);
+  font-size: var(--text-sm);
+}

@@ -81,6 +81,12 @@ Bổ sung ngày 2026-10-24, các chỗ còn thiếu trong danh sách trên. Số
 
 Ghi chú: `tests/test_input_limits.py:36-53` khoá hành vi "bảng > 10 tiến trình → `OUT_OF_RANGE` (BLOCKING)". Đây là test I5 (CLAUDE.md §9), nên bước 2 của ADR-005 phải giữ hành vi này mà không sửa test. Đã duyệt 2026-10-24: khi đó giới hạn số dòng đến từ `input_schema` của template (`max_rows`, spec §5.10) thay cho `MAX_PROCESSES`; template RR khai báo `max_rows = 10` để giữ hành vi trên. ADR-005 mục 2 đã ghi thêm `max_rows`.
 
+### Giới hạn độ dài dòng (LINE_TOO_LONG)
+
+- **Quyết định cũ, chưa từng triển khai:** ngày 2026-10-28 dự định thêm mã lỗi `LINE_TOO_LONG` cho trường hợp một dòng văn bản đã xác nhận dài quá giới hạn của Knowledge Vault.
+- **Thay bằng phương án B (người dùng quyết 2026-10-29, `.claude/state/decisions-answers-2026-10-29.md` mục 7):** không thêm mã lỗi. Giới hạn 2000 ký tự trước đây khai báo hai lần (`domain/documents.py` cho `ExtractedLine`, `domain/vault.py` cho `ConfirmedPage`) được gom về một hằng `MAX_LINE_CHARS` ở `domain/limits.py`; hai module kia dùng lại hằng này. `tests/test_line_limit_contract.py` khoá: (1) chỉ có một phép gán `MAX_LINE_CHARS` trong `holocron_core` và giới hạn bộ đọc ≤ giới hạn Vault; (2) bộ đọc (lắp trang lớp chữ và trang OCR) luôn chuẩn hoá NFC rồi mới cắt dòng dài thành các đoạn ≤ giới hạn, kể cả khi NFC làm chuỗi dài ra; (3) mọi dòng bộ đọc tạo ra đều vào được `ConfirmedPage`.
+- **Lý do:** `ExtractedLine.text` và `LineEdit` (`domain/documents.py`) đã chặn dòng quá dài ngay từ model (sau chuẩn hoá NFC), còn bộ đọc luôn cắt dòng dài theo đúng giới hạn của Vault, nên không có đường nào đưa một dòng quá dài tới Vault. Mã lỗi riêng sẽ là nhánh không bao giờ xảy ra; một hằng dùng chung cộng test khoá giữ được bảo đảm đó mà không thêm contract. Kiểm `_fits_vault` ở `services/document_import.py` vẫn giữ làm lớp phòng thủ.
+
 ## Phương án đã loại
 
 - **Chỉ dựa vào CI, không pre-commit:** phản hồi chậm và dễ đẩy commit sai chuẩn lên nhánh chung.

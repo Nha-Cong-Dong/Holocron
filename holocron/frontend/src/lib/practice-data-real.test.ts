@@ -225,7 +225,7 @@ describe("TwinBatch thật của backend (TheoryTwin)", () => {
     if (ticket === undefined || raw === undefined) return;
     const line = ticketLine(ticket);
     expect(line.startsWith(raw.reason)).toBe(true);
-    expect(line).toContain("cặp khái niệm đã xác nhận ở trang Cặp khái niệm");
+    expect(line).toContain("khái niệm đã nhận ở tab Khái niệm của môn");
   });
 
   it("batch rỗng (mọi slot thành ticket) vẫn được nhận: không có câu, còn lý do để hiển thị", () => {

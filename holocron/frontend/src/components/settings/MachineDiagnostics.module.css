@@ -151,3 +151,49 @@
 .muted {
   color: var(--ink-2);
 }
+
+/* Trạng thái kết nối trong "Chi tiết kỹ thuật" (thay cho thanh trạng thái dưới cùng đã gỡ). */
+.statusList {
+  display: grid;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.statusItem {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.statusDot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ink-2);
+}
+
+.statusItem[data-tone="success"] .statusDot {
+  background: var(--ok);
+}
+
+.statusItem[data-tone="warning"] .statusDot {
+  background: var(--warn);
+}
+
+.statusItem[data-tone="danger"] .statusDot {
+  background: var(--err);
+}
+
+.statusItem[data-tone="info"] .statusDot {
+  background: var(--cite);
+}
+
+.logDir {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}

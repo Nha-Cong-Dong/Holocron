@@ -1,0 +1,565 @@
+/* Làm bài (màn 9) và Kết quả (màn 10), design-handoff/README.md mục 5; chuyển động ở motion.css (.m-option,
+   .m-source-in, .m-points, .m-result-star). Giảm chuyển động do motion.css xử lý. */
+
+.screen {
+  display: grid;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+/* ---------------------------------------------------------------------------------------- thanh trên */
+
+.top {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.backIcon {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.bar {
+  flex: 1;
+  min-width: 0;
+}
+
+.count {
+  font-size: var(--fs-small);
+  font-weight: var(--fw-semibold);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------------------------------ câu hỏi */
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 28px;
+  align-items: start;
+  outline: none;
+}
+
+@media (max-width: 1100px) {
+  .grid {
+    grid-template-columns: minmax(0, 1fr) 300px;
+  }
+}
+
+.card {
+  display: grid;
+  gap: var(--sp-4);
+  min-width: 0;
+  padding: var(--sp-6);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--sh-1);
+}
+
+.chapter {
+  justify-self: start;
+  padding: 2px 10px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-semibold);
+}
+
+.stem {
+  font-size: var(--fs-h2);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-h2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.option {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 56px;
+  padding: 12px 18px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--fs-body);
+  line-height: 24px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.option[disabled] {
+  cursor: default;
+}
+
+.option[data-tone="right"] {
+  border-color: var(--ok);
+}
+
+.option[data-tone="wrong"] {
+  border-color: var(--err);
+  background: var(--err-soft);
+}
+
+.option[data-tone="dim"] {
+  opacity: 0.72;
+}
+
+.optionText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.kbd {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-semibold);
+}
+
+.verdict {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: var(--fs-small);
+  font-weight: var(--fw-semibold);
+}
+
+.verdict[data-tone="right"] {
+  color: var(--ok);
+}
+
+.verdict[data-tone="wrong"] {
+  color: var(--err);
+}
+
+.verdictStar {
+  width: 18px;
+  height: 18px;
+  color: var(--accent-ink);
+}
+
+/* Giải thích phương án nhiễu, lời giải câu tính toán. */
+.note {
+  display: grid;
+  gap: var(--sp-1);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+
+.noteLabel {
+  font-weight: var(--fw-semibold);
+}
+
+.notes {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.sectionTitle {
+  font-size: var(--fs-h3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-h3);
+}
+
+.solution {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------------------------------------ tự luận */
+
+.field {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.fieldLabel {
+  font-weight: var(--fw-semibold);
+}
+
+.answer {
+  width: 100%;
+  min-height: 150px;
+  padding: 12px 14px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--fs-body);
+  line-height: 26px;
+  resize: vertical;
+}
+
+.answer:focus {
+  border-color: var(--accent);
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.answer[readonly] {
+  background: var(--surface-2);
+}
+
+.caption {
+  color: var(--ink-2);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+}
+
+.fieldError {
+  color: var(--err);
+  font-size: var(--fs-small);
+}
+
+.essayResult {
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+
+.essayHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.matchBadge {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--r-pill);
+  background: var(--cite-soft);
+  color: var(--cite);
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+}
+
+.points {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.points li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: var(--fs-body);
+  line-height: 22px;
+}
+
+.points li[data-matched="true"] {
+  color: var(--ink);
+}
+
+.pointIcon[data-matched="true"] {
+  color: var(--ok);
+}
+
+.pointIcon[data-matched="false"] {
+  color: var(--cite);
+}
+
+.mockNote {
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 3px solid var(--warn);
+  background: var(--warn-soft);
+  font-size: var(--fs-small);
+}
+
+.skipActions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* --------------------------------------------------------------------------------- chân thẻ câu hỏi */
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  margin-top: var(--sp-2);
+}
+
+.grading {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-weight: var(--fw-semibold);
+}
+
+/* -------------------------------------------------------------------------------------------- nguồn */
+
+.source {
+  display: grid;
+  gap: 14px;
+  padding: 20px;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--sh-2);
+}
+
+.sourceTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--cite);
+  font-weight: var(--fw-semibold);
+}
+
+.sourcePlaceholder {
+  display: flex;
+  gap: 10px;
+  padding: var(--sp-6);
+  border: 1.5px dashed var(--line);
+  border-radius: var(--r-lg);
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  line-height: 20px;
+}
+
+/* ------------------------------------------------------------------------------------------- kết quả */
+
+.resultTitle {
+  font-size: var(--fs-h2);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-h2);
+  outline: none;
+}
+
+.resultGrid {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 40px;
+  align-items: start;
+}
+
+.ringPanel {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-5);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--sh-1);
+}
+
+.ring {
+  position: relative;
+  width: 240px;
+  height: 240px;
+  margin: 8px auto;
+  border-radius: 50%;
+  background: var(--sky);
+}
+
+.segPos {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+}
+
+.seg {
+  position: absolute;
+  top: -104px;
+  left: -11px;
+  display: block;
+  width: 22px;
+  height: 22px;
+}
+
+.seg svg {
+  display: block;
+  width: 22px;
+  height: 22px;
+}
+
+.seg[data-tone="gold"] path {
+  fill: var(--star);
+}
+
+.seg[data-tone="violet"] path {
+  fill: var(--star-pending);
+}
+
+.seg[data-tone="empty"] path {
+  fill: none;
+  stroke: var(--sky-ink);
+  stroke-width: 1.5;
+}
+
+.seg[data-tone="dim"] path {
+  fill: var(--star-empty);
+  opacity: 0.45;
+}
+
+.ringCenter {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--sky-ink);
+}
+
+.big {
+  font-size: 40px;
+  font-weight: var(--fw-semibold);
+  line-height: 48px;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ink-2);
+  font-size: var(--fs-caption);
+}
+
+.resultSide {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.rows {
+  margin: 0;
+  padding: 8px 20px;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--sh-1);
+  list-style: none;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 28px 110px minmax(0, 1fr) 90px;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 4px;
+  box-shadow: inset 0 -1px 0 var(--line);
+  font-size: var(--fs-body);
+}
+
+.row:last-child {
+  box-shadow: none;
+}
+
+.rowIcon[data-status="correct"] {
+  color: var(--ok);
+}
+
+.rowIcon[data-status="incorrect"] {
+  color: var(--err);
+}
+
+.rowIcon[data-status="essay"] {
+  color: var(--cite);
+}
+
+.rowIcon[data-status="unanswered"] {
+  color: var(--ink-2);
+}
+
+.rowStatus {
+  font-size: var(--fs-small);
+  font-weight: var(--fw-semibold);
+}
+
+.rowText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowPage {
+  color: var(--ink-2);
+  font-size: var(--fs-caption);
+  text-align: right;
+}
+
+.resultActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-3);
+}
+
+/* "Ôn lại câu sai": vẫn nhận focus (aria-disabled), bấm chỉ báo "sẽ có ở bản sau". */
+.soonButton {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--tap-min);
+  padding: 0 22px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1.5px var(--line-strong);
+  color: var(--ink);
+  font: inherit;
+  font-weight: var(--fw-semibold);
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.soon {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 700;
+}

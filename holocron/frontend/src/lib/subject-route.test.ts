@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   isSubjectCode,
+  parsePracticeSession,
   parseSubjectDocumentLocation,
   parseSubjectLocation,
   subjectConceptsHref,
@@ -105,5 +106,11 @@ describe("phần Tài liệu: danh sách và xem lại trang", () => {
       doc: "doc_0123456789abcdef",
       page: null,
     });
+  });
+});
+
+describe("đột biến sống (subject-route)", () => {
+  it("session có khoảng trắng hai đầu vẫn nhận", () => {
+    expect(parsePracticeSession(params("code=VXL01&tab=practice&session=%20quiz%20"))).toBe("quiz");
   });
 });

@@ -764,3 +764,15 @@ def test_command_with_only_backslash_separators_becomes_absolute(
 def test_read_bounded_returns_none_for_a_path_with_a_nul_byte(tmp_path: Path) -> None:
     """`os.open` ném `ValueError` (không phải `OSError`) với byte NUL trong đường dẫn ⇒ None, không ném lỗi."""
     assert read_bounded(tmp_path / "a\x00b", 10) is None
+
+
+def test_drive_letter_in_the_middle_of_a_relative_path_is_not_a_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ổ đĩa chỉ có nghĩa ở ĐẦU chuỗi: `sub/C:/td` vẫn là đường dẫn tương đối trên mọi nền tảng."""
+    assert _has_root("sub/C:/td", sep="/", altsep=None) is False
+    assert _has_root("sub/C:/td", sep="\\", altsep="/") is False
+    assert _has_root("C:/td", sep="/", altsep=None) is True
+    monkeypatch.chdir(tmp_path)
+    settings = load_ocr_settings({ENV_TESSDATA_DIR: "sub/C:/td"}, _no_which)
+    assert settings.tessdata_dir == os.path.abspath("sub/C:/td")

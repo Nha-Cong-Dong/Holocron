@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 from typing import get_args
@@ -2146,3 +2147,54 @@ def test_background_check_stores_only_under_the_lock_and_drops_a_stale_result() 
     assert not hasattr(application.state, LOCAL_FAILURES_STATE_ATTR)
     request = Request({"type": "http", "app": application})
     assert runtime.get_local_failures(request, must_not_check) == runtime.PENDING_LOCAL_FAILURES
+
+
+def _clear_in_thread(application: FastAPI) -> threading.Thread:
+    thread = threading.Thread(target=runtime.clear_local_capability_check, args=(application,), daemon=True)
+    thread.start()
+    return thread
+
+
+def test_clear_waits_for_the_state_lock_held_by_a_running_check() -> None:
+    """`_run_check` đang ở vùng găng (giữ `old_state.lock`) ⇒ `clear_local_capability_check` phải chờ, không xoá
+    kết quả cũ trước; nhả khoá thì xong với state mới."""
+    application = FastAPI()
+    old_state = runtime.install_local_check_state(application, started=True)
+    stored = MappingProxyType({})
+    setattr(application.state, LOCAL_FAILURES_STATE_ATTR, stored)
+    old_state.lock.acquire()
+    try:
+        thread = _clear_in_thread(application)
+        thread.join(timeout=0.3)
+        assert thread.is_alive()
+        assert getattr(application.state, LOCAL_FAILURES_STATE_ATTR, None) is stored
+        assert getattr(application.state, LOCAL_CHECK_STATE_ATTR) is old_state
+    finally:
+        old_state.lock.release()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert not hasattr(application.state, LOCAL_FAILURES_STATE_ATTR)
+    new_state = getattr(application.state, LOCAL_CHECK_STATE_ATTR)
+    assert isinstance(new_state, runtime.LocalCheckState) and new_state is not old_state
+    assert new_state.started is False
+
+
+def test_concurrent_clears_leave_one_valid_fresh_state() -> None:
+    """Kiểm an toàn (không phân biệt được đột biến): hai lần clear cùng lúc không lỗi, không còn kết quả cũ."""
+    application = FastAPI()
+    old_state = runtime.install_local_check_state(application, started=True)
+    setattr(application.state, LOCAL_FAILURES_STATE_ATTR, MappingProxyType({}))
+    barrier = threading.Barrier(2)
+
+    def clear() -> None:
+        barrier.wait(timeout=5)
+        runtime.clear_local_capability_check(application)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(clear) for _ in range(2)]
+        for future in futures:
+            future.result(timeout=10)  # ném lại exception của luồng nếu có
+    assert not hasattr(application.state, LOCAL_FAILURES_STATE_ATTR)
+    final_state = getattr(application.state, LOCAL_CHECK_STATE_ATTR)
+    assert isinstance(final_state, runtime.LocalCheckState)
+    assert final_state is not old_state and final_state.started is False

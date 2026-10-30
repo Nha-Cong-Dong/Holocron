@@ -220,3 +220,27 @@ def test_tier_eval_rows_record_template_scan_and_content_area() -> None:
     plain = page_row("a.pdf", raw.model_copy(update={"content_image_area_ratio": None}), config)
     assert (plain.content_image_area_ratio, plain.template_scan, plain.template_images) == (0.98, "skipped", 0)
     assert plain.new_reason == "image_covers_page"
+
+
+def test_tier_eval_ocr_table_shows_all_and_non_template_coverage() -> None:
+    config = PdfReaderConfig()
+    row = _row(
+        page_number=3,
+        image_area_ratio=0.98,
+        content_image_area_ratio=0.25,
+        new_tier="ocr",
+        new_reason="image_covers_page",
+        status="failed",
+        review_reasons=[],
+    )
+    text = markdown([_report([row])], config, 120, 0.30, 0.30)
+    header = (
+        "| Trang | non_ws | clean | valid | image_area_ratio | điểm cũ | tầng cũ | tầng mới | lý do | "
+        "content_image_area_ratio |"
+    )
+    assert header in text and "|---|---|---|---|---|---|---|---|---|---|" in text
+    assert "| 3 | 40 | 1.000 | 1.000 | 0.980 | 0.200 | ocr | ocr | image_covers_page | 0.250 |" in text
+    # Dòng mô tả luật mới ghi đúng độ phủ dùng cho hai luật ảnh: độ phủ ảnh không-template.
+    assert f"và độ phủ ảnh không-template ≥ {config.text_sparse_image_min} ⇒ OCR" in text
+    assert f"độ phủ ảnh không-template ≥ {config.text_full_image_min} ⇒ OCR" in text
+    assert "`image_area_ratio ≥" not in text

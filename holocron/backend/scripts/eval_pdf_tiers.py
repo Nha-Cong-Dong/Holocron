@@ -8,7 +8,8 @@ Chạy NGOÀI pytest, không chạy trong CI hay pre-commit; không cần OCR, k
 Với mỗi trang của mỗi PDF trong các thư mục: quyết định theo công thức CŨ (`text_score = min(1, non_ws / 200) ×
 clean × valid`, OCR khi < 0.85; hai hằng ghi cứng ở đây chỉ để so) và theo luật MỚI của app
 (`text_layer.ocr_reason` với `PdfReaderConfig()` mặc định). Báo cáo theo từng thư mục: số trang theo tầng cũ/mới,
-số trang đổi tầng, danh sách trang còn đi OCR kèm lý do và các số `clean`, `valid`, `non_ws`, `image_area_ratio`;
+số trang đổi tầng, danh sách trang còn đi OCR kèm lý do và các số `clean`, `valid`, `non_ws`, `image_area_ratio`
+(độ phủ ảnh toàn bộ) và `content_image_area_ratio` (độ phủ ảnh không-template, cột cuối);
 riêng bảng "lớp chữ ít + ảnh phủ lớn" (lớp chữ sạch, có chữ, ít hơn `--sparse-report-chars` ký tự, ảnh phủ ít nhất
 `--sparse-report-image`) kèm quyết định và độ phủ ảnh, và bảng "trang giữ lớp chữ có ảnh phủ ít nhất
 `--figure-report-image`" kèm `review_reasons`.
@@ -241,9 +242,10 @@ def markdown(
         f"- Cũ: `min(1, non_ws/{OLD_TEXT_FULL_CHARS}) × clean × valid < {OLD_TEXT_LAYER_MIN}` ⇒ OCR.",
         (
             f"- Mới: `non_ws = 0` ⇒ OCR; `clean × valid < {config.text_layer_min}` ⇒ OCR; "
-            f"`non_ws < {config.text_sparse_chars}` và `image_area_ratio ≥ {config.text_sparse_image_min}` ⇒ OCR; "
-            f"`non_ws < {config.text_full_image_max_chars}` và `image_area_ratio ≥ {config.text_full_image_min}` "
-            "⇒ OCR; còn lại giữ lớp chữ."
+            f"`non_ws < {config.text_sparse_chars}` và độ phủ ảnh không-template ≥ {config.text_sparse_image_min} "
+            f"⇒ OCR; `non_ws < {config.text_full_image_max_chars}` và độ phủ ảnh không-template ≥ "
+            f"{config.text_full_image_min} ⇒ OCR; còn lại giữ lớp chữ. Độ phủ ảnh không-template là "
+            "`content_image_area_ratio` (bằng `image_area_ratio` khi tài liệu không có ảnh template)."
         ),
         "",
         "## Tổng",
@@ -262,8 +264,14 @@ def markdown(
         name = Path(report.pdf_dir).name
         still_ocr = [r for r in report.pages if r.new_tier == "ocr"]
         lines += ["", f"## {name}: trang còn đi OCR ({len(still_ocr)})", ""]
-        lines += [header.replace("| tầng mới |", "| tầng mới | lý do |"), "|---|---|---|---|---|---|---|---|---|"]
-        lines += [f"| {r.page_number} | {_row_cells(r)} | {r.new_reason} |" for r in still_ocr]
+        lines += [
+            header.replace("| tầng mới |", "| tầng mới | lý do | content_image_area_ratio |"),
+            "|---|---|---|---|---|---|---|---|---|---|",
+        ]
+        lines += [
+            f"| {r.page_number} | {_row_cells(r)} | {r.new_reason} | {r.content_image_area_ratio:.3f} |"
+            for r in still_ocr
+        ]
         sparse = [r for r in report.pages if is_sparse_on_image(r, config, max_chars, min_image)]
         lines += [
             "",

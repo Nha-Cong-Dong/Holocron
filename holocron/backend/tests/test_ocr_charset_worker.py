@@ -38,6 +38,7 @@ from holocron_core.infrastructure.document_readers.config import (
     TESSDATA_DEFAULT_DIRS,
     OcrSettings,
     PdfReaderConfig,
+    _has_root,
     load_ocr_settings,
 )
 from holocron_core.infrastructure.document_readers.pdf_reader import WorkerPdfReader
@@ -707,12 +708,48 @@ def test_drive_relative_tessdata_dir_becomes_absolute(tmp_path: Path, monkeypatc
     assert load_ocr_settings({ENV_TESSDATA_DIR: "C:td"}, _no_which).tessdata_dir == os.path.abspath("C:td")
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="gạch ngược chỉ là dấu phân cách trên Windows")
 def test_backslash_rooted_tessdata_dir_is_kept_as_is(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Hành vi hiện tại (đổi sang tính từ gốc ổ đã hoãn): dạng bắt đầu bằng gạch ngược coi như đã tuyệt đối, giữ
-    nguyên."""
+    """Windows — hành vi hiện tại (đổi sang tính từ gốc ổ đã hoãn): dạng bắt đầu bằng gạch ngược coi như đã có gốc,
+    giữ nguyên."""
     monkeypatch.chdir(tmp_path)
     rooted = r"\opt\tessdata"
     assert load_ocr_settings({ENV_TESSDATA_DIR: rooted}, _no_which).tessdata_dir == rooted
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="trên Windows gạch ngược là dấu phân cách")
+def test_backslash_tessdata_dir_is_relative_on_posix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """POSIX: `\\` không phải dấu phân cách nên `\\opt\\tessdata` là tên tương đối ⇒ đổi sang tuyệt đối theo cwd."""
+    monkeypatch.chdir(tmp_path)
+    relative = r"\opt\tessdata"
+    expected = os.path.abspath(relative)
+    assert load_ocr_settings({ENV_TESSDATA_DIR: relative}, _no_which).tessdata_dir == expected
+    assert expected != relative
+
+
+@pytest.mark.parametrize(
+    ("value", "sep", "altsep", "rooted"),
+    [
+        (r"\opt\tessdata", "\\", "/", True),  # Windows: gạch ngược là `sep`
+        (r"\opt\tessdata", "/", "\\", True),  # gạch ngược là `altsep`
+        (r"\opt\tessdata", "/", None, False),  # POSIX: tên tương đối
+        ("/opt/tessdata", "/", None, True),
+        ("/opt/tessdata", "\\", "/", True),
+        ("C:/Tesseract/tesseract.exe", "/", None, True),
+        (r"C:\Tesseract\tesseract.exe", "/", None, True),
+        (r"C:\Tesseract\tesseract.exe", "\\", "/", True),
+        ("C:td", "\\", "/", False),
+        (r"opt\tessdata", "\\", "/", False),
+        ("opt/tessdata", "/", None, False),
+        ("", "\\", "/", False),
+    ],
+)
+def test_has_root_depends_on_the_platform_separators_only_for_backslash(
+    value: str, sep: str, altsep: str | None, rooted: bool
+) -> None:
+    """Hàm thuần `_has_root`: `/x` và dạng có ổ đĩa có gốc trên mọi nền tảng; `\\x` chỉ khi gạch ngược là dấu phân
+    cách (`sep` hoặc `altsep`)."""
+    assert _has_root(value, sep=sep, altsep=altsep) is rooted
 
 
 def test_command_with_only_backslash_separators_becomes_absolute(

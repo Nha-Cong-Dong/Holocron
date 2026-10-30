@@ -204,12 +204,25 @@ def _read_env(env: Mapping[str, str], name: str) -> str | None:
 _WINDOWS_DRIVE_PATH = re.compile(r"[A-Za-z]:[\\/]")
 
 
+def _has_root(value: str, *, sep: str, altsep: str | None) -> bool:
+    """Dạng đường dẫn coi như đã có gốc: bắt đầu bằng `/` hoặc có ổ đĩa (`C:/x`, `C:\\x`) trên mọi nền tảng.
+
+    Dạng bắt đầu bằng gạch ngược (`\\x`) chỉ có gốc khi gạch ngược là dấu phân cách của nền tảng (`sep` hoặc
+    `altsep`, tức Windows); trên POSIX nó là tên tương đối. Hàm thuần nhận `sep`/`altsep` làm tham số để kiểm được
+    cả hai nhánh trên mọi máy.
+    """
+    if value[:1] == "/" or _WINDOWS_DRIVE_PATH.match(value):
+        return True
+    backslash_separates = sep == "\\" or (altsep is not None and "\\" in altsep)
+    return backslash_separates and value[:1] == "\\"
+
+
 def _absolute_path(value: str) -> str:
-    """Đường dẫn tương đối đổi sang tuyệt đối theo cwd hiện tại; đã tuyệt đối (kể cả dạng gốc hay có ổ đĩa) giữ nguyên.
+    """Đường dẫn tương đối đổi sang tuyệt đối theo cwd hiện tại; đã tuyệt đối hay có gốc (`_has_root`) giữ nguyên.
 
     Lần kiểm lúc khởi động (cwd của app) và worker (cwd tạm) phải thấy cùng một đường dẫn.
     """
-    if os.path.isabs(value) or value[:1] in ("/", "\\") or _WINDOWS_DRIVE_PATH.match(value):
+    if os.path.isabs(value) or _has_root(value, sep=os.sep, altsep=os.altsep):
         return value
     return os.path.abspath(value)
 

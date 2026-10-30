@@ -2078,3 +2078,71 @@ def test_lazy_check_reraises_non_exception_errors(caplog: pytest.LogCaptureFixtu
         runtime.get_local_failures(request, interrupted)
     assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
     assert not hasattr(app.state, LOCAL_FAILURES_STATE_ATTR)
+
+
+# --------------------------------------------------------------------------- #
+# Đột biến còn sống ở vòng 7: dọn thư mục tạm khi runner ném lỗi, khoá khi lưu kết quả kiểm nền
+# --------------------------------------------------------------------------- #
+
+
+def test_probe_runner_error_propagates_after_removing_the_temporary_cwd(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Runner mặc định ném lỗi ⇒ lỗi lan ra khỏi `probe_secondary_ocr` và thư mục tạm đã bị xoá NGAY (khối `with`).
+
+    Kiểm trong lúc `excinfo` còn giữ traceback (tức frame của `probe_secondary_ocr` và biến cục bộ của nó): bỏ `with`
+    thì đối tượng `TemporaryDirectory` còn sống trong frame đó, thư mục chưa bị dọn ⇒ test đỏ.
+    """
+    seen: list[str] = []
+
+    def crashing(
+        args: Sequence[str],
+        stdin_data: bytes,
+        timeout_s: float,
+        max_output_bytes: int,
+        *,
+        kill_grace_s: float,
+        env: Mapping[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> RunResult:
+        assert cwd is not None and Path(cwd).is_dir()
+        seen.append(cwd)
+        raise RuntimeError("runner hỏng")
+
+    monkeypatch.setattr(secondary_probe, "run_bounded", crashing)
+    with pytest.raises(RuntimeError, match="runner hỏng") as excinfo:
+        probe_secondary_ocr(PdfReaderConfig())
+    [cwd] = seen
+    assert excinfo.tb is not None  # frame của `probe_secondary_ocr` còn được giữ
+    assert not Path(cwd).exists()
+
+
+def test_background_check_stores_only_under_the_lock_and_drops_a_stale_result() -> None:
+    """`_run_check` lưu kết quả dưới `state.lock`: khi khoá đang bị giữ (giả lập `clear_local_capability_check` đang
+    chạy), kết quả chưa được ghi; trong lúc đó app nhận trạng thái mới ⇒ nhả khoá xong, kết quả của lần kiểm cũ bị bỏ,
+    trạng thái mới vẫn `local_check_pending`. Bỏ khoá ⇒ kết quả cũ ghi ngay khi kiểm xong ⇒ test đỏ."""
+    application = FastAPI()
+    old_state = runtime.install_local_check_state(application, started=True)
+    checked = threading.Event()
+
+    def check(config: PdfReaderConfig, /) -> Failures:
+        checked.set()
+        return {"ocr": "ocr_engine_missing", "ocr_cross_check": "secondary_ocr_unavailable"}
+
+    def must_not_check(config: PdfReaderConfig, /) -> Failures:
+        raise AssertionError("trạng thái mới đã khởi chạy kiểm nền: request không tự kiểm")
+
+    thread = threading.Thread(target=runtime._run_check, args=(application, old_state, check, CONFIG), daemon=True)
+    old_state.lock.acquire()
+    try:
+        thread.start()
+        assert checked.wait(5.0)
+        assert not old_state.done.wait(0.2), "kết quả không được ghi khi khoá còn bị giữ"
+        assert not hasattr(application.state, LOCAL_FAILURES_STATE_ATTR)
+        new_state = runtime.install_local_check_state(application, started=True)
+    finally:
+        old_state.lock.release()
+    thread.join(5.0)
+    assert not thread.is_alive() and old_state.done.is_set()
+    assert getattr(application.state, LOCAL_CHECK_STATE_ATTR) is new_state
+    assert not hasattr(application.state, LOCAL_FAILURES_STATE_ATTR)
+    request = Request({"type": "http", "app": application})
+    assert runtime.get_local_failures(request, must_not_check) == runtime.PENDING_LOCAL_FAILURES

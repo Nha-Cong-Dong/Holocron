@@ -52,7 +52,7 @@ _LOGGER = logging.getLogger(__name__)
 # Thông điệp cố định khi cấu hình OCR sai: chỉ nêu tên biến, KHÔNG chép thông điệp của `ConfigError` (có thể chứa
 # giá trị người dùng đặt).
 INVALID_OCR_CONFIG_LOG = (
-    f"không kiểm được OCR lúc khởi động: cấu hình OCR không hợp lệ (xem {ENV_PDF_OCR_PRIMARY}, {ENV_PDF_OCR_SECONDARY})"
+    f"không kiểm được OCR: cấu hình OCR không hợp lệ (xem {ENV_PDF_OCR_PRIMARY}, {ENV_PDF_OCR_SECONDARY})"
 )
 
 
@@ -128,7 +128,7 @@ def secondary_ocr_loads(probe: SecondaryProber, config: PdfReaderConfig) -> bool
     """
     report = probe(config)
     if not report.loaded:
-        _LOGGER.warning("không nạp được lượt đọc thứ hai (RapidOCR) lúc khởi động (%s)", report.error)
+        _LOGGER.warning("không nạp được lượt đọc thứ hai (RapidOCR) (%s)", report.error)
     return report.loaded
 
 

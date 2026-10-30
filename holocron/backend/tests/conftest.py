@@ -167,6 +167,7 @@ def _fake_secondary_runner(
     *,
     kill_grace_s: float,
     env: Mapping[str, str] | None = None,
+    cwd: str | None = None,
 ) -> RunResult:
     """Bộ chạy tiến trình con giả của bộ thăm dò RapidOCR: không dựng tiến trình, báo đã nạp được."""
     return LOADED_REPORT

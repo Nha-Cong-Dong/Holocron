@@ -660,3 +660,70 @@ def test_read_bounded_never_blocks_on_a_fifo(tmp_path: Path) -> None:
     except subprocess.TimeoutExpired:
         pytest.fail("read_bounded bị chặn trên FIFO (thiếu O_NONBLOCK)")
     assert done.stdout.strip() == b"None"
+
+
+# --------------------------------------------------------------------------- #
+# `run_bounded(cwd=...)`: tiến trình con thật chạy trong đúng thư mục được truyền
+# --------------------------------------------------------------------------- #
+
+
+def _cwd_printer_env() -> dict[str, str]:
+    env: dict[str, str] = {"PYTHONIOENCODING": "utf-8"}
+    if sys.platform == "win32":
+        env["SYSTEMROOT"] = os.environ.get("SYSTEMROOT", r"C:\Windows")
+    return env
+
+
+CWD_PRINTER = [sys.executable, "-c", "import os; print(os.getcwd())"]
+
+
+def test_run_bounded_runs_the_child_in_the_given_cwd(tmp_path: Path) -> None:
+    """Tiến trình con in `os.getcwd()`: phải là đúng thư mục truyền vào (bỏ `cwd=` khỏi `Popen` ⇒ test đỏ)."""
+    workdir = tmp_path / "probe-cwd"
+    workdir.mkdir()
+    assert not os.path.samefile(workdir, os.getcwd())
+    result = run_bounded(CWD_PRINTER, b"", 30.0, 4096, env=_cwd_printer_env(), cwd=str(workdir))
+    assert result.status == "ok"
+    printed = result.stdout.decode("utf-8").strip()
+    assert os.path.samefile(printed, workdir)
+    assert os.path.realpath(printed) == os.path.realpath(workdir)
+
+
+def test_run_bounded_with_a_missing_cwd_fails(tmp_path: Path) -> None:
+    """`cwd` không tồn tại ⇒ không dựng được tiến trình con ⇒ "failed" (không ném lỗi ra nơi gọi)."""
+    missing = tmp_path / "khong-ton-tai"
+    result = run_bounded(CWD_PRINTER, b"", 30.0, 4096, env=_cwd_printer_env(), cwd=str(missing))
+    assert result.status == "failed" and result.stdout == b""
+
+
+# --------------------------------------------------------------------------- #
+# Đột biến còn sống ở vòng 6: dạng đường dẫn đặc biệt của cấu hình, tên file có byte NUL
+# --------------------------------------------------------------------------- #
+
+
+def test_drive_relative_tessdata_dir_becomes_absolute(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`C:td` (Windows: tương đối theo ổ C; POSIX: tên thư mục thường) KHÔNG phải dạng có ổ đã tuyệt đối ⇒ abspath."""
+    monkeypatch.chdir(tmp_path)
+    assert load_ocr_settings({ENV_TESSDATA_DIR: "C:td"}, _no_which).tessdata_dir == os.path.abspath("C:td")
+
+
+def test_backslash_rooted_tessdata_dir_is_kept_as_is(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hành vi hiện tại (đổi sang tính từ gốc ổ đã hoãn): dạng bắt đầu bằng gạch ngược coi như đã tuyệt đối, giữ
+    nguyên."""
+    monkeypatch.chdir(tmp_path)
+    rooted = r"\opt\tessdata"
+    assert load_ocr_settings({ENV_TESSDATA_DIR: rooted}, _no_which).tessdata_dir == rooted
+
+
+def test_command_with_only_backslash_separators_becomes_absolute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lệnh chỉ có dấu gạch ngược (dạng Windows) vẫn là đường dẫn tương đối, không phải tên lệnh trần ⇒ abspath."""
+    monkeypatch.chdir(tmp_path)
+    command = r"bin\tesseract.exe"
+    assert load_ocr_settings({ENV_TESSERACT_CMD: command}, _no_which).tesseract_cmd == os.path.abspath(command)
+
+
+def test_read_bounded_returns_none_for_a_path_with_a_nul_byte(tmp_path: Path) -> None:
+    """`os.open` ném `ValueError` (không phải `OSError`) với byte NUL trong đường dẫn ⇒ None, không ném lỗi."""
+    assert read_bounded(tmp_path / "a\x00b", 10) is None

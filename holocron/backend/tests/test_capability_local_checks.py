@@ -8,6 +8,7 @@ gói `rapidocr` GIẢ (đặt trước trong `PYTHONPATH`), không nạp model t
 from __future__ import annotations
 
 import functools
+import inspect
 import io
 import logging
 import os
@@ -15,6 +16,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -23,7 +25,7 @@ from types import MappingProxyType, SimpleNamespace
 from typing import get_args
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -82,6 +84,7 @@ from holocron_core.services.capability_checks import (
     probe_tesseract,
     secondary_ocr_loads,
 )
+from tests import conftest
 
 WITH_SECONDARY = OcrSettings(tesseract_cmd="/opt/tesseract", tessdata_dir="/opt/tessdata", secondary="rapidocr")
 WITHOUT_SECONDARY = OcrSettings(tesseract_cmd="/opt/tesseract", tessdata_dir=None, secondary=None)
@@ -1935,8 +1938,12 @@ def test_probe_runs_in_its_own_temporary_cwd_removed_afterwards(monkeypatch: pyt
     assert not Path(cwd).exists()
 
 
-def test_probe_cleanup_failure_does_not_change_the_result(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Dọn thư mục tạm lỗi (Windows còn giữ) không làm đổi kết quả thăm dò."""
+def test_probe_cleanup_failure_does_not_change_the_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dọn thư mục tạm lỗi (Windows còn giữ) không làm đổi kết quả thăm dò.
+
+    Thư mục `holocron_probe_*` không dọn được nằm dưới `tmp_path` (đặt `tempfile.tempdir`), nên pytest tự dọn nó.
+    """
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     seen: list[tuple[str | None, bool]] = []
     monkeypatch.setattr(secondary_probe, "run_bounded", _cwd_spy(seen, _report_line(LOADED)))
 
@@ -1946,6 +1953,101 @@ def test_probe_cleanup_failure_does_not_change_the_result(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(shutil, "rmtree", failing_rmtree)
     assert probe_secondary_ocr(PdfReaderConfig()) == LOADED
+    [(cwd, existed)] = seen
+    assert cwd is not None and existed
+    assert Path(cwd).parent == tmp_path and Path(cwd).name.startswith("holocron_probe_")
+    assert Path(cwd).is_dir()  # không dọn được: còn lại dưới `tmp_path`
+
+
+def _temporary_directory_failing_with(error: OSError) -> SimpleNamespace:
+    """Thay module `tempfile` của `secondary_probe` (chỉ module đó): tạo `TemporaryDirectory` ném `error`."""
+
+    def create(*args: object, **kwargs: object) -> None:
+        raise error
+
+    return SimpleNamespace(TemporaryDirectory=create)
+
+
+def test_probe_temporary_directory_error_reports_the_error_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Không tạo được thư mục tạm ⇒ không chạy tiến trình con, báo "không nạp được" kèm đúng tên lớp lỗi."""
+    error = PermissionError("C:/Users/secret-user/AppData/Local/Temp")
+    monkeypatch.setattr(secondary_probe, "tempfile", _temporary_directory_failing_with(error))
+
+    def forbidden_runner(*args: object, **kwargs: object) -> RunResult:
+        raise AssertionError("không tạo được thư mục tạm thì không chạy tiến trình con")
+
+    monkeypatch.setattr(secondary_probe, "run_bounded", forbidden_runner)
+    assert probe_secondary_ocr(PdfReaderConfig()) == SecondaryProbeReport(loaded=False, error="PermissionError")
+
+
+@pytest.mark.parametrize("through_lifespan", [True, False], ids=["startup-check", "first-request-check"])
+def test_temporary_directory_error_only_disables_the_cross_check(
+    install_check: Callable[[LocalCapabilityCheck], None],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    through_lifespan: bool,
+) -> None:
+    """Đường kiểm lúc khởi động và nhánh kiểm lười: lỗi tạo thư mục tạm của bộ thăm dò RapidOCR chỉ làm
+    `ocr_cross_check` = `secondary_ocr_unavailable`; `ocr` vẫn khả dụng; đúng một cảnh báo chỉ có tên lớp lỗi."""
+    error = PermissionError("C:/Users/secret-user/AppData/Local/Temp")
+    monkeypatch.setattr(secondary_probe, "tempfile", _temporary_directory_failing_with(error))
+    install_check(
+        functools.partial(
+            check_local_capabilities, lambda: WITH_SECONDARY, _probe_returning(READY), probe_secondary_ocr
+        )
+    )
+    with caplog.at_level(logging.WARNING):
+        if through_lifespan:
+            with TestClient(app) as client:
+                response = client.get("/v1/runtime")
+        else:
+            response = TestClient(app).get("/v1/runtime")
+    assert response.status_code == 200
+    assert _ocr_pair(response.json()) == {
+        "ocr": (True, None),
+        "ocr_cross_check": (False, "secondary_ocr_unavailable"),
+    }
+    warnings = [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING]
+    assert len(warnings) == 1 and "PermissionError" in warnings[0]
+    assert "secret-user" not in caplog.text and "secret-user" not in response.text
+
+
+def test_lazy_and_startup_crash_warnings_name_their_own_path(
+    install_check: Callable[[LocalCapabilityCheck], None], caplog: pytest.LogCaptureFixture
+) -> None:
+    """Bộ kiểm ném lỗi: cảnh báo của kiểm lúc khởi động và của kiểm ở request đầu tiên là hai câu khác nhau; câu của
+    nhánh lười không nói "lúc khởi động"."""
+
+    class BoomError(Exception):
+        pass
+
+    def crashing(config: PdfReaderConfig, /) -> Failures:
+        raise BoomError
+
+    install_check(crashing)
+    with caplog.at_level(logging.WARNING):
+        with TestClient(app) as client:
+            client.get("/v1/runtime")
+        startup = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
+        caplog.clear()
+        TestClient(app).get("/v1/runtime")
+        lazy = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(startup) == 1 and len(lazy) == 1
+    assert "BoomError" in startup[0] and "BoomError" in lazy[0]
+    assert startup[0] != lazy[0]
+    assert "lúc khởi động" in startup[0] and "lúc khởi động" not in lazy[0]
+    assert "request đầu tiên" in lazy[0]
+
+
+def test_conftest_fake_secondary_runner_matches_run_bounded_signature() -> None:
+    """Bản giả `run_bounded` của `conftest.py` phải nhận đúng các tham số của `run_bounded` thật (cùng tên, cùng loại).
+
+    Lệch chữ ký (ví dụ thiếu `cwd`) làm bộ thăm dò mặc định ném `TypeError`, bị nhánh kiểm nuốt thành
+    `ocr_engine_missing` im lặng; test này báo thẳng.
+    """
+    real = inspect.signature(real_run_bounded).parameters
+    fake = inspect.signature(conftest._fake_secondary_runner).parameters
+    assert [(name, param.kind) for name, param in fake.items()] == [(name, param.kind) for name, param in real.items()]
 
 
 def test_probe_with_a_given_runner_creates_no_temporary_directory(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1958,3 +2060,21 @@ def test_probe_with_a_given_runner_creates_no_temporary_directory(monkeypatch: p
         return RunResult(status="ok", stdout=_report_line(LOADED))
 
     assert probe_secondary_ocr(PdfReaderConfig(), runner) == LOADED
+
+
+@pytest.mark.parametrize("error", [SystemExit(3), KeyboardInterrupt()], ids=["system-exit", "keyboard-interrupt"])
+def test_lazy_check_reraises_non_exception_errors(caplog: pytest.LogCaptureFixture, error: BaseException) -> None:
+    """Nhánh kiểm lười: lỗi không thuộc `Exception` lan ra ngoài, không cảnh báo, không lưu kết quả vào `app.state`.
+
+    Gọi thẳng dependency `get_local_failures` (request chưa qua lifespan, chưa có kết quả lưu): qua `TestClient`, lỗi
+    bị anyio bọc trong `BaseExceptionGroup` tuỳ phiên bản thư viện.
+    """
+
+    def interrupted(config: PdfReaderConfig, /) -> Failures:
+        raise error
+
+    request = Request({"type": "http", "app": app})
+    with caplog.at_level(logging.WARNING), pytest.raises(type(error)):
+        runtime.get_local_failures(request, interrupted)
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+    assert not hasattr(app.state, LOCAL_FAILURES_STATE_ATTR)

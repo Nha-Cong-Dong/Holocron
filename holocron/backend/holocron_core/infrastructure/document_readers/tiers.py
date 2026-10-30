@@ -1,9 +1,12 @@
 """Chọn tầng theo điểm và cờ trang, dựng `PageExtraction` (ADR-008 mục 6, 8–11; SPECIFICATION §5.7).
 
 Có tầng 1 (lớp chữ) và tầng 2 (OCR Tesseract, đối chiếu chéo bằng RapidOCR); chưa có tầng 3 và VLM.
-- Trang cần OCR theo `text_layer.needs_ocr_page` (lớp chữ rỗng, lớp chữ rác `text_score < TEXT_LAYER_MIN`, hoặc
-  trang ảnh chỉ có ít chữ; cùng hàm worker dùng) mà worker không gửi kết quả OCR (không có engine) thành `failed`
-  với `OCR_ENGINE_MISSING` (mục 8). Văn bản tầng 1 của trang đó không được trả ra, vì có thể là ký tự rác.
+- Trang cần OCR theo `text_layer.needs_ocr_page` (lớp chữ rỗng, lớp chữ rác `text_score < TEXT_LAYER_MIN`, trang
+  ảnh chỉ có ít chữ (luật (c) `sparse_text_on_image`), hoặc ảnh phủ gần kín với ít chữ (luật (d)
+  `image_covers_page`); cùng hàm worker dùng) mà worker không gửi kết quả OCR (không có engine) thành `failed` với
+  `OCR_ENGINE_MISSING` (mục 8). Văn bản tầng 1 của trang đó không được trả ra, vì có thể là ký tự rác.
+- Độ phủ ảnh của luật (c), (d) và phần ảnh của cờ hình chỉ tính ảnh KHÔNG phải template (ảnh lặp lại cùng nội dung,
+  cùng chỗ trên đa số trang, `template_images`; sửa đổi 2026-10-30), qua `text_layer.content_image_area`.
 - Trang lẽ ra lên tầng 3 nhận `TIER3_UNAVAILABLE` (mục 9): trang PDF số có bảng, công thức hoặc hình; trang scan
   có bảng (lưới toạ độ chữ OCR là việc của tầng 3).
 - Trang OCR: văn bản từ lượt chính, lý do xem lại theo §5.7 (điểm, độ phủ dòng, mực ngoài hộp chữ, hình/công
@@ -30,7 +33,7 @@ from ...domain.documents import (
 from .config import PdfReaderConfig
 from .cross_check import CrossCheckLimitError, CrossCheckLimits, coverage_ratio, cross_check_lines
 from .protocol import RawOcrLine, RawOcrPage, RawPdfPage
-from .text_layer import has_figure, has_formula, has_table, needs_ocr_page, page_text, text_score
+from .text_layer import content_image_area, has_figure, has_formula, has_table, needs_ocr_page, page_text, text_score
 
 NOT_APPLICABLE = CrossCheck(status="not_applicable", secondary_engine=None)
 
@@ -69,10 +72,11 @@ def select_tier(score: float, flags: PageFlags, config: PdfReaderConfig, *, layo
 
 
 def page_flags(raw: RawPdfPage, text: str, config: PdfReaderConfig) -> PageFlags:
+    """Cờ trang PDF số; phần ảnh của cờ hình dùng độ phủ ảnh không phải template (sửa đổi 2026-10-30)."""
     return PageFlags(
         has_table=has_table(raw.lines, raw.width_pt, raw.height_pt, config),
         has_formula=has_formula(text, config),
-        has_figure=has_figure(raw.image_area_ratio, raw.path_area_ratio, config),
+        has_figure=has_figure(content_image_area(raw), raw.path_area_ratio, config),
     )
 
 

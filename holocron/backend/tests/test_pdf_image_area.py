@@ -18,7 +18,8 @@ from holocron_core.infrastructure.document_readers.pdfium_adapter import (
     union_area_ratio,
 )
 from holocron_core.infrastructure.document_readers.protocol import RawPdfPage
-from holocron_core.infrastructure.document_readers.text_layer import PdfBox, ocr_reason
+from holocron_core.infrastructure.document_readers.text_layer import PdfBox, has_figure, ocr_reason, page_text
+from holocron_core.infrastructure.document_readers.tiers import page_flags
 from tests.pdf_samples import Box, Page, Text, build_pdf, write_pdf
 
 CONFIG = PdfReaderConfig()
@@ -142,3 +143,36 @@ def test_union_box_cap_is_pinned() -> None:
 def test_box_order_does_not_change_the_union(boxes: list[PdfBox], expected: float) -> None:
     assert union_area_ratio(boxes, PAGE) == pytest.approx(expected)
     assert union_area_ratio(boxes[::-1], PAGE) == pytest.approx(expected)
+
+
+# --------------------------------------------------------------------------- #
+# Cờ hình ở biên `figure_image_area_min` với hai ảnh chồng nhau: diện tích HỢP, không phải tổng
+# --------------------------------------------------------------------------- #
+
+# Hai dải ngang, mỗi dải phủ 6% trang 612 x 792.
+STRIP_HEIGHT = 792.0 * 0.06
+
+
+@pytest.mark.parametrize(
+    ("second_y", "expected_union", "expected_figure"),
+    [
+        (STRIP_HEIGHT / 2, 0.09, False),  # chồng nửa dải: tổng 0,12 ≥ 0,10 nhưng hợp 0,09 < 0,10
+        (STRIP_HEIGHT * 2 / 3, 0.10, True),  # hợp đúng 0,10 (≥, đúng biên)
+        (STRIP_HEIGHT, 0.12, True),  # rời nhau: hợp = tổng
+    ],
+)
+def test_figure_flag_uses_union_of_overlapping_images(
+    second_y: float, expected_union: float, expected_figure: bool
+) -> None:
+    title = Text(x=72.0, y=700.0, value="Chuong 1 Gioi thieu he dieu hanh va tien trinh")
+    strips = [Box(0.0, 0.0, 612.0, STRIP_HEIGHT), Box(0.0, second_y, 612.0, STRIP_HEIGHT)]
+    raw = _read(build_pdf([Page(texts=[title], images=strips)]))
+    assert raw.image_area_ratio == pytest.approx(expected_union, abs=1e-6)
+    assert raw.content_image_area_ratio is None
+    text = page_text(raw.lines)
+    # Đúng biên dùng chính số đo của trang làm ngưỡng (số thực của PDFium, không giả định làm tròn).
+    config = PdfReaderConfig.model_validate(
+        {**CONFIG.model_dump(), "figure_image_area_min": min(0.10, raw.image_area_ratio) if expected_figure else 0.10}
+    )
+    assert page_flags(raw, text, config).has_figure == expected_figure
+    assert has_figure(raw.image_area_ratio, 0.0, CONFIG) == (raw.image_area_ratio >= 0.10)

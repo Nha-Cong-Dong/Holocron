@@ -293,6 +293,15 @@ def page_text(lines: Sequence[RawTextLine]) -> str:
 OcrReason = Literal["empty_text_layer", "garbled_text_layer", "sparse_text_on_image", "image_covers_page"]
 
 
+def content_image_area(raw: RawPdfPage) -> float:
+    """Độ phủ ảnh dùng cho mọi luật dựa trên độ phủ: diện tích hợp của các ảnh KHÔNG phải template.
+
+    `content_image_area_ratio` là None khi tài liệu không có ảnh template (tài liệu 1–2 trang, lượt quét không `ok`):
+    khi đó là `image_area_ratio`, đúng hành vi cũ.
+    """
+    return raw.image_area_ratio if raw.content_image_area_ratio is None else raw.content_image_area_ratio
+
+
 def ocr_reason(raw: RawPdfPage, config: PdfReaderConfig) -> OcrReason | None:
     """Lý do trang phải OCR cả trang, hoặc None khi dùng lớp chữ (ADR-008 mục 6; sửa đổi 2026-10-29).
 
@@ -306,7 +315,9 @@ def ocr_reason(raw: RawPdfPage, config: PdfReaderConfig) -> OcrReason | None:
       ảnh nhúng phủ ít nhất `text_full_image_min` diện tích trang: nội dung nằm trong ảnh, chữ còn lại chỉ là tiêu
       đề, header, số trang dưới ảnh. Lớp chữ đầy đủ trên ảnh phủ kín (PDF scan đã có lớp chữ) vẫn giữ lớp chữ.
     Thứ tự xét: rỗng, rác, trang ảnh ít chữ, ảnh phủ gần kín. Ít chữ trên trang không có ảnh lớn KHÔNG phải lý do bỏ
-    lớp chữ.
+    lớp chữ. "Ảnh" ở hai luật cuối là ảnh KHÔNG phải template (`content_image_area`, sửa đổi 2026-10-30): ảnh nền,
+    dải tiêu đề lặp lại trên đa số trang không làm trang thành trang ảnh. Hai luật đầu không dùng độ phủ ảnh, nên ảnh
+    template không bao giờ làm trang có lớp chữ rỗng hay rác thoát OCR.
     """
     text = page_text(raw.lines)
     non_ws = non_whitespace_count(text)
@@ -314,9 +325,10 @@ def ocr_reason(raw: RawPdfPage, config: PdfReaderConfig) -> OcrReason | None:
         return "empty_text_layer"
     if text_score(text, config) < config.text_layer_min:
         return "garbled_text_layer"
-    if non_ws < config.text_sparse_chars and raw.image_area_ratio >= config.text_sparse_image_min:
+    image = content_image_area(raw)
+    if non_ws < config.text_sparse_chars and image >= config.text_sparse_image_min:
         return "sparse_text_on_image"
-    if non_ws < config.text_full_image_max_chars and raw.image_area_ratio >= config.text_full_image_min:
+    if non_ws < config.text_full_image_max_chars and image >= config.text_full_image_min:
         return "image_covers_page"
     return None
 
@@ -348,7 +360,11 @@ def has_formula(text: str, config: PdfReaderConfig) -> bool:
 
 
 def has_figure(image_area_ratio: float, path_area_ratio: float, config: PdfReaderConfig) -> bool:
-    """PDF số: ảnh nhúng đủ lớn; diện tích đường vẽ chỉ được tính khi trang có ảnh (không dùng một mình)."""
+    """PDF số: ảnh nhúng đủ lớn; diện tích đường vẽ chỉ được tính khi trang có ảnh (không dùng một mình).
+
+    Nơi gọi truyền độ phủ ảnh KHÔNG phải template (`content_image_area`, sửa đổi 2026-10-30) cho cả ngưỡng
+    `figure_image_area_min` lẫn điều kiện "có ảnh" của nhánh đường vẽ; `path_area_ratio` không trừ gì.
+    """
     if image_area_ratio >= config.figure_image_area_min:
         return True
     return image_area_ratio > 0.0 and path_area_ratio >= config.figure_path_area_min

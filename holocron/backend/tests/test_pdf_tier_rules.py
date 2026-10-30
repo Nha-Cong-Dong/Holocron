@@ -1,9 +1,12 @@
-"""Luật chọn tầng của bộ nhập PDF (ADR-008 mục 6; sửa đổi 2026-10-29, người dùng duyệt).
+"""Luật chọn tầng của bộ nhập PDF (ADR-008 mục 6; sửa đổi 2026-10-29 và 2026-10-30, người dùng duyệt).
 
 Ít chữ KHÔNG phải lý do bỏ lớp chữ. Trang chỉ OCR cả trang khi lớp chữ rỗng, lớp chữ rác (TCVN3/VNI, ký tự rác),
-hoặc trang ảnh: lớp chữ sạch nhưng có dưới `text_sparse_chars` ký tự không trắng trong khi ảnh nhúng phủ ít nhất
-`text_sparse_image_min` diện tích trang. Worker (quyết định OCR) và tiến trình cha (dựng trang) dùng chung
-`needs_ocr_page`; test cuối kiểm hai đường cho cùng kết quả ở đúng ngưỡng biên, trên PDF tự tạo.
+trang ảnh (luật (c): lớp chữ sạch nhưng có dưới `text_sparse_chars` ký tự không trắng trong khi ảnh nhúng phủ ít nhất
+`text_sparse_image_min` diện tích trang), hoặc ảnh phủ gần kín (luật (d): dưới `text_full_image_max_chars` ký tự,
+ảnh phủ ít nhất `text_full_image_min`). Độ phủ ảnh của luật (c), (d) và phần ảnh của cờ hình chỉ tính ảnh KHÔNG phải
+template (ảnh lặp cùng nội dung, cùng chỗ trên đa số trang; chi tiết ở `tests/test_pdf_template_images.py`). Worker
+(quyết định OCR) và tiến trình cha (dựng trang) dùng chung `needs_ocr_page`; các test cuối kiểm hai đường cho cùng
+kết quả ở đúng ngưỡng biên và trên tài liệu có ảnh template, trên PDF tự tạo.
 """
 
 from __future__ import annotations
@@ -615,3 +618,28 @@ def test_eval_tiers_reports_review_reasons_and_full_image_pages(tmp_path: Path) 
     text = eval_pdf_tiers.markdown([report], CONFIG, 120, 0.30, 0.30)
     assert "trang giữ lớp chữ có ảnh ≥ 0.3 (1)" in text
     assert f"| slides.pdf | 1 | 35 | {figure.image_area_ratio * 100:.1f} | text_layer | TIER3_UNAVAILABLE |" in text
+
+
+@pytest.mark.parametrize("scan_templates", [True, False])
+def test_worker_and_parent_agree_on_document_with_template_images(tmp_path: Path, scan_templates: bool) -> None:
+    # Ảnh nền giống nhau trên mọi trang (ảnh template) + một trang có ảnh nội dung phủ gần kín + một trang lớp chữ
+    # rỗng. Có quét: chỉ trang ảnh nội dung và trang rỗng đi OCR; không quét (hành vi cũ): mọi trang đi OCR.
+    background = Box(0.0, 0.0, 612.0, 792.0)
+    pages = [Page(texts=[Text(x=20.0, y=780.0, value=TITLE_64, size=8.0)], images=[background]) for _ in range(6)]
+    pages[2].images.append(Box(0.0, 0.0, 612.0, 776.0))
+    pages[4] = Page(images=[background])
+    path = write_pdf(tmp_path / "template.pdf", pages)
+    config = PdfReaderConfig.model_validate(CONFIG.model_copy(update={"ocr_dpi": 36}).model_dump())
+    emitted: list[BaseModel] = []
+    request = WorkerRequest(path=str(path), page_budget=6, config=config, ocr=SETTINGS, scan_templates=scan_templates)
+    ocr = OcrRunner(primary=StubPrimary(), secondary=None)
+    requests = [PageRequest(page_index=i) for i in range(6)]
+    _pdf_worker.run(request, PdfiumBackend.load(), requests, emitted.append, ocr)
+    ocr_pages = {m.page_index for m in emitted if isinstance(m, OcrStartedMessage)}
+    raws = [m.page for m in emitted if isinstance(m, PageMessage)]
+    for raw in raws:
+        worker_ocr = raw.page_index in ocr_pages
+        assert worker_ocr == needs_ocr_page(raw, config) == (raw.ocr is not None)
+        assert assemble_text_layer_page(raw, DOC_ID, config).tier_used == ("ocr" if worker_ocr else "text_layer")
+    # Trang 3 có hai ảnh cùng phủ gần kín nhưng chỉ ảnh thứ hai là nội dung.
+    assert ocr_pages == ({2, 4} if scan_templates else set(range(6)))

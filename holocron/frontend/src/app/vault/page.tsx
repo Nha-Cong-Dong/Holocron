@@ -1,12 +1,12 @@
 import { Suspense } from "react";
 
-import { Loading } from "@/components/common/LoadState";
-import { VaultView } from "@/components/vault/VaultView";
+import { LegacyRedirect, LegacyRedirectWaiting } from "@/components/shell/LegacyRedirect";
 
+/** Route cũ: chuyển hướng sang tab tương ứng của trang môn (`lib/legacy-routes.ts`). */
 export default function VaultPage() {
   return (
-    <Suspense fallback={<Loading />}>
-      <VaultView />
+    <Suspense fallback={<LegacyRedirectWaiting />}>
+      <LegacyRedirect path="/vault" />
     </Suspense>
   );
 }

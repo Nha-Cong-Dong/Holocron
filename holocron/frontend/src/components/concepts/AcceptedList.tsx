@@ -3,7 +3,7 @@
 import { type RefObject, useEffect, useId, useRef, useState } from "react";
 
 import { Accordion, Button } from "@/components/ui";
-import type { ConceptView } from "@/lib/concept-board";
+import { type ConceptView, renameCloseFocus, rowErrorText } from "@/lib/concept-board";
 import type { ActionGate } from "@/lib/pairs";
 import type { ConceptPair } from "@/types/holocron";
 
@@ -18,6 +18,8 @@ export interface AcceptedEntry {
   /** Vừa thành "đã nhận" ở lần tải này: dòng vào bằng `m-accepted-in`. */
   fresh: boolean;
   error: string | null;
+  /** Lỗi hiện tại thuộc thao tác đổi tên (khung sửa tên gửi lại bằng "Lưu"). */
+  errorIsRename: boolean;
 }
 
 interface AcceptedListProps {
@@ -27,6 +29,8 @@ interface AcceptedListProps {
   onRename: (pair: ConceptPair, term: string) => void;
   onReject: (pair: ConceptPair) => void;
   onRestore: (pair: ConceptPair) => void;
+  /** "Thử lại" trên dòng có lỗi: gửi lại đúng thao tác vừa lỗi (đổi tên, bỏ, nhận lại). */
+  onRetry: (pair: ConceptPair) => void;
 }
 
 function gateReason(gate: ActionGate): string | null {
@@ -47,7 +51,15 @@ function StarIcon() {
  * không tra được đoạn nguồn thì không hiện số trang, không hiện như trích dẫn đã kiểm chứng, nút khoá kèm lý do. Dòng
  * vừa ghi xong mà danh sách chưa đọc lại được thì mọi nút khoá kèm lý do chờ cập nhật.
  */
-export function AcceptedList({ confirmed, rejected, headingRef, onRename, onReject, onRestore }: AcceptedListProps) {
+export function AcceptedList({
+  confirmed,
+  rejected,
+  headingRef,
+  onRename,
+  onReject,
+  onRestore,
+  onRetry,
+}: AcceptedListProps) {
   return (
     <aside className={styles.aside} aria-labelledby="concepts-accepted-title">
       <h2 id="concepts-accepted-title" ref={headingRef} tabIndex={-1} className={styles.h2}>
@@ -58,7 +70,13 @@ export function AcceptedList({ confirmed, rejected, headingRef, onRename, onReje
       ) : (
         <ul className={styles.rows}>
           {confirmed.map((entry) => (
-            <AcceptedRow key={entry.pair.pair_id} entry={entry} onRename={onRename} onReject={onReject} />
+            <AcceptedRow
+              key={entry.pair.pair_id}
+              entry={entry}
+              onRename={onRename}
+              onReject={onReject}
+              onRetry={onRetry}
+            />
           ))}
         </ul>
       )}
@@ -66,7 +84,7 @@ export function AcceptedList({ confirmed, rejected, headingRef, onRename, onReje
         <Accordion summary={`Đã bỏ (${rejected.length})`}>
           <ul className={styles.rows}>
             {rejected.map((entry) => (
-              <RejectedRow key={entry.pair.pair_id} entry={entry} onRestore={onRestore} />
+              <RejectedRow key={entry.pair.pair_id} entry={entry} onRestore={onRestore} onRetry={onRetry} />
             ))}
           </ul>
         </Accordion>
@@ -75,26 +93,64 @@ export function AcceptedList({ confirmed, rejected, headingRef, onRename, onReje
   );
 }
 
+/** Câu lỗi của một dòng, kèm "Thử lại" khi khung sửa tên đóng (khung mở thì nút "Lưu" của khung gửi lại). */
+function RowError({
+  text,
+  editing,
+  renameFailed,
+  onRetry,
+}: {
+  text: string;
+  editing: boolean;
+  renameFailed: boolean;
+  onRetry: () => void;
+}) {
+  return (
+    <div className={styles.actions}>
+      <p className={styles.error} role="alert">
+        {rowErrorText(text, editing, renameFailed)}
+      </p>
+      {!(editing && renameFailed) && (
+        <Button variant="secondary" onClick={onRetry}>
+          Thử lại
+        </Button>
+      )}
+    </div>
+  );
+}
+
 function AcceptedRow({
   entry,
   onRename,
   onReject,
+  onRetry,
 }: {
   entry: AcceptedEntry;
   onRename: (pair: ConceptPair, term: string) => void;
   onReject: (pair: ConceptPair) => void;
+  onRetry: (pair: ConceptPair) => void;
 }) {
   const { pair, view, busy } = entry;
   const ids = useId();
   const [editing, setEditing] = useState(false);
   const returnFocus = useRef(false);
   const editRef = useRef<HTMLButtonElement>(null);
+  const frameRef = useRef<HTMLFieldSetElement>(null);
 
   useEffect(() => {
     if (editing || !returnFocus.current) return;
     returnFocus.current = false;
     editRef.current?.focus();
   }, [editing]);
+
+  // "Lưu" giữ khung tới khi ghi xong: ghi xong thì dòng khoá chờ cập nhật ⇒ đóng khung, focus về "Sửa tên" nếu focus
+  // đang trong khung. Ghi lỗi thì khung vẫn mở, nháp và focus (ô nhập hoặc nút Lưu) giữ nguyên.
+  useEffect(() => {
+    if (!view.stale || !editing) return;
+    const focusInFrame = frameRef.current?.contains(document.activeElement) === true;
+    returnFocus.current = renameCloseFocus(focusInFrame, false) === "edit";
+    setEditing(false);
+  }, [view.stale, editing]);
 
   const editReason = gateReason(view.actions.edit);
   const rejectReason = gateReason(view.actions.reject);
@@ -125,14 +181,12 @@ function AcceptedRow({
               submitLabel="Lưu"
               busy={busy}
               lockedReasonId={editReason !== null ? reasonId : null}
-              onSave={(term) => {
-                setEditing(false);
-                onRename(pair, term);
-              }}
+              onSave={(term) => onRename(pair, term)}
               onCancel={() => {
                 returnFocus.current = true;
                 setEditing(false);
               }}
+              frameRef={frameRef}
             />
           ) : (
             <div className={styles.actions}>
@@ -169,9 +223,12 @@ function AcceptedRow({
             </p>
           )}
           {entry.error !== null && (
-            <p className={styles.error} role="alert">
-              {entry.error}
-            </p>
+            <RowError
+              text={entry.error}
+              editing={editing}
+              renameFailed={entry.errorIsRename}
+              onRetry={() => onRetry(pair)}
+            />
           )}
           <p className={styles.muted}>Sửa hoặc bỏ khái niệm đã nhận sẽ đổi câu ôn tập sinh sau đó.</p>
         </div>
@@ -180,7 +237,15 @@ function AcceptedRow({
   );
 }
 
-function RejectedRow({ entry, onRestore }: { entry: AcceptedEntry; onRestore: (pair: ConceptPair) => void }) {
+function RejectedRow({
+  entry,
+  onRestore,
+  onRetry,
+}: {
+  entry: AcceptedEntry;
+  onRestore: (pair: ConceptPair) => void;
+  onRetry: (pair: ConceptPair) => void;
+}) {
   const { pair, view, busy } = entry;
   const ids = useId();
   const reason = gateReason(view.actions.confirm);
@@ -214,9 +279,7 @@ function RejectedRow({ entry, onRestore }: { entry: AcceptedEntry; onRestore: (p
         </p>
       )}
       {entry.error !== null && (
-        <p className={styles.error} role="alert">
-          {entry.error}
-        </p>
+        <RowError text={entry.error} editing={false} renameFailed={false} onRetry={() => onRetry(pair)} />
       )}
     </li>
   );

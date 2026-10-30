@@ -1,12 +1,12 @@
 import { Suspense } from "react";
 
-import { Loading } from "@/components/common/LoadState";
-import { PairsView } from "@/components/pairs/PairsView";
+import { LegacyRedirect, LegacyRedirectWaiting } from "@/components/shell/LegacyRedirect";
 
+/** Route cũ: chuyển hướng sang tab tương ứng của trang môn (`lib/legacy-routes.ts`). */
 export default function PairsPage() {
   return (
-    <Suspense fallback={<Loading />}>
-      <PairsView />
+    <Suspense fallback={<LegacyRedirectWaiting />}>
+      <LegacyRedirect path="/pairs" />
     </Suspense>
   );
 }

@@ -18,6 +18,11 @@
   background: var(--surface-2);
 }
 
+/* `hideList` (làm bài toàn màn): `display: flex` ở trên đè luật `[hidden]` của trình duyệt nên ẩn tường minh. */
+.list[hidden] {
+  display: none;
+}
+
 .tab {
   position: relative;
   z-index: 1;

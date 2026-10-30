@@ -106,21 +106,21 @@ export interface ClassifyOptions {
 
 /** Gợi ý ngắn theo mã lý do; không nêu tên khả năng nội bộ hay giá trị cấu hình. */
 const CAPABILITY_REASON_HINT_VI: Record<CapabilityReason, string> = {
-  llm_not_configured: "cần LLM, mà backend chưa được cấu hình LLM.",
-  vlm_not_configured: "cần mô hình đọc ảnh (VLM), mà backend chưa được cấu hình VLM.",
-  ocr_engine_missing: "cần Tesseract, mà máy chưa cài hoặc backend không chạy được Tesseract.",
+  llm_not_configured: "cần mô hình ngôn ngữ (LLM), mà Holocron chưa được cấu hình LLM.",
+  vlm_not_configured: "cần mô hình đọc ảnh (VLM), mà Holocron chưa được cấu hình VLM.",
+  ocr_engine_missing: "cần Tesseract, mà máy chưa cài hoặc Holocron không chạy được Tesseract.",
   ocr_language_missing: "Tesseract còn thiếu dữ liệu tiếng Việt (vie.traineddata).",
-  secondary_ocr_disabled: "lượt đọc thứ hai đang tắt trong cấu hình backend.",
+  secondary_ocr_disabled: "lượt đọc thứ hai đang tắt trong cấu hình của Holocron.",
   not_implemented: "bản đang chạy chưa có tính năng này.",
 };
 
 /** Câu chung khi `CapabilityError` mang mã lý do frontend chưa biết. */
 const CAPABILITY_GENERIC_VI =
-  "Tính năng này chưa sẵn sàng: backend chưa được cấu hình hoặc máy còn thiếu thành phần cần thiết. Xem màn Bắt đầu để biết khả năng nào đang tắt.";
+  "Tính năng này chưa sẵn sàng: Holocron chưa được cấu hình hoặc máy còn thiếu thành phần cần thiết. Xem Cài đặt › Máy của bạn để biết khả năng nào đang tắt.";
 
 const MESSAGES: Record<Exclude<ErrorKind, "network" | "capability" | "blocking">, string> = {
-  server: "Không kết nối được backend, hoặc backend vừa gặp lỗi. Kiểm tra backend đang chạy rồi thử lại.",
-  llm_upstream: "Dịch vụ LLM đang lỗi tạm thời. Thử lại sau ít phút.",
+  server: "Không kết nối được Holocron, hoặc Holocron vừa gặp lỗi. Kiểm tra Holocron đang chạy rồi thử lại.",
+  llm_upstream: "Dịch vụ mô hình ngôn ngữ đang lỗi tạm thời. Thử lại sau ít phút.",
   version_conflict: "Dữ liệu đã được sửa ở nơi khác hoặc không còn sửa được. Tải lại bản mới nhất rồi làm lại.",
   state_conflict: "Thao tác này không còn phù hợp với trạng thái hiện tại. Tải lại để xem trạng thái mới nhất.",
   duplicate: "Dữ liệu này đã có.",
@@ -130,7 +130,7 @@ const MESSAGES: Record<Exclude<ErrorKind, "network" | "capability" | "blocking">
   unsupported_media: "Định dạng file không được hỗ trợ.",
   validation: "Dữ liệu gửi lên không hợp lệ. Kiểm tra lại các ô đã nhập.",
   not_found: "Không tìm thấy dữ liệu yêu cầu. Có thể nó đã bị xoá.",
-  forbidden: "Backend từ chối yêu cầu từ cửa sổ này. Khởi động lại ứng dụng rồi thử lại.",
+  forbidden: "Holocron từ chối yêu cầu từ cửa sổ này. Khởi động lại ứng dụng rồi thử lại.",
   bad_request: "Thao tác không hợp lệ với trạng thái hiện tại.",
   busy: "Kho dữ liệu đang bận. Thử lại sau giây lát.",
   unknown: "Đã có lỗi không mong muốn. Thử lại sau.",
@@ -184,12 +184,12 @@ const CONTEXT_MESSAGES: Record<ErrorContext, Partial<Record<ContextualKind, stri
     validation: `Chưa soạn được câu hỏi vì yêu cầu không hợp lệ: số câu mỗi lần phải từ ${MIN_TWIN_COUNT} đến ${MAX_TWIN_COUNT}. Tạo đề khác rồi thử lại.`,
   },
   essay_grade: {
-    not_found: "Không tìm thấy câu hỏi này ở backend. Có thể backend vừa khởi động lại; tạo lại bộ đề rồi làm lại.",
+    not_found: "Không tìm thấy câu hỏi này. Có thể Holocron vừa khởi động lại; tạo lại bộ đề rồi làm lại.",
     validation:
-      "Chưa chấm được: câu trả lời đang trống, dài quá giới hạn của backend, hoặc câu này không phải câu tự luận. Sửa câu trả lời rồi nộp lại.",
+      "Chưa chấm được: câu trả lời đang trống, dài quá giới hạn cho phép, hoặc câu này không phải câu tự luận. Sửa câu trả lời rồi nộp lại.",
   },
   vault_source: {
-    not_found: "Backend đang chạy chưa cho xem văn bản nguồn trong kho tri thức. Trích dẫn ở trên vẫn là nguyên văn.",
+    not_found: "Bản Holocron đang chạy chưa cho xem đoạn văn nguồn trong tài liệu. Trích dẫn ở trên vẫn là nguyên văn.",
   },
   vault_browse: {
     not_found:
@@ -202,16 +202,16 @@ const CONTEXT_MESSAGES: Record<ErrorContext, Partial<Record<ContextualKind, stri
   },
   document_review: {
     not_found:
-      "Không tìm thấy tài liệu hoặc trang này (có thể đã bị xoá), hoặc backend đang chạy chưa hỗ trợ sửa và xác nhận trang.",
+      "Không tìm thấy tài liệu hoặc trang này (có thể đã bị xoá), hoặc bản Holocron đang chạy chưa hỗ trợ sửa và xác nhận trang.",
     validation: `Nội dung sửa không hợp lệ: mỗi dòng tối đa ${LINE_TEXT_MAX_CHARS} ký tự. Rút ngắn dòng rồi lưu lại.`,
   },
   page_confirm: {
     not_found:
-      "Không tìm thấy tài liệu hoặc trang này (có thể đã bị xoá), hoặc backend đang chạy chưa hỗ trợ xác nhận trang.",
+      "Không tìm thấy tài liệu hoặc trang này (có thể đã bị xoá), hoặc bản Holocron đang chạy chưa hỗ trợ xác nhận trang.",
   },
   document_confirm: {
     not_found:
-      "Không tìm thấy tài liệu này (có thể đã bị xoá), hoặc backend đang chạy chưa hỗ trợ xác nhận cả tài liệu.",
+      "Không tìm thấy tài liệu này (có thể đã bị xoá), hoặc bản Holocron đang chạy chưa hỗ trợ xác nhận cả tài liệu.",
   },
   vault_labels: {
     not_found:
@@ -219,11 +219,11 @@ const CONTEXT_MESSAGES: Record<ErrorContext, Partial<Record<ContextualKind, stri
     validation: `Nhãn chưa hợp lệ. Mã chương có dạng ch1 hoặc ch2.1; mỗi khoá dạng bài gồm ít nhất ba phần chữ thường, chữ số hoặc gạch dưới nối bằng dấu chấm, tối đa ${TOPIC_KEYS_MAX} khoá, mỗi khoá tối đa ${TOPIC_KEY_MAX_CHARS} ký tự.`,
   },
   document_delete: {
-    not_found: "Tài liệu này không còn ở backend (có thể đã bị xoá). Tải lại danh sách tài liệu.",
+    not_found: "Tài liệu này không còn trong môn (có thể đã bị xoá). Tải lại danh sách tài liệu.",
   },
   subject_create: {
     not_found:
-      "Backend đang chạy chưa hỗ trợ tạo môn riêng. Môn sẽ tự được tạo khi bạn nhập tài liệu đầu tiên với mã môn đó.",
+      "Bản Holocron đang chạy chưa hỗ trợ tạo môn riêng. Môn sẽ tự được tạo khi bạn nhập tài liệu đầu tiên với mã môn đó.",
     validation: "Mã môn hoặc tên môn không hợp lệ. Mã môn gồm 2–6 chữ cái in hoa rồi 2–4 chữ số, ví dụ MAU101.",
   },
   pairs_list: {
@@ -500,7 +500,7 @@ function classifyConflict(detail: unknown, options: ClassifyOptions): UiError {
 }
 
 const RUNTIME_NOT_FOUND_VI =
-  "Địa chỉ đã cấu hình không trả lời như backend Holocron (có thể nhầm địa chỉ, hoặc backend quá cũ). Kiểm tra backend đang chạy đúng địa chỉ rồi thử lại.";
+  "Địa chỉ đã cấu hình không trả lời như Holocron (có thể nhầm địa chỉ, hoặc bản Holocron đang chạy quá cũ). Kiểm tra Holocron đang chạy đúng địa chỉ rồi thử lại.";
 
 /**
  * Địa chỉ backend để hiển thị: bỏ phần tên đăng nhập và mật khẩu (`user:pass@`) nếu có, để không in thông tin xác
@@ -514,7 +514,7 @@ export function displayBase(base: string): string {
 export function classifyNetworkError(base: string): UiError {
   const where = base === "" ? "cùng địa chỉ với giao diện" : displayBase(base);
   return withDiagnostic(
-    build("network", `Không kết nối được backend ở ${where}. Kiểm tra backend đã chạy chưa rồi thử lại.`),
+    build("network", `Không kết nối được Holocron ở ${where}. Kiểm tra Holocron đã chạy chưa rồi thử lại.`),
     "NETWORK · fetch_failed",
   );
 }

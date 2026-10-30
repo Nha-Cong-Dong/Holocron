@@ -12,7 +12,8 @@ import type { DocumentStatusView, DocumentSummaryView, DocumentView, PageSummary
 import type { UiError } from "@/lib/errors";
 import { readingLines } from "@/lib/home-cards";
 import { createLatestCounter } from "@/lib/latest";
-import { type VaultHrefFor, vaultHref } from "@/lib/vault";
+import { vaultLocationTarget } from "@/lib/legacy-routes";
+import type { VaultHrefFor } from "@/lib/vault";
 
 import type { DocumentsSnapshot } from "./DocumentsPanel";
 import { PageStrip } from "./PageStrip";
@@ -37,12 +38,12 @@ function formatUploadedAt(value: string): string {
 interface DocumentListProps {
   snapshot: DocumentsSnapshot;
   onChanged: () => void;
-  /** Dựng địa chỉ xem lại trang; mặc định `vaultHref` (`/vault?doc=&page=`). */
+  /** Dựng địa chỉ xem lại trang; mặc định là tab Tài liệu của trang môn (`vaultLocationTarget`). */
   hrefFor?: VaultHrefFor;
 }
 
 /** Danh sách tài liệu của môn (mới nhất trước, như backend trả), trạng thái bằng chữ và số đếm do backend đếm. */
-export function DocumentList({ snapshot, onChanged, hrefFor = vaultHref }: DocumentListProps) {
+export function DocumentList({ snapshot, onChanged, hrefFor = vaultLocationTarget }: DocumentListProps) {
   return (
     <ul className={styles.docList}>
       {snapshot.documents.map((document) => (

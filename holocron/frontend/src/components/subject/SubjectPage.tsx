@@ -14,6 +14,7 @@ import { SkyView } from "@/components/sky/SkyView";
 import { api } from "@/lib/api";
 import type { UiError } from "@/lib/errors";
 import type { PairsLocation } from "@/lib/pairs";
+import { practiceFullscreen } from "@/lib/quiz";
 import { writeRecentSubject } from "@/lib/recent-subject";
 import { buildSkyLayout } from "@/lib/sky";
 import { EMPTY_SKY_TRACK, type SkyTrack, trackedGains, trackSkyLayout } from "@/lib/sky-gains";
@@ -25,8 +26,11 @@ import {
   skyLoadReducer,
 } from "@/lib/sky-load";
 import {
+  type PracticeSessionKind,
+  parsePracticeSession,
   parseSubjectDocumentLocation,
   parseSubjectLocation,
+  practiceSessionHref,
   type SubjectDocumentLocation,
   subjectConceptsHref,
   subjectDocumentsHref,
@@ -59,18 +63,31 @@ const CONCEPTS_TAB_ID = `${TABS_ID_PREFIX}-tab-${TAB_ITEMS.findIndex((item) => i
  * kiến thức của môn, rồi ba phần Tài liệu · Khái niệm · Ôn tập. Mã môn đọc từ địa chỉ và truyền làm prop cho từng
  * phần; khung được báo qua `selectSubject` (và mã được lưu làm môn gần nhất cho trang chủ) để hộp lệnh và các route cũ
  * biết môn mở gần nhất. Phần Tài liệu (`DocumentsTab`, màn 4–6) đọc thêm `?doc=&page=` để xem lại một tài liệu ngay
- * trong tab; xem lại xong thì sang tab Khái niệm. Phải nằm trong
- * `<Suspense>` vì đọc `useSearchParams()`.
+ * trong tab; xem lại xong thì sang tab Khái niệm. Khi tab Ôn tập đang làm đề hoặc xem kết quả (màn 9–10), trang ẩn
+ * bầu trời và hàng tab (tab vẫn mounted) để bài làm chiếm cả màn; phần đó do tab Ôn tập báo lên (nguồn chân lý) và chỉ
+ * được phản chiếu lên địa chỉ bằng `&session=`. Phải nằm trong `<Suspense>` vì đọc `useSearchParams()`.
  */
 export function SubjectPage() {
   const params = useSearchParams();
   const location = parseSubjectLocation(params);
   const documentLocation = parseSubjectDocumentLocation(params);
+  const urlSession = parsePracticeSession(params);
   const { subjects, reloadSubjects, selectSubject } = useShell();
   const code = location.code;
   // Lượt tải lại bầu trời do tab Khái niệm yêu cầu (nhận, bỏ, tạo khái niệm): nối `SubjectPanes` với `SubjectSky`.
   const [skyReloads, setSkyReloads] = useState(0);
   const onConceptsChanged = useCallback(() => setSkyReloads((count) => count + 1), []);
+  // Phần đang mở của tab Ôn tập (làm đề, xem kết quả) do tab đó báo lên. Đổi tab thì bỏ (tab Ôn tập mở lại từ đầu).
+  const [session, setSession] = useState<{ tab: SubjectTab; kind: PracticeSessionKind | null }>({
+    tab: location.tab,
+    kind: null,
+  });
+  if (session.tab !== location.tab) setSession({ tab: location.tab, kind: null });
+  const onSessionChange = useCallback(
+    (kind: PracticeSessionKind | null) => setSession((previous) => ({ ...previous, kind })),
+    [],
+  );
+  const fullscreen = practiceFullscreen(location.tab, session.tab === location.tab ? session.kind : null);
 
   useEffect(() => {
     if (code === null) return;
@@ -115,7 +132,7 @@ export function SubjectPage() {
         </h1>
         <p className={styles.meta}>Mã môn {view.code}</p>
       </header>
-      {canShowSky(view) && (
+      {canShowSky(view) && !fullscreen && (
         <SubjectSky
           key={`sky-${view.code}`}
           code={view.code}
@@ -133,6 +150,9 @@ export function SubjectPage() {
           listError={view.kind === "list_unavailable" ? view.error : null}
           onReloadSubjects={reloadSubjects}
           onConceptsChanged={onConceptsChanged}
+          urlSession={urlSession}
+          onSessionChange={onSessionChange}
+          fullscreen={fullscreen}
         />
       )}
     </section>
@@ -234,6 +254,12 @@ interface SubjectPanesProps {
   onReloadSubjects: () => void;
   /** Tab Khái niệm vừa đổi danh sách khái niệm: tải lại bầu trời. */
   onConceptsChanged: () => void;
+  /** `&session=` trên địa chỉ (chỉ phản chiếu). */
+  urlSession: PracticeSessionKind | null;
+  /** Tab Ôn tập báo phần đang mở (làm đề, kết quả, hoặc `null` là thiết lập đề). */
+  onSessionChange: (session: PracticeSessionKind | null) => void;
+  /** Đang làm bài toàn màn: ẩn hàng tab, giữ nội dung. */
+  fullscreen: boolean;
 }
 
 function SubjectPanes({
@@ -243,8 +269,20 @@ function SubjectPanes({
   listError,
   onReloadSubjects,
   onConceptsChanged,
+  urlSession,
+  onSessionChange,
+  fullscreen,
 }: SubjectPanesProps) {
   const router = useRouter();
+  // Tab Ôn tập là nguồn chân lý; địa chỉ chỉ phản chiếu bằng `replace` (không thêm mục lịch sử, Back rời trang môn như
+  // trước). Mở lại địa chỉ có `session` mà đề không còn trong bộ nhớ: tab báo `null` ngay khi mở ⇒ bỏ `session`.
+  const onPracticeSession = useCallback(
+    (next: PracticeSessionKind | null) => {
+      onSessionChange(next);
+      if (next !== urlSession) router.replace(practiceSessionHref(code, next), { scroll: false });
+    },
+    [onSessionChange, urlSession, router, code],
+  );
   const conceptsHref = useCallback(
     (pairsLocation: Partial<PairsLocation>) => subjectConceptsHref(code, pairsLocation),
     [code],
@@ -266,6 +304,7 @@ function SubjectPanes({
       items={TAB_ITEMS}
       selected={tab}
       onSelect={(next) => router.push(subjectHref(code, next))}
+      hideList={fullscreen}
     >
       {tab === "documents" && (
         <DocumentsTab
@@ -286,7 +325,12 @@ function SubjectPanes({
       )}
       {tab === "practice" &&
         (listError === null ? (
-          <PracticeView subjectCode={code} hrefFor={conceptsHref} />
+          <PracticeView
+            subjectCode={code}
+            hrefFor={conceptsHref}
+            urlSession={urlSession}
+            onSessionChange={onPracticeSession}
+          />
         ) : (
           <SubjectsListNotice error={listError} onRetry={onReloadSubjects} />
         ))}
@@ -308,7 +352,7 @@ function SubjectsListNotice({ error, onRetry }: { error: UiError; onRetry: () =>
   }
   return (
     <EmptyState title="Chưa tải được danh sách môn nên chưa tạo được đề ôn tập.">
-      <p>Kiểm tra kết nối ở thanh trạng thái phía dưới, rồi tải lại danh sách môn.</p>
+      <p>Kiểm tra kết nối ở Cài đặt › Máy của bạn, rồi tải lại danh sách môn.</p>
       <button type="button" className={`m-btn-secondary ${styles.retry}`} onClick={onRetry}>
         Thử lại
       </button>

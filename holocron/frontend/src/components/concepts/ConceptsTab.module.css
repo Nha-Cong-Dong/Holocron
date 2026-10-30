@@ -382,6 +382,45 @@
   line-height: 30px;
 }
 
+/* Văn bản của một đoạn để bôi định nghĩa (`PassageText`): một text node, giữ xuống dòng. */
+.preview {
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-3);
+  color: var(--ink-2);
+  font-family: var(--font-ui);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.pageLabel {
+  color: var(--cite);
+  font-weight: var(--fw-semibold);
+}
+
+.passageText {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 3px solid var(--cite);
+  border-radius: var(--r-sm);
+  background: var(--cite-soft);
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  cursor: text;
+}
+
+.passageText::selection {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
 .sentences {
   margin: 0;
   padding: 0;

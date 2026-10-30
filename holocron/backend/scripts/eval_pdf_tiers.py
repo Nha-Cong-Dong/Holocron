@@ -18,6 +18,12 @@ không có engine OCR: `tiers.assemble_text_layer_page` (cờ `page_flags`, ch�
 `layout_available=False` như app mặc định). Trang đi OCR thì thành `failed` (`OCR_ENGINE_MISSING`), `review_reasons`
 rỗng: lý do xem lại của trang đó do tầng 2 quyết, script không gọi OCR.
 
+Ảnh template (sửa đổi 2026-10-30): mỗi PDF được quét ảnh template bằng đúng hàm của worker
+(`template_images.scan_template_images`) rồi đọc từng trang với tập ảnh template đó, nên luật chọn tầng và cờ dùng độ
+phủ ảnh KHÔNG phải template như app. Mỗi dòng ghi thêm `content_image_area_ratio`, trạng thái quét và số ảnh
+template của tài liệu; báo cáo thêm (ở cuối, không đổi các bảng cũ) bảng ảnh template theo file và bảng "trang giữ lớp
+chữ có ảnh không phải template phủ ít nhất `--figure-report-image`".
+
 Kết quả chỉ gồm số liệu (không chép văn bản tài liệu), ghi ra `results.json` và `results.md`; script từ chối ghi
 vào trong repo. Script đọc PDF ngay trong tiến trình này (không qua worker có giới hạn), nên chỉ dùng cho tài liệu
 đánh giá của chính người chạy; vẫn áp trần kích thước và số trang của app (`max_bytes`, `max_pages`), và PDF hỏng chỉ
@@ -32,15 +38,17 @@ import io
 import json
 import sys
 import unicodedata
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 from holocron_core.domain.documents import PageExtraction
 from holocron_core.infrastructure.document_readers.config import PdfReaderConfig
 from holocron_core.infrastructure.document_readers.pdfium_adapter import PdfiumBackend
-from holocron_core.infrastructure.document_readers.protocol import RawPdfPage
+from holocron_core.infrastructure.document_readers.protocol import RawPdfPage, TemplateScan
+from holocron_core.infrastructure.document_readers.template_images import TemplateFilter, scan_template_images
 from holocron_core.infrastructure.document_readers.text_layer import (
     clean_char_ratio,
+    content_image_area,
     non_whitespace_count,
     ocr_reason,
     page_text,
@@ -76,6 +84,11 @@ class PageRow:
     has_figure: bool
     has_table: bool
     has_formula: bool
+    # Ảnh template (sửa đổi 2026-10-30): độ phủ ảnh không phải template của trang, trạng thái quét và số ảnh
+    # template của cả tài liệu (giống nhau ở mọi dòng của cùng file).
+    content_image_area_ratio: float = 0.0
+    template_scan: str = "skipped"
+    template_images: int = 0
 
 
 @dataclass
@@ -99,6 +112,7 @@ def app_page(raw: RawPdfPage, config: PdfReaderConfig) -> PageExtraction:
 
 
 def page_row(file_name: str, raw: RawPdfPage, config: PdfReaderConfig) -> PageRow:
+    """Dòng số liệu của một trang (trạng thái quét ảnh template ghi sau bằng `with_template_scan`)."""
     text = unicodedata.normalize("NFC", page_text(raw.lines))
     old_score = old_text_score(text)
     reason = ocr_reason(raw, config)
@@ -120,7 +134,13 @@ def page_row(file_name: str, raw: RawPdfPage, config: PdfReaderConfig) -> PageRo
         has_figure=page.has_figure,
         has_table=page.has_table,
         has_formula=page.has_formula,
+        content_image_area_ratio=content_image_area(raw),
     )
+
+
+def with_template_scan(row: PageRow, scan: TemplateScan) -> PageRow:
+    """Ghi trạng thái quét và số ảnh template của tài liệu vào dòng của một trang."""
+    return replace(row, template_scan=scan.status, template_images=len(scan.keys))
 
 
 def is_sparse_on_image(row: PageRow, config: PdfReaderConfig, max_chars: int, min_image: float) -> bool:
@@ -132,6 +152,11 @@ def is_sparse_on_image(row: PageRow, config: PdfReaderConfig, max_chars: int, mi
 def is_text_layer_with_image(row: PageRow, min_image: float) -> bool:
     """Trang cho bảng "giữ lớp chữ có ảnh lớn": tầng mới là lớp chữ, ảnh phủ ít nhất `min_image`."""
     return row.new_tier == "text_layer" and row.image_area_ratio >= min_image
+
+
+def is_text_layer_with_content_image(row: PageRow, min_image: float) -> bool:
+    """Trang cho bảng "giữ lớp chữ có ảnh không phải template lớn": tầng mới là lớp chữ, ảnh đó phủ ≥ `min_image`."""
+    return row.new_tier == "text_layer" and row.content_image_area_ratio >= min_image
 
 
 def is_unflagged_figure(row: PageRow) -> bool:
@@ -171,6 +196,40 @@ def _figure_cells(row: PageRow) -> str:
     return (
         f"{row.file} | {row.page_number} | {row.non_ws} | {row.image_area_ratio * 100:.1f} | {row.new_tier} | {reasons}"
     )
+
+
+def _content_figure_cells(row: PageRow) -> str:
+    reasons = ", ".join(row.review_reasons) or "(rỗng)"
+    return (
+        f"{row.file} | {row.page_number} | {row.non_ws} | {row.image_area_ratio * 100:.1f} | "
+        f"{row.content_image_area_ratio * 100:.1f} | {row.new_tier} | {reasons}"
+    )
+
+
+def _template_lines(report: DirReport, figure_image: float) -> list[str]:
+    """Hai bảng thêm ở cuối báo cáo: ảnh template theo file, trang giữ lớp chữ có ảnh không-template lớn."""
+    name = Path(report.pdf_dir).name
+    lines = [
+        "",
+        f"## {name}: ảnh template theo file",
+        "",
+        "| File | Trạng thái quét | Số ảnh template |",
+        "|---|---|---|",
+    ]
+    for file_name in report.files:
+        first = next((r for r in report.pages if r.file == file_name), None)
+        if first is not None:
+            lines.append(f"| {file_name} | {first.template_scan} | {first.template_images} |")
+    rows = [r for r in report.pages if is_text_layer_with_content_image(r, figure_image)]
+    lines += [
+        "",
+        f"## {name}: trang giữ lớp chữ có ảnh không phải template ≥ {figure_image} ({len(rows)})",
+        "",
+        "| File | Trang | non_ws | % ảnh | % ảnh không-template | tier | review_reasons |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    lines += [f"| {_content_figure_cells(r)} |" for r in rows]
+    return lines
 
 
 def markdown(
@@ -226,6 +285,8 @@ def markdown(
         if report.skipped:
             lines += ["", f"## {name}: file bỏ qua", ""]
             lines += [f"- {item['file']}: {item['reason']}" for item in report.skipped]
+    for report in reports:
+        lines += _template_lines(report, figure_image)
     return "\n".join(lines) + "\n"
 
 
@@ -235,7 +296,8 @@ def evaluate_file(backend: PdfiumBackend, path: Path, config: PdfReaderConfig) -
     Áp cùng trần của app (`config.max_bytes`, `config.max_pages`): file được đọc MỘT lần, tối đa `max_bytes + 1`
     byte, rồi mới kiểm kích thước. File không đọc được hoặc PDF hỏng giữa chừng (PDFium báo lỗi, dữ liệu sai kiểu,
     trang vượt giới hạn của protocol) chỉ làm bỏ qua file đó, không dừng cả lượt đo. Chỉ bắt lỗi quanh phần đọc và mở
-    PDF; lỗi khi tính dòng số liệu (`page_row`) là lỗi của script, không bị nuốt.
+    PDF; lỗi khi tính dòng số liệu (`page_row`) là lỗi của script, không bị nuốt. Ảnh template được quét bằng
+    đúng hàm của worker trước khi đọc trang; lỗi của lượt quét không làm bỏ qua file (lượt quét tự trả `error`).
     """
     try:
         with path.open("rb") as handle:
@@ -252,11 +314,17 @@ def evaluate_file(backend: PdfiumBackend, path: Path, config: PdfReaderConfig) -
             count = document.page_count()
             if count > config.max_pages:
                 return f"TOO_MANY_PAGES: {count} > {config.max_pages} trang"
-            raws = [document.read_page(index) for index in range(count)]
+            scan = scan_template_images(document, count, config)
+            templates = TemplateFilter.from_scan(scan, config)
+            # Không có ảnh template thì đọc trang đúng như trước (như `_pdf_worker._read_one`).
+            raws = [
+                document.read_page(index) if templates is None else document.read_page(index, templates)
+                for index in range(count)
+            ]
     # `PdfiumError` và `PdfiumDataError` là `RuntimeError`; `ValidationError` của pydantic là `ValueError`.
     except (RuntimeError, ValueError, OSError, TypeError, KeyError, IndexError) as exc:
         return f"READ_FAILED: {type(exc).__name__}"
-    return [page_row(path.name, raw, config) for raw in raws]
+    return [with_template_scan(page_row(path.name, raw, config), scan) for raw in raws]
 
 
 def evaluate_dir(backend: PdfiumBackend, pdf_dir: Path, config: PdfReaderConfig) -> DirReport:
@@ -301,6 +369,9 @@ def main(argv: list[str] | None = None) -> int:
             "text_full_image_min": config.text_full_image_min,
             "text_full_image_max_chars": config.text_full_image_max_chars,
             "figure_image_area_min": config.figure_image_area_min,
+            "template_image_min_page_ratio": config.template_image_min_page_ratio,
+            "template_image_min_pages": config.template_image_min_pages,
+            "template_image_bbox_step": config.template_image_bbox_step,
         },
         "dirs": [{"summary": summary(report), **asdict(report)} for report in reports],
     }

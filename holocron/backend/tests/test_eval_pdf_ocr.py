@@ -3,19 +3,31 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
 from holocron_core.infrastructure.document_readers.config import PdfReaderConfig
-from holocron_core.infrastructure.document_readers.protocol import RawOcrPage, RawPdfPage, RawTextLine
+from holocron_core.infrastructure.document_readers.protocol import (
+    ImageKey,
+    RawOcrPage,
+    RawPdfPage,
+    RawTextLine,
+    TemplateScan,
+)
+from scripts import eval_pdf_tiers
 from scripts.eval_pdf_ocr import digit_accuracy_micro, digit_correct, digits, edit_distance
 from scripts.eval_pdf_tiers import (
+    DirReport,
     PageRow,
     app_page,
+    is_text_layer_with_content_image,
     is_text_layer_with_image,
     is_unflagged_figure,
+    markdown,
     old_text_score,
     page_row,
+    with_template_scan,
 )
 
 
@@ -125,3 +137,86 @@ def test_tier_eval_figure_table_filter() -> None:
     assert is_unflagged_figure(_row(review_reasons=[], status="ok"))
     assert not is_unflagged_figure(_row(review_reasons=[], has_figure=False))
     assert not is_unflagged_figure(_row(new_tier="ocr", review_reasons=[]))
+
+
+# --------------------------------------------------------------------------- #
+# Bảng "trang giữ lớp chữ có ảnh" và bảng ảnh template của `eval_pdf_tiers` (sửa đổi 2026-10-30)
+# --------------------------------------------------------------------------- #
+
+
+def _report(rows: list[PageRow]) -> DirReport:
+    return DirReport(pdf_dir="arm_ch9", files=sorted({row.file for row in rows}), pages=rows)
+
+
+def test_tier_eval_figure_table_cells_show_empty_and_joined_reasons() -> None:
+    config = PdfReaderConfig()
+    rows = [
+        _row(page_number=1, review_reasons=[], status="ok"),
+        _row(page_number=2, review_reasons=["TIER3_UNAVAILABLE", "FIGURE_ON_SCAN"]),
+    ]
+    text = markdown([_report(rows)], config, 120, 0.30, 0.30)
+    assert "| a.pdf | 1 | 40 | 50.0 | text_layer | (rỗng) |" in text
+    assert "| a.pdf | 2 | 40 | 50.0 | text_layer | TIER3_UNAVAILABLE, FIGURE_ON_SCAN |" in text
+
+
+def test_tier_eval_figure_table_uses_its_own_threshold() -> None:
+    config = PdfReaderConfig()
+    text = markdown([_report([_row(image_area_ratio=0.5)])], config, 120, 0.9, 0.3)
+    assert "## arm_ch9: trang giữ lớp chữ có ảnh ≥ 0.3 (1)" in text
+    assert "## arm_ch9: lớp chữ ít (0 < non_ws < 120) + ảnh phủ ≥ 0.9 (0)" in text
+    text = markdown([_report([_row(image_area_ratio=0.5)])], config, 120, 0.3, 0.9)
+    assert "## arm_ch9: trang giữ lớp chữ có ảnh ≥ 0.9 (0)" in text
+
+
+def test_tier_eval_cli_default_figure_threshold(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    pdf_dir = tmp_path / "arm_empty"
+    pdf_dir.mkdir()
+    out_dir = tmp_path / "out"
+    assert eval_pdf_tiers.main([str(out_dir), str(pdf_dir)]) == 0
+    text = (out_dir / "results.md").read_text(encoding="utf-8")
+    assert "## arm_empty: trang giữ lớp chữ có ảnh ≥ 0.3 (0)" in text
+    assert "## arm_empty: lớp chữ ít (0 < non_ws < 120) + ảnh phủ ≥ 0.3 (0)" in text
+    assert "## arm_empty: trang giữ lớp chữ có ảnh không phải template ≥ 0.3 (0)" in text
+    capsys.readouterr()
+
+
+def test_tier_eval_template_tables_are_appended() -> None:
+    config = PdfReaderConfig()
+    rows = [
+        _row(page_number=1, image_area_ratio=1.0, content_image_area_ratio=0.0, template_scan="ok", template_images=2),
+        _row(page_number=2, image_area_ratio=0.6, content_image_area_ratio=0.45, template_scan="ok", template_images=2),
+    ]
+    text = markdown([_report(rows)], config, 120, 0.30, 0.30)
+    assert "| a.pdf | ok | 2 |" in text
+    assert "## arm_ch9: trang giữ lớp chữ có ảnh không phải template ≥ 0.3 (1)" in text
+    assert "| a.pdf | 2 | 40 | 60.0 | 45.0 | text_layer | TIER3_UNAVAILABLE |" in text
+    # Bảng cũ giữ nguyên định dạng và vẫn lọc theo độ phủ toàn bộ.
+    assert "## arm_ch9: trang giữ lớp chữ có ảnh ≥ 0.3 (2)" in text
+    assert text.index("ảnh template theo file") > text.index("trang giữ lớp chữ có ảnh ≥ 0.3")
+    assert is_text_layer_with_content_image(rows[1], 0.45)
+    assert not is_text_layer_with_content_image(rows[0], 0.01)
+    assert not is_text_layer_with_content_image(replace(rows[1], new_tier="ocr"), 0.3)
+
+
+def test_tier_eval_rows_record_template_scan_and_content_area() -> None:
+    config = PdfReaderConfig()
+    lines = [RawTextLine(text="x" * 64, bbox=None, words=[])]
+    raw = RawPdfPage(
+        page_index=0,
+        width_pt=720,
+        height_pt=540,
+        lines=lines,
+        image_area_ratio=0.98,
+        path_area_ratio=0,
+        content_image_area_ratio=0.0,
+    )
+    scan = TemplateScan(
+        status="ok",
+        keys=[ImageKey(digest="a" * 64, width_px=1, height_px=1, bits_per_pixel=8, filters=(), bbox=(0, 0, 1, 1))],
+    )
+    row = with_template_scan(page_row("a.pdf", raw, config), scan)
+    assert (row.content_image_area_ratio, row.template_scan, row.template_images) == (0.0, "ok", 1)
+    assert (row.new_tier, row.status) == ("text_layer", "ok")  # ảnh template không làm trang thành trang ảnh
+    plain = page_row("a.pdf", raw.model_copy(update={"content_image_area_ratio": None}), config)
+    assert (plain.content_image_area_ratio, plain.template_scan, plain.template_images) == (0.98, "skipped", 0)
+    assert plain.new_reason == "image_covers_page"

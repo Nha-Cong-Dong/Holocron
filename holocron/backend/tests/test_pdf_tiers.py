@@ -22,7 +22,6 @@ from holocron_core.infrastructure.document_readers.text_layer import (
     is_math_symbol,
     normalize_box,
     text_score,
-    text_sufficiency,
     valid_word_ratio,
 )
 from holocron_core.infrastructure.document_readers.tiers import (
@@ -125,9 +124,9 @@ def test_correct_words_and_lone_symbols_are_valid(word: str) -> None:
 
 
 def test_text_score_components() -> None:
-    assert text_sufficiency("", CONFIG) == 0.0
-    assert text_sufficiency("a" * 100, CONFIG) == pytest.approx(0.5)
-    assert text_sufficiency("a " * 400, CONFIG) == 1.0
+    assert text_score("a", CONFIG) == pytest.approx(1.0)
+    assert text_score("a" * 100, CONFIG) == pytest.approx(1.0)
+    assert text_score("a " * 400, CONFIG) == 1.0
     assert clean_char_ratio("") == 1.0
     assert clean_char_ratio("ab\ufffd\ue000") == pytest.approx(0.5)
     assert clean_char_ratio("ab\x01\x02") == pytest.approx(0.5)
@@ -136,14 +135,14 @@ def test_text_score_components() -> None:
     assert text_score("", CONFIG) == 0.0
 
 
-def test_text_score_penalizes_garbage_and_short_text() -> None:
+def test_text_score_penalizes_garbage_not_short_text() -> None:
     garbage = ENGLISH + " " + "\ufffd" * 60
     assert text_score(garbage, CONFIG) < CONFIG.text_layer_min
-    assert text_score("Chương 1", CONFIG) < CONFIG.text_layer_min
+    assert text_score("Chương 1", CONFIG) >= CONFIG.text_layer_min
 
 
-def test_text_full_chars_is_configurable() -> None:
-    assert text_score("Chương 1", PdfReaderConfig(text_full_chars=5)) == pytest.approx(1.0)
+def test_text_score_does_not_depend_on_length() -> None:
+    assert text_score("Chương 1", CONFIG) == text_score(CLEAN_VIETNAMESE, CONFIG) == pytest.approx(1.0)
 
 
 # --------------------------------------------------------------------------- #

@@ -11,6 +11,7 @@ nền tảng và không ngủ.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -262,3 +263,29 @@ def test_workers_that_go_silent_after_scan_start_end_within_one_scan_wait(
     assert first.timeouts == [pytest.approx(config.text_layer_page_timeout_s), config.template_scan_timeout_s]
     assert held[0] is None and held[1:] == [TemplateScan(status="timeout")] * page_count
     assert all(s.killed and s.timeouts == [pytest.approx(2.0)] for s in sessions[1 : page_count + 1])
+
+
+LOGGER = "holocron_core.infrastructure.document_readers.pdf_reader"
+
+
+@pytest.mark.parametrize(("status", "logged"), [("skipped", 0), ("ok", 0), ("error", 1)])
+def test_only_unfinished_scans_are_logged_and_the_held_scan_is_reused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    clock: _FakeClock,
+    caplog: pytest.LogCaptureFixture,
+    status: str,
+    logged: int,
+) -> None:
+    scan = OK_SCAN if status == "ok" else TemplateScan.model_validate({"status": status})
+    first = _Session(clock, [TemplateScanStartedMessage(), TemplateScanMessage(scan=scan), _ok(0), None])
+    second = _Session(clock, [_ok(2)])
+    held = _patch_start(monkeypatch, [first, second], page_count=3)
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        pages = _summary(WorkerPdfReader(_config()), _stub(tmp_path))
+    assert pages == [("ok", None), ("failed", "PAGE_ERROR"), ("ok", None)]
+    records = [r for r in caplog.records if r.name == LOGGER]
+    assert len(records) == logged
+    assert all(status in r.getMessage() for r in records)
+    # Worker dựng lại nhận đúng kết quả quét lần đầu, không quét lại.
+    assert held == [None, scan]

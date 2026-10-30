@@ -381,6 +381,41 @@ def test_scan_timeout_has_no_templates() -> None:
     assert scan_template_images(FakeSource([_keys(1)] * 3), 3, CONFIG, clock=lambda: next(late)).status == "timeout"
 
 
+def test_scan_deadline_has_no_grace() -> None:
+    # Vượt hạn dưới 1 s ⇒ đã quá hạn (hạn = lúc bắt đầu + `template_scan_timeout_s`, không cộng dư).
+    over = iter([0.0, CONFIG.template_scan_timeout_s + 0.5])
+    source = FakeSource([_keys(1)] * 3)
+    assert scan_template_images(source, 3, CONFIG, clock=lambda: next(over)) == TemplateScan(status="timeout")
+    assert source.read == []
+
+
+def test_scan_exactly_at_deadline_is_still_ok() -> None:
+    # Đồng hồ đúng bằng hạn ở mọi lần kiểm ⇒ chưa quá hạn (chỉ `clock() > deadline` mới là quá hạn).
+    ticks = iter([0.0])
+
+    def clock() -> float:
+        return next(ticks, CONFIG.template_scan_timeout_s)
+
+    source = FakeSource([_keys(1)] * 3)
+    assert scan_template_images(source, 3, CONFIG, clock=clock) == TemplateScan(status="ok", keys=[_key()])
+    assert source.read == [0, 1, 2]
+
+
+def test_scan_with_exactly_1024_template_keys_is_ok() -> None:
+    keys = [_key(digest_char="a", bbox=(i % 100, i // 100, 100, 100)) for i in range(1024)]
+    page = PageImageKeys(keys=list(keys), hashed_bytes=0)
+    config = _config(template_scan_max_images_per_page=2000, template_scan_max_images=10_000)
+    scan = scan_template_images(FakeSource([page] * 3), 3, config)
+    assert scan.status == "ok" and len(scan.keys) == 1024 and set(scan.keys) == set(keys)
+
+
+def test_template_scan_accepts_1024_keys_and_rejects_1025() -> None:
+    # Số viết thẳng (không dùng hằng): trần giao thức là đúng 1024 khoá.
+    assert len(TemplateScan(status="ok", keys=[_key()] * 1024).keys) == 1024
+    with pytest.raises(ValidationError):
+        TemplateScan(status="ok", keys=[_key()] * 1025)
+
+
 # --------------------------------------------------------------------------- #
 # Khoá ảnh thật qua PDFium
 # --------------------------------------------------------------------------- #
@@ -531,6 +566,26 @@ def test_probe_worker_does_not_scan(tmp_path: Path) -> None:
     request = WorkerRequest(path=str(path), page_budget=0, config=CONFIG, scan_templates=True)
     _pdf_worker.run(request, PdfiumBackend.load(), [], emitted.append)
     assert emitted == [OpenedMessage(page_count=3)]
+
+
+def test_worker_with_a_one_page_budget_still_scans(tmp_path: Path) -> None:
+    path = write_pdf(tmp_path / "slides.pdf", [_slide() for _ in range(4)])
+    emitted: list[BaseModel] = []
+    request = WorkerRequest(path=str(path), page_budget=1, config=_config(), scan_templates=True)
+    ocr = OcrRunner(primary=StubPrimary(), secondary=None)
+    _pdf_worker.run(request, PdfiumBackend.load(), [PageRequest(page_index=2)], emitted.append, ocr)
+    kinds = [type(m).__name__ for m in emitted]
+    assert kinds == ["OpenedMessage", "TemplateScanStartedMessage", "TemplateScanMessage", "PageMessage"]
+    assert len(_scan(emitted).keys) == 1
+    [page] = _pages(emitted)
+    assert page.page_index == 2 and page.content_image_area_ratio == 0.0
+
+
+def test_scan_cpu_budget_for_a_one_page_worker() -> None:
+    config = _config(template_scan_timeout_s=7.5)
+    request = WorkerRequest(path="x.pdf", page_budget=1, config=config, scan_templates=True)
+    assert _pdf_worker.scan_cpu_seconds(request) == 8
+    assert _pdf_worker.scan_cpu_seconds(request.model_copy(update={"page_budget": 0})) == 0
 
 
 def test_scan_adds_explicit_cpu_budget(tmp_path: Path) -> None:
@@ -781,6 +836,15 @@ def test_scan_timeout_reads_on_without_templates_and_without_failures(
     assert requests[0].scan_templates and requests[0].template_scan is None
     # Tiến trình cha quá hạn thì dựng worker mới với kết quả `timeout`, worker mới không quét lại.
     assert all(r.template_scan == TemplateScan(status="timeout") and not r.scan_templates for r in requests[1:])
+
+
+def test_reading_one_selected_page_asks_the_worker_to_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    requests = _recording_sessions(monkeypatch)
+    path = write_pdf(tmp_path / "slides.pdf", [_slide() for _ in range(4)])
+    [page] = list(WorkerPdfReader(CONFIG).read_pages(path, DOC_ID, page_numbers=[2]))
+    assert [(r.page_budget, r.scan_templates, r.template_scan) for r in requests] == [(1, True, None)]
+    assert (page.page_number, page.status, page.tier_used, page.has_figure) == (2, "ok", "text_layer", False)
+    assert [line.text for line in page.lines] == [TITLE_40]
 
 
 def test_worker_restart_keeps_the_same_template_decisions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

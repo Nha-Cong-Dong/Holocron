@@ -1490,23 +1490,97 @@ class UnexpectedCheckError(Exception):
     pass
 
 
-def test_background_check_unexpected_error_still_leaves_the_pending_state(
+def _joined_thread_launcher(work: Callable[[], None]) -> None:
+    """Chạy việc kiểm trong một luồng thật rồi chờ luồng đó kết thúc (lỗi lan ra sẽ tới `threading.excepthook`)."""
+    thread = threading.Thread(target=work, name=LOCAL_CHECK_THREAD_NAME, daemon=True)
+    thread.start()
+    thread.join(10)
+    assert not thread.is_alive()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        UnexpectedCheckError("C:/Users/secret-user/tessdata"),
+        OSError("C:/Users/secret-user/tessdata"),
+        KeyError("/home/secret-user/tessdata"),
+    ],
+    ids=["unexpected", "os-error", "key-error"],
+)
+def test_background_check_any_error_is_logged_once_and_never_reaches_the_thread_hook(
+    install_check: Callable[[LocalCapabilityCheck], None],
+    install_launcher: Callable[[LocalCheckLauncher], None],
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+) -> None:
+    """Cũ → mới: lỗi ngoài danh sách `CHECK_ERRORS` (đã xoá) trước lan ra khỏi luồng nền; nay MỌI lỗi ⇒ đúng một
+    cảnh báo qua logger của app chỉ gồm tên lớp (không traceback, không đường dẫn), `threading.excepthook` không bị
+    gọi, kết quả `ocr_engine_missing`."""
+    hooked: list[threading.ExceptHookArgs] = []
+    monkeypatch.setattr(threading, "excepthook", hooked.append)
+
+    def broken(config: PdfReaderConfig, /) -> Failures:
+        raise error
+
+    install_check(broken)
+    install_launcher(_joined_thread_launcher)
+    with caplog.at_level(logging.WARNING), TestClient(app) as client:
+        state = getattr(app.state, LOCAL_CHECK_STATE_ATTR)
+        assert isinstance(state, LocalCheckState) and state.done.is_set()
+        assert _ocr_pair(client.get("/v1/runtime").json()) == {
+            "ocr": (False, "ocr_engine_missing"),
+            "ocr_cross_check": (False, "ocr_engine_missing"),
+        }
+    assert hooked == []
+    records = [record for record in caplog.records if record.name == runtime.__name__]
+    assert len(records) == 1
+    [record] = records
+    assert record.levelno == logging.WARNING and type(error).__name__ in record.getMessage()
+    assert record.exc_info is None and record.exc_text is None and record.stack_info is None
+    assert "secret-user" not in caplog.text
+
+
+def test_background_check_does_not_swallow_system_exit(
+    install_check: Callable[[LocalCapabilityCheck], None],
+    install_launcher: Callable[[LocalCheckLauncher], None],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`SystemExit`/`KeyboardInterrupt` không phải lỗi của bộ kiểm: ném lại, không ghi cảnh báo; kết quả vẫn là
+    `ocr_engine_missing`, không treo pending."""
+
+    def interrupted(config: PdfReaderConfig, /) -> Failures:
+        raise SystemExit(3)
+
+    install_check(interrupted)
+    held = HeldLauncher()
+    install_launcher(held)
+    with caplog.at_level(logging.WARNING), TestClient(app) as client:
+        [work] = held.works
+        with pytest.raises(SystemExit):
+            work()
+        assert _ocr_pair(client.get("/v1/runtime").json())["ocr"] == (False, "ocr_engine_missing")
+    assert not [record for record in caplog.records if record.name == runtime.__name__]
+
+
+def test_startup_drops_a_stored_result_before_the_background_check_runs(
     install_check: Callable[[LocalCapabilityCheck], None],
     install_launcher: Callable[[LocalCheckLauncher], None],
 ) -> None:
-    """Lỗi ngoài `CHECK_ERRORS` lan ra khỏi luồng nền nhưng kết quả vẫn là `ocr_engine_missing`, không treo pending."""
-
-    def broken(config: PdfReaderConfig, /) -> Failures:
-        raise UnexpectedCheckError()
-
-    install_check(broken)
+    """Kết quả cũ đã lưu (ví dụ của lần chạy trước) bị bỏ khi khởi chạy kiểm nền: tới khi việc nền chạy, `ocr` và
+    `ocr_cross_check` báo `local_check_pending` chứ không phải kết quả cũ."""
+    install_check(lambda _config: {"ocr": "ocr_language_missing", "ocr_cross_check": "ocr_language_missing"})
     held = HeldLauncher()
     install_launcher(held)
+    setattr(app.state, LOCAL_FAILURES_STATE_ATTR, MappingProxyType({}))
     with TestClient(app) as client:
+        assert _ocr_pair(client.get("/v1/runtime").json()) == PENDING_PAIR
         [work] = held.works
-        with pytest.raises(UnexpectedCheckError):
-            work()
-        assert _ocr_pair(client.get("/v1/runtime").json())["ocr"] == (False, "ocr_engine_missing")
+        work()
+        assert _ocr_pair(client.get("/v1/runtime").json()) == {
+            "ocr": (False, "ocr_language_missing"),
+            "ocr_cross_check": (False, "ocr_language_missing"),
+        }
 
 
 def test_check_of_a_previous_startup_never_overwrites_the_next(

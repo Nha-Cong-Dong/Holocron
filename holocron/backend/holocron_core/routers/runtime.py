@@ -59,18 +59,6 @@ CHECK_CRASHED_FAILURES: LocalFailures = MappingProxyType(
     {"ocr": "ocr_engine_missing", "ocr_cross_check": "ocr_engine_missing"}
 )
 LOCAL_CHECK_THREAD_NAME = "holocron-local-capability-check"
-# Lỗi chuẩn bộ kiểm có thể ném (đọc file, chạy tiến trình con, validate dữ liệu): ghi một cảnh báo chỉ gồm tên lớp
-# lỗi. Lỗi khác vẫn lan ra khỏi luồng nền, nhưng kết quả vẫn được lưu là `CHECK_CRASHED_FAILURES` (khối `finally`).
-CHECK_ERRORS: tuple[type[Exception], ...] = (
-    RuntimeError,
-    ValueError,
-    LookupError,
-    ArithmeticError,
-    TypeError,
-    AttributeError,
-    MemoryError,
-    OSError,
-)
 
 
 class LocalCheckState:
@@ -129,13 +117,17 @@ def _run_check(
 ) -> None:
     """Thân của lần kiểm nền: chạy bộ kiểm rồi lưu kết quả, nếu `state` vẫn là trạng thái hiện hành của app.
 
-    Bộ kiểm ném lỗi thuộc `CHECK_ERRORS` ⇒ một cảnh báo chỉ gồm tên lớp lỗi (thông điệp có thể chứa đường dẫn). Ném
-    bất kỳ lỗi nào ⇒ lưu `CHECK_CRASHED_FAILURES`, không bao giờ treo ở trạng thái đang kiểm.
+    Bộ kiểm ném bất kỳ lỗi nào (`Exception`) ⇒ đúng một cảnh báo qua logger của app chỉ gồm tên lớp lỗi (không thông
+    điệp vì có thể chứa đường dẫn, không traceback), lưu `CHECK_CRASHED_FAILURES` và không để lỗi lan ra khỏi luồng nền
+    (không tới `threading.excepthook`). Lỗi không thuộc `Exception` (`KeyboardInterrupt`, `SystemExit`) được ném lại.
+    Không bao giờ treo ở trạng thái đang kiểm (khối `finally`).
     """
     failures: Mapping[CapabilityName, CapabilityReason] = CHECK_CRASHED_FAILURES
     try:
         failures = check(reader_config)
-    except CHECK_ERRORS as exc:
+    except BaseException as exc:
+        if not isinstance(exc, Exception):
+            raise  # KeyboardInterrupt, SystemExit…: không nuốt; kết quả vẫn được lưu ở `finally`
         _LOGGER.warning("kiểm cục bộ OCR lúc khởi động bị lỗi (%s): coi như thiếu engine OCR", error_name(exc))
     finally:
         with state.lock:

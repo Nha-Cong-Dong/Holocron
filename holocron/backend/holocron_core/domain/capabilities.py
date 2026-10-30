@@ -23,6 +23,10 @@ CapabilityName = Literal[
     "essay_grading_llm",
     "template_authoring_llm",
     "vlm",
+    # Ba tên cho UI mới (đề xuất, chờ duyệt (2026-10-29)): luôn `not_implemented` cho tới khi có code.
+    "concept_auto_proposal",
+    "line_review_queue",
+    "page_progress_eta",
 ]
 CapabilityReason = Literal[
     "llm_not_configured",
@@ -31,6 +35,12 @@ CapabilityReason = Literal[
     "ocr_language_missing",
     "secondary_ocr_disabled",
     "not_implemented",
+    # Lượt đọc thứ hai được bật mà không nạp được RapidOCR (bản rút gọn không kèm, thiếu gói, model hỏng);
+    # duyệt 2026-10-29.
+    "secondary_ocr_unavailable",
+    # Kiểm cục bộ OCR (chạy nền sau khi app mở cổng) chưa xong; chỉ dùng cho `ocr` và `ocr_cross_check`, là trạng
+    # thái hiển thị, không chặn route nào; duyệt 2026-10-30.
+    "local_check_pending",
 ]
 
 CAPABILITY_NAMES: tuple[CapabilityName, ...] = get_args(CapabilityName)

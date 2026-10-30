@@ -1,10 +1,11 @@
 """Fixture dùng chung cho test; độc lập với thư mục scripts/."""
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping, Sequence
 
 import pytest
 from starlette.types import ASGIApp
 
+from holocron_core.domain.capabilities import CapabilityName, CapabilityReason
 from holocron_core.domain.schemas import (
     BlueprintSlot,
     CognitiveLevel,
@@ -14,9 +15,21 @@ from holocron_core.domain.schemas import (
     QuestionFormat,
     SelfSolveResult,
 )
-from holocron_core.routers import access
+from holocron_core.infrastructure.document_readers import secondary_probe
+from holocron_core.infrastructure.document_readers.config import OcrSettings, PdfReaderConfig
+from holocron_core.infrastructure.document_readers.secondary_probe import REPORT_PREFIX, SecondaryProbeReport
+from holocron_core.infrastructure.document_readers.tesseract import RunResult
+from holocron_core.routers import access, runtime
 from holocron_core.routers.access import DEFAULT_ALLOWED_HOSTS, ProviderOverrides, get_allowed_hosts
 from holocron_core.routers.api import app
+from holocron_core.routers.runtime import (
+    LocalCapabilityCheck,
+    LocalCheckLauncher,
+    clear_local_capability_check,
+    get_local_capability_check,
+    get_local_check_launcher,
+)
+from holocron_core.services.capability_checks import OcrProbeResult
 
 THEORY_CHUNK = KnowledgeChunk(
     chunk_id="chk_os05_rr_definition",
@@ -121,3 +134,73 @@ def allow_testserver_host() -> Iterator[None]:
         patch.setitem(app.dependency_overrides, get_allowed_hosts, _allow_testserver_hosts)
         patch.setattr(access, "LocalAccessMiddleware", _TestserverAccessMiddleware)
         yield
+
+
+def _no_local_failures(config: PdfReaderConfig, /) -> dict[CapabilityName, CapabilityReason]:
+    """Bộ kiểm cục bộ giả: máy có Tesseract, có `vie`, lượt đọc thứ hai bật và nạp được."""
+    return {}
+
+
+def _fake_local_capability_check() -> LocalCapabilityCheck:
+    return _no_local_failures
+
+
+def _fake_ocr_settings() -> OcrSettings:
+    return OcrSettings(tesseract_cmd="tesseract", tessdata_dir=None, secondary="rapidocr")
+
+
+def _fake_probe(settings: OcrSettings, config: PdfReaderConfig, /) -> OcrProbeResult:
+    return OcrProbeResult(engine_runs=True, vie_available=True)
+
+
+LOADED_REPORT = RunResult(
+    status="ok",
+    stdout=(REPORT_PREFIX + SecondaryProbeReport(loaded=True, error=None).model_dump_json() + "\n").encode("utf-8"),
+)
+
+
+def _fake_secondary_runner(
+    args: Sequence[str],
+    stdin_data: bytes,
+    timeout_s: float,
+    max_output_bytes: int,
+    *,
+    kill_grace_s: float,
+    env: Mapping[str, str] | None = None,
+    cwd: str | None = None,
+) -> RunResult:
+    """Bộ chạy tiến trình con giả của bộ thăm dò RapidOCR: không dựng tiến trình, báo đã nạp được."""
+    return LOADED_REPORT
+
+
+def run_inline(work: Callable[[], None]) -> None:
+    """Cách chạy kiểm lúc khởi động cho test: chạy ngay trong `lifespan`, nên kết quả có sẵn trước request đầu tiên."""
+    work()
+
+
+def _inline_launcher() -> LocalCheckLauncher:
+    return run_inline
+
+
+@pytest.fixture(autouse=True)
+def fake_local_capability_check() -> Iterator[None]:
+    """Mọi `TestClient` dùng bộ kiểm cục bộ giả, không chạy binary Tesseract hay đọc cấu hình OCR của máy chạy test.
+
+    `app` nhận override `get_local_capability_check`. App dựng mới trong test (chỉ gắn vài router, không có override
+    của `app`) dùng bộ kiểm mặc định, nên bộ nạp cấu hình OCR và probe mà bộ kiểm mặc định gọi cũng được thay bằng
+    bản giả (máy có Tesseract, có `vie`, lượt đọc thứ hai bật); bộ chạy tiến trình con của bộ thăm dò RapidOCR
+    (tầng thấp nhất, `secondary_probe.run_bounded`) cũng là bản giả báo "nạp được" (không dựng tiến trình, không
+    nạp model thật). Kết quả kiểm lưu ở `app.state` (một lần mỗi lần khởi động); bỏ trước và sau mỗi test để test sau không
+    thấy kết quả của test trước. Test cần kết quả khác thì đặt override riêng cho `get_local_capability_check`.
+    Kiểm lúc khởi động của `app` chạy ngay trong `lifespan` (override `get_local_check_launcher`) thay vì luồng nền,
+    để test không thấy trạng thái `local_check_pending` thoáng qua; test của kiểm nền tự đặt override khác.
+    """
+    clear_local_capability_check(app)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setitem(app.dependency_overrides, get_local_capability_check, _fake_local_capability_check)
+        patch.setitem(app.dependency_overrides, get_local_check_launcher, _inline_launcher)
+        patch.setattr(runtime, "load_ocr_settings", _fake_ocr_settings)
+        patch.setattr(runtime, "probe_tesseract", _fake_probe)
+        patch.setattr(secondary_probe, "run_bounded", _fake_secondary_runner)
+        yield
+    clear_local_capability_check(app)

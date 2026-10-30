@@ -3,7 +3,8 @@
 Khởi chạy bởi `pdf_reader.WorkerSession` bằng `python -P -s -m <module này>`, cwd là thư mục tạm, môi trường
 tối thiểu, stdin/stdout UTF-8. Thứ tự: đọc `WorkerRequest` (dòng đầu stdin), nạp PDFium, làm nóng PDFium bằng PDF
 viết sẵn trong bộ nhớ (`pdfium_adapter.WARMUP_PDF`, bỏ qua khi `page_budget == 0`), nếu có cấu hình OCR thì kiểm
-Tesseract (`--version`, `--list-langs`) và nạp RapidOCR, TỰ áp giới hạn OS (RAM, CPU, `RLIMIT_FSIZE` = 0 trên Unix;
+Tesseract (`--version`, `--list-langs`), kiểm bộ chữ của `vie.traineddata` (cùng hàm với kiểm lúc khởi động app,
+`tesseract.check_vie_charset`) và nạp RapidOCR, TỰ áp giới hạn OS (RAM, CPU, `RLIMIT_FSIZE` = 0 trên Unix;
 Job Object trên Windows), báo `ready`, mở file, báo `opened`, quét ảnh template của cả tài liệu khi được yêu cầu
 (`WorkerRequest.scan_templates`, báo `template_scan_started` rồi `template_scan`; worker dựng lại thì nhận sẵn kết
 quả quét trong `WorkerRequest.template_scan` và không quét lại), rồi đọc từng trang khi nhận `PageRequest`.
@@ -53,7 +54,7 @@ from .protocol import (
 from .rapidocr_adapter import RapidOcrBackend
 from .raster import GrayImage, PixelBox, encode_png_gray, ink_outside_text_ratio
 from .template_images import READ_ERRORS, TemplateFilter, scan_template_images
-from .tesseract import Runner, TesseractEngine, run_bounded
+from .tesseract import Runner, TesseractEngine, check_vie_charset, run_bounded
 from .text_layer import needs_ocr_page
 
 Emit = Callable[[BaseModel], None]
@@ -105,18 +106,25 @@ def build_ocr(
     run: Runner | None = None,
     load_secondary: Callable[[], SecondaryOcr | None] = RapidOcrBackend.load,
 ) -> OcrRunner | None:
-    """Kiểm Tesseract và nạp lượt thứ hai; thiếu binary hoặc thiếu `vie` ⇒ None (coi như không có engine OCR).
+    """Kiểm Tesseract, kiểm bộ chữ của `vie.traineddata` rồi nạp lượt thứ hai.
 
-    `run` mặc định là `run_bounded` với thời gian chờ sau khi kill lấy từ `config.ocr_kill_grace_s`.
+    Thiếu binary, thiếu `vie`, hoặc `vie.traineddata` ở thư mục tessdata engine dùng (`tesseract.resolve_tessdata_dir`)
+    vắng, không phải file thường, không đọc được hay thiếu chữ ngoài `config.ocr_charset_allowed_missing` ⇒ None: coi
+    như không có engine OCR, trang cần OCR thành `failed` (`OCR_ENGINE_MISSING`, ADR-008 mục 14). Không xác định được
+    thư mục (Tesseract 4.x, đường lùi không có file) ⇒ bỏ qua kiểm bộ chữ (ngoại lệ duyệt 2026-10-30), engine vẫn dùng
+    được. Kiểm bộ chữ là `tesseract.check_vie_charset`, cùng hàm kiểm cục bộ lúc khởi động app gọi. `run` mặc định
+    là `run_bounded` với thời gian chờ sau khi kill lấy từ `config.ocr_kill_grace_s`.
     """
     runner = run if run is not None else functools.partial(run_bounded, kill_grace_s=config.ocr_kill_grace_s)
-    primary = TesseractEngine.probe(
+    outcome = TesseractEngine.probe_status(
         settings, config.ocr_probe_timeout_s, runner, max_output_bytes=config.ocr_probe_max_bytes
     )
-    if primary is None:
+    if outcome.status != "ok":
+        return None
+    if not check_vie_charset(settings, outcome.listed_tessdata_dir, config).usable:
         return None
     secondary = load_secondary() if settings.secondary == "rapidocr" else None
-    return OcrRunner(primary=primary, secondary=secondary)
+    return OcrRunner(primary=outcome.engine, secondary=secondary)
 
 
 def _emit_stdout(message: BaseModel) -> None:

@@ -1,5 +1,5 @@
 import { CAPABILITY_LABEL_VI, capabilityOf, type RuntimeView } from "@/lib/runtime";
-import type { CapabilityName } from "@/types/contract-pending";
+import type { CapabilityName } from "@/types/holocron";
 
 import styles from "./CapabilityNotice.module.css";
 

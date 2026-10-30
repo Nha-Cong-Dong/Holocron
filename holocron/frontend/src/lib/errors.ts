@@ -33,7 +33,7 @@ import {
   type CapabilityError,
   type CapabilityName,
   type CapabilityReason,
-} from "@/types/contract-pending";
+} from "@/types/holocron";
 
 export type ErrorKind =
   | "network"
@@ -111,6 +111,8 @@ const CAPABILITY_REASON_HINT_VI: Record<CapabilityReason, string> = {
   ocr_engine_missing: "cần Tesseract, mà máy chưa cài hoặc Holocron không chạy được Tesseract.",
   ocr_language_missing: "Tesseract còn thiếu dữ liệu tiếng Việt (vie.traineddata).",
   secondary_ocr_disabled: "lượt đọc thứ hai đang tắt trong cấu hình của Holocron.",
+  secondary_ocr_unavailable: "không nạp được lượt đọc thứ hai (RapidOCR) trên máy này.",
+  local_check_pending: "Holocron đang kiểm tra OCR trên máy này, đợi vài giây rồi thử lại.",
   not_implemented: "bản đang chạy chưa có tính năng này.",
 };
 

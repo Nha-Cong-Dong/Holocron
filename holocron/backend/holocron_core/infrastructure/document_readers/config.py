@@ -5,13 +5,15 @@ Các ngưỡng tên viết hoa trong ADR (`TEXT_LAYER_MIN`…) giữ đúng giá
 tầng 1 (ký hiệu toán, bảng, hình) là giá trị khởi đầu chưa hiệu chỉnh bằng phép đo.
 
 Engine OCR (tầng 2) cấu hình bằng biến môi trường `HOLOCRON_PDF_OCR_*`, `HOLOCRON_TESSERACT_CMD`,
-`HOLOCRON_TESSDATA_DIR` (spec §11.2), đọc bằng `load_ocr_settings` thành `OcrSettings`. Bộ đọc không có
+`HOLOCRON_TESSDATA_DIR` (spec §11.2), đọc bằng `load_ocr_settings` thành `OcrSettings`. `TESSDATA_PREFIX` KHÔNG được
+đọc: worker chạy Tesseract với môi trường tối thiểu nên engine không thấy biến này (duyệt 2026-10-30). Bộ đọc không có
 `OcrSettings` thì coi như không có engine OCR: trang cần OCR thành `failed` (`OCR_ENGINE_MISSING`).
 """
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from collections.abc import Callable, Mapping
 from typing import Literal
@@ -47,6 +49,20 @@ DEFAULT_CROSS_CHECK_MAX_LINES = 5000
 DEFAULT_CROSS_CHECK_MAX_LINE_TOKENS = 512
 DEFAULT_CROSS_CHECK_MAX_LINE_PAIRS = 200_000
 DEFAULT_CROSS_CHECK_MAX_TOKEN_CELLS = 250_000
+
+# Chữ tiếng Việt hiếm đã duyệt (2026-10-25, ADR-008 mục 14) được phép thiếu trong unicharset của engine chính:
+# `vie.traineddata` bản best thiếu đúng hai chữ này. Mở rộng tập này cần người dùng duyệt riêng, nên field
+# `ocr_charset_allowed_missing` chỉ nhận tập con của nó.
+OCR_CHARSET_APPROVED_MISSING: frozenset[str] = frozenset({"Ỵ", "ỵ"})
+
+# Thư mục tessdata mặc định của các bản cài Tesseract thường gặp trên Linux (gói 5.x, gói 4.x, bản dựng chung): đường
+# lùi khi kiểm bộ chữ mà app không truyền `--tessdata-dir` và `--list-langs` không ghi thư mục (Tesseract 4.x, duyệt
+# 2026-10-30). Trên Windows còn dò thêm `tessdata` cạnh file chạy Tesseract (bộ cài thường đặt ở đó).
+TESSDATA_DEFAULT_DIRS: tuple[str, ...] = (
+    "/usr/share/tesseract-ocr/5/tessdata",
+    "/usr/share/tesseract-ocr/4.00/tessdata",
+    "/usr/share/tessdata",
+)
 
 
 class PdfReaderConfig(BaseModel):
@@ -90,6 +106,15 @@ class PdfReaderConfig(BaseModel):
     # Sau khi kill Tesseract (quá hạn, đầu ra quá lớn), thời gian chờ tối đa để pipe đóng và tiến trình thoát hẳn;
     # quá mức này thì worker thôi chờ (luồng đọc là daemon), nên một tiến trình con treo không giữ worker mãi.
     ocr_kill_grace_s: float = Field(default=DEFAULT_OCR_KILL_GRACE_S, gt=0)
+    # `OCR_CHARSET_ALLOWED_MISSING` (spec §5.7; ADR-008 mục 14): chữ được phép thiếu trong unicharset của
+    # `vie.traineddata`, kèm cảnh báo; thiếu chữ ngoài tập này thì coi như thiếu gói `vie`.
+    ocr_charset_allowed_missing: frozenset[str] = OCR_CHARSET_APPROVED_MISSING
+    # Trần byte khi đọc `vie.traineddata` để kiểm unicharset lúc khởi động (bản best khoảng 12 MiB); file lớn hơn
+    # coi như không đọc được.
+    ocr_traineddata_max_bytes: int = Field(default=64 * MIB, ge=1024)
+    # Thư mục tessdata mặc định, chỉ dò khi không xác định được thư mục engine dùng (`tesseract.resolve_tessdata_dir`);
+    # test thay bằng thư mục tạm để không phụ thuộc máy chạy test.
+    ocr_tessdata_default_dirs: tuple[str, ...] = TESSDATA_DEFAULT_DIRS
     # Hệ số giảm dần tỉ lệ render khi ảnh làm tròn lên vẫn vượt `ocr_max_pixels` (mục 4).
     render_shrink_factor: float = Field(default=DEFAULT_RENDER_SHRINK_FACTOR, gt=0.0, lt=1.0)
     # Nhị phân hoá ảnh xám để đếm điểm ảnh mực (`ink_outside_text_ratio`, mục 9): điểm ảnh tối hơn ngưỡng là mực.
@@ -179,6 +204,14 @@ class PdfReaderConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _only_approved_missing_letters(self) -> PdfReaderConfig:
+        """Danh sách chữ được phép thiếu chỉ gồm các chữ hiếm đã duyệt (spec §5.7)."""
+        if not self.ocr_charset_allowed_missing <= OCR_CHARSET_APPROVED_MISSING:
+            approved = ", ".join(sorted(OCR_CHARSET_APPROVED_MISSING))
+            raise ValueError(f"ocr_charset_allowed_missing chỉ được chứa các chữ đã duyệt ({approved})")
+        return self
+
+    @model_validator(mode="after")
     def _full_image_not_below_sparse_image(self) -> PdfReaderConfig:
         """Ngưỡng trang ảnh phủ gần kín không được thấp hơn ngưỡng ảnh của luật trang ảnh ít chữ."""
         if self.text_full_image_min < self.text_sparse_image_min:
@@ -202,7 +235,8 @@ class OcrSettings(BaseModel):
     """Engine OCR của tầng 2 (ADR-008 mục 8, 12). Chỉ chứa đường dẫn và tên engine, không chứa bí mật.
 
     `tesseract_cmd` là đường dẫn tuyệt đối khi tìm được trong PATH của tiến trình cha (worker chạy với môi trường
-    tối thiểu, không có PATH). `tessdata_dir` là None thì dùng thư mục mặc định của bản cài Tesseract.
+    tối thiểu, không có PATH). `tessdata_dir` (`HOLOCRON_TESSDATA_DIR`) khác rỗng thì được truyền cho Tesseract bằng
+    `--tessdata-dir`; None thì Tesseract dùng thư mục mặc định của bản cài.
     `secondary` là None thì không có lượt đọc thứ hai (`cross_check = unavailable`).
     """
 
@@ -219,6 +253,38 @@ def _read_env(env: Mapping[str, str], name: str) -> str | None:
     return value or None
 
 
+_WINDOWS_DRIVE_PATH = re.compile(r"[A-Za-z]:[\\/]")
+
+
+def _has_root(value: str, *, sep: str, altsep: str | None) -> bool:
+    """Dạng đường dẫn coi như đã có gốc: bắt đầu bằng `/` hoặc có ổ đĩa (`C:/x`, `C:\\x`) trên mọi nền tảng.
+
+    Dạng bắt đầu bằng gạch ngược (`\\x`) chỉ có gốc khi gạch ngược là dấu phân cách của nền tảng (`sep` hoặc
+    `altsep`, tức Windows); trên POSIX nó là tên tương đối. Hàm thuần nhận `sep`/`altsep` làm tham số để kiểm được
+    cả hai nhánh trên mọi máy.
+    """
+    if value[:1] == "/" or _WINDOWS_DRIVE_PATH.match(value):
+        return True
+    backslash_separates = sep == "\\" or (altsep is not None and "\\" in altsep)
+    return backslash_separates and value[:1] == "\\"
+
+
+def _absolute_path(value: str) -> str:
+    """Đường dẫn tương đối đổi sang tuyệt đối theo cwd hiện tại; đã tuyệt đối hay có gốc (`_has_root`) giữ nguyên.
+
+    Lần kiểm lúc khởi động (cwd của app) và worker (cwd tạm) phải thấy cùng một đường dẫn.
+    """
+    if os.path.isabs(value) or _has_root(value, sep=os.sep, altsep=os.altsep):
+        return value
+    return os.path.abspath(value)
+
+
+def _absolute_command(command: str) -> str:
+    """Lệnh có dấu phân cách đường dẫn mà tương đối ⇒ tuyệt đối; tên lệnh trần giữ nguyên để tra PATH."""
+    has_separator = "/" in command or "\\" in command
+    return _absolute_path(command) if has_separator else command
+
+
 def load_ocr_settings(
     env: Mapping[str, str] | None = None,
     which: Callable[[str], str | None] = shutil.which,
@@ -229,7 +295,9 @@ def load_ocr_settings(
     - `HOLOCRON_PDF_OCR_SECONDARY`: chưa đặt thì là `rapidocr`; ĐẶT RỖNG thì không có lượt thứ hai (spec §11.2 ghi
       riêng cho biến này, ưu tiên hơn quy tắc chung "rỗng coi như chưa đặt"); giá trị khác là `ConfigError`.
     - `HOLOCRON_TESSERACT_CMD`: mặc định `tesseract`, tìm trong PATH của tiến trình cha bằng `which`; không tìm
-      thấy thì giữ nguyên, worker sẽ không chạy được binary và coi như thiếu engine.
+      thấy thì giữ nguyên, worker sẽ không chạy được binary và coi như thiếu engine. Dạng đường dẫn tương đối (có dấu
+      phân cách) đổi sang tuyệt đối theo cwd lúc đọc; tên lệnh trần giữ nguyên.
+    - `HOLOCRON_TESSDATA_DIR`: dạng tương đối đổi sang tuyệt đối theo cwd lúc đọc.
     """
     source = os.environ if env is None else env
     primary = _read_env(source, ENV_PDF_OCR_PRIMARY) or "tesseract"
@@ -242,9 +310,10 @@ def load_ocr_settings(
             secondary = None
         elif raw_secondary != "rapidocr":
             raise ConfigError(f"{ENV_PDF_OCR_SECONDARY} không hợp lệ: chỉ nhận 'rapidocr' hoặc để rỗng")
-    command = _read_env(source, ENV_TESSERACT_CMD) or DEFAULT_TESSERACT_CMD
+    command = _absolute_command(_read_env(source, ENV_TESSERACT_CMD) or DEFAULT_TESSERACT_CMD)
+    tessdata_dir = _read_env(source, ENV_TESSDATA_DIR)
     return OcrSettings(
         tesseract_cmd=which(command) or command,
-        tessdata_dir=_read_env(source, ENV_TESSDATA_DIR),
+        tessdata_dir=None if tessdata_dir is None else _absolute_path(tessdata_dir),
         secondary=secondary,
     )

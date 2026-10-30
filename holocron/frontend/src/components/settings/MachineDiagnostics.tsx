@@ -125,6 +125,9 @@ function ScanReadiness({ runtime }: { runtime: RuntimeView }) {
   if (ocr.state === "available") {
     return <p className={styles.ready}>Máy đã sẵn sàng đọc cả PDF có chữ sẵn và trang scan.</p>;
   }
+  if (ocr.state === "unavailable" && ocr.reason === "local_check_pending") {
+    return <p className={styles.caption}>Đang kiểm tra máy đã đọc được ảnh scan chưa, vài giây nữa là xong.</p>;
+  }
   if (needsTesseractHelp(runtime)) {
     return (
       <div className={styles.warn}>

@@ -518,9 +518,19 @@ def test_worker_ocr_failures(tmp_path: Path) -> None:
     assert emitted[2] == PageErrorMessage(page_index=0, message="TesseractError")
 
 
-def test_build_ocr_requires_tesseract_and_vie() -> None:
-    assert build_ocr(SETTINGS, CONFIG, FakeRunner({"--version": RunResult(status="failed")})) is None
-    runner = build_ocr(SETTINGS, CONFIG, _probe_runner())
+def test_build_ocr_requires_tesseract_and_vie(tmp_path: Path) -> None:
+    # Cũ → mới (duyệt 2026-10-30): `--tessdata-dir` trước là "/data/tess" (không tồn tại); nay worker kiểm bộ chữ
+    # của `vie.traineddata` ở đúng thư mục truyền cho Tesseract, nên dùng thư mục tạm chứa file tự tạo đủ bộ chữ.
+    from holocron_core.infrastructure.document_readers.tesseract import TESSDATA_LSTM_UNICHARSET, vietnamese_letters
+
+    entries = ["NULL 0 Common 0", *[f"{c} 3 0,255 Latin 5 0 5 {c}" for c in sorted(vietnamese_letters())]]
+    unicharset = (f"{len(entries)}\n" + "\n".join(entries) + "\n").encode("utf-8")
+    offsets = [-1] * 24
+    offsets[TESSDATA_LSTM_UNICHARSET] = 4 + 8 * 24
+    (tmp_path / "vie.traineddata").write_bytes(struct.pack("<i24q", 24, *offsets) + unicharset)
+    settings = SETTINGS.model_copy(update={"tessdata_dir": str(tmp_path)})
+    assert build_ocr(settings, CONFIG, FakeRunner({"--version": RunResult(status="failed")})) is None
+    runner = build_ocr(settings, CONFIG, _probe_runner())
     assert runner is not None and runner.secondary is None
     loaded: list[int] = []
 
@@ -529,7 +539,7 @@ def test_build_ocr_requires_tesseract_and_vie() -> None:
         return StubSecondary()
 
     with_second = build_ocr(
-        SETTINGS.model_copy(update={"secondary": "rapidocr"}), CONFIG, _probe_runner(), load_secondary
+        settings.model_copy(update={"secondary": "rapidocr"}), CONFIG, _probe_runner(), load_secondary
     )
     assert with_second is not None and isinstance(with_second.secondary, StubSecondary) and loaded == [1]
 

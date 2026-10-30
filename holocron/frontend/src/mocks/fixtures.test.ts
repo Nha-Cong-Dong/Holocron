@@ -27,7 +27,7 @@ describe("RuntimeInfo (§5.12)", () => {
     const runtime = RUNTIME_FIXTURES[scenario];
 
     describe(scenario, () => {
-      it("capabilities đủ 9 phần tử theo đúng thứ tự khai báo", () => {
+      it("capabilities đủ 12 phần tử theo đúng thứ tự khai báo", () => {
         expect(runtime.capabilities?.map((c) => c.name)).toEqual([...CAPABILITY_NAMES]);
       });
 
@@ -174,6 +174,6 @@ describe("fillRuntimeGaps (M1)", () => {
     ) {
       filled.capabilities.pop();
     }
-    expect(RUNTIME_FIXTURES.offline.capabilities).toHaveLength(9);
+    expect(RUNTIME_FIXTURES.offline.capabilities).toHaveLength(12);
   });
 });

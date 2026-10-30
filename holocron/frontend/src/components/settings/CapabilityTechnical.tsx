@@ -22,6 +22,10 @@ import styles from "./MachineDiagnostics.module.css";
  */
 
 const GROUP_TEXT: Record<Exclude<UnavailableGroupName, "unrecognized">, { title: string; intro: string }> = {
+  pending: {
+    title: "Đang kiểm tra trên máy này",
+    intro: "Holocron đang kiểm tra OCR, vài giây nữa là xong. Trạng thái tự cập nhật.",
+  },
   install: {
     title: "Cần cài thêm trên máy này",
     intro: "Các phần dưới đây chạy offline nhưng cần chương trình hoặc dữ liệu chưa có trên máy.",
@@ -84,6 +88,7 @@ export function CapabilityOverview({ runtime }: { runtime: RuntimeView }) {
         tone="info"
         note="Khi dùng các tính năng này, văn bản đã tách từ tài liệu (với LLM) hoặc ảnh trang (với VLM) được gửi tới dịch vụ đã cấu hình."
       />
+      <UnavailableGroup {...GROUP_TEXT.pending} capabilities={groups.pending} />
       <UnavailableGroup {...GROUP_TEXT.install} capabilities={groups.install} />
       {needsTesseractHelp(runtime) && <TesseractHelp headingLevel={3} />}
       <UnavailableGroup {...GROUP_TEXT.configure} capabilities={groups.configure} />

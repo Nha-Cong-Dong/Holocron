@@ -646,7 +646,26 @@ export type CapabilityName =
   | "essay_grading_offline"
   | "essay_grading_llm"
   | "template_authoring_llm"
-  | "vlm";
+  | "vlm"
+  | "concept_auto_proposal"
+  | "line_review_queue"
+  | "page_progress_eta";
+
+/** Tên khả năng đúng thứ tự khai báo `CapabilityName` (§5.12; ba tên cuối: đề xuất, chờ duyệt (2026-10-29)). */
+export const CAPABILITY_NAMES = [
+  "ocr",
+  "ocr_cross_check",
+  "vault_search",
+  "theory_generation",
+  "concept_pair_llm_proposal",
+  "essay_grading_offline",
+  "essay_grading_llm",
+  "template_authoring_llm",
+  "vlm",
+  "concept_auto_proposal",
+  "line_review_queue",
+  "page_progress_eta",
+] as const satisfies readonly CapabilityName[];
 
 export type CapabilityReason =
   | "llm_not_configured"
@@ -654,7 +673,21 @@ export type CapabilityReason =
   | "ocr_engine_missing"
   | "ocr_language_missing"
   | "secondary_ocr_disabled"
-  | "not_implemented";
+  | "not_implemented"
+  | "secondary_ocr_unavailable"
+  | "local_check_pending";
+
+/** Mã lý do không khả dụng (§5.12). */
+export const CAPABILITY_REASONS = [
+  "llm_not_configured",
+  "vlm_not_configured",
+  "ocr_engine_missing",
+  "ocr_language_missing",
+  "secondary_ocr_disabled",
+  "not_implemented",
+  "secondary_ocr_unavailable",
+  "local_check_pending",
+] as const satisfies readonly CapabilityReason[];
 
 /** Một khả năng của app (spec §5.12, §11.4); `reason` là `null` khi và chỉ khi `available = true`. */
 export interface Capability {
@@ -710,6 +743,8 @@ export interface RuntimeInfo {
   app_version: string;
   commit: string;
   log_dir: string | null;
+  /** Đủ 12 phần tử theo thứ tự `CAPABILITY_NAMES` (§5.12). */
+  capabilities: Capability[];
 }
 
 /** Body của `POST /v1/blueprints/{id}/twins`; mọi field đều tuỳ chọn khi gửi. `format` chỉ ghi đè slot tính toán. */

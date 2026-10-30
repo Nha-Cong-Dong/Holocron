@@ -7,7 +7,14 @@ import { ToastProvider } from "@/components/ui/Toast";
 import { api, toUiError } from "@/lib/api";
 import { createLatestCounter } from "@/lib/latest";
 import { shellHeadingForPath } from "@/lib/navigation";
-import { INITIAL_RUNTIME_STATE, runtimeReducer, selectOfflineMode } from "@/lib/runtime";
+import {
+  freshRuntime,
+  hasPendingLocalCheck,
+  INITIAL_RUNTIME_STATE,
+  runtimeReducer,
+  selectOfflineMode,
+} from "@/lib/runtime";
+import { createRuntimePoller } from "@/lib/runtime-poll";
 import { GLOBAL_SCOPE, resolveShortcut, targetKindOf } from "@/lib/shortcuts";
 import { subjectHref } from "@/lib/subject-route";
 import type { SubjectsState } from "@/lib/subjects";
@@ -52,6 +59,16 @@ export function AppShell({ children }: { children: ReactNode }) {
         if (runtimeCalls.current.isLatest(ticket)) dispatch({ type: "load_failed", error: toUiError(error) });
       });
   }, []);
+
+  // Backend còn kiểm OCR nền (`local_check_pending`): hỏi lại im lặng (không đổi sang "đang kết nối" để ô trạng thái
+  // không nhấp nháy); một lần lỗi mạng giữ nguyên runtime, lỗi liên tiếp đủ ngưỡng mới báo lỗi và hiện "Kiểm tra lại".
+  const localCheckPending = hasPendingLocalCheck(freshRuntime(runtime));
+  useEffect(() => {
+    if (!localCheckPending) return;
+    const poller = createRuntimePoller({ load: api.getRuntime, dispatch, toUiError });
+    poller.start();
+    return () => poller.stop();
+  }, [localCheckPending]);
 
   const reloadSubjects = useCallback(() => {
     const ticket = subjectCalls.current.begin();

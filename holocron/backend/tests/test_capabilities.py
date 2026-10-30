@@ -1,12 +1,12 @@
 """`services/capabilities.compute_capabilities` (spec v0.6 §5.12, §11.4). Không gọi mạng, không đọc môi trường máy chạy.
 
-`GET /v1/runtime` chưa trả danh sách này (cần sửa `routers/runtime.py`, ngoài phạm vi thay đổi hiện tại).
+`GET /v1/runtime` trả danh sách này (`routers/runtime.py`).
 """
 
 import pytest
 from pydantic import ValidationError
 
-from holocron_core.domain.capabilities import CAPABILITY_NAMES, Capability
+from holocron_core.domain.capabilities import CAPABILITY_NAMES, Capability, CapabilityReason
 from holocron_core.infrastructure.llm_config import load_runtime_config, load_runtime_config_lenient
 from holocron_core.services.capabilities import (
     IMPLEMENTED_CAPABILITIES,
@@ -36,6 +36,9 @@ EXPECTED_ORDER = (
     "essay_grading_llm",
     "template_authoring_llm",
     "vlm",
+    "concept_auto_proposal",
+    "line_review_queue",
+    "page_progress_eta",
 )
 
 
@@ -43,7 +46,7 @@ def _by_name(capabilities: list[Capability]) -> dict[str, Capability]:
     return {capability.name: capability for capability in capabilities}
 
 
-def test_lists_all_nine_capabilities_in_declaration_order() -> None:
+def test_lists_all_twelve_capabilities_in_declaration_order() -> None:
     capabilities = compute_capabilities(load_runtime_config({}))
     assert tuple(capability.name for capability in capabilities) == EXPECTED_ORDER == CAPABILITY_NAMES
 
@@ -165,3 +168,65 @@ def test_invalid_llm_or_vlm_configuration_counts_as_not_configured(broken: dict[
     assert capabilities["vlm"].reason == "vlm_not_configured"
     error = unavailable_error(list(capabilities.values()), "concept_pair_llm_proposal")
     assert error is not None and "0123" not in error.message and "abc def" not in error.message
+
+
+def test_missing_vlm_configuration_is_reported_before_a_local_failure() -> None:
+    capabilities = _by_name(
+        compute_capabilities(
+            load_runtime_config({}),
+            implemented=set(CAPABILITY_NAMES),
+            local_failures={"vlm": "ocr_engine_missing"},
+        )
+    )
+    assert capabilities["vlm"].reason == "vlm_not_configured"
+
+
+def test_vlm_detail_names_all_three_variables_and_no_value() -> None:
+    capabilities = _by_name(compute_capabilities(load_runtime_config({}), implemented=set(CAPABILITY_NAMES)))
+    detail = capabilities["vlm"].detail_vi
+    assert detail is not None
+    for variable in ("HOLOCRON_VLM_BASE_URL", "HOLOCRON_VLM_API_KEY", "HOLOCRON_VLM_MODEL"):
+        assert variable in detail
+    assert "vlm-secret-value" not in detail
+
+
+def _local_failure(reason: CapabilityReason) -> tuple[str, str]:
+    capabilities = compute_capabilities(
+        load_runtime_config({}),
+        implemented=set(CAPABILITY_NAMES),
+        local_failures={"ocr": reason},
+    )
+    capability = _by_name(capabilities)["ocr"]
+    error = unavailable_error(capabilities, "ocr")
+    assert capability.detail_vi is not None
+    assert error is not None
+    return capability.detail_vi, error.message
+
+
+def test_ocr_engine_missing_names_the_tesseract_variable() -> None:
+    detail, message = _local_failure("ocr_engine_missing")
+    assert "HOLOCRON_TESSERACT_CMD" in detail
+    assert "HOLOCRON_TESSERACT_CMD" in message
+
+
+def test_ocr_language_missing_names_the_file_and_the_variable() -> None:
+    detail, _ = _local_failure("ocr_language_missing")
+    assert "vie.traineddata" in detail
+    assert "HOLOCRON_TESSDATA_DIR" in detail
+
+
+def test_secondary_ocr_disabled_names_the_variable() -> None:
+    detail, _ = _local_failure("secondary_ocr_disabled")
+    assert "HOLOCRON_PDF_OCR_SECONDARY" in detail
+
+
+def test_capability_rejects_unknown_field() -> None:
+    with pytest.raises(ValidationError):
+        Capability.model_validate({"name": "ocr", "available": True, "reason": None, "detail_vi": None, "extra": 1})
+
+
+def test_capability_strips_detail_whitespace() -> None:
+    capability = Capability.model_validate(
+        {"name": "vlm", "available": False, "reason": "vlm_not_configured", "detail_vi": " x "}
+    )
+    assert capability.detail_vi == "x"

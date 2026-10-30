@@ -1,7 +1,7 @@
 /**
  * Dữ liệu mẫu cho `GET /v1/runtime` theo spec §5.12 (M1 của kế hoạch UI): ba kịch bản dựng sẵn.
  * `detail_vi` chép nguyên văn `REASON_DETAILS_VI` của `services/capabilities.py` (nhánh `feat/vault-theory-llm`).
- * Gỡ cùng thư mục `src/mocks/` khi backend trả `capabilities`.
+ * Backend đã trả `capabilities` (12 phần tử); gỡ cùng thư mục `src/mocks/`.
  */
 
 import type { Capability, CapabilityName, CapabilityReason, RuntimeInfoPending } from "@/types/contract-pending";
@@ -18,7 +18,11 @@ export const REASON_DETAILS_VI: Record<CapabilityReason, string> = {
     "Thiếu dữ liệu tiếng Việt cho Tesseract: thêm vie.traineddata vào thư mục tessdata hoặc đặt " +
     "HOLOCRON_TESSDATA_DIR.",
   secondary_ocr_disabled: "Lượt đọc thứ hai đang tắt vì HOLOCRON_PDF_OCR_SECONDARY để trống.",
+  secondary_ocr_unavailable:
+    "Không nạp được lượt đọc thứ hai (RapidOCR) trên máy này. Bản rút gọn không kèm RapidOCR: dùng bản đầy đủ. " +
+    "Nếu đang dùng bản đầy đủ, cài lại ứng dụng.",
   not_implemented: "Bản đang chạy chưa có khả năng này.",
+  local_check_pending: "Holocron đang kiểm tra OCR trên máy này. Đợi vài giây rồi xem lại.",
 };
 
 function available(name: CapabilityName): Capability {
@@ -52,6 +56,9 @@ const offline: RuntimeInfoPending = {
     unavailable("essay_grading_llm", "not_implemented"),
     unavailable("template_authoring_llm", "llm_not_configured"),
     unavailable("vlm", "vlm_not_configured"),
+    unavailable("concept_auto_proposal", "not_implemented"),
+    unavailable("line_review_queue", "not_implemented"),
+    unavailable("page_progress_eta", "not_implemented"),
   ],
 };
 
@@ -74,6 +81,9 @@ const llm: RuntimeInfoPending = {
     unavailable("essay_grading_llm", "not_implemented"),
     available("template_authoring_llm"),
     unavailable("vlm", "vlm_not_configured"),
+    unavailable("concept_auto_proposal", "not_implemented"),
+    unavailable("line_review_queue", "not_implemented"),
+    unavailable("page_progress_eta", "not_implemented"),
   ],
 };
 
@@ -96,6 +106,9 @@ const noTesseract: RuntimeInfoPending = {
     unavailable("essay_grading_llm", "not_implemented"),
     available("template_authoring_llm"),
     unavailable("vlm", "vlm_not_configured"),
+    unavailable("concept_auto_proposal", "not_implemented"),
+    unavailable("line_review_queue", "not_implemented"),
+    unavailable("page_progress_eta", "not_implemented"),
   ],
 };
 

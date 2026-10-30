@@ -10,9 +10,6 @@
  */
 
 import type {
-  Capability,
-  CapabilityName,
-  CapabilityReason,
   Citation,
   CognitiveLevel,
   OptionKey,
@@ -25,8 +22,6 @@ import type {
   RuntimeInfo,
 } from "@/types/holocron";
 
-// Kiểu khả năng và thân lỗi §6.0 đã có ở backend (`domain/capabilities.py`, `domain/llm.py`) và ở `holocron.ts`; xuất
-// lại ở đây cho nơi còn import từ file này.
 export type {
   Capability,
   CapabilityError,
@@ -34,40 +29,15 @@ export type {
   CapabilityReason,
   LlmUpstreamErrorDetail,
 } from "@/types/holocron";
+// Kiểu khả năng và thân lỗi §6.0 đã có ở backend (`domain/capabilities.py`, `domain/llm.py`) và ở `holocron.ts`; xuất
+// lại ở đây cho nơi còn import từ file này.
+export { CAPABILITY_NAMES, CAPABILITY_REASONS } from "@/types/holocron";
 
 // --------------------------------------------------------------------------------- §5.12 Capability
 
-/** Tên khả năng, đúng thứ tự khai báo `CapabilityName` (§5.12, đã duyệt 2026-10-25); chưa nối vào `/v1/runtime`. */
-export const CAPABILITY_NAMES = [
-  "ocr",
-  "ocr_cross_check",
-  "vault_search",
-  "theory_generation",
-  "concept_pair_llm_proposal",
-  "essay_grading_offline",
-  "essay_grading_llm",
-  "template_authoring_llm",
-  "vlm",
-] as const satisfies readonly CapabilityName[];
-
-/** Mã lý do không khả dụng (§5.12; danh sách mã còn đề xuất, chờ duyệt). */
-export const CAPABILITY_REASONS = [
-  "llm_not_configured",
-  "vlm_not_configured",
-  "ocr_engine_missing",
-  "ocr_language_missing",
-  "secondary_ocr_disabled",
-  "not_implemented",
-] as const satisfies readonly CapabilityReason[];
-
-/**
- * `GET /v1/runtime` theo §5.12. `capabilities` đã duyệt (đủ 9 phần tử theo thứ tự `CAPABILITY_NAMES`);
- * `mock_extractor` còn đề xuất (§17 D8). Backend hiện tại chỉ trả ba cờ của `RuntimeInfo`, nên hai field này
- * tuỳ chọn ở phía frontend: thiếu nghĩa là backend chưa báo, không phải "không khả dụng".
- */
+/** `GET /v1/runtime`: `capabilities` đã ở `RuntimeInfo`; `mock_extractor` còn đề xuất (§17 D8), tuỳ chọn. */
 export interface RuntimeInfoPending extends RuntimeInfo {
   mock_extractor?: boolean;
-  capabilities?: Capability[];
 }
 
 // ------------------------------------------------------------------------- §5.7, §6.5 bộ nhập PDF

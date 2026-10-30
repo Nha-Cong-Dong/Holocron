@@ -1,28 +1,46 @@
 """Engine chính của tầng 2: binary Tesseract `vie` gọi qua subprocess (ADR-008 mục 8).
 
-Chỉ chạy BÊN TRONG worker có giới hạn (`_pdf_worker.py`); Tesseract là tiến trình con của worker nên chịu cùng
-giới hạn OS (RLIMIT kế thừa trên Unix, Job Object bao cả tiến trình con trên Windows). Ảnh PNG do PDFium render
-đi vào qua stdin, kết quả TSV ra qua stdout, nên Tesseract không ghi file nào (giữ được `RLIMIT_FSIZE` 0) và không
-bao giờ đọc file PDF gốc.
+Nhận dạng trang (`TesseractEngine.recognize`) chỉ chạy BÊN TRONG worker có giới hạn (`_pdf_worker.py`); Tesseract
+là tiến trình con của worker nên chịu cùng giới hạn OS (RLIMIT kế thừa trên Unix, Job Object bao cả tiến trình con
+trên Windows). Ảnh PNG do PDFium render đi vào qua stdin, kết quả TSV ra qua stdout, nên Tesseract không ghi file
+nào (giữ được `RLIMIT_FSIZE` 0) và không bao giờ đọc file PDF gốc.
+
+Chạy ở TIẾN TRÌNH CHA (app), một lần lúc khởi động, cho kiểm cục bộ của chế độ khả năng
+(`services/capability_checks.py`): `TesseractEngine.probe_status` (chỉ `--version` và `--list-langs`, qua
+`run_bounded`: không qua shell, có timeout, có trần byte đầu ra, kill khi quá hạn), `listed_tessdata_dir` và các hàm
+thuần đọc unicharset trên bytes của `vie.traineddata` (file đọc có trần byte ở tầng gọi). `run_bounded` cũng là bộ
+chạy tiến trình con thăm dò RapidOCR (`secondary_probe.py`); tiến trình cha không nhận dạng ảnh nào.
 
 - Gọi bằng danh sách tham số (`shell=False`), môi trường tối thiểu (`SYSTEMROOT` trên Windows), timeout, stdout
   đọc có giới hạn byte; stdout giải mã UTF-8 strict.
 - TSV xin bằng `-c tessedit_create_tsv=1` thay vì file cấu hình `tsv`: khi `--tessdata-dir` trỏ tới thư mục chỉ có
   `vie.traineddata`, Tesseract không tìm thấy `configs/tsv` và lặng lẽ trả văn bản thường (đo 2026-10-25 với 5.4.0).
 - Hàm đọc unicharset của `.traineddata` (ADR-008 mục 14, test 1) là hàm thuần trên bytes.
+- `check_vie_charset` là hàm kiểm bộ chữ DÙNG CHUNG cho kiểm cục bộ lúc khởi động (tiến trình cha) và cho worker
+  khi dựng engine (`_pdf_worker.build_ocr`). Nó chỉ kiểm `vie.traineddata` ở ĐÚNG thư mục mà lần gọi OCR thật dùng,
+  do MỘT hàm `resolve_tessdata_dir` xác định (duyệt 2026-10-30): app truyền `--tessdata-dir` (`HOLOCRON_TESSDATA_DIR`)
+  ⇒ thư mục đó; không truyền mà `--list-langs` ghi thư mục (Tesseract 5.x) ⇒ thư mục đó; không truyền và không ghi
+  (Tesseract 4.x) ⇒ đường lùi: thư mục mặc định của bản cài (`PdfReaderConfig.ocr_tessdata_default_dirs`, rồi
+  `tessdata` cạnh file chạy trên Windows), thư mục đầu tiên có `vie.traineddata` là file thường. `TESSDATA_PREFIX`
+  không tham gia: Tesseract chạy với môi trường tối thiểu (`tesseract_env`) nên không đọc biến này. Thư mục đã xác
+  định mà file vắng hoặc không phải file thường ⇒ không dùng được; đường lùi không thấy file ⇒ "không xác định được"
+  (ngoại lệ Tesseract 4.x: bỏ qua kiểm). Hàm không ghi log; nơi gọi tự ghi (không ghi đường dẫn).
 """
 
 from __future__ import annotations
 
 import contextlib
 import os
+import re
+import stat
 import struct
 import subprocess
 import sys
 import threading
 import unicodedata
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import IO, Literal
 
 from .config import (
@@ -40,12 +58,23 @@ TSV_COLUMNS = 12
 TSV_WORD_LEVEL = 5
 
 RunStatus = Literal["ok", "timeout", "overflow", "failed"]
+# Kết quả kiểm Tesseract khi khởi động (`TesseractEngine.probe_status`).
+ProbeStatus = Literal["ok", "engine_missing", "language_missing"]
+# Dòng đầu của `tesseract --list-langs`: bản 5.x ghi `List of available languages in "<thư mục>" (<số>):`; bản 4.x
+# ghi `List of available languages (<số>):`, không có thư mục (khi đó `listed_tessdata_dir` trả None).
+_LIST_LANGS_DIR = re.compile(r'"(?P<dir>[^"]+)"')
 
 
 @dataclass(frozen=True)
 class RunResult:
     status: RunStatus
     stdout: bytes = b""
+
+
+def listed_tessdata_dir(header: str) -> str | None:
+    """Thư mục tessdata ghi trong dòng đầu của `--list-langs`; dòng không có thư mục trong ngoặc kép ⇒ None."""
+    match = _LIST_LANGS_DIR.search(header)
+    return match.group("dir") if match is not None else None
 
 
 Runner = Callable[[Sequence[str], bytes, float, int], RunResult]
@@ -96,13 +125,18 @@ def run_bounded(
     max_output_bytes: int,
     *,
     kill_grace_s: float = DEFAULT_OCR_KILL_GRACE_S,
+    env: Mapping[str, str] | None = None,
+    cwd: str | None = None,
 ) -> RunResult:
     """Chạy `args` (không qua shell), ghi `stdin_data` vào stdin, đọc stdout tối đa `max_output_bytes` byte.
 
-    Quá hạn ⇒ "timeout"; stdout vượt giới hạn ⇒ "overflow"; mã thoát khác 0 hoặc không chạy được ⇒ "failed".
+    Quá hạn ⇒ "timeout"; stdout vượt giới hạn ⇒ "overflow"; mã thoát khác 0 hoặc không chạy được ⇒ "failed" (mã
+    thoát khác 0 thì kèm stdout đã đọc, trong trần byte, để nơi gọi đọc được dòng báo lỗi cuối của tiến trình con).
     Trường hợp nào tiến trình con cũng bị kill trước khi hàm trả về; sau khi kill, mỗi lần chờ (luồng đọc/ghi, tiến
     trình thoát) tối đa `kill_grace_s` (`PdfReaderConfig.ocr_kill_grace_s`). Tiến trình không thoát trong hạn đó
-    cũng bị kill và kết quả là "timeout".
+    cũng bị kill và kết quả là "timeout". `env` là môi trường của tiến trình con (mặc định `tesseract_env()`, tối
+    thiểu); nơi gọi tự cấp môi trường tối thiểu của mình khi cần thêm biến. `cwd` là thư mục làm việc của tiến trình con
+    (mặc định kế thừa cwd của tiến trình cha).
     """
     try:
         process = subprocess.Popen(
@@ -110,7 +144,8 @@ def run_bounded(
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            env=tesseract_env(),
+            env=dict(env) if env is not None else tesseract_env(),
+            cwd=cwd,
             shell=False,
             close_fds=True,
         )
@@ -161,7 +196,7 @@ def run_bounded(
     if timed_out or reader.is_alive() or returncode is None:
         return RunResult(status="timeout")
     if returncode != 0:
-        return RunResult(status="failed")
+        return RunResult(status="failed", stdout=b"".join(chunks))
     return RunResult(status="ok", stdout=b"".join(chunks))
 
 
@@ -218,6 +253,128 @@ def missing_vietnamese_letters(traineddata: bytes) -> list[str]:
     unicharset = read_unicharset(traineddata)
     present = unicharset_entries(unicharset) if unicharset is not None else frozenset()
     return sorted(vietnamese_letters() - present)
+
+
+VIE_TRAINEDDATA = f"{TESSERACT_LANGUAGE}.traineddata"
+# Kết quả kiểm bộ chữ: "ok" (đủ chữ, có thể thiếu chữ được phép thiếu), "missing_file" (thư mục engine dùng không có
+# `vie.traineddata` là file thường: vắng, là thư mục, FIFO, thiết bị…), "unreadable" (file thường mà không đọc được:
+# lỗi đọc hoặc vượt trần byte), "missing_letters" (thiếu chữ ngoài danh sách cho phép), "unknown_tessdata" (không xác
+# định được thư mục engine dùng và đường lùi không có file ⇒ bỏ qua kiểm).
+CharsetStatus = Literal["ok", "missing_file", "unreadable", "missing_letters", "unknown_tessdata"]
+
+
+@dataclass(frozen=True)
+class CharsetCheck:
+    """Kết quả `check_vie_charset`: `missing` là mọi chữ thiếu, `outside` là phần nằm ngoài danh sách cho phép."""
+
+    status: CharsetStatus
+    missing: frozenset[str] = frozenset()
+    outside: frozenset[str] = frozenset()
+
+    @property
+    def usable(self) -> bool:
+        """Engine dùng được: đủ chữ, hoặc không xác định được tessdata (bỏ qua kiểm, ngoại lệ đã duyệt)."""
+        return self.status in ("ok", "unknown_tessdata")
+
+
+def passed_tessdata_dir(settings: OcrSettings) -> str | None:
+    """Thư mục app truyền cho Tesseract bằng `--tessdata-dir` (`HOLOCRON_TESSDATA_DIR`); rỗng hay None ⇒ không truyền.
+
+    `TesseractEngine` dựng từ `settings` dùng đúng giá trị này, nên kiểm bộ chữ và lời gọi OCR không lệch nhau.
+    """
+    return settings.tessdata_dir or None
+
+
+def fallback_tessdata_dirs(settings: OcrSettings, default_dirs: Iterable[str], *, platform: str) -> list[str]:
+    """Đường lùi khi không xác định được thư mục engine dùng (Tesseract 4.x không ghi thư mục ở `--list-langs`):
+    `default_dirs`, rồi (chỉ Windows, khi file chạy là đường dẫn tuyệt đối) `tessdata` cạnh file chạy. Mục rỗng bị
+    bỏ (không bao giờ dò thư mục hiện hành).
+
+    `HOLOCRON_TESSDATA_DIR` đứng đầu thứ tự đã duyệt nhưng không cần có ở đây: khi đặt, app luôn truyền nó bằng
+    `--tessdata-dir` nên `resolve_tessdata_dir` trả nó trước khi tới đường lùi.
+    """
+    candidates = list(default_dirs)
+    if platform == "win32" and os.path.isabs(settings.tesseract_cmd):
+        candidates.append(os.path.join(os.path.dirname(settings.tesseract_cmd), "tessdata"))
+    return [candidate for candidate in candidates if candidate]
+
+
+def resolve_tessdata_dir(
+    settings: OcrSettings, listed_dir: str | None, default_dirs: Iterable[str], *, platform: str = sys.platform
+) -> str | None:
+    """Thư mục tessdata mà lần gọi OCR thật dùng (duyệt 2026-10-30); dùng chung cho kiểm lúc khởi động và worker.
+
+    1. App truyền `--tessdata-dir` (`passed_tessdata_dir`) ⇒ thư mục đó.
+    2. Không truyền, `--list-langs` ghi thư mục ở dòng đầu (`listed_dir`, Tesseract 5.x) ⇒ thư mục đó.
+    3. Không truyền, không ghi (Tesseract 4.x) ⇒ thư mục đầu tiên trong `fallback_tessdata_dirs` có `vie.traineddata`
+       là file thường; mục không phải file thường bị bỏ qua, dò tiếp. Không thư mục nào có ⇒ None.
+
+    Ở bước 1 và 2 thư mục được trả về mà không cần có file: engine sẽ dùng đúng thư mục đó, file vắng là thiếu `vie`.
+    `TESSDATA_PREFIX` không tham gia vì Tesseract chạy với môi trường tối thiểu (`tesseract_env`).
+    """
+    passed = passed_tessdata_dir(settings)
+    if passed is not None:
+        return passed
+    if listed_dir is not None:
+        return listed_dir
+    for directory in fallback_tessdata_dirs(settings, default_dirs, platform=platform):
+        if os.path.isfile(Path(directory) / VIE_TRAINEDDATA):  # lỗi quyền hay đường dẫn hỏng ⇒ False, dò tiếp
+            return directory
+    return None
+
+
+def read_bounded(path: Path, max_bytes: int) -> bytes | None:
+    """Đọc tối đa `max_bytes` byte của file thường `path`; không phải file thường, lớn hơn hoặc lỗi đọc ⇒ None.
+
+    Mở không chặn (`O_NONBLOCK` trên POSIX) rồi kiểm loại file trên chính descriptor đã mở: FIFO hay thiết bị thay
+    vào giữa lúc dò và lúc đọc không làm treo lần kiểm.
+    """
+    flags = os.O_RDONLY
+    if sys.platform == "win32":
+        flags |= os.O_BINARY
+    else:
+        flags |= os.O_NONBLOCK
+    try:
+        descriptor = os.open(path, flags)
+    except (OSError, ValueError):
+        return None
+    # Kiểm loại file trước `fdopen`: trên POSIX `os.open` mở được thư mục, còn `fdopen` của thư mục ném
+    # `IsADirectoryError` ngoài khối bắt lỗi.
+    try:
+        regular = stat.S_ISREG(os.fstat(descriptor).st_mode)
+    except OSError:
+        regular = False
+    if not regular:
+        os.close(descriptor)
+        return None
+    with os.fdopen(descriptor, "rb") as handle:
+        try:
+            data = handle.read(max_bytes + 1)
+        except OSError:
+            return None
+    return data if len(data) <= max_bytes else None
+
+
+def check_vie_charset(
+    settings: OcrSettings, listed_dir: str | None, config: PdfReaderConfig, *, platform: str = sys.platform
+) -> CharsetCheck:
+    """Kiểm unicharset của `vie.traineddata` (ADR-008 mục 14); dùng chung cho tiến trình cha và worker.
+
+    Thư mục do `resolve_tessdata_dir` xác định. Chữ trong `config.ocr_charset_allowed_missing` được phép thiếu; file
+    đọc tối đa `config.ocr_traineddata_max_bytes`.
+    """
+    directory = resolve_tessdata_dir(settings, listed_dir, config.ocr_tessdata_default_dirs, platform=platform)
+    if directory is None:
+        return CharsetCheck(status="unknown_tessdata")
+    path = Path(directory) / VIE_TRAINEDDATA
+    if not os.path.isfile(path):
+        return CharsetCheck(status="missing_file")
+    data = read_bounded(path, config.ocr_traineddata_max_bytes)
+    if data is None:
+        return CharsetCheck(status="unreadable")
+    missing = frozenset(missing_vietnamese_letters(data))
+    outside = missing - config.ocr_charset_allowed_missing
+    return CharsetCheck(status="missing_letters" if outside else "ok", missing=missing, outside=outside)
 
 
 # --------------------------------------------------------------------------- #
@@ -352,20 +509,39 @@ class TesseractEngine:
 
         Đầu ra của mỗi lệnh kiểm đọc tối đa `max_output_bytes` (`PdfReaderConfig.ocr_probe_max_bytes`).
         """
-        engine = cls(command=settings.tesseract_cmd, tessdata_dir=settings.tessdata_dir, run=run)
+        outcome = cls.probe_status(settings, timeout_s, run, max_output_bytes=max_output_bytes)
+        return outcome.engine if outcome.status == "ok" else None
+
+    @classmethod
+    def probe_status(
+        cls,
+        settings: OcrSettings,
+        timeout_s: float,
+        run: Runner = run_bounded,
+        *,
+        max_output_bytes: int = DEFAULT_OCR_PROBE_MAX_BYTES,
+    ) -> ProbeOutcome:
+        """Như `probe` (cùng lệnh, cùng thứ tự, mỗi lệnh chạy đúng một lần) nhưng nói rõ lý do.
+
+        `--version` không chạy được ⇒ "engine_missing"; `--list-langs` lỗi, sai UTF-8 hoặc không có `vie` ⇒
+        "language_missing". Khi "ok", `listed_tessdata_dir` là thư mục tessdata Tesseract ghi ở dòng đầu của
+        `--list-langs` (None nếu dòng đó không ghi thư mục).
+        """
+        engine = cls(command=settings.tesseract_cmd, tessdata_dir=passed_tessdata_dir(settings), run=run)
         limit = max_output_bytes
         if run([engine.command, "--version"], b"", timeout_s, limit).status != "ok":
-            return None
+            return ProbeOutcome(engine, "engine_missing")
         listing = run([engine.command, "--list-langs", *engine._tessdata_args()], b"", timeout_s, limit)
         if listing.status != "ok":
-            return None
+            return ProbeOutcome(engine, "language_missing")
         try:
-            languages = listing.stdout.decode("utf-8").splitlines()[1:]
+            lines = listing.stdout.decode("utf-8").splitlines()
         except UnicodeDecodeError:
-            return None
+            return ProbeOutcome(engine, "language_missing")
+        languages = lines[1:]
         if TESSERACT_LANGUAGE not in {language.strip() for language in languages}:
-            return None
-        return engine
+            return ProbeOutcome(engine, "language_missing")
+        return ProbeOutcome(engine, "ok", listed_tessdata_dir(lines[0]))
 
     def recognize(
         self, png: bytes, image: GrayImage, config: PdfReaderConfig
@@ -381,3 +557,12 @@ class TesseractEngine:
         except UnicodeDecodeError as exc:
             raise TesseractError("Tesseract ghi byte không phải UTF-8") from exc
         return tsv_to_lines(tsv, image.width, image.height)
+
+
+@dataclass(frozen=True)
+class ProbeOutcome:
+    """Kết quả `TesseractEngine.probe_status`: engine (đã dựng, dùng được khi "ok"), lý do và thư mục tessdata."""
+
+    engine: TesseractEngine
+    status: ProbeStatus
+    listed_tessdata_dir: str | None = None

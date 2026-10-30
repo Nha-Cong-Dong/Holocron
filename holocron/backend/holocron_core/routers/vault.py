@@ -47,6 +47,7 @@ from ..services import vault as vault_service
 from ..services.capabilities import compute_capabilities, unavailable_error
 from ..services.concept_proposal import MAX_PROPOSAL_CHUNKS, ChunkSubjectMismatchError, propose_concept_pairs
 from .deps import ClockDep, RuntimeConfigDep, VaultDep
+from .runtime import NO_LOCAL_FAILURES, LocalFailuresDep
 
 router = APIRouter(prefix="/v1/vault")
 
@@ -63,14 +64,16 @@ LLM_UPSTREAM_MESSAGE = (
 )
 
 
-def get_chat_client(config: RuntimeConfigDep) -> ChatCompletionClient:
+def get_chat_client(
+    config: RuntimeConfigDep, local_failures: LocalFailuresDep = NO_LOCAL_FAILURES
+) -> ChatCompletionClient:
     """Client LLM cho đề xuất cặp khái niệm, dùng model `HOLOCRON_LLM_MODEL_EXTRACT` (§11.2).
 
     Khả năng `concept_pair_llm_proposal` không khả dụng, hoặc cấu hình LLM không dựng được client (`ConfigError`) ⇒
     409 `CapabilityError` (spec v0.6 §11.4). Không gửi gì ra mạng ở đây. Client dựng mỗi request nên cận tổng
     `LlmTaskLimits.deadline_s` của nó (tính từ lúc dựng) trùng với hạn của lần đề xuất.
     """
-    error = unavailable_error(compute_capabilities(config), "concept_pair_llm_proposal")
+    error = unavailable_error(compute_capabilities(config, local_failures=local_failures), "concept_pair_llm_proposal")
     if error is not None:
         raise HTTPException(status_code=409, detail=error.model_dump(mode="json"))
     failure: str | None = None

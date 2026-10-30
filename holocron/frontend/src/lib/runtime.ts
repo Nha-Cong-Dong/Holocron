@@ -8,12 +8,7 @@
  */
 
 import type { ErrorKind, UiError } from "@/lib/errors";
-import {
-  CAPABILITY_NAMES,
-  CAPABILITY_REASONS,
-  type CapabilityName,
-  type CapabilityReason,
-} from "@/types/contract-pending";
+import { CAPABILITY_NAMES, CAPABILITY_REASONS, type CapabilityName, type CapabilityReason } from "@/types/holocron";
 
 // ------------------------------------------------------------------------------- kiểm dạng ở ranh giới
 
@@ -181,6 +176,9 @@ export const CAPABILITY_LABEL_VI: Record<CapabilityName, string> = {
   essay_grading_llm: "Chấm tự luận bằng LLM",
   template_authoring_llm: "LLM học cách sinh câu cho dạng bài mới",
   vlm: "Đọc ảnh bằng mô hình thị giác (VLM)",
+  concept_auto_proposal: "Đề xuất khái niệm tự động",
+  line_review_queue: "Hàng đợi duyệt theo dòng nghi ngờ",
+  page_progress_eta: "Tiến độ theo trang và thời gian còn lại",
 };
 
 /** Nhãn cho tên khả năng frontend chưa biết; không chép tên thô của backend ra giao diện. */
@@ -226,6 +224,9 @@ export const CAPABILITY_USES_NETWORK: Record<CapabilityName, boolean> = {
   essay_grading_llm: true,
   template_authoring_llm: true,
   vlm: true,
+  concept_auto_proposal: false,
+  line_review_queue: false,
+  page_progress_eta: false,
 };
 
 /** Khả năng có thể gửi dữ liệu ra khỏi máy; tên lạ mặc định là có. */
@@ -237,7 +238,14 @@ export function mayUseNetwork(entry: CapabilityEntry): boolean {
  * `offline`: khả dụng, chạy hoàn toàn trên máy; `online`: khả dụng nhưng gửi dữ liệu tới LLM/VLM đã cấu hình;
  * `unrecognized`: tên hoặc mã lý do mà giao diện này chưa biết, coi như có thể dùng mạng.
  */
-export type CapabilityGroup = "offline" | "online" | "install" | "configure" | "not_implemented" | "unrecognized";
+export type CapabilityGroup =
+  | "offline"
+  | "online"
+  | "pending"
+  | "install"
+  | "configure"
+  | "not_implemented"
+  | "unrecognized";
 
 export type UnavailableGroup = Exclude<CapabilityGroup, "offline" | "online">;
 
@@ -246,6 +254,8 @@ const REASON_GROUP: Record<CapabilityReason, UnavailableGroup> = {
   ocr_engine_missing: "install",
   ocr_language_missing: "install",
   secondary_ocr_disabled: "configure",
+  secondary_ocr_unavailable: "install",
+  local_check_pending: "pending",
   llm_not_configured: "configure",
   vlm_not_configured: "configure",
   not_implemented: "not_implemented",
@@ -263,6 +273,7 @@ export function groupCapabilities(capabilities: CapabilityEntry[]): Record<Capab
   const groups: Record<CapabilityGroup, CapabilityEntry[]> = {
     offline: [],
     online: [],
+    pending: [],
     install: [],
     configure: [],
     not_implemented: [],
@@ -312,6 +323,11 @@ export function mockExtractorNotice(runtime: RuntimeView | null): MockExtractorN
   if (runtime === null) return null;
   if (runtime.mock_extractor !== null) return runtime.mock_extractor ? "confirmed" : null;
   return runtime.demo_mode ? "assumed" : null;
+}
+
+/** Backend còn đang kiểm OCR nền: có khả năng báo `local_check_pending`. */
+export function hasPendingLocalCheck(runtime: RuntimeView | null): boolean {
+  return (capabilitiesOf(runtime) ?? []).some((entry) => !entry.available && entry.reason === "local_check_pending");
 }
 
 /** Cần hiện hướng dẫn cài Tesseract và `vie.traineddata`. */
@@ -379,6 +395,8 @@ const OCR_REASON_VALUE: Record<CapabilityReasonView, string> = {
   ocr_engine_missing: "thiếu Tesseract",
   ocr_language_missing: "thiếu vie.traineddata",
   secondary_ocr_disabled: "lượt đọc thứ hai tắt",
+  secondary_ocr_unavailable: "lượt đọc thứ hai không chạy được",
+  local_check_pending: "đang kiểm tra…",
   llm_not_configured: "chưa cấu hình",
   vlm_not_configured: "chưa cấu hình",
   not_implemented: "chưa có trong bản này",
@@ -387,8 +405,17 @@ const OCR_REASON_VALUE: Record<CapabilityReasonView, string> = {
 
 function ocrItem(runtime: RuntimeView): Pick<StatusItem, "value" | "tone"> {
   const view = capabilityOf(runtime, "ocr");
+  if (view.state === "unavailable" && view.reason === "local_check_pending") {
+    return { value: OCR_REASON_VALUE.local_check_pending, tone: "info" };
+  }
   if (view.state === "unknown") return { value: "backend chưa báo", tone: "neutral" };
-  if (view.state === "available") return { value: "sẵn sàng", tone: "success" };
+  if (view.state === "available") {
+    const second = capabilityOf(runtime, "ocr_cross_check");
+    if (second.state === "unavailable" && second.reason === "secondary_ocr_unavailable") {
+      return { value: OCR_REASON_VALUE.secondary_ocr_unavailable, tone: "warning" };
+    }
+    return { value: "sẵn sàng", tone: "success" };
+  }
   return { value: OCR_REASON_VALUE[view.reason], tone: "warning" };
 }
 

@@ -11,6 +11,7 @@ import functools
 import io
 import logging
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -973,6 +974,7 @@ def _runner_returning(result: RunResult) -> Callable[..., RunResult]:
         *,
         kill_grace_s: float,
         env: Mapping[str, str] | None = None,
+        cwd: str | None = None,
     ) -> RunResult:
         return result
 
@@ -1050,6 +1052,7 @@ def test_probe_default_runner_uses_kill_grace_and_the_minimal_env(monkeypatch: p
         *,
         kill_grace_s: float,
         env: Mapping[str, str] | None = None,
+        cwd: str | None = None,
     ) -> RunResult:
         seen.append((kill_grace_s, env))
         return RunResult(status="ok", stdout=_report_line(LOADED))
@@ -1902,3 +1905,56 @@ def test_lazy_check_that_raises_is_treated_like_the_background_branch(
     warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
     assert len(warnings) == 1 and "BoomError" in warnings[0].getMessage()
     assert "secret-user" not in caplog.text and calls == [1]
+
+
+def _cwd_spy(seen: list[tuple[str | None, bool]], stdout: bytes) -> Callable[..., RunResult]:
+    def run(
+        args: Sequence[str],
+        stdin_data: bytes,
+        timeout_s: float,
+        max_output_bytes: int,
+        *,
+        kill_grace_s: float,
+        env: Mapping[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> RunResult:
+        seen.append((cwd, cwd is not None and Path(cwd).is_dir()))
+        return RunResult(status="ok", stdout=stdout)
+
+    return run
+
+
+def test_probe_runs_in_its_own_temporary_cwd_removed_afterwards(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Runner mặc định: cwd là thư mục tạm riêng (khác cwd của app), tồn tại khi chạy và bị dọn sau đó."""
+    seen: list[tuple[str | None, bool]] = []
+    monkeypatch.setattr(secondary_probe, "run_bounded", _cwd_spy(seen, _report_line(LOADED)))
+    assert probe_secondary_ocr(PdfReaderConfig()) == LOADED
+    [(cwd, existed)] = seen
+    assert cwd is not None and existed
+    assert os.path.abspath(cwd) != os.path.abspath(os.getcwd())
+    assert not Path(cwd).exists()
+
+
+def test_probe_cleanup_failure_does_not_change_the_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dọn thư mục tạm lỗi (Windows còn giữ) không làm đổi kết quả thăm dò."""
+    seen: list[tuple[str | None, bool]] = []
+    monkeypatch.setattr(secondary_probe, "run_bounded", _cwd_spy(seen, _report_line(LOADED)))
+
+    def failing_rmtree(path: str, *args: object, onexc: Callable[..., object] | None = None, **kwargs: object) -> None:
+        assert onexc is not None
+        onexc(os.rmdir, path, OSError("busy"))
+
+    monkeypatch.setattr(shutil, "rmtree", failing_rmtree)
+    assert probe_secondary_ocr(PdfReaderConfig()) == LOADED
+
+
+def test_probe_with_a_given_runner_creates_no_temporary_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("runner được truyền vào thì không tạo thư mục tạm")
+
+    monkeypatch.setattr(secondary_probe.tempfile, "TemporaryDirectory", forbidden)
+
+    def runner(args: Sequence[str], stdin_data: bytes, timeout_s: float, max_output_bytes: int) -> RunResult:
+        return RunResult(status="ok", stdout=_report_line(LOADED))
+
+    assert probe_secondary_ocr(PdfReaderConfig(), runner) == LOADED

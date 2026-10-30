@@ -126,6 +126,7 @@ def run_bounded(
     *,
     kill_grace_s: float = DEFAULT_OCR_KILL_GRACE_S,
     env: Mapping[str, str] | None = None,
+    cwd: str | None = None,
 ) -> RunResult:
     """Chạy `args` (không qua shell), ghi `stdin_data` vào stdin, đọc stdout tối đa `max_output_bytes` byte.
 
@@ -134,7 +135,8 @@ def run_bounded(
     Trường hợp nào tiến trình con cũng bị kill trước khi hàm trả về; sau khi kill, mỗi lần chờ (luồng đọc/ghi, tiến
     trình thoát) tối đa `kill_grace_s` (`PdfReaderConfig.ocr_kill_grace_s`). Tiến trình không thoát trong hạn đó
     cũng bị kill và kết quả là "timeout". `env` là môi trường của tiến trình con (mặc định `tesseract_env()`, tối
-    thiểu); nơi gọi tự cấp môi trường tối thiểu của mình khi cần thêm biến.
+    thiểu); nơi gọi tự cấp môi trường tối thiểu của mình khi cần thêm biến. `cwd` là thư mục làm việc của tiến trình con
+    (mặc định kế thừa cwd của tiến trình cha).
     """
     try:
         process = subprocess.Popen(
@@ -143,6 +145,7 @@ def run_bounded(
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             env=dict(env) if env is not None else tesseract_env(),
+            cwd=cwd,
             shell=False,
             close_fds=True,
         )

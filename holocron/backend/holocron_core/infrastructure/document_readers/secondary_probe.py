@@ -20,10 +20,10 @@ tên loại lỗi (định danh Python, không có đường dẫn hay thông đ
 
 from __future__ import annotations
 
-import functools
 import os
 import re
 import sys
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
@@ -127,20 +127,19 @@ def parse_report(stdout: bytes) -> SecondaryProbeReport:
 def probe_secondary_ocr(config: PdfReaderConfig, run: Runner | None = None) -> SecondaryProbeReport:
     """Nạp RapidOCR một lần trong tiến trình con có giới hạn (xem docstring của module) và trả kết quả.
 
-    `run` mặc định là `run_bounded` với `kill_grace_s` của `config` và môi trường `probe_env()`.
+    `run` mặc định là `run_bounded` với `kill_grace_s` của `config` môi trường `probe_env()` và `cwd` là thư mục tạm
+    riêng (dọn khi xong).
     """
-    runner: Runner = (
-        run
-        if run is not None
-        else functools.partial(run_bounded, kill_grace_s=config.ocr_kill_grace_s, env=probe_env())
-    )
     request = SecondaryProbeRequest(mem_bytes=config.worker_mem_bytes, cpu_seconds=config.ocr_cpu_seconds_per_page)
-    result = runner(
-        probe_command(),
-        (request.model_dump_json() + "\n").encode("utf-8"),
-        config.worker_startup_timeout_s,
-        config.ocr_probe_max_bytes,
-    )
+    args = (probe_command(), (request.model_dump_json() + "\n").encode("utf-8"))
+    limits = (config.worker_startup_timeout_s, config.ocr_probe_max_bytes)
+    if run is not None:
+        result = run(*args, *limits)
+    else:
+        # Runner mặc định chạy trong thư mục tạm riêng (như worker của `pdf_reader`), không dùng cwd của app. Dọn
+        # thư mục lỗi (Windows còn giữ) không làm đổi kết quả thăm dò.
+        with tempfile.TemporaryDirectory(prefix="holocron_probe_", ignore_cleanup_errors=True) as workdir:
+            result = run_bounded(*args, *limits, kill_grace_s=config.ocr_kill_grace_s, env=probe_env(), cwd=workdir)
     if result.status == "timeout":
         return _failure(CHILD_TIMEOUT)
     if result.status == "overflow":

@@ -144,7 +144,7 @@ def _config(**update: object) -> PdfReaderConfig:
 
 
 def _key(digest_char: str = "a", bbox: tuple[int, int, int, int] = (0, 0, 100, 100)) -> ImageKey:
-    return ImageKey(digest=digest_char * 64, width_px=4, height_px=4, bits_per_pixel=8, filters=(), bbox=bbox)
+    return ImageKey(digest=digest_char * 64, width_px=4, height_px=4, bits_per_pixel=0, filters=(), bbox=bbox)
 
 
 def test_quantize_bbox_rounds_half_up_on_the_configured_grid() -> None:
@@ -256,11 +256,17 @@ def test_protocol_models_are_bounded_and_strict() -> None:
     assert len(TemplateScan(status="ok", keys=[_key()] * MAX_TEMPLATE_KEYS).keys) == MAX_TEMPLATE_KEYS
     for bad_digest in ("A" * 64, "a" * 63, "g" * 64):
         with pytest.raises(ValidationError):
-            ImageKey(digest=bad_digest, width_px=1, height_px=1, bits_per_pixel=8, filters=(), bbox=(0, 0, 1, 1))
+            ImageKey(digest=bad_digest, width_px=1, height_px=1, bits_per_pixel=0, filters=(), bbox=(0, 0, 1, 1))
     with pytest.raises(ValidationError):
-        ImageKey(digest="a" * 64, width_px=1, height_px=1, bits_per_pixel=8, filters=("x" * 65,), bbox=(0, 0, 1, 1))
+        ImageKey(digest="a" * 64, width_px=1, height_px=1, bits_per_pixel=0, filters=("x" * 65,), bbox=(0, 0, 1, 1))
     with pytest.raises(ValidationError):
-        ImageKey(digest="a" * 64, width_px=1, height_px=1, bits_per_pixel=8, filters=(), bbox=(0, 0, 1, 10_001))
+        ImageKey(digest="a" * 64, width_px=1, height_px=1, bits_per_pixel=0, filters=(), bbox=(0, 0, 1, 10_001))
+    with pytest.raises(ValidationError):  # khoá không dùng bpp: chỉ nhận 0
+        ImageKey(digest="a" * 64, width_px=1, height_px=1, bits_per_pixel=8, filters=(), bbox=(0, 0, 1, 1))
+    for field in ("width_px", "height_px"):
+        sizes = {"width_px": 1, "height_px": 1, field: 1_000_001}
+        with pytest.raises(ValidationError):
+            ImageKey(digest="a" * 64, **sizes, bits_per_pixel=0, filters=(), bbox=(0, 0, 1, 1))
     with pytest.raises(ValidationError):
         WorkerRequest(
             path="x.pdf", page_budget=1, config=CONFIG, scan_templates=True, template_scan=TemplateScan(status="ok")
@@ -698,6 +704,8 @@ def test_template_frame_drawn_as_paths_is_flagged_for_now(tmp_path: Path) -> Non
         (1.0, 0.0, 0.25, True),  # chỉ ảnh template + đường vẽ đúng ngưỡng: nhánh đường vẽ tính mọi ảnh
         (1.0, 0.0, 0.24, False),
         (1.0, None, 0.25, True),
+        (0.05, None, 0.25, True),  # không có thông tin template: dùng toàn bộ độ phủ ảnh
+        (0.05, None, 0.24, False),
         (0.0, 0.0, 0.9, False),  # không ảnh nào: đường vẽ không dùng một mình
         (1.0, 0.10, 0.0, True),  # nhánh ảnh: ảnh nội dung đúng ngưỡng
         (1.0, 0.09, 0.0, False),  # nhánh ảnh dùng độ phủ không-template, không dùng độ phủ toàn bộ

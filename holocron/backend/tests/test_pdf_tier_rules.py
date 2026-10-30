@@ -30,6 +30,7 @@ from holocron_core.infrastructure.document_readers.protocol import (
     RawOcrPage,
     RawPdfPage,
     RawTextLine,
+    RawWord,
     WorkerRequest,
 )
 from holocron_core.infrastructure.document_readers.raster import GrayImage, PixelBox
@@ -44,7 +45,7 @@ from holocron_core.infrastructure.document_readers.text_layer import (
     text_score,
     valid_word_ratio,
 )
-from holocron_core.infrastructure.document_readers.tiers import assemble_text_layer_page
+from holocron_core.infrastructure.document_readers.tiers import assemble_text_layer_page, page_flags
 from scripts import eval_pdf_tiers
 from scripts.eval_pdf_tiers import evaluate_file
 from tests.pdf_samples import Box, Page, Text, text_lines, write_pdf
@@ -643,3 +644,25 @@ def test_worker_and_parent_agree_on_document_with_template_images(tmp_path: Path
         assert assemble_text_layer_page(raw, DOC_ID, config).tier_used == ("ocr" if worker_ocr else "text_layer")
     # Trang 3 có hai ảnh cùng phủ gần kín nhưng chỉ ảnh thứ hai là nội dung.
     assert ocr_pages == ({2, 4} if scan_templates else set(range(6)))
+
+
+def _table_page(width_pt: float, height_pt: float) -> RawPdfPage:
+    """3 dòng liền nhau, mỗi dòng 2 từ: cao 0,02 và cách nhau 0,03 (chuẩn hoá), mép trái hai cột thẳng hàng."""
+    lines = []
+    for row in range(3):
+        top = 0.1 + row * 0.05
+        words = [
+            RawWord(text="aa", bbox=(0.10, top, 0.20, top + 0.02)),
+            RawWord(text="bb", bbox=(0.23, top, 0.33, top + 0.02)),
+        ]
+        lines.append(RawTextLine(text="aa bb", bbox=(0.10, top, 0.33, top + 0.02), words=words))
+    return RawPdfPage(
+        page_index=0, width_pt=width_pt, height_pt=height_pt, lines=lines, image_area_ratio=0.0, path_area_ratio=0.0
+    )
+
+
+def test_page_flags_table_uses_width_and_height_in_right_order() -> None:
+    """Ngưỡng tách ô = 1,5 × cao dòng (pt). Trang ngang: cao 10,8 → 16,2 pt < khoảng trống 21,6 pt ⇒ hai ô;
+    trang đứng: cao 14,4 → 21,6 pt > khoảng trống 16,2 pt ⇒ một ô. Đổi chỗ rộng/cao làm hai kết quả đảo."""
+    assert page_flags(_table_page(720.0, 540.0), "", CONFIG).has_table is True
+    assert page_flags(_table_page(540.0, 720.0), "", CONFIG).has_table is False

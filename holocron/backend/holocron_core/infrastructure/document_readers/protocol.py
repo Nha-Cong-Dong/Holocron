@@ -62,9 +62,9 @@ class ImageKey(_Frozen):
     """
 
     digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    width_px: int = Field(ge=0)
-    height_px: int = Field(ge=0)
-    bits_per_pixel: int = Field(ge=0)
+    width_px: int = Field(ge=0, le=1_000_000)
+    height_px: int = Field(ge=0, le=1_000_000)
+    bits_per_pixel: int = Field(default=0, ge=0, le=0)
     filters: tuple[Annotated[str, Field(max_length=MAX_IMAGE_FILTER_CHARS)], ...] = Field(max_length=MAX_IMAGE_FILTERS)
     bbox: GridBox
 

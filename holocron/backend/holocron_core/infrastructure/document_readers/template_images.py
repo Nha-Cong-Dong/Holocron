@@ -43,7 +43,7 @@ GRID_TOLERANCE = 1
 _GRID_OFFSETS = tuple(itertools.product(range(-GRID_TOLERANCE, GRID_TOLERANCE + 1), repeat=4))
 
 # Nội dung của một ảnh: mọi trường của `ImageKey` trừ hộp.
-_Content = tuple[str, int, int, int, tuple[str, ...]]
+_Content = tuple[str, int, int, tuple[str, ...]]
 
 
 def quantize_bbox(bbox: UnitBBox, step: float) -> GridBox:
@@ -109,7 +109,7 @@ def find_template_images(
 
 
 def _content(key: ImageKey) -> _Content:
-    return (key.digest, key.width_px, key.height_px, key.bits_per_pixel, key.filters)
+    return (key.digest, key.width_px, key.height_px, key.filters)
 
 
 def _nearby_boxes(bbox: GridBox) -> Iterator[GridBox]:
@@ -158,8 +158,8 @@ class ImageKeySource(Protocol):
         ...
 
 
-def _sort_key(key: ImageKey) -> tuple[str, GridBox, int, int, int, tuple[str, ...]]:
-    return (key.digest, key.bbox, key.width_px, key.height_px, key.bits_per_pixel, key.filters)
+def _sort_key(key: ImageKey) -> tuple[str, GridBox, int, int, tuple[str, ...]]:
+    return (key.digest, key.bbox, key.width_px, key.height_px, key.filters)
 
 
 def scan_template_images(

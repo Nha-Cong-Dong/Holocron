@@ -212,7 +212,7 @@ def test_tier_eval_rows_record_template_scan_and_content_area() -> None:
     )
     scan = TemplateScan(
         status="ok",
-        keys=[ImageKey(digest="a" * 64, width_px=1, height_px=1, bits_per_pixel=8, filters=(), bbox=(0, 0, 1, 1))],
+        keys=[ImageKey(digest="a" * 64, width_px=1, height_px=1, bits_per_pixel=0, filters=(), bbox=(0, 0, 1, 1))],
     )
     row = with_template_scan(page_row("a.pdf", raw, config), scan)
     assert (row.content_image_area_ratio, row.template_scan, row.template_images) == (0.0, "ok", 1)

@@ -208,6 +208,9 @@ PERMISSIVE_LICENSES = frozenset(
 )
 # LGPL/MPL chỉ được phép với đúng gói đã duyệt (kế hoạch §5 bước 7). GEOS (LGPL-2.1) là DLL, đi qua BINARY_ALLOWLIST.
 WEAK_COPYLEFT_ALLOWED = frozenset({("certifi", "MPL-2.0"), ("tqdm", "MPL-2.0")})
+# Font đóng vào bản build frontend (SIL Open Font License 1.1): chỉ đúng hai gói font đã dùng ở PR #89; file OFL của
+# gói được chép vào licenses/ như mọi gói npm production. Font khác cần thêm vào đây sau khi đọc license.
+FONT_LICENSE_ALLOWED = frozenset({("@fontsource/lexend", "OFL-1.1"), ("@fontsource/newsreader", "OFL-1.1")})
 # Metadata không phải biểu thức SPDX, đã đọc tay; ghim theo phiên bản để bản mới buộc xem lại.
 # pypdfium2: `License: BSD-3-Clause, Apache-2.0, dependency licenses`; license của PDFium và thư viện nó nhúng
 # (freetype chọn FTL, ICU, lcms, libjpeg-turbo, openjpeg, libpng, zlib, abseil…) nằm trong dist-info/licenses.
@@ -831,6 +834,12 @@ def license_id_verdict(package: str, license_id: str) -> LicenseVerdict:
     upper = license_id.upper()
     if upper in PERMISSIVE_LICENSES:
         return LicenseVerdict(True, license_id)
+    if upper.startswith("OFL"):
+        allowed = any(name == package and upper == spdx.upper() for name, spdx in FONT_LICENSE_ALLOWED)
+        reason = (
+            f"{license_id} (font, danh sách cho phép)" if allowed else f"{license_id} ngoài danh sách font cho phép"
+        )
+        return LicenseVerdict(allowed, reason)
     if upper.startswith(("LGPL", "MPL")):
         allowed = any(name == package and upper == spdx.upper() for name, spdx in WEAK_COPYLEFT_ALLOWED)
         reason = f"{license_id} (danh sách cho phép)" if allowed else f"{license_id} ngoài danh sách cho phép"

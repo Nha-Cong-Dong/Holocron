@@ -1168,11 +1168,14 @@ CapabilityReason = Literal[        # danh sách mã lý do: duyệt 2026-10-26 (
 # (Tesseract, unicharset, RapidOCR trong tiến trình con) rồi lưu kết quả bất biến vào app.state. Trong lúc chưa xong, `ocr` và
 # `ocr_cross_check` có available = false, reason = "local_check_pending". Trạng thái pending chỉ để hiển thị: bộ nhập tài liệu
 # KHÔNG bị chặn và vẫn chạy như cũ. Luồng nền lỗi ⇒ ghi log và coi như ocr_engine_missing (không treo pending mãi).
-# Kiểm khả năng `ocr` (duyệt 2026-10-30; thay dòng duyệt 2026-10-29): dò `vie.traineddata` theo thứ tự (1) HOLOCRON_TESSDATA_DIR,
-# (2) TESSDATA_PREFIX trong môi trường tiến trình, (3) thư mục từ dòng đầu của `--list-langs` (nếu có), (4) đường dẫn mặc định
-# của bản cài (danh sách hằng trong config). Tìm thấy ⇒ kiểm unicharset bình thường. Không tìm thấy (ví dụ Tesseract 4.x không in
-# thư mục) ⇒ bỏ qua kiểm unicharset, cảnh báo một lần, chỉ kiểm `vie` có trong danh sách ngôn ngữ (ngoại lệ đã duyệt 2026-10-30,
-# ADR-008 mục 14). Không ghi đường dẫn tuyệt đối vào log.
+# Kiểm khả năng `ocr` (duyệt 2026-10-30; thay dòng duyệt 2026-10-29): chỉ kiểm `vie.traineddata` ở ĐÚNG thư mục mà lần gọi OCR
+# thật sẽ dùng: (1) HOLOCRON_TESSDATA_DIR đặt ⇒ app truyền `--tessdata-dir` và kiểm thư mục đó; (2) không đặt, Tesseract 5.x ⇒
+# kiểm thư mục do `--list-langs` in ra; (3) không đặt, Tesseract 4.x (không in thư mục) ⇒ đường lùi HOLOCRON_TESSDATA_DIR →
+# đường dẫn mặc định của bản cài (danh sách hằng trong config). TESSDATA_PREFIX KHÔNG nằm trong thứ tự dò và app không truyền
+# nó cho Tesseract (worker chạy môi trường tối thiểu). Một hàm chung xác định thư mục tessdata, dùng cho cả kiểm khởi động lẫn
+# worker. Xác định được thư mục ⇒ file vắng hoặc không phải file thường ⇒ `ocr_language_missing`; có file ⇒ kiểm unicharset bình
+# thường. Không xác định được thư mục ⇒ bỏ qua kiểm unicharset, cảnh báo một lần, chỉ kiểm `vie` có trong danh sách ngôn ngữ
+# (ngoại lệ đã duyệt 2026-10-30, ADR-008 mục 14). Không ghi đường dẫn tuyệt đối vào log.
 
 class Capability(StrictModel):
     name: CapabilityName            # code
@@ -2012,7 +2015,7 @@ Mọi việc của LLM ở bảng trên là **tuỳ chọn** (đã duyệt 2026-
 | `HOLOCRON_PDF_OCR_PRIMARY` | `tesseract` | Engine chính của tầng 2. MVP chỉ nhận `tesseract` (đã duyệt 2026-10-24; ADR-008 mục 12); giá trị khác là `ConfigError` |
 | `HOLOCRON_PDF_OCR_SECONDARY` | `rapidocr` | Lượt đọc thứ hai (model PP-OCRv6 small đóng sẵn trong wheel, đã duyệt 2026-10-24). Rỗng nghĩa là không có lượt thứ hai (`cross_check = unavailable`). Không được cùng họ model với lượt chính |
 | `HOLOCRON_TESSERACT_CMD` | `tesseract` (tìm trong PATH) | Đường dẫn binary Tesseract do người dùng tự cài |
-| `HOLOCRON_TESSDATA_DIR` | thư mục mặc định của bản cài Tesseract | Thư mục chứa `vie.traineddata`, truyền qua `--tessdata-dir` |
+| `HOLOCRON_TESSDATA_DIR` | thư mục mặc định của bản cài Tesseract | Thư mục chứa `vie.traineddata`, truyền qua `--tessdata-dir`. Không đặt thì không truyền cờ; Tesseract 5.x dùng thư mục của chính nó. `TESSDATA_PREFIX` không được app đọc và không được truyền cho Tesseract (duyệt 2026-10-30, §11.4) |
 | `HOLOCRON_DATA_DIR` | — (không đặt ⇒ kho in-memory, duyệt 2026-10-25; file PDF gốc ghi tạm vào thư mục tạm của hệ điều hành, xoá khi tắt app, duyệt 2026-10-26 chiều, §5.13) | Đã duyệt 2026-10-25 (§5.13): thư mục chứa `holocron.sqlite3` và file gốc. Bản đóng gói (zip MVP-1, sau này Tauri) luôn đặt biến này qua launcher (§1.5) |
 | `HOLOCRON_LOG_DIR` | — (không đặt ⇒ `RuntimeInfo.log_dir = null`) | Duyệt 2026-10-28 (§5.12, §14). Do launcher quản lý, người dùng KHÔNG đặt tay: launcher đặt biến này (đường dẫn thư mục log) khi mở được file log, và xoá biến khỏi môi trường tiến trình con khi không mở được. `GET /v1/runtime` đọc biến này cho `log_dir`. Không có trong `.env.example` |
 | `HOLOCRON_LLM_DATA_RECIPIENT` | — (không đặt ⇒ `RuntimeInfo.llm_data_recipient = null`) | Hướng duyệt 2026-10-26 chiều; tên biến và quy tắc là đề xuất (chi tiết), chờ duyệt (§5.12): nhãn do người dùng đặt cho bên nhận dữ liệu gửi LLM, hiển thị trên UI (§13.1). Tối đa 80 ký tự; KHÔNG ĐƯỢC chứa URL, key hay tên model (giá trị vi phạm bị bỏ qua). Chưa có trong `.env.example` (file này sửa ở commit riêng sau khi PR triển khai merge) |
@@ -2036,7 +2039,7 @@ Quy tắc "503 khi thiếu key" của v0.5 bị bỏ. Thay vào đó, `GET /v1/r
 
 | Khả năng | Cần | Endpoint hoặc luồng bị ảnh hưởng | Khi không khả dụng |
 |---|---|---|---|
-| `ocr` | Tesseract + `vie.traineddata` đủ chữ. Dò tessdata theo thứ tự `HOLOCRON_TESSDATA_DIR` → `TESSDATA_PREFIX` → thư mục từ `--list-langs` → đường dẫn mặc định của bản cài; không xác định được thì bỏ qua kiểm unicharset, cảnh báo một lần (ngoại lệ Tesseract 4.x, duyệt 2026-10-30; ADR-008 mục 14). Worker gọi cùng hàm kiểm. Kiểm chạy nền sau khi mở cổng; chưa xong ⇒ `local_check_pending` (§5.12) | Trang scan trong `POST /v1/documents` (§6.5) | Trang scan thành `failed` (`OCR_ENGINE_MISSING`). Trang `failed` không sửa và không xác nhận được trong MVP (duyệt 2026-10-26, §5.7, §6.5): người dùng cài Tesseract và `vie.traineddata`, rồi xoá tài liệu và nhập lại. Trang có lớp chữ vẫn đọc ở tầng 1 |
+| `ocr` | Tesseract + `vie.traineddata` đủ chữ. Kiểm đúng thư mục tessdata mà lần gọi OCR thật dùng: `--tessdata-dir` từ `HOLOCRON_TESSDATA_DIR` nếu đặt; không thì Tesseract 5.x dùng thư mục `--list-langs` in ra; Tesseract 4.x đường lùi `HOLOCRON_TESSDATA_DIR` → đường dẫn mặc định của bản cài. `TESSDATA_PREFIX` không được đọc và không được truyền cho Tesseract. File vắng hoặc không phải file thường ⇒ `ocr_language_missing`; không xác định được thư mục thì bỏ qua kiểm unicharset, cảnh báo một lần (ngoại lệ đã duyệt 2026-10-30; ADR-008 mục 14). Kiểm khởi động và worker gọi chung một hàm xác định thư mục. Kiểm chạy nền sau khi mở cổng; chưa xong ⇒ `local_check_pending` (§5.12) | Trang scan trong `POST /v1/documents` (§6.5) | Trang scan thành `failed` (`OCR_ENGINE_MISSING`). Trang `failed` không sửa và không xác nhận được trong MVP (duyệt 2026-10-26, §5.7, §6.5): người dùng cài Tesseract và `vie.traineddata`, rồi xoá tài liệu và nhập lại. Trang có lớp chữ vẫn đọc ở tầng 1 |
 | `ocr_cross_check` | RapidOCR nạp được (kiểm trong tiến trình con có giới hạn lúc khởi động; không nạp được ⇒ `secondary_ocr_unavailable`), `HOLOCRON_PDF_OCR_SECONDARY` khác rỗng (để trống ⇒ `secondary_ocr_disabled`) (duyệt 2026-10-29); chưa kiểm xong ⇒ `local_check_pending` (duyệt 2026-10-30) | Đối chiếu chéo trang OCR (§7.4) | `cross_check = unavailable` ⇒ WARNING `CROSS_CHECK_UNAVAILABLE`, ô số không AUTO_PASS |
 | `vault_search` | Không gì ngoài code (FTS5 hoặc BM25 tự cài) | `GET /v1/vault/search` (§6.6) | Luôn khả dụng khi đã có code |
 | `theory_generation` | Không gì ngoài code | Slot lý thuyết `MCQ4` trong `POST …/twins` | Luôn khả dụng khi đã có code; thiếu cặp đã xác nhận thì `ReviewTicket` như ADR-007 |

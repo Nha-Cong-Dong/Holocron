@@ -7,8 +7,13 @@ Có tầng 1 (lớp chữ) và tầng 2 (OCR Tesseract, đối chiếu chéo b�
   `OCR_ENGINE_MISSING` (mục 8). Văn bản tầng 1 của trang đó không được trả ra, vì có thể là ký tự rác.
 - Độ phủ ảnh của luật (c), (d) và phần ảnh của cờ hình chỉ tính ảnh KHÔNG phải template (ảnh lặp lại cùng nội dung,
   cùng chỗ trên đa số trang, `template_images`; sửa đổi 2026-10-30), qua `text_layer.content_image_area`.
-- Trang lẽ ra lên tầng 3 nhận `TIER3_UNAVAILABLE` (mục 9): trang PDF số có bảng, công thức hoặc hình; trang scan
-  có bảng (lưới toạ độ chữ OCR là việc của tầng 3).
+- Trang lẽ ra lên tầng 3 nhận `TIER3_UNAVAILABLE` (mục 9): trang PDF số có bảng hoặc công thức; trang scan có
+  bảng (lưới toạ độ chữ OCR là việc của tầng 3). Từ GĐ0 (sửa đổi 2026-10-31) hình trên PDF số KHÔNG còn sinh lý do
+  này: luật 0C (`text_layer.ocr_reason` luật (e)) đưa trang ít chữ có ảnh nội dung lớn đi OCR kèm
+  `IMAGE_NEEDS_READING`; trang giữ lớp chữ có hình chỉ ghi vùng ảnh (`own_images`), trừ khi khử nhiễu không chạy được
+  (`DENOISE_UNAVAILABLE`).
+- GĐ0 0B: cờ dòng lớp chữ (`LOW_TEXT_CONTRAST`, `TEXT_OCCLUDED` do worker đo; `FONT_ENCODING_SUSPECT` theo cổng
+  glyph) thành lý do xem lại cùng tên; dòng header/footer mang `is_header_footer`.
 - Trang OCR: văn bản từ lượt chính, lý do xem lại theo §5.7 (điểm, độ phủ dòng, mực ngoài hộp chữ, hình/công
   thức trên trang scan, dòng điểm thấp, token lệch, thiếu lượt đối chiếu).
 """
@@ -26,14 +31,28 @@ from ...domain.documents import (
     FailureReason,
     LineFlag,
     PageExtraction,
+    PageImage,
     ReviewReason,
     TokenMismatch,
 )
 from ...domain.limits import MAX_LINE_CHARS
 from .config import PdfReaderConfig
 from .cross_check import CrossCheckLimitError, CrossCheckLimits, coverage_ratio, cross_check_lines
-from .protocol import RawOcrLine, RawOcrPage, RawPdfPage
-from .text_layer import content_image_area, has_figure, has_formula, has_table, needs_ocr_page, page_text, text_score
+from .protocol import RawOcrLine, RawOcrPage, RawPdfPage, RawTextLine
+from .text_layer import (
+    IMAGE_OCR_REASONS,
+    content_image_area,
+    content_path_area,
+    content_token_count,
+    font_encoding_suspect,
+    has_figure,
+    has_formula,
+    has_table,
+    image_needs_reading,
+    ocr_reason,
+    page_text,
+    text_score,
+)
 
 NOT_APPLICABLE = CrossCheck(status="not_applicable", secondary_engine=None)
 
@@ -72,20 +91,60 @@ def select_tier(score: float, flags: PageFlags, config: PdfReaderConfig, *, layo
 
 
 def page_flags(raw: RawPdfPage, text: str, config: PdfReaderConfig) -> PageFlags:
-    """Cờ trang PDF số; nhánh ảnh của cờ hình dùng độ phủ ảnh không phải template, nhánh đường vẽ dùng mọi ảnh.
-
-    Sửa đổi 2026-10-30 (người dùng duyệt): xem `has_figure`.
-    """
+    """Cờ trang PDF số. Cờ hình (GĐ0, sửa đổi 2026-10-31; trả ADR-004 BE-007) chỉ tính đối tượng không-template,
+    không-nền: độ phủ ảnh nội dung, và diện tích đường vẽ nội dung khi trang có ảnh nội dung (`has_figure`)."""
+    content = content_image_area(raw)
     return PageFlags(
         has_table=has_table(raw.lines, raw.width_pt, raw.height_pt, config),
         has_formula=has_formula(text, config),
-        has_figure=has_figure(
-            raw.image_area_ratio,
-            raw.path_area_ratio,
-            config,
-            content_image_area_ratio=content_image_area(raw),
-        ),
+        has_figure=has_figure(content, content_path_area(raw), config, content_image_area_ratio=content),
     )
+
+
+def denoise_unavailable(raw: RawPdfPage) -> bool:
+    """Khử nhiễu không chạy đầy đủ cho trang (0C): lượt quét cấp tài liệu không `ok`, hoặc trang vượt trần đối tượng."""
+    return raw.objects_over_cap or not raw.template_scan_ok
+
+
+def _page_images(raw: RawPdfPage) -> list[PageImage]:
+    return [PageImage(bbox=image.bbox, sha256=image.sha256, dhash=image.dhash) for image in raw.own_images]
+
+
+def _denoise_fields(raw: RawPdfPage) -> dict[str, object]:
+    """Field GĐ0 của `PageExtraction` lấy thẳng từ dữ liệu worker (0A, 0B(1), 0C)."""
+    return {
+        "own_images": _page_images(raw),
+        "hidden_chars_dropped": raw.hidden_chars_dropped,
+        "scan_text_layer": raw.scan_text_layer,
+        "content_token_count": content_token_count(raw.lines),
+    }
+
+
+def _text_layer_flags(line: RawTextLine) -> list[LineFlag]:
+    """Cờ dòng lớp chữ: cờ worker đo (0B(1), 0B(2)) và cổng glyph (0B(3)).
+
+    Dòng header/footer không mang cờ chất lượng chữ (đề xuất suy ra): dòng đó không vào văn bản xác nhận, chunk hay
+    token, nên cờ trên nó không có gì để người dùng xem lại và chỉ làm trang thành `needs_review` vô ích.
+    """
+    if line.header_footer:
+        return []
+    flags: list[LineFlag] = list(line.flags)
+    if font_encoding_suspect(line.text):
+        flags.append("FONT_ENCODING_SUSPECT")
+    return flags
+
+
+_LINE_FLAG_REASONS: tuple[tuple[LineFlag, ReviewReason], ...] = (
+    ("LOW_TEXT_CONTRAST", "LOW_TEXT_CONTRAST"),
+    ("TEXT_OCCLUDED", "TEXT_OCCLUDED"),
+    ("FONT_ENCODING_SUSPECT", "FONT_ENCODING_SUSPECT"),
+)
+
+
+def line_flag_reasons(lines: Sequence[ExtractedLine]) -> list[ReviewReason]:
+    """Lý do xem lại cùng tên với cờ dòng GĐ0 còn trên trang."""
+    present = {flag for line in lines for flag in line.flags}
+    return [reason for flag, reason in _LINE_FLAG_REASONS if flag in present]
 
 
 def failed_page(
@@ -95,19 +154,24 @@ def failed_page(
     *,
     score: float | None = None,
     flags: PageFlags | None = None,
+    raw: RawPdfPage | None = None,
 ) -> PageExtraction:
+    """Trang `failed`; có `raw` (lớp chữ đã đọc được) thì giữ thêm các field GĐ0 của worker."""
     flags = flags or PageFlags()
-    return PageExtraction(
-        document_id=document_id,
-        page_number=page_number,
-        status="failed",
-        tier_used=None,
-        text_score=score,
-        has_table=flags.has_table,
-        has_formula=flags.has_formula,
-        has_figure=flags.has_figure,
-        cross_check=NOT_APPLICABLE,
-        failure_reason=reason,
+    return PageExtraction.model_validate(
+        {
+            "document_id": document_id,
+            "page_number": page_number,
+            "status": "failed",
+            "tier_used": None,
+            "text_score": score,
+            "has_table": flags.has_table,
+            "has_formula": flags.has_formula,
+            "has_figure": flags.has_figure,
+            "cross_check": NOT_APPLICABLE,
+            "failure_reason": reason,
+            **({} if raw is None else _denoise_fields(raw)),
+        }
     )
 
 
@@ -120,38 +184,54 @@ def _chunks(text: str) -> list[str]:
 def assemble_text_layer_page(raw: RawPdfPage, document_id: str, config: PdfReaderConfig) -> PageExtraction:
     """Dựng `PageExtraction` từ dữ liệu worker mà tiến trình cha đã validate (tầng 3 chưa có).
 
-    Trang cần OCR theo `needs_ocr_page` (cùng hàm worker dùng để quyết định OCR) dùng `raw.ocr` khi có
-    (`assemble_ocr_page`), không có thì `failed` với `OCR_ENGINE_MISSING`; trang còn lại chọn tầng bằng `select_tier`.
+    Trang cần OCR theo `ocr_reason` (cùng hàm worker dùng để quyết định OCR) dùng `raw.ocr` khi có
+    (`assemble_ocr_page`), không có thì `failed` với `OCR_ENGINE_MISSING`; trang còn lại chọn tầng bằng `select_tier`
+    với cờ bảng và công thức (GĐ0: cờ hình không đưa trang lên tầng 3 nữa, luật 0C). Trang giữ lớp chữ có hình mà
+    khử nhiễu không chạy đầy đủ (`denoise_unavailable`) mang `DENOISE_UNAVAILABLE`.
     """
     text = page_text(raw.lines)
     score = text_score(text, config)
     flags = page_flags(raw, text, config)
-    if needs_ocr_page(raw, config):
-        decision = TierDecision(tier="ocr")
-    else:
-        decision = select_tier(score, flags, config, layout_available=False)
+    reason = ocr_reason(raw, config)
     page_number = raw.page_index + 1
-    if decision.tier == "ocr":
+    if reason is not None:
         if raw.ocr is not None:
-            return assemble_ocr_page(raw, raw.ocr, document_id, score, config)
-        return failed_page(document_id, page_number, "OCR_ENGINE_MISSING", score=score, flags=flags)
-    pieces = [(chunk, line.bbox) for line in raw.lines for chunk in _chunks(line.text)]
+            reading = reason in IMAGE_OCR_REASONS and image_needs_reading(raw, config)
+            return assemble_ocr_page(raw, raw.ocr, document_id, score, config, image_needs_reading=reading)
+        return failed_page(document_id, page_number, "OCR_ENGINE_MISSING", score=score, flags=flags, raw=raw)
+    tier_flags = PageFlags(has_table=flags.has_table, has_formula=flags.has_formula)
+    decision = select_tier(score, tier_flags, config, layout_available=False)
+    pieces = [(chunk, line) for line in raw.lines for chunk in _chunks(line.text)]
     lines = [
-        ExtractedLine(line_index=index, text=chunk, bbox=bbox, conf=score, engine="text_layer")
-        for index, (chunk, bbox) in enumerate(pieces)
+        ExtractedLine(
+            line_index=index,
+            text=chunk,
+            bbox=line.bbox,
+            conf=score,
+            engine="text_layer",
+            flags=_text_layer_flags(line),
+            is_header_footer=line.header_footer,
+        )
+        for index, (chunk, line) in enumerate(pieces)
     ]
-    return PageExtraction(
-        document_id=document_id,
-        page_number=page_number,
-        status="needs_review" if decision.review_reasons else "ok",
-        tier_used="text_layer",
-        text_score=score,
-        has_table=flags.has_table,
-        has_formula=flags.has_formula,
-        has_figure=flags.has_figure,
-        lines=lines,
-        cross_check=NOT_APPLICABLE,
-        review_reasons=list(decision.review_reasons),
+    reasons: list[ReviewReason] = [*decision.review_reasons, *line_flag_reasons(lines)]
+    if flags.has_figure and denoise_unavailable(raw):
+        reasons.append("DENOISE_UNAVAILABLE")
+    return PageExtraction.model_validate(
+        {
+            "document_id": document_id,
+            "page_number": page_number,
+            "status": "needs_review" if reasons else "ok",
+            "tier_used": "text_layer",
+            "text_score": score,
+            "has_table": flags.has_table,
+            "has_formula": flags.has_formula,
+            "has_figure": flags.has_figure,
+            "lines": lines,
+            "cross_check": NOT_APPLICABLE,
+            "review_reasons": reasons,
+            **_denoise_fields(raw),
+        }
     )
 
 
@@ -246,9 +326,19 @@ def _cross_check(
 
 
 def assemble_ocr_page(
-    raw: RawPdfPage, ocr: RawOcrPage, document_id: str, score: float, config: PdfReaderConfig
+    raw: RawPdfPage,
+    ocr: RawOcrPage,
+    document_id: str,
+    score: float,
+    config: PdfReaderConfig,
+    *,
+    image_needs_reading: bool = False,
 ) -> PageExtraction:
-    """Dựng trang OCR (tầng 2): văn bản lượt chính, đối chiếu token với lượt thứ hai, lý do xem lại theo §5.7."""
+    """Dựng trang OCR (tầng 2): văn bản lượt chính, đối chiếu token với lượt thứ hai, lý do xem lại theo §5.7.
+
+    `image_needs_reading` (GĐ0 0C): trang lớp chữ sạch thoả điều kiện (e) ⇒ thêm `IMAGE_NEEDS_READING`. Trang OCR
+    giữ nguyên luật tầng 2, chỉ thêm các field GĐ0 của worker (`own_images`…).
+    """
     pieces = _line_pieces(ocr.lines)
     cross_check, mismatched = _cross_check(ocr, pieces, config)
     coverage = None if ocr.secondary is None else coverage_ratio(len(ocr.lines), len(ocr.secondary.lines))
@@ -282,19 +372,24 @@ def assemble_ocr_page(
         reasons.append("TOKEN_MISMATCH")
     if cross_check.status == "unavailable":
         reasons.append("CROSS_CHECK_UNAVAILABLE")
-    return PageExtraction(
-        document_id=document_id,
-        page_number=raw.page_index + 1,
-        status="needs_review" if reasons else "ok",
-        tier_used="ocr",
-        text_score=score,
-        ocr_score=page_ocr_score,
-        coverage_ratio=coverage,
-        ink_outside_text_ratio=ocr.ink_outside_text_ratio,
-        has_table=flags_of_page.has_table,
-        has_formula=flags_of_page.has_formula,
-        has_figure=flags_of_page.has_figure,
-        lines=lines,
-        cross_check=cross_check,
-        review_reasons=reasons,
+    if image_needs_reading:
+        reasons.append("IMAGE_NEEDS_READING")
+    return PageExtraction.model_validate(
+        {
+            "document_id": document_id,
+            "page_number": raw.page_index + 1,
+            "status": "needs_review" if reasons else "ok",
+            "tier_used": "ocr",
+            "text_score": score,
+            "ocr_score": page_ocr_score,
+            "coverage_ratio": coverage,
+            "ink_outside_text_ratio": ocr.ink_outside_text_ratio,
+            "has_table": flags_of_page.has_table,
+            "has_formula": flags_of_page.has_formula,
+            "has_figure": flags_of_page.has_figure,
+            "lines": lines,
+            "cross_check": cross_check,
+            "review_reasons": reasons,
+            **_denoise_fields(raw),
+        }
     )

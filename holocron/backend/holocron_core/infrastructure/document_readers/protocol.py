@@ -11,6 +11,11 @@ Worker được yêu cầu quét ảnh template (`WorkerRequest.scan_templates`)
 rồi `template_scan` khi quét xong, trước trang đầu; tiến trình cha nhận hai thông điệp này trong lượt chờ trang đầu
 (như `ocr_started`) và chuyển sang hạn riêng của lượt quét. Số khoá ảnh template có trần `MAX_TEMPLATE_KEYS` (sửa đổi
 2026-10-30).
+
+GĐ0 (sửa đổi 2026-10-31): lượt quét trả thêm khoá đường vẽ (`PathKey`) và dòng chữ lặp (`TextKey`, header/footer),
+mỗi loại có trần `MAX_TEMPLATE_KEYS` riêng; `RawPdfPage` mang thêm dữ liệu khử nhiễu của worker (ảnh nội dung, diện
+tích đường vẽ nội dung, cờ dòng, chữ ẩn đã loại, lớp OCR của PDF scan, trang vượt trần đối tượng). Đây là giao thức nội
+bộ giữa worker và tiến trình cha, không phải contract API (spec §5.7).
 """
 
 from __future__ import annotations
@@ -46,6 +51,14 @@ MAX_GRID_INDEX = 10_000
 
 GridIndex = Annotated[int, Field(ge=0, le=MAX_GRID_INDEX)]
 GridBox = tuple[GridIndex, GridIndex, GridIndex, GridIndex]
+ColorChannel = Annotated[int, Field(ge=0, le=255)]
+Rgba = tuple[ColorChannel, ColorChannel, ColorChannel, ColorChannel]
+# Dòng chữ dài hơn mức này không có khoá TEXT (header/footer là dòng ngắn); giữ thông điệp lượt quét nhỏ.
+MAX_TEMPLATE_TEXT_CHARS = 500
+MAX_PATH_SEGMENTS = 10_000_000
+# Số ảnh nội dung tối đa của một trang gửi qua giao thức (= trần `PageExtraction.own_images`).
+MAX_OWN_IMAGES = 256
+RawLineFlag = Literal["LOW_TEXT_CONTRAST", "TEXT_OCCLUDED"]
 TemplateScanStatus = Literal["ok", "over_cap", "timeout", "error", "skipped"]
 
 
@@ -69,22 +82,45 @@ class ImageKey(_Frozen):
     bbox: GridBox
 
 
+class PathKey(_Frozen):
+    """Khoá của một đường vẽ (GĐ0 0A): hộp lượng tử, màu tô RGBA (None: không tô), màu viền RGBA (None: không viền),
+    số đoạn của path (`template_images.path_key`)."""
+
+    bbox: GridBox
+    fill: Rgba | None
+    stroke: Rgba | None
+    segments: int = Field(ge=0, le=MAX_PATH_SEGMENTS)
+
+
+class TextKey(_Frozen):
+    """Khoá của một dòng chữ (GĐ0 0A, 0B(5)): hộp lượng tử của dòng và chuỗi chuẩn hoá (`template_images.text_key`)."""
+
+    bbox: GridBox
+    text: str = Field(min_length=1, max_length=MAX_TEMPLATE_TEXT_CHARS)
+
+
+TemplateKey = ImageKey | PathKey | TextKey
+
+
 class TemplateScan(_Frozen):
     """Kết quả lượt quét ảnh template của cả tài liệu (ADR-008 mục 6; sửa đổi 2026-10-30).
 
     - `ok`: quét xong; `keys` là các ảnh template (có thể rỗng).
     - `over_cap`: vượt trần số ảnh, số byte đem băm hoặc số khoá; `timeout`: quá `template_scan_timeout_s`;
       `error`: lỗi khi quét; `skipped`: không quét (worker của `probe`, hay worker không được yêu cầu quét).
-    Mọi trạng thái khác `ok` có `keys` rỗng: không ảnh nào là template (hành vi cũ).
+    Mọi trạng thái khác `ok` có `keys` rỗng: không ảnh nào là template (hành vi cũ). `path_keys`, `text_keys` (GĐ0):
+    đường vẽ template và dòng chữ lặp (header/footer); cùng quy tắc.
     """
 
     status: TemplateScanStatus
     keys: list[ImageKey] = Field(default_factory=list, max_length=MAX_TEMPLATE_KEYS)
+    path_keys: list[PathKey] = Field(default_factory=list, max_length=MAX_TEMPLATE_KEYS)
+    text_keys: list[TextKey] = Field(default_factory=list, max_length=MAX_TEMPLATE_KEYS)
 
     @model_validator(mode="after")
     def _keys_only_when_ok(self) -> TemplateScan:
-        if self.status != "ok" and self.keys:
-            raise ValueError("chỉ lượt quét `ok` mới có khoá ảnh template")
+        if self.status != "ok" and (self.keys or self.path_keys or self.text_keys):
+            raise ValueError("chỉ lượt quét `ok` mới có khoá template")
         return self
 
 
@@ -128,11 +164,17 @@ class RawWord(_Frozen):
 
 
 class RawTextLine(_Frozen):
-    """Một dòng của lớp chữ theo thứ tự đọc của PDFium; `text` giữ nguyên khoảng trắng bên trong."""
+    """Một dòng của lớp chữ theo thứ tự đọc của PDFium; `text` giữ nguyên khoảng trắng bên trong.
+
+    GĐ0: `flags` là cờ dòng do worker đo (tương phản thấp, bị che); `header_footer` là dòng khớp một khoá TEXT
+    template của tài liệu (0B(5)). Dòng OCR luôn để mặc định.
+    """
 
     text: str = Field(max_length=MAX_RAW_LINE_CHARS)
     bbox: UnitBBox | None
     words: list[RawWord] = Field(max_length=MAX_RAW_LINE_CHARS)
+    flags: list[RawLineFlag] = Field(default_factory=list, max_length=2)
+    header_footer: bool = False
 
 
 class RawOcrLine(RawTextLine):
@@ -176,6 +218,14 @@ class RawOcrPage(_Frozen):
         return self
 
 
+class RawPageImage(_Frozen):
+    """Một ảnh nội dung (không-template) của trang, theo thứ tự vẽ (GĐ0 0A); `dhash` là None khi không render được."""
+
+    bbox: UnitBBox
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    dhash: str | None = Field(default=None, pattern=r"^[0-9a-f]{16}$")
+
+
 class RawPdfPage(_Frozen):
     """Dữ liệu thô của một trang. Khổ trang tính bằng point, theo hướng hiển thị (đã áp `/Rotate`).
 
@@ -183,6 +233,12 @@ class RawPdfPage(_Frozen):
     `image_area_ratio` là diện tích hợp của MỌI ảnh nhúng; `content_image_area_ratio` là diện tích hợp của các ảnh
     KHÔNG phải template (sửa đổi 2026-10-30), None khi tài liệu không có ảnh template (khi đó dùng
     `image_area_ratio`, xem `text_layer.content_image_area`).
+
+    GĐ0 (sửa đổi 2026-10-31): `content_path_area_ratio` là tổng diện tích (chặn ở 1) đường vẽ không-template,
+    không-nền (None ⇒ `path_area_ratio`, dữ liệu trước GĐ0); `own_images` là ảnh nội dung; `hidden_chars_dropped` là số
+    ký tự bị loại vì chữ ẩn (không có trong `lines`); `scan_text_layer` là trang được nhận là lớp OCR của PDF scan;
+    `objects_over_cap` là trang vượt trần đối tượng (`page_objects_max`, `pdf_form_max_depth`); `template_scan_ok` là
+    False khi lượt quét cấp tài liệu không `ok` (worker đặt).
     """
 
     page_index: int = Field(ge=0)
@@ -193,6 +249,12 @@ class RawPdfPage(_Frozen):
     path_area_ratio: UnitFloat
     ocr: RawOcrPage | None = None
     content_image_area_ratio: UnitFloat | None = None
+    content_path_area_ratio: UnitFloat | None = None
+    own_images: list[RawPageImage] = Field(default_factory=list, max_length=MAX_OWN_IMAGES)
+    hidden_chars_dropped: int = Field(default=0, ge=0, le=MAX_PAGE_WORDS * MAX_RAW_LINE_CHARS)
+    scan_text_layer: bool = False
+    objects_over_cap: bool = False
+    template_scan_ok: bool = True
 
     @model_validator(mode="after")
     def _bounded_words(self) -> RawPdfPage:

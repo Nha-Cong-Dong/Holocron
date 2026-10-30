@@ -21,12 +21,12 @@ from uuid import uuid4
 
 from pydantic import Field, field_validator, model_validator
 
+from .limits import MAX_LINE_CHARS
 from .schemas import TOPIC_KEY_PATTERN, ChunkCategory, KnowledgeChunk, StrictModel, normalize_quote, quote_in_text
 
 SUBJECT_CODE_PATTERN = r"^[A-Z]{2,6}[0-9]{2,4}$"
 CHAPTER_CODE_PATTERN = r"^ch[0-9]{1,2}(\.[0-9]{1,2})?$"
 MAX_PAGE_LINES = 5000
-MAX_LINE_CHARS = 2000
 MIN_QUOTE_CHARS = 8
 MAX_DOCUMENT_PAGES = 300  # cùng giới hạn trang của bộ nhập PDF (§6.5, ADR-008 mục 4)
 MAX_TOPIC_KEY_CHARS = 128

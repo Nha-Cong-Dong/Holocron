@@ -14,9 +14,8 @@ from typing import Literal, get_args
 from pydantic import Field, field_validator, model_validator
 
 from .ingestion import ExtractedTable
+from .limits import MAX_LINE_CHARS
 from .schemas import DocumentMeta, StrictModel
-
-MAX_LINE_CHARS = 2000
 
 LineEngine = Literal["text_layer", "tesseract", "vlm", "human"]
 TierUsed = Literal["text_layer", "ocr", "layout", "vlm"]

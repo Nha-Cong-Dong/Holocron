@@ -408,9 +408,9 @@ def test_traineddata_over_the_byte_cap_means_language_missing(full_tessdata: Pat
 
 
 def test_unreadable_traineddata_means_language_missing(tmp_path: Path) -> None:
-    # Thư mục đã đặt không có `vie.traineddata` và không thư mục nào khác có: không xác định được ⇒ bỏ qua kiểm
-    # (dò theo thứ tự, duyệt 2026-10-30; trước đây là thiếu `vie`).
-    assert _probe_with(_settings_in(tmp_path / "khong-co")) == READY
+    # Thư mục truyền bằng `--tessdata-dir` không có `vie.traineddata` ⇒ thiếu `vie` (cũ → mới, duyệt 2026-10-30
+    # "Tessdata 5.x": vòng trước bỏ qua kiểm vì dò tiếp không thấy; nay chỉ kiểm đúng thư mục engine dùng).
+    assert _probe_with(_settings_in(tmp_path / "khong-co")) == NO_VIE
     garbage = tmp_path / "rac"
     garbage.mkdir()
     (garbage / "vie.traineddata").write_bytes(b"\x00" * 2048)
@@ -433,9 +433,11 @@ def test_tessdata_dir_falls_back_to_the_list_langs_header(full_tessdata: Path, t
     )
     assert probe_tesseract(_settings_in(None), CONFIG, runner) == READY
     assert [args[1] for args, _, _ in runner.calls] == ["--version", "--list-langs"]
-    # Dòng đầu có ghi thư mục mà thư mục đó không có `vie.traineddata`, không thư mục nào khác có: bỏ qua kiểm (dò
-    # theo thứ tự, duyệt 2026-10-30; trước đây là thiếu `vie`).
-    assert _probe_with(_settings_in(None), header_dir=str(tmp_path / "khong-co")) == READY
+    # Dòng đầu có ghi thư mục mà thư mục đó không có `vie.traineddata` ⇒ thiếu `vie`, không dò đường lùi (cũ → mới,
+    # duyệt 2026-10-30 "Tessdata 5.x": vòng trước bỏ qua kiểm).
+    assert _probe_with(_settings_in(None), header_dir=str(tmp_path / "khong-co")) == NO_VIE
+    fallback = PdfReaderConfig(ocr_tessdata_default_dirs=(str(full_tessdata),))
+    assert _probe_with(_settings_in(None), fallback, header_dir=str(tmp_path / "khong-co")) == NO_VIE
 
 
 def test_unknown_tessdata_dir_skips_the_charset_check(caplog: pytest.LogCaptureFixture) -> None:
@@ -463,9 +465,10 @@ def test_configured_tessdata_dir_wins_over_the_header(full_tessdata: Path, tmp_p
     lacking = _tessdata(tmp_path / "lacking", [letter for letter in ALL_LETTERS if letter != "ơ"])
     assert _probe_with(_settings_in(full_tessdata), header_dir=str(lacking)) == READY
     assert _probe_with(_settings_in(lacking), header_dir=str(full_tessdata)) == NO_VIE
-    # Thư mục đã đặt không có file thì dò tiếp tới thư mục ở dòng đầu `--list-langs` (duyệt 2026-10-30).
+    # Thư mục truyền bằng `--tessdata-dir` không có file ⇒ thiếu `vie`, KHÔNG dò tiếp tới thư mục ở dòng đầu
+    # `--list-langs` (cũ → mới, duyệt 2026-10-30 "Tessdata 5.x": vòng trước dò tiếp nên ca header đủ chữ là READY).
     assert _probe_with(_settings_in(empty), header_dir=str(lacking)) == NO_VIE
-    assert _probe_with(_settings_in(empty), header_dir=str(full_tessdata)) == READY
+    assert _probe_with(_settings_in(empty), header_dir=str(full_tessdata)) == NO_VIE
 
 
 def test_listed_tessdata_dir_parses_the_header() -> None:
@@ -1276,14 +1279,54 @@ def test_charset_warning_counts_only_letters_outside_the_allowed_list(
 
 
 def test_unreadable_traineddata_warning_has_no_path(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    missing = tmp_path / "khong-doc-duoc"
-    (missing / "vie.traineddata").mkdir(parents=True)  # thấy file nhưng đọc lỗi (là thư mục)
+    """Cũ → mới: `vie.traineddata` là thư mục trước là "không đọc được", nay là "không phải file thường"
+    (`missing_file`); ca "không đọc được" nay dùng file vượt trần byte."""
+    over_cap = _tessdata(tmp_path / "khong-doc-duoc", ALL_LETTERS)
+    size = (over_cap / "vie.traineddata").stat().st_size
     with caplog.at_level(logging.WARNING):
-        assert _probe_with(_settings_in(missing)) == NO_VIE
+        assert _probe_with(_settings_in(over_cap), PdfReaderConfig(ocr_traineddata_max_bytes=size - 1)) == NO_VIE
     messages = [record.getMessage() for record in caplog.records]
-    assert any("không đọc được" in message for message in messages)
-    for leaked in (str(tmp_path), tmp_path.name, missing.name):
+    assert sum("không đọc được" in message for message in messages) == 1
+    for leaked in (str(tmp_path), tmp_path.name, over_cap.name):
         assert all(leaked not in message for message in messages)
+
+
+@pytest.mark.parametrize("layout", ["absent", "directory"])
+def test_missing_traineddata_warning_has_no_path(tmp_path: Path, caplog: pytest.LogCaptureFixture, layout: str) -> None:
+    """Thư mục engine dùng không có `vie.traineddata` là file thường (vắng, hoặc là thư mục) ⇒ thiếu `vie`, đúng một
+    cảnh báo, không lộ đường dẫn."""
+    tessdata = tmp_path / "thu-muc-rieng"
+    tessdata.mkdir()
+    if layout == "directory":
+        (tessdata / "vie.traineddata").mkdir()
+    with caplog.at_level(logging.WARNING):
+        assert _probe_with(_settings_in(tessdata)) == NO_VIE
+    messages = [record.getMessage() for record in caplog.records]
+    assert sum("không có vie.traineddata là file thường" in message for message in messages) == 1
+    for leaked in (str(tmp_path), tmp_path.name, tessdata.name):
+        assert all(leaked not in message for message in messages)
+
+
+def test_startup_check_ignores_tessdata_prefix(
+    full_tessdata: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`TESSDATA_PREFIX` trỏ tới bản đủ chữ không đổi kết quả khi thư mục engine dùng (`--list-langs`) thiếu chữ, và
+    ngược lại (duyệt 2026-10-30 "Tessdata 5.x"). Cấu hình đọc bằng bộ nạp thật từ môi trường của tiến trình."""
+    for name in ("HOLOCRON_TESSDATA_DIR", "HOLOCRON_TESSERACT_CMD", ENV_PDF_OCR_PRIMARY):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(ENV_PDF_OCR_SECONDARY, "")
+    lacking = _tessdata(tmp_path / "lacking", [letter for letter in ALL_LETTERS if letter != "ơ"])
+
+    def check(prefix: Path, listed: Path) -> dict[CapabilityName, CapabilityReason]:
+        monkeypatch.setenv("TESSDATA_PREFIX", str(prefix))
+        listing = RunResult(status="ok", stdout=f'List of available languages in "{listed}/" (2):\neng\nvie\n'.encode())
+        runner = FakeRunner({"--version": OK_VERSION, "--list-langs": listing})
+        return check_local_capabilities(
+            load_ocr_settings, functools.partial(probe_tesseract, run=runner), _loaded, CONFIG
+        )
+
+    assert check(full_tessdata, lacking) == {"ocr": "ocr_language_missing", "ocr_cross_check": "ocr_language_missing"}
+    assert check(lacking, full_tessdata) == {"ocr_cross_check": "secondary_ocr_disabled"}
 
 
 def _probe_status_with(listing: RunResult) -> ProbeOutcome:

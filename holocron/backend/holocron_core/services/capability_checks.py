@@ -7,9 +7,11 @@ Chạy MỘT LẦN lúc khởi động app (tầng router gắn kết quả vào
   rồi `--list-langs`, mỗi lệnh một lần, không qua shell, timeout, giới hạn byte đầu ra và thời gian chờ sau khi kill
   lấy từ `PdfReaderConfig` của app). Lý do của probe phân biệt "không chạy được binary" với "thiếu `vie`". Có `vie`
   thì kiểm unicharset đủ chữ tiếng Việt (ADR-008 mục 14) bằng `tesseract.check_vie_charset`, CÙNG hàm worker gọi khi
-  dựng engine. Không tìm thấy `vie.traineddata` ở thư mục nào đã dò (`HOLOCRON_TESSDATA_DIR` → `TESSDATA_PREFIX` →
-  thư mục ở dòng đầu `--list-langs` → thư mục mặc định của bản cài; như Tesseract 4.x không ghi thư mục) thì bỏ qua
-  kiểm unicharset, kèm MỘT cảnh báo (ngoại lệ duyệt 2026-10-30).
+  dựng engine; cả hai kiểm đúng thư mục tessdata mà lần gọi OCR thật dùng (`tesseract.resolve_tessdata_dir`:
+  `--tessdata-dir` từ `HOLOCRON_TESSDATA_DIR` → thư mục ở dòng đầu `--list-langs` → với Tesseract 4.x, đường lùi
+  là thư mục mặc định của bản cài; `TESSDATA_PREFIX` không tham gia). Thư mục đã xác định mà không có
+  `vie.traineddata` là file thường ⇒ thiếu `vie`. Đường lùi không thấy file thì bỏ qua kiểm unicharset, kèm MỘT cảnh
+  báo (ngoại lệ duyệt 2026-10-30).
 - `secondary_ocr_loads`: đọc kết quả thăm dò lượt đọc thứ hai. Việc nạp RapidOCR chạy trong tiến trình con có giới
   hạn (`infrastructure/document_readers/secondary_probe.py`); tiến trình này không import `rapidocr`,
   `onnxruntime` hay `cv2`.
@@ -99,6 +101,12 @@ def log_charset_check(charset: CharsetCheck) -> None:
     if charset.status == "unknown_tessdata":
         _LOGGER.warning(
             "không tìm thấy %s.traineddata ở thư mục tessdata nào đã dò: bỏ qua kiểm unicharset", TESSERACT_LANGUAGE
+        )
+    elif charset.status == "missing_file":
+        _LOGGER.warning(
+            "thư mục tessdata Tesseract dùng không có %s.traineddata là file thường: coi như thiếu gói %s",
+            TESSERACT_LANGUAGE,
+            TESSERACT_LANGUAGE,
         )
     elif charset.status == "unreadable":
         _LOGGER.warning("không đọc được %s.traineddata (lỗi đọc hoặc quá lớn)", TESSERACT_LANGUAGE)

@@ -5,8 +5,8 @@ Các ngưỡng tên viết hoa trong ADR (`TEXT_LAYER_MIN`…) giữ đúng giá
 tầng 1 (ký hiệu toán, bảng, hình) là giá trị khởi đầu chưa hiệu chỉnh bằng phép đo.
 
 Engine OCR (tầng 2) cấu hình bằng biến môi trường `HOLOCRON_PDF_OCR_*`, `HOLOCRON_TESSERACT_CMD`,
-`HOLOCRON_TESSDATA_DIR` (spec §11.2) và `TESSDATA_PREFIX` (biến chuẩn của Tesseract, chỉ dùng để dò `vie.traineddata`
-khi kiểm bộ chữ), đọc bằng `load_ocr_settings` thành `OcrSettings`. Bộ đọc không có
+`HOLOCRON_TESSDATA_DIR` (spec §11.2), đọc bằng `load_ocr_settings` thành `OcrSettings`. `TESSDATA_PREFIX` KHÔNG được
+đọc: worker chạy Tesseract với môi trường tối thiểu nên engine không thấy biến này (duyệt 2026-10-30). Bộ đọc không có
 `OcrSettings` thì coi như không có engine OCR: trang cần OCR thành `failed` (`OCR_ENGINE_MISSING`).
 """
 
@@ -25,7 +25,6 @@ ENV_PDF_OCR_PRIMARY = "HOLOCRON_PDF_OCR_PRIMARY"
 ENV_PDF_OCR_SECONDARY = "HOLOCRON_PDF_OCR_SECONDARY"
 ENV_TESSERACT_CMD = "HOLOCRON_TESSERACT_CMD"
 ENV_TESSDATA_DIR = "HOLOCRON_TESSDATA_DIR"
-ENV_TESSDATA_PREFIX = "TESSDATA_PREFIX"
 
 DEFAULT_TESSERACT_CMD = "tesseract"
 TESSERACT_LANGUAGE = "vie"
@@ -55,8 +54,8 @@ DEFAULT_CROSS_CHECK_MAX_TOKEN_CELLS = 250_000
 # `ocr_charset_allowed_missing` chỉ nhận tập con của nó.
 OCR_CHARSET_APPROVED_MISSING: frozenset[str] = frozenset({"Ỵ", "ỵ"})
 
-# Thư mục tessdata mặc định của các bản cài Tesseract thường gặp trên Linux (gói 5.x, gói 4.x, bản dựng chung), dò
-# theo thứ tự này khi kiểm bộ chữ mà chưa biết `vie.traineddata` nằm ở đâu (ngoại lệ Tesseract 4.x, duyệt
+# Thư mục tessdata mặc định của các bản cài Tesseract thường gặp trên Linux (gói 5.x, gói 4.x, bản dựng chung): đường
+# lùi khi kiểm bộ chữ mà app không truyền `--tessdata-dir` và `--list-langs` không ghi thư mục (Tesseract 4.x, duyệt
 # 2026-10-30). Trên Windows còn dò thêm `tessdata` cạnh file chạy Tesseract (bộ cài thường đặt ở đó).
 TESSDATA_DEFAULT_DIRS: tuple[str, ...] = (
     "/usr/share/tesseract-ocr/5/tessdata",
@@ -112,8 +111,8 @@ class PdfReaderConfig(BaseModel):
     # Trần byte khi đọc `vie.traineddata` để kiểm unicharset lúc khởi động (bản best khoảng 12 MiB); file lớn hơn
     # coi như không đọc được.
     ocr_traineddata_max_bytes: int = Field(default=64 * MIB, ge=1024)
-    # Thư mục tessdata mặc định dò sau `HOLOCRON_TESSDATA_DIR`, `TESSDATA_PREFIX` và thư mục `--list-langs` ghi
-    # (`tesseract.find_vie_traineddata`); test thay bằng thư mục tạm để không phụ thuộc máy chạy test.
+    # Thư mục tessdata mặc định, chỉ dò khi không xác định được thư mục engine dùng (`tesseract.resolve_tessdata_dir`);
+    # test thay bằng thư mục tạm để không phụ thuộc máy chạy test.
     ocr_tessdata_default_dirs: tuple[str, ...] = TESSDATA_DEFAULT_DIRS
     # Hệ số giảm dần tỉ lệ render khi ảnh làm tròn lên vẫn vượt `ocr_max_pixels` (mục 4).
     render_shrink_factor: float = Field(default=DEFAULT_RENDER_SHRINK_FACTOR, gt=0.0, lt=1.0)
@@ -183,9 +182,8 @@ class OcrSettings(BaseModel):
     """Engine OCR của tầng 2 (ADR-008 mục 8, 12). Chỉ chứa đường dẫn và tên engine, không chứa bí mật.
 
     `tesseract_cmd` là đường dẫn tuyệt đối khi tìm được trong PATH của tiến trình cha (worker chạy với môi trường
-    tối thiểu, không có PATH). `tessdata_dir` là None thì dùng thư mục mặc định của bản cài Tesseract.
-    `tessdata_prefix` là giá trị `TESSDATA_PREFIX` của tiến trình cha, chỉ dùng để dò `vie.traineddata` khi kiểm bộ
-    chữ (worker chạy với môi trường tối thiểu nên không tự đọc được biến này); không truyền cho Tesseract.
+    tối thiểu, không có PATH). `tessdata_dir` (`HOLOCRON_TESSDATA_DIR`) khác rỗng thì được truyền cho Tesseract bằng
+    `--tessdata-dir`; None thì Tesseract dùng thư mục mặc định của bản cài.
     `secondary` là None thì không có lượt đọc thứ hai (`cross_check = unavailable`).
     """
 
@@ -193,7 +191,6 @@ class OcrSettings(BaseModel):
 
     tesseract_cmd: str = Field(min_length=1)
     tessdata_dir: str | None = None
-    tessdata_prefix: str | None = None
     secondary: SecondaryEngine | None = "rapidocr"
 
 
@@ -214,7 +211,6 @@ def load_ocr_settings(
       riêng cho biến này, ưu tiên hơn quy tắc chung "rỗng coi như chưa đặt"); giá trị khác là `ConfigError`.
     - `HOLOCRON_TESSERACT_CMD`: mặc định `tesseract`, tìm trong PATH của tiến trình cha bằng `which`; không tìm
       thấy thì giữ nguyên, worker sẽ không chạy được binary và coi như thiếu engine.
-    - `TESSDATA_PREFIX`: chỉ ghi lại để dò `vie.traineddata` khi kiểm bộ chữ.
     """
     source = os.environ if env is None else env
     primary = _read_env(source, ENV_PDF_OCR_PRIMARY) or "tesseract"
@@ -231,6 +227,5 @@ def load_ocr_settings(
     return OcrSettings(
         tesseract_cmd=which(command) or command,
         tessdata_dir=_read_env(source, ENV_TESSDATA_DIR),
-        tessdata_prefix=_read_env(source, ENV_TESSDATA_PREFIX),
         secondary=secondary,
     )

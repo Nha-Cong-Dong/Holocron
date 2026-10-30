@@ -99,12 +99,12 @@ def build_ocr(
 ) -> OcrRunner | None:
     """Kiểm Tesseract, kiểm bộ chữ của `vie.traineddata` rồi nạp lượt thứ hai.
 
-    Thiếu binary, thiếu `vie`, hoặc `vie.traineddata` không đọc được hay thiếu chữ ngoài
-    `config.ocr_charset_allowed_missing` ⇒ None: coi như không có engine OCR, trang cần OCR thành `failed`
-    (`OCR_ENGINE_MISSING`, ADR-008 mục 14). Không tìm thấy `vie.traineddata` ở thư mục nào đã dò ⇒ bỏ qua kiểm bộ chữ
-    (ngoại lệ Tesseract 4.x, duyệt 2026-10-30), engine vẫn dùng được. Kiểm bộ chữ là `tesseract.check_vie_charset`,
-    cùng hàm kiểm cục bộ lúc khởi động app gọi. `run` mặc định là `run_bounded` với thời gian chờ sau khi kill lấy
-    từ `config.ocr_kill_grace_s`.
+    Thiếu binary, thiếu `vie`, hoặc `vie.traineddata` ở thư mục tessdata engine dùng (`tesseract.resolve_tessdata_dir`)
+    vắng, không phải file thường, không đọc được hay thiếu chữ ngoài `config.ocr_charset_allowed_missing` ⇒ None: coi
+    như không có engine OCR, trang cần OCR thành `failed` (`OCR_ENGINE_MISSING`, ADR-008 mục 14). Không xác định được
+    thư mục (Tesseract 4.x, đường lùi không có file) ⇒ bỏ qua kiểm bộ chữ (ngoại lệ duyệt 2026-10-30), engine vẫn dùng
+    được. Kiểm bộ chữ là `tesseract.check_vie_charset`, cùng hàm kiểm cục bộ lúc khởi động app gọi. `run` mặc định
+    là `run_bounded` với thời gian chờ sau khi kill lấy từ `config.ocr_kill_grace_s`.
     """
     runner = run if run is not None else functools.partial(run_bounded, kill_grace_s=config.ocr_kill_grace_s)
     outcome = TesseractEngine.probe_status(

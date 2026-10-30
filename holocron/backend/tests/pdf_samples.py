@@ -206,3 +206,12 @@ def slow_page() -> Page:
 def write_pdf(path: Path, pages: list[Page], *, user_password: str | None = None) -> Path:
     path.write_bytes(build_pdf(pages, user_password=user_password))
     return path
+
+
+def gray_raster(box: Box, value: int, *, width: int = 4, height: int = 4) -> Raster:
+    """Ảnh xám đều màu `value` vẽ vào `box`; mỗi `Raster` là một luồng ảnh riêng trong PDF.
+
+    Cùng `value` (cùng kích thước) trên nhiều trang là cùng nội dung ở các đối tượng khác nhau; khác `value` là khác
+    nội dung (dùng cho ảnh template và ảnh nội dung, sửa đổi 2026-10-30).
+    """
+    return Raster(box=box, width=width, height=height, pixels=bytes([value]) * (width * height))

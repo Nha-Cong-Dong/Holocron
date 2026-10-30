@@ -338,10 +338,17 @@ def read_bounded(path: Path, max_bytes: int) -> bytes | None:
         descriptor = os.open(path, flags)
     except (OSError, ValueError):
         return None
+    # Kiểm loại file trước `fdopen`: trên POSIX `os.open` mở được thư mục, còn `fdopen` của thư mục ném
+    # `IsADirectoryError` ngoài khối bắt lỗi.
+    try:
+        regular = stat.S_ISREG(os.fstat(descriptor).st_mode)
+    except OSError:
+        regular = False
+    if not regular:
+        os.close(descriptor)
+        return None
     with os.fdopen(descriptor, "rb") as handle:
         try:
-            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-                return None
             data = handle.read(max_bytes + 1)
         except OSError:
             return None

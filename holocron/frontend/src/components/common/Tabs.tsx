@@ -23,14 +23,28 @@ interface TabsProps<Id extends string> {
   idPrefix: string;
   /** Nội dung của tab đang chọn. */
   children: ReactNode;
+  /**
+   * Ẩn hàng tab nhưng giữ vùng nội dung (và nội dung) mounted, ví dụ khi tab Ôn tập đang làm bài toàn màn. Mặc định
+   * hiện hàng tab như cũ.
+   */
+  hideList?: boolean;
 }
 
 /**
  * Hàng tab theo mẫu ARIA tabs (design-handoff/README.md màn 3): chỉ tab đang chọn có `tabIndex=0`; ←/→ đi vòng,
- * Home/End về đầu/cuối, chọn ngay khi chuyển focus. Vạch dưới `m-tab-indicator` trượt theo tab; nội dung vào bằng
- * `m-pane-r`/`m-pane-l` theo hướng đổi tab (không animate ở lần vẽ đầu). Giảm chuyển động do `motion.css` xử lý.
+ * Home/End về đầu/cuối, chọn ngay khi chuyển focus. Viên nền `m-tab-pill` trượt ra sau tab đang chọn (thuộc tính
+ * `translate`, mỗi tab rộng cố định nên một bước là 100% bề rộng viên nền); nội dung vào bằng `m-pane-r`/`m-pane-l` theo
+ * hướng đổi tab (không animate ở lần vẽ đầu). Giảm chuyển động do `motion.css` xử lý.
  */
-export function Tabs<Id extends string>({ label, items, selected, onSelect, idPrefix, children }: TabsProps<Id>) {
+export function Tabs<Id extends string>({
+  label,
+  items,
+  selected,
+  onSelect,
+  idPrefix,
+  children,
+  hideList = false,
+}: TabsProps<Id>) {
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const selectedIndex = Math.max(
     items.findIndex((item) => item.id === selected),
@@ -64,7 +78,12 @@ export function Tabs<Id extends string>({ label, items, selected, onSelect, idPr
 
   return (
     <div className={styles.root}>
-      <div className={styles.list} role="tablist" aria-label={label} onKeyDown={onKeyDown}>
+      <div className={styles.list} role="tablist" aria-label={label} onKeyDown={onKeyDown} hidden={hideList}>
+        <span
+          className={`m-tab-pill ${styles.pill}`}
+          aria-hidden="true"
+          style={{ translate: `${selectedIndex * 100}% 0` }}
+        />
         {items.map((item, index) => {
           const isSelected = index === selectedIndex;
           return (
@@ -89,11 +108,6 @@ export function Tabs<Id extends string>({ label, items, selected, onSelect, idPr
             </button>
           );
         })}
-        <span
-          className={`m-tab-indicator ${styles.indicator}`}
-          aria-hidden="true"
-          style={{ transform: `translateX(${selectedIndex * 100}%)` }}
-        />
       </div>
       <div role="tabpanel" id={panelId} aria-labelledby={tabId(selectedIndex)} className={styles.panel}>
         <div key={selected} className={paneClass}>

@@ -28,12 +28,23 @@
   --warn-soft: #fcefcf;
   --focus: #5b47c9;
   --glow: rgba(233, 174, 42, 0.25);
+  /* Ánh sáng trên bề mặt màu (ánh quét nút chính, sọc thanh tiến độ, sao đầu thanh) và ánh quét của skeleton. */
+  --sheen: rgba(255, 255, 255, 0.6);
+  --stripe: rgba(255, 255, 255, 0.35);
+  --glint: #ffffff;
+  --shimmer: rgba(255, 255, 255, 0.55);
   --sky: #0b0d29; /* ô bầu trời: luôn tối ở cả hai theme */
   --sky-ink: #eef0ff;
   --sky-ink-2: #a9afd9;
   --star: #f5c04e;
   --star-pending: #c9bbff;
   --star-empty: #5a62a8;
+  /* Chi tiết của ô bầu trời. Ô luôn tối ở cả hai theme nên một bộ giá trị dùng chung cho sáng và tối. */
+  --sky-edge: rgba(201, 187, 255, 0.12); /* viền trong của ô */
+  --sky-line: rgba(201, 187, 255, 0.55); /* nét nối giữa các sao */
+  --sky-chip: rgba(201, 187, 255, 0.14); /* nền nhãn "+k chương" */
+  --sky-dust: rgba(255, 255, 255, 0.35); /* bụi sao trang trí */
+  --star-glow: rgba(245, 192, 78, 0.7); /* quầng sáng sao vàng */
   --scan: #f7f3ea;
   --sh-1: 0 1px 0 #d9dcee, 0 4px 12px rgba(26, 29, 69, 0.05);
   --sh-2: 0 1px 0 #d9dcee, 0 12px 28px rgba(26, 29, 69, 0.12);
@@ -127,6 +138,7 @@
   --warn-soft: #3a3218;
   --focus: #c9bbff;
   --glow: rgba(245, 192, 78, 0.3);
+  --shimmer: rgba(255, 255, 255, 0.07);
   --scan: #e9e4d8;
   --sh-1: 0 0 0 1px #2c3270;
   --sh-2: 0 0 0 1px #4a4f96, 0 0 28px rgba(245, 192, 78, 0.12);
@@ -166,6 +178,7 @@
     --warn-soft: #3a3218;
     --focus: #c9bbff;
     --glow: rgba(245, 192, 78, 0.3);
+    --shimmer: rgba(255, 255, 255, 0.07);
     --scan: #e9e4d8;
     --sh-1: 0 0 0 1px #2c3270;
     --sh-2: 0 0 0 1px #4a4f96, 0 0 28px rgba(245, 192, 78, 0.12);

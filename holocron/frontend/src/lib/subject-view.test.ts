@@ -5,6 +5,7 @@ import {
   breadcrumbForLocation,
   breadcrumbForPath,
   canShowPanes,
+  canShowSky,
   HOME_CRUMB,
   subjectBreadcrumb,
   subjectTitle,
@@ -148,5 +149,37 @@ describe("breadcrumbForLocation (môn lấy từ địa chỉ)", () => {
       HOME_CRUMB,
       { label: "Cài đặt", href: null },
     ]);
+  });
+});
+
+describe("canShowSky", () => {
+  it("chỉ hiện bầu trời khi môn có trong danh sách đã tải", () => {
+    expect(canShowSky(subjectViewOf("VXL01", READY))).toBe(true);
+  });
+
+  it("mã sai, môn không có, danh sách đang tải hoặc lỗi: không hiện bầu trời", () => {
+    expect(canShowSky(subjectViewOf(null, READY))).toBe(false);
+    expect(canShowSky(subjectViewOf("KHAC01", READY))).toBe(false);
+    expect(canShowSky(subjectViewOf("VXL01", { kind: "ready", subjects: [] }))).toBe(false);
+    expect(canShowSky(subjectViewOf("VXL01", { kind: "loading" }))).toBe(false);
+    expect(canShowSky(subjectViewOf("VXL01", { kind: "error", error: ERROR }))).toBe(false);
+  });
+});
+
+describe("breadcrumb khi đang làm bài: tên môn không thêm mục lịch sử", () => {
+  it("tên môn trỏ về tab Ôn tập không kèm session và thay mục lịch sử hiện tại", () => {
+    const items = breadcrumbForLocation("/subject", new URLSearchParams("code=VXL01&tab=practice&session=quiz"), READY);
+    const crumb = items[1];
+    expect(crumb).toEqual({ label: "Vi xử lý", href: "/subject?code=VXL01&tab=practice", replace: true });
+    expect(crumb?.href).not.toContain("session");
+  });
+
+  it("ngoài lúc làm bài: không có mục nào thay lịch sử", () => {
+    const items = [
+      ...breadcrumbForLocation("/subject", new URLSearchParams("code=VXL01&tab=practice"), READY),
+      ...breadcrumbForPath("/settings", null, READY),
+      HOME_CRUMB,
+    ];
+    expect(items.every((item) => item.replace === undefined)).toBe(true);
   });
 });

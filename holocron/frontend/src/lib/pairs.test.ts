@@ -355,8 +355,8 @@ describe("tra chunk và trích dẫn của cặp", () => {
     expect(lookupChunk("partial", map, "b").kind).toBe("found");
     expect(lookupChunk("loading", map, "a").kind).toBe("unknown");
     expect(lookupChunk("error", map, "a").kind).toBe("unknown");
-    expect(lookupLabel({ kind: "missing" })).toContain("Không tìm thấy chunk nguồn");
-    expect(lookupLabel({ kind: "not_loaded" })).toContain("Chưa tải hết chunk của môn");
+    expect(lookupLabel({ kind: "missing" })).toContain("Không tìm thấy đoạn nguồn");
+    expect(lookupLabel({ kind: "not_loaded" })).toContain("Chưa tải hết các đoạn của môn");
     expect(lookupLabel({ kind: "not_loaded" })).not.toContain("Không tìm thấy");
   });
 

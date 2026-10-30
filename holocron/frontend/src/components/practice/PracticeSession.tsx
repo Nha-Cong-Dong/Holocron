@@ -1,57 +1,78 @@
 "use client";
 
-import { useCallback, useEffect, useReducer, useRef } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
+import { HolocronMark } from "@/components/brand/HolocronMark";
 import { describeTarget } from "@/components/shell/keyboard";
 import { useShell } from "@/components/shell/ShellContext";
+import { Button } from "@/components/ui";
 import { api, toUiError } from "@/lib/api";
 import { localError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
-import {
-  entrySummary,
-  essaySubmission,
-  initialPracticeState,
-  isAnswered,
-  type PracticeState,
-  practiceKeyEffect,
-  practiceReducer,
-  practiceScope,
-} from "@/lib/practice";
+import { essaySubmission, initialPracticeState, isAnswered, type PracticeState, practiceScope } from "@/lib/practice";
 import type { PracticeBlueprint, PracticeQuestion } from "@/lib/practice-data";
+import { essayErrorPlacement, nextLabel, quizHint, quizKeyEffect, quizReducer, resultRows } from "@/lib/quiz";
 import { resolveShortcut, targetKindOf } from "@/lib/shortcuts";
+import { chapterLabel } from "@/lib/sky";
+import type { PracticeSessionKind } from "@/lib/subject-route";
 
 import { EssayQuestionView } from "./EssayQuestionView";
 import { McqQuestionView } from "./McqQuestionView";
-import styles from "./Practice.module.css";
+import styles from "./Quiz.module.css";
+import { QuizHeader } from "./QuizHeader";
+import { ResultScreen } from "./ResultScreen";
+import { SourceAside } from "./SourceAside";
 
 interface PracticeSessionProps {
   questions: PracticeQuestion[];
   blueprint: PracticeBlueprint;
+  /** Môn của đề (ADR-006 mục 6): để tìm đoạn nguồn và tên tài liệu. */
   subjectCode: string;
-  onNewExam: () => void;
+  /** "Thoát" khi đang làm hoặc "Làm đề mới" ở Kết quả: về thiết lập đề. */
+  onExit: () => void;
+  /** Báo bài làm đang ở màn làm đề hay màn kết quả. */
+  onPhaseChange: (phase: PracticeSessionKind) => void;
 }
 
-const KIND_LABEL: Record<PracticeQuestion["kind"], string> = {
-  mcq: "Trắc nghiệm",
-  essay: "Tự luận",
-};
+/** `id` của nút chính "Câu tiếp"/"Xem kết quả": nhận focus ngay khi câu đã trả lời, để Enter đi tiếp. */
+const NEXT_BUTTON_ID = "quiz-next";
 
 /**
- * Làm bài từng câu một. Phím tắt (kế hoạch UI mục 5.7) chỉ có tác dụng khi không mở hộp lệnh hay bảng phím tắt, và
- * phím một ký tự không có tác dụng khi đang gõ trong ô trả lời.
+ * Làm bài (màn 9) rồi Kết quả (màn 10). Một câu một màn: thanh trên, thẻ câu hỏi và cột "Nguồn". Phím tắt (kế hoạch UI
+ * mục 5.7) chỉ có tác dụng khi không mở hộp lệnh hay bảng phím tắt; phím một ký tự không có tác dụng khi đang gõ trong
+ * ô trả lời. Trả lời xong thì focus sang nút chính, nên Enter là cú bấm gốc của nút đó; giữ Enter không nhảy qua câu
+ * chưa làm vì nút chỉ có khi câu đã trả lời và reducer chỉ sang câu khi câu đang mở đã trả lời.
  */
-export function PracticeSession({ questions, blueprint, subjectCode, onNewExam }: PracticeSessionProps) {
+export function PracticeSession({ questions, blueprint, subjectCode, onExit, onPhaseChange }: PracticeSessionProps) {
   const { overlayOpen } = useShell();
-  const [state, dispatch] = useReducer(practiceReducer, questions, initialPracticeState);
-  const headingRef = useRef<HTMLHeadingElement>(null);
+  const [state, dispatch] = useReducer(quizReducer, questions, initialPracticeState);
+  const boxRef = useRef<HTMLDivElement>(null);
   // Bản mới nhất của trạng thái cho handler phím (gắn một lần) và cho lời gọi chấm bất đồng bộ.
   const stateRef = useRef<PracticeState>(state);
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
-  // Mã lượt gửi chấm, tăng dần trong cả phiên (kể cả qua "Làm lại từ đầu"): reducer chỉ áp phản hồi mang đúng mã
-  // của lượt đang chờ ở câu đó, nên kết quả của lượt cũ không bị gán cho câu trả lời mới.
+  // Mã lượt gửi chấm, tăng dần trong cả phiên: reducer chỉ áp phản hồi mang đúng mã của lượt đang chờ ở câu đó.
   const submissions = useRef(createLatestCounter());
+
+  // Tên tài liệu cho chú thích trích dẫn; không tải được thì chỉ ghi số trang, không chặn bài làm.
+  const [titles, setTitles] = useState<ReadonlyMap<string, string>>(new Map());
+  useEffect(() => {
+    let alive = true;
+    api.listDocuments(subjectCode).then(
+      (documents) => {
+        if (alive) setTitles(new Map(documents.map((document) => [document.docId, document.title])));
+      },
+      () => undefined,
+    );
+    return () => {
+      alive = false;
+    };
+  }, [subjectCode]);
+
+  useEffect(() => {
+    onPhaseChange(state.finished ? "result" : "quiz");
+  }, [state.finished, onPhaseChange]);
 
   const chapterOf = useCallback(
     (slotIndex: number): string | null =>
@@ -93,7 +114,7 @@ export function PracticeSession({ questions, blueprint, subjectCode, onNewExam }
         },
         { overlayOpen: false, scope: practiceScope(stateRef.current) },
       );
-      const effect = action === null ? null : practiceKeyEffect(action);
+      const effect = action === null ? null : quizKeyEffect(action);
       if (effect === null) return;
       event.preventDefault();
       if (effect.kind === "submit_essay") submitEssay();
@@ -103,150 +124,91 @@ export function PracticeSession({ questions, blueprint, subjectCode, onNewExam }
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [overlayOpen, submitEssay]);
 
-  // Khi chuyển câu (không phải câu tự luận đang viết, ô trả lời tự nhận focus), đưa focus về tiêu đề câu.
-  const currentQuestion = state.questions[state.index];
-  const currentKind = currentQuestion?.kind;
-  const currentTwinId = currentQuestion?.twinId;
-  useEffect(() => {
-    if (state.finished || currentTwinId === undefined) return;
-    if (currentKind === "mcq") headingRef.current?.focus();
-  }, [currentTwinId, state.finished, currentKind]);
-
-  if (state.finished) {
-    return (
-      <SessionSummary
-        state={state}
-        onReview={(index) => dispatch({ type: "go_to", index })}
-        onRestart={() => dispatch({ type: "restart" })}
-        onNewExam={onNewExam}
-      />
-    );
-  }
-
+  const question = state.questions[state.index];
   const entry = state.entries[state.index];
-  if (currentQuestion === undefined || entry === undefined) return null;
-  const isLast = state.index === state.questions.length - 1;
-  const chapterCode = chapterOf(currentQuestion.slotIndex);
+  const answered = entry !== undefined && isAnswered(entry);
+  const twinId = question?.twinId;
+  const kind = question?.kind;
+
+  // Sang câu mới: câu trắc nghiệm đưa focus về khung câu (câu tự luận thì ô trả lời tự nhận focus và bỏ các lần lặp
+  // của phím đang giữ từ "Câu tiếp", xem `answerHeldKey`).
+  useEffect(() => {
+    if (state.finished || twinId === undefined) return;
+    if (kind === "mcq") boxRef.current?.focus();
+  }, [twinId, kind, state.finished]);
+
+  // Vừa trả lời: focus sang nút chính để Enter đi tiếp (không có bước này thì Enter mất tác dụng).
+  useEffect(() => {
+    if (answered && !state.finished) document.getElementById(NEXT_BUTTON_ID)?.focus();
+  }, [answered, state.finished]);
+
+  if (state.finished) return <ResultScreen rows={resultRows(state)} onNewExam={onExit} />;
+  if (question === undefined || entry === undefined) return null;
+
+  const chapterCode = chapterOf(question.slotIndex);
+  const citation = entry.kind === "essay" && entry.result !== null ? entry.result.citation : question.citation;
+  const grading = entry.kind === "essay" && entry.status === "grading";
+  const needsCheck = entry.kind === "essay" && entry.status === "editing";
+  const screenError = entry.kind === "essay" && entry.error !== null && essayErrorPlacement(entry.error) === "screen";
 
   return (
-    <div className={styles.page}>
-      <nav aria-label="Các câu trong đề">
-        <ol className={styles.progress}>
-          {state.questions.map((question, index) => {
-            const item = state.entries[index];
-            const done = item !== undefined && isAnswered(item);
-            return (
-              <li key={question.twinId}>
-                <button
-                  type="button"
-                  className={styles.stepButton}
-                  aria-current={index === state.index ? "step" : undefined}
-                  aria-label={`Câu ${index + 1}${done ? ", đã làm" : ""}`}
-                  data-done={done}
-                  onClick={() => dispatch({ type: "go_to", index })}
-                >
-                  {index + 1}
-                </button>
-              </li>
-            );
-          })}
-        </ol>
-      </nav>
-
-      <article className={styles.panel} aria-labelledby="practice-question-title">
-        <header className={styles.questionHeader}>
-          <h2 id="practice-question-title" ref={headingRef} className={styles.questionTitle} tabIndex={-1}>
-            Câu {state.index + 1}/{state.questions.length}
+    <section className={styles.screen} aria-label="Làm bài">
+      <QuizHeader index={state.index} total={state.questions.length} answered={answered} onExit={onExit} />
+      <div key={question.twinId} ref={boxRef} className={styles.grid} tabIndex={-1}>
+        <article className={styles.card} aria-labelledby={`stem-${question.twinId}`}>
+          {chapterCode !== null && <span className={styles.chapter}>{chapterLabel(chapterCode)}</span>}
+          <h2 id={`stem-${question.twinId}`} className={styles.stem}>
+            {question.stem}
           </h2>
-          <span className={styles.kindLabel}>
-            {KIND_LABEL[currentQuestion.kind]}
-            {chapterCode !== null && ` · chương ${chapterCode}`}
-          </span>
-        </header>
-        <p className={styles.stem}>{currentQuestion.stem}</p>
 
-        {currentQuestion.kind === "mcq" && entry.kind === "mcq" && (
-          <McqQuestionView
-            key={currentQuestion.twinId}
-            question={currentQuestion}
-            selected={entry.selected}
-            submitted={entry.submitted}
-            subjectCode={subjectCode}
-            chapterCode={chapterCode}
-            sourceOpen={state.sourceOpen}
-            onSelect={(key) => dispatch({ type: "select", key })}
-            onSubmit={() => dispatch({ type: "submit_mcq" })}
-            onToggleSource={() => dispatch({ type: "toggle_source" })}
-          />
-        )}
-        {currentQuestion.kind === "essay" && entry.kind === "essay" && (
-          <EssayQuestionView
-            key={currentQuestion.twinId}
-            question={currentQuestion}
-            entry={entry}
-            subjectCode={subjectCode}
-            chapterCode={chapterCode}
-            sourceOpen={state.sourceOpen}
-            onEdit={(text) => dispatch({ type: "edit_essay", text })}
-            onSubmit={submitEssay}
-            onToggleSource={() => dispatch({ type: "toggle_source" })}
-          />
-        )}
-      </article>
+          {question.kind === "mcq" && entry.kind === "mcq" && (
+            <McqQuestionView
+              question={question}
+              entry={entry}
+              titles={titles}
+              onPick={(key) => dispatch({ type: "pick", key })}
+            />
+          )}
+          {question.kind === "essay" && entry.kind === "essay" && (
+            <EssayQuestionView
+              question={question}
+              entry={entry}
+              onEdit={(text) => dispatch({ type: "edit_essay", text })}
+              onRetry={submitEssay}
+              onSkip={() => dispatch({ type: "skip_essay" })}
+            />
+          )}
 
-      <div className={styles.navigation}>
-        <button
-          type="button"
-          className={styles.secondary}
-          onClick={() => dispatch({ type: "previous" })}
-          disabled={state.index === 0}
-        >
-          Câu trước
-        </button>
-        <button type="button" className={styles.primary} onClick={() => dispatch({ type: "next" })}>
-          {isLast ? "Xem lại cả lượt (N)" : "Câu kế tiếp (N)"}
-        </button>
-      </div>
-    </div>
-  );
-}
+          <div className={styles.footer}>
+            <span className={styles.caption}>{quizHint(entry)}</span>
+            {grading && (
+              <output className={styles.grading}>
+                <HolocronMark size={24} spinning />
+                Đang chấm…
+              </output>
+            )}
+            {needsCheck && !screenError && (
+              <Button variant="primary" onClick={submitEssay}>
+                Chấm ý
+              </Button>
+            )}
+            {answered && (
+              <Button id={NEXT_BUTTON_ID} variant="primary" onClick={() => dispatch({ type: "next" })}>
+                {nextLabel(state)} <span className={styles.kbd}>Enter</span>
+              </Button>
+            )}
+          </div>
+        </article>
 
-interface SessionSummaryProps {
-  state: PracticeState;
-  onReview: (index: number) => void;
-  onRestart: () => void;
-  onNewExam: () => void;
-}
-
-/** Cuối lượt: kết quả từng câu (đúng/sai, hoặc "Khớp x/y ý"), không có con số tổng do giao diện đếm. */
-function SessionSummary({ state, onReview, onRestart, onNewExam }: SessionSummaryProps) {
-  return (
-    <section className={styles.panel} aria-labelledby="practice-summary-title">
-      <h2 id="practice-summary-title">Xem lại lượt luyện tập</h2>
-      <p className={styles.muted}>Kết quả từng câu. Chọn “Xem lại” để mở lại câu đó cùng giải thích và trích dẫn.</p>
-      <ol className={styles.summaryList}>
-        {state.questions.map((question, index) => {
-          const entry = state.entries[index];
-          return (
-            <li key={question.twinId} className={styles.summaryItem}>
-              <span>Câu {index + 1}</span>
-              <span className={styles.summaryStem}>
-                {entry === undefined ? "Chưa làm" : entrySummary(question, entry)}
-              </span>
-              <button type="button" className={styles.linkButton} onClick={() => onReview(index)}>
-                Xem lại
-              </button>
-            </li>
-          );
-        })}
-      </ol>
-      <div className={styles.actions}>
-        <button type="button" className={styles.secondary} onClick={onRestart}>
-          Làm lại từ đầu
-        </button>
-        <button type="button" className={styles.primary} onClick={onNewExam}>
-          Tạo đề mới
-        </button>
+        <SourceAside
+          answered={answered}
+          citation={citation}
+          titles={titles}
+          subjectCode={subjectCode}
+          chapterCode={chapterCode}
+          open={state.sourceOpen}
+          onToggle={() => dispatch({ type: "toggle_source" })}
+        />
       </div>
     </section>
   );

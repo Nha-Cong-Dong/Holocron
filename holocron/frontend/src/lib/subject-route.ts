@@ -83,3 +83,23 @@ export function subjectDocumentsHref(code: string, location: Partial<VaultLocati
   const page = doc === null || location.page === undefined || location.page === null ? null : String(location.page);
   return subjectHref(code, "documents", { doc, page });
 }
+
+// ---------------------------------------------------------------------------- phiên làm bài trong tab Ôn tập
+
+/**
+ * Phần đang mở trong tab Ôn tập khi đang làm đề (`&session=quiz`) hoặc xem kết quả (`&session=result`). Chỉ phản chiếu
+ * state của màn Ôn tập (nguồn chân lý nằm trong bộ nhớ), ghi bằng `router.replace` nên không thêm mục lịch sử.
+ */
+export type PracticeSessionKind = "quiz" | "result";
+
+/** Đọc `?session=` của tab Ôn tập; tab khác, thiếu hoặc giá trị lạ ⇒ `null`. Không ném lỗi. */
+export function parsePracticeSession(params: SearchParamsLike): PracticeSessionKind | null {
+  if (parseSubjectTab(params.get("tab")) !== "practice") return null;
+  const value = params.get("session")?.trim() ?? "";
+  return value === "quiz" || value === "result" ? value : null;
+}
+
+/** Địa chỉ tab Ôn tập của một môn, kèm `session` khi đang làm đề hoặc xem kết quả; `null` ⇒ màn thiết lập đề. */
+export function practiceSessionHref(code: string, session: PracticeSessionKind | null): string {
+  return subjectHref(code, "practice", { session });
+}

@@ -1,0 +1,11 @@
+/* Hình dáng thẻ; chuyển động ở motion.css (.m-card). Nền của thẻ cũng là nền lớp ::after nằm trên viền chạy. */
+.card {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-4) var(--sp-5);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--sh-1);
+  color: var(--ink);
+  list-style: none;
+}

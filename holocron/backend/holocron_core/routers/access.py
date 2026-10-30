@@ -17,9 +17,13 @@ Hai lớp:
   `Host: 127.0.0.1:<port>`, hợp lệ. Chỉ token (khi bật) chặn được CSRF.
 - **Token tuỳ chọn**: chỉ khi đặt `HOLOCRON_REQUIRE_TOKEN` (giá trị của biến chính là token) thì mọi request phải mang
   đúng một header `X-Holocron-Token` bằng đúng giá trị đó, so bằng `hmac.compare_digest` trên bytes latin-1 (cách
-  Starlette giải mã header). Biến rỗng coi như chưa đặt (`.env.example`). Token chỉ được gồm ASCII in được
-  (U+0020–U+007E) và không có khoảng trắng đầu/cuối; vi phạm (kể cả giá trị toàn khoảng trắng) là cấu hình hỏng và app
-  fail-closed: mọi request bị 403 với `detail` cố định chỉ nêu tên biến, không nêu giá trị.
+  Starlette giải mã header). Biến không đặt hoặc là chuỗi rỗng `""` coi như chưa đặt (dòng `HOLOCRON_REQUIRE_TOKEN=`
+  trong `.env`). Có giá trị thì token chỉ được gồm ASCII in được (U+0020–U+007E) và không có khoảng trắng đầu/cuối;
+  không cắt khoảng trắng trước khi kiểm. Vi phạm, kể cả giá trị toàn khoảng trắng (dấu cách, tab, NBSP, xuống dòng hay
+  khoảng trắng Unicode khác), là cấu hình hỏng: app TỪ CHỐI KHỞI ĐỘNG (`check_token_config` gọi trong `lifespan` ở
+  `routers/api.py`, lỗi `InvalidTokenConfigError` chỉ nêu tên biến, không nêu giá trị). Middleware vẫn đọc lại biến ở
+  mỗi request làm lớp phòng thủ thứ hai (ví dụ `os.environ` bị đổi trong tiến trình sau khi khởi động): cấu hình hỏng
+  ⇒ fail-closed, mọi request bị 403 với `detail` cố định chỉ nêu tên biến.
 
 Danh sách host và token lấy từ hai provider `get_allowed_hosts`, `get_required_token`; middleware tra
 `app.dependency_overrides` trước khi gọi provider, nên test override như một dependency FastAPI (fixture `autouse` ở
@@ -64,7 +68,8 @@ class InvalidTokenConfigError(ValueError):
 
     def __init__(self) -> None:
         super().__init__(
-            f"{TOKEN_ENV} chỉ được gồm ký tự ASCII in được (U+0020–U+007E), không có khoảng trắng đầu hoặc cuối"
+            f"{TOKEN_ENV} không hợp lệ: chỉ được gồm ký tự ASCII in được (U+0020–U+007E), không có khoảng trắng đầu "
+            "hoặc cuối, không được chỉ gồm khoảng trắng; để trống hoặc bỏ biến nếu không cần xác thực"
         )
 
 
@@ -125,9 +130,11 @@ def is_valid_token(value: str) -> bool:
 
 
 def read_required_token(env: Mapping[str, str] | None = None) -> str | None:
-    """Token bắt buộc từ `env` (mặc định `os.environ`); `None` khi không đặt hoặc rỗng.
+    """Token bắt buộc từ `env` (mặc định `os.environ`); `None` chỉ khi biến không đặt hoặc là chuỗi rỗng `""`.
 
-    Giá trị khác rỗng nhưng không hợp lệ (xem `is_valid_token`) ném `InvalidTokenConfigError`.
+    Mọi giá trị khác phải hợp lệ theo `is_valid_token`, kiểm nguyên văn (không cắt khoảng trắng); sai ⇒ ném
+    `InvalidTokenConfigError`, kể cả giá trị toàn khoảng trắng (dấu cách, tab, NBSP, U+3000, xuống dòng): lúc khởi
+    động app từ chối khởi động (`check_token_config`), lúc phục vụ request thì fail-closed thay vì âm thầm bỏ token.
     """
     source = os.environ if env is None else env
     value = source.get(TOKEN_ENV)
@@ -151,6 +158,20 @@ def get_allowed_hosts() -> frozenset[str]:
 
 def get_required_token() -> str | None:
     return read_required_token()
+
+
+def required_token_provider(overrides: ProviderOverrides) -> Callable[[], str | None]:
+    """Provider token hiện hành: override trong `overrides` (ở app là `app.dependency_overrides`) nếu có."""
+    provider: Callable[[], str | None] = overrides.get(get_required_token, get_required_token)
+    return provider
+
+
+def check_token_config(overrides: ProviderOverrides) -> None:
+    """Kiểm cấu hình token lúc khởi động; hỏng ⇒ `InvalidTokenConfigError` (chỉ nêu tên biến), app từ chối khởi động.
+
+    Gọi trong `lifespan` của `routers/api.py`, trước khi mở kho, cùng đường lỗi với DB mới hơn code (§5.13).
+    """
+    required_token_provider(overrides)()
 
 
 def access_denial(
@@ -189,9 +210,7 @@ class LocalAccessMiddleware:
         return hosts
 
     def _required_token(self) -> str | None:
-        provider = self._overrides().get(get_required_token, get_required_token)
-        token: str | None = provider()
-        return token
+        return required_token_provider(self._overrides())()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):

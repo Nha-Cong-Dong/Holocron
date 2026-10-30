@@ -12,7 +12,8 @@ Mọi lời gọi `python/python.exe` của zip đều có `-I` (như `Holocron.
 2. RapidOCR thật (bản `full`): import `rapidocr`, `onnxruntime`, `cv2`, `shapely`; một lần suy luận trên ảnh có chữ tự
    tạo bằng adapter của app (model đóng sẵn, không tải mạng).
 3. `Holocron.cmd --no-browser --data-dir <thư mục có dấu>`, đọc URL từ stdout. `GET /` có `__HOLOCRON_RUNTIME__`;
-   `/vault/` 200; `/v1/khong-co` JSON 404; `/v1/runtime` 200; `Host: evil.example` ⇒ 403 (SKIP "chờ B4" trừ khi có
+   `/vault/` 200; `/pairs/`, `/practice/`, `/vault/` là trang chuyển hướng (`data-legacy-redirect`, không còn chữ của
+   màn cũ); `/v1/khong-co` JSON 404; `/v1/runtime` 200; `Host: evil.example` ⇒ 403 (SKIP "chờ B4" trừ khi có
    `--expect-host-check`). Tải lên một PDF có lớp chữ (trang 1 có văn bản) và một PDF scan không có lớp chữ (bản
    `full`: `cross_check` là ok/mismatch với `secondary_engine = rapidocr`). Server và tiến trình con luôn được dừng
    (`finally`) trước khi xoá thư mục tạm.
@@ -609,6 +610,12 @@ def check_rapidocr(report: Report, root: Path, work: Path) -> Path | None:
     return gray
 
 
+# Route cũ chỉ còn trang chuyển hướng phía client sang trang môn (frontend `LegacyRedirect`, `data-legacy-redirect`).
+LEGACY_REDIRECT_PATHS = ("/pairs/", "/practice/", "/vault/")
+LEGACY_REDIRECT_MARKER = "data-legacy-redirect"
+# Chữ chỉ có trong HTML dựng sẵn của màn cũ (khung chờ chung và màn ôn tập cũ đang tải danh sách môn).
+LEGACY_SCREEN_MARKERS = (">Đang tải…<", "Đang tải danh sách môn")
+
 HOST_CHECK_PENDING = "chờ B4: kiểm Host chưa có ở develop (bật bằng --expect-host-check khi B4 đã merge)"
 
 
@@ -619,6 +626,14 @@ def check_http(report: Report, port: int, *, expect_host_check: bool = False) ->
     )
     status, _, _ = http_request(port, "GET", "/vault/")
     report.check("GET /vault/ 200", status == 200, f"{status}")
+    for path in LEGACY_REDIRECT_PATHS:
+        status, _, body = http_request(port, "GET", path)
+        legacy = [marker for marker in LEGACY_SCREEN_MARKERS if marker in body]
+        report.check(
+            f"GET {path} là trang chuyển hướng, không còn màn cũ",
+            status == 200 and LEGACY_REDIRECT_MARKER in body and not legacy,
+            f"{status} {legacy}",
+        )
     status, kind, body = http_request(port, "GET", "/v1/khong-co")
     report.check(
         "GET /v1/khong-co JSON 404", status == 404 and "json" in kind and '"detail"' in body, f"{status} {kind}"

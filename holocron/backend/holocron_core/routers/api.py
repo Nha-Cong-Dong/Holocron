@@ -20,7 +20,7 @@ from ..infrastructure.memory_store import IDEMPOTENCY_TTL, IngestionStore
 from ..infrastructure.storage import SQLiteStore, data_dir_from_env
 from ..services.document_import import ImportRuntime
 from . import blueprints, documents, ingestion, runtime, static_site, subjects, vault
-from .access import LocalAccessMiddleware, get_allowed_hosts, get_required_token
+from .access import LocalAccessMiddleware, check_token_config, get_allowed_hosts, get_required_token
 from .blueprints import create_twins
 from .deps import (
     REGISTRY,
@@ -107,6 +107,9 @@ STORE_BUSY_DETAIL = "Kho dữ liệu đang bận, thử lại"
 async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     """Mở kho ngay khi khởi động: DB SQLite mới hơn code thì app từ chối khởi động (SPECIFICATION §5.13).
 
+    Trước khi mở kho, kiểm cấu hình token (`check_token_config`): `HOLOCRON_REQUIRE_TOKEN` có giá trị mà không hợp lệ,
+    kể cả toàn khoảng trắng, thì app cũng từ chối khởi động; lỗi chỉ nêu tên biến (§11.2; duyệt 2026-10-29, câu 6).
+
     Sau khi mở kho, tạo bộ nhập tài liệu (kho file gốc, hàng đợi đọc nền, §6.5), gắn vào `app.state`, dọn file gốc
     mồ côi và xếp lại các tài liệu còn đang đọc dở. Khi tắt app (kể cả khi chính bước tạo bộ nhập lỗi): dừng bộ nhập
     (chờ có hạn; luồng đọc nền chưa dừng kịp thì thư mục file tạm được giữ lại cho lần khởi động sau, luồng đó tự
@@ -120,6 +123,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     báo `local_check_pending`; kết quả gắn vào `app.state` cho `GET /v1/runtime` và các route cần khả năng; bỏ khi tắt
     app để lần khởi động sau kiểm lại.
     """
+    check_token_config(application.dependency_overrides)
     store = get_store()
     import_runtime: ImportRuntime | None = None
     try:

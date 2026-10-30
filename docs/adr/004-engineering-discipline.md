@@ -90,6 +90,12 @@ Trạng thái: đề xuất, chờ duyệt (2026-10-29; người dùng yêu cầ
 | CAP-002 | `line_review_queue` | UI mới cần hàng đợi duyệt theo dòng nghi ngờ; backend chưa có; khi làm thật cần ADR I5 riêng | Tên vào `IMPLEMENTED_CAPABILITIES` và có test endpoint |
 | CAP-003 | `page_progress_eta` | UI mới cần tiến độ theo trang và thời gian còn lại cho từng tài liệu đang đọc; backend chưa có | Tên vào `IMPLEMENTED_CAPABILITIES` và có test endpoint |
 
+### Giới hạn độ dài dòng (LINE_TOO_LONG)
+
+- **Quyết định cũ, chưa từng triển khai:** ngày 2026-10-28 dự định thêm mã lỗi `LINE_TOO_LONG` cho trường hợp một dòng văn bản đã xác nhận dài quá giới hạn của Knowledge Vault.
+- **Thay bằng phương án B (người dùng quyết 2026-10-29, `.claude/state/decisions-answers-2026-10-29.md` mục 7):** không thêm mã lỗi. Giới hạn 2000 ký tự trước đây khai báo hai lần (`domain/documents.py` cho `ExtractedLine`, `domain/vault.py` cho `ConfirmedPage`) được gom về một hằng `MAX_LINE_CHARS` ở `domain/limits.py`; hai module kia dùng lại hằng này. `tests/test_line_limit_contract.py` khoá: (1) chỉ có một phép gán `MAX_LINE_CHARS` trong `holocron_core` và giới hạn bộ đọc ≤ giới hạn Vault; (2) bộ đọc (lắp trang lớp chữ và trang OCR) luôn chuẩn hoá NFC rồi mới cắt dòng dài thành các đoạn ≤ giới hạn, kể cả khi NFC làm chuỗi dài ra; (3) mọi dòng bộ đọc tạo ra đều vào được `ConfirmedPage`.
+- **Lý do:** `ExtractedLine.text` và `LineEdit` (`domain/documents.py`) đã chặn dòng quá dài ngay từ model (sau chuẩn hoá NFC), còn bộ đọc luôn cắt dòng dài theo đúng giới hạn của Vault, nên không có đường nào đưa một dòng quá dài tới Vault. Mã lỗi riêng sẽ là nhánh không bao giờ xảy ra; một hằng dùng chung cộng test khoá giữ được bảo đảm đó mà không thêm contract. Kiểm `_fits_vault` ở `services/document_import.py` vẫn giữ làm lớp phòng thủ.
+
 ## Phương án đã loại
 
 - **Chỉ dựa vào CI, không pre-commit:** phản hồi chậm và dễ đẩy commit sai chuẩn lên nhánh chung.

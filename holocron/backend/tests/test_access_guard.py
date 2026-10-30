@@ -9,7 +9,7 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import MutableMapping
+from collections.abc import Iterator, MutableMapping
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +19,8 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from holocron_core.infrastructure.memory_store import IngestionStore
-from holocron_core.routers import access
+from holocron_core.infrastructure.storage import DATA_DIR_ENV
+from holocron_core.routers import access, deps, documents
 from holocron_core.routers.access import (
     DEFAULT_ALLOWED_HOSTS,
     FORWARDED_HOST_HEADER,
@@ -431,6 +432,26 @@ def test_token_variable_value_is_the_token() -> None:
     assert read_required_token({}) is None
 
 
+# Giá trị toàn khoảng trắng KHÔNG làm biến thành "chưa đặt": cấu hình hỏng, fail-closed (duyệt 2026-10-29, câu 6).
+OTHER_BLANK_TOKENS = ["\u00a0", "\u3000", "\x1f", "\n", "\r", " \u00a0", "\t\n"]
+
+
+@pytest.mark.parametrize("value", OTHER_BLANK_TOKENS)
+def test_other_blank_only_token_variable_is_invalid(value: str) -> None:
+    assert not is_valid_token(value)
+    with pytest.raises(InvalidTokenConfigError):
+        read_required_token({TOKEN_ENV: value})
+
+
+@pytest.mark.parametrize("value", OTHER_BLANK_TOKENS)
+def test_other_blank_only_token_variable_fails_closed_over_http(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv(TOKEN_ENV, value)
+    client = TestClient(app)
+    for response in (client.get("/v1/runtime"), client.get("/v1/runtime", headers={TOKEN_HEADER: TOKEN})):
+        assert response.status_code == 403
+        assert response.json() == {"detail": TOKEN_CONFIG_INVALID_DETAIL}
+
+
 @pytest.mark.parametrize("value", [TOKEN, "a", "a b", "!~", "tok with inner spaces"])
 def test_printable_ascii_tokens_are_valid(value: str) -> None:
     assert is_valid_token(value)
@@ -476,6 +497,99 @@ def test_host_is_checked_before_a_broken_token_config(monkeypatch: pytest.Monkey
     monkeypatch.setenv(TOKEN_ENV, " broken")
     response = _client(EVIL).get("/v1/runtime")
     assert response.json() == {"detail": HOST_FORBIDDEN_DETAIL}
+
+
+# --------------------------------------------------------------------------- #
+# M10: cấu hình token lúc khởi động (duyệt 2026-10-29, câu 6, phương án (3))
+# --------------------------------------------------------------------------- #
+
+# (giá trị biến, có phải cấu hình hỏng): `""` là chưa đặt; có giá trị mà toàn khoảng trắng (kể cả dấu cách/tab) là hỏng.
+M10_CASES = [
+    pytest.param("", False, id="empty"),
+    pytest.param(" ", True, id="space"),
+    pytest.param("\t", True, id="tab"),
+    pytest.param("\u00a0", True, id="nbsp"),
+    pytest.param("\n", True, id="newline"),
+    pytest.param(TOKEN, False, id="valid"),
+]
+# Token có ký tự không hợp lệ xử lý giống hệt giá trị toàn khoảng trắng.
+M10_MALFORMED = [pytest.param(" tok", id="leading-space"), pytest.param("tök", id="non-ascii")]
+
+
+@pytest.fixture
+def startup_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Chạy `lifespan` thật trên kho in-memory: bỏ `HOLOCRON_DATA_DIR`, bỏ kho mặc định đã cache trước và sau test."""
+    monkeypatch.delenv(DATA_DIR_ENV, raising=False)
+    deps._default_store.cache_clear()
+    yield
+    deps._default_store.cache_clear()
+
+
+def _assert_names_only_the_variable(text: str, value: str) -> None:
+    """Thông điệp lỗi cố định: nêu tên biến, không mang giá trị (kể cả dạng `repr`)."""
+    assert text == str(InvalidTokenConfigError())
+    assert TOKEN_ENV in text
+    assert repr(value) not in text
+    assert value.strip() == "" or value.strip() not in text
+
+
+@pytest.mark.parametrize(("value", "broken"), M10_CASES)
+def test_m10_read_required_token(value: str, broken: bool) -> None:
+    if not broken:
+        assert read_required_token({TOKEN_ENV: value}) == (value or None)
+        return
+    assert not is_valid_token(value)
+    with pytest.raises(InvalidTokenConfigError) as caught:
+        read_required_token({TOKEN_ENV: value})
+    _assert_names_only_the_variable(str(caught.value), value)
+
+
+def _assert_app_refuses_to_start(caplog: pytest.LogCaptureFixture, value: str) -> None:
+    """`lifespan` ném `InvalidTokenConfigError` trước khi mở kho hay tạo bộ nhập; log không mang giá trị biến."""
+    with caplog.at_level(logging.DEBUG), pytest.raises(InvalidTokenConfigError) as caught, TestClient(app):
+        pytest.fail("app không được khởi động khi cấu hình token hỏng")
+    _assert_names_only_the_variable(str(caught.value), value)
+    assert deps._default_store.cache_info().currsize == 0, "kho không được mở"
+    assert not hasattr(app.state, documents.RUNTIME_STATE_ATTR)
+    assert repr(value) not in caplog.text
+    assert value.strip() == "" or value.strip() not in caplog.text
+
+
+@pytest.mark.usefixtures("startup_env")
+@pytest.mark.parametrize(("value", "broken"), M10_CASES)
+def test_m10_app_startup(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, value: str, broken: bool
+) -> None:
+    monkeypatch.setenv(TOKEN_ENV, value)
+    if broken:
+        _assert_app_refuses_to_start(caplog, value)
+        return
+    with TestClient(app) as client:
+        unauthenticated = client.get("/v1/runtime")
+        authenticated = client.get("/v1/runtime", headers={TOKEN_HEADER: TOKEN})
+    assert authenticated.status_code == 200
+    if value:
+        assert unauthenticated.json() == {"detail": TOKEN_FORBIDDEN_DETAIL}
+    else:
+        assert unauthenticated.status_code == 200
+
+
+@pytest.mark.usefixtures("startup_env")
+@pytest.mark.parametrize("value", M10_MALFORMED)
+def test_m10_app_refuses_to_start_with_a_malformed_token(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, value: str
+) -> None:
+    monkeypatch.setenv(TOKEN_ENV, value)
+    _assert_app_refuses_to_start(caplog, value)
+
+
+@pytest.mark.usefixtures("startup_env")
+def test_m10_startup_check_uses_the_overridden_token_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Kiểm lúc khởi động tra `app.dependency_overrides` như middleware: cùng một nguồn token cho cả hai."""
+    monkeypatch.setenv(TOKEN_ENV, " ")
+    monkeypatch.setitem(app.dependency_overrides, get_required_token, lambda: TOKEN)
+    with TestClient(app) as client:
+        assert client.get("/v1/runtime", headers={TOKEN_HEADER: TOKEN}).status_code == 200
 
 
 @pytest.mark.parametrize(

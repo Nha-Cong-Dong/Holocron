@@ -1,5 +1,6 @@
 /* Holocron — motion.css
- * Bộ animation đã chọn (kiểu "Đề xuất" ở bảng Chọn tiếp). Chỉ dùng transform và opacity.
+ * Khung và màn cụ thể theo design-handoff; phần thành phần theo lựa chọn của người dùng 2026-10-29 (ô "Kết hợp" của
+ * trang chọn animation). Chỉ animate opacity, transform và translate/scale/rotate (src/lib/motion-css.test.ts).
  * Import sau tokens.css. Tên class là toàn cục có tiền tố "m-" để gắn kèm class của CSS Modules.
  * Giảm chuyển động: @media (prefers-reduced-motion) HOẶC <html data-motion="reduce"> (công tắc trong Cài đặt).
  */
@@ -127,12 +128,27 @@
   animation-delay: 280ms;
 }
 
-/* ================== 1. NÚT CHÍNH — C "Bụi sao" ================== */
-/* Viền sáng khi rê; khi bấm, component <StarBurst> bắn 8 hạt (xem README). */
+/* ================== THÀNH PHẦN — BẮT ĐẦU ================== */
+/* Bộ thành phần dùng chung ở src/components/ui (và hàng tab common/Tabs) theo lựa chọn animation của người dùng
+ * 2026-10-29 (.claude/state/drafts/anim-picker, ô "Kết hợp"). Mỗi class m-* trong khối này PHẢI có mặt trong cả hai
+ * khối giảm chuyển động ở cuối file; src/lib/motion-css.test.ts kiểm điều đó. Chỉ animate opacity, transform và các
+ * thuộc tính translate/scale/rotate (riêng lẻ, để nhiều kiểu cộng dồn trên cùng một phần tử). */
+
+/* ---------- 1. NÚT CHÍNH — A "Nhấc nhẹ" + B "Ánh quét" + C "Bụi sao" ---------- */
 .m-btn-primary {
   position: relative;
-  transition: transform var(--d-micro) var(--ease-out);
+  transition:
+    translate var(--d-micro) var(--ease-out),
+    scale var(--d-micro) var(--ease-out);
 }
+.m-btn-primary:not([aria-disabled="true"]):not([disabled]):hover,
+.m-btn-primary:not([aria-disabled="true"]):not([disabled]):focus-visible {
+  translate: 0 -2px;
+}
+.m-btn-primary:not([aria-disabled="true"]):not([disabled]):active {
+  scale: 0.94;
+}
+/* C: viền sáng quanh viên thuốc (nằm ngoài nút nên nút không cắt overflow). */
 .m-btn-primary::before {
   content: "";
   position: absolute;
@@ -149,14 +165,654 @@
 .m-btn-primary:focus-visible::before {
   opacity: 1;
 }
-.m-btn-primary:active {
-  transform: scale(0.94);
-}
-.m-btn-primary[disabled]::before {
+.m-btn-primary[disabled]::before,
+.m-btn-primary[aria-disabled="true"]::before {
   display: none;
 }
+/* B: ánh quét chạy trong lớp riêng bị cắt theo viên thuốc, để viền sáng C và bụi sao không bị cắt. */
+.m-btn-sheen {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.m-btn-sheen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, transparent 30%, var(--sheen) 50%, transparent 70%);
+  transform: translateX(-120%);
+  transition: transform calc(var(--d-screen) * 2) var(--ease-out);
+}
+.m-btn-primary:not([aria-disabled="true"]):not([disabled]):hover .m-btn-sheen::after,
+.m-btn-primary:not([aria-disabled="true"]):not([disabled]):focus-visible .m-btn-sheen::after {
+  transform: translateX(120%);
+}
+/* Chữ (và icon) của nút nằm trên lớp ánh quét và lớp nền. */
+.m-btn-label {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
 
-/* Hạt sao dùng chung (nút chính, logo, ô đánh dấu) */
+/* ---------- 2. NÚT PHỤ — A "Phủ màu" + C "Mũi tên đẩy" ---------- */
+/* Lớp phủ dùng màu hành động (vàng), không dùng tím: tím chỉ dành cho trích dẫn và nguồn (README mục 4). */
+.m-btn-secondary {
+  position: relative;
+  isolation: isolate;
+  transition: scale var(--d-micro) var(--ease-out);
+}
+.m-btn-secondary::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity var(--d-micro) var(--ease-out);
+  pointer-events: none;
+}
+.m-btn-secondary:not([aria-disabled="true"]):not([disabled]):hover::before,
+.m-btn-secondary:not([aria-disabled="true"]):not([disabled]):focus-visible::before {
+  opacity: 0.16;
+}
+.m-btn-secondary:not([aria-disabled="true"]):not([disabled]):active {
+  scale: 0.97;
+}
+.m-btn-secondary .m-btn-label {
+  transition: translate var(--d-short) var(--ease-out);
+}
+.m-btn-arrow {
+  transition: translate var(--d-short) var(--ease-spring);
+}
+.m-btn-secondary:has(.m-btn-arrow):not([aria-disabled="true"]):hover .m-btn-label,
+.m-btn-secondary:has(.m-btn-arrow):not([aria-disabled="true"]):focus-visible .m-btn-label {
+  translate: -2px 0;
+}
+.m-btn-secondary:not([aria-disabled="true"]):hover .m-btn-arrow,
+.m-btn-secondary:not([aria-disabled="true"]):focus-visible .m-btn-arrow {
+  translate: 5px 0;
+}
+
+/* ---------- 3. NÚT ICON — A "Nền nở ra" ---------- */
+.m-btn-icon {
+  position: relative;
+  overflow: hidden;
+  border-radius: 50%;
+}
+.m-btn-icon > * {
+  position: relative;
+}
+.m-btn-icon::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--surface-2);
+  transform: scale(0.4);
+  opacity: 0;
+  transition:
+    transform var(--d-short) var(--ease-spring),
+    opacity var(--d-micro);
+}
+.m-btn-icon:hover::before,
+.m-btn-icon:focus-visible::before {
+  transform: none;
+  opacity: 1;
+}
+.m-btn-icon:active {
+  transform: scale(0.94);
+}
+
+/* ---------- 4. NÚT ĐANG XỬ LÝ — C "Ba chấm" ---------- */
+/* Khối Holocron xoay (.m-cube-spin) chỉ dành cho chỉ báo tải toàn màn, không dùng trong nút. */
+.m-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.m-dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: m-dot calc(var(--d-screen) * 3) var(--ease-turn) infinite;
+}
+.m-dots i:nth-child(2) {
+  animation-delay: 120ms;
+}
+.m-dots i:nth-child(3) {
+  animation-delay: 240ms;
+}
+@keyframes m-dot {
+  0%,
+  100% {
+    opacity: 0.5;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-5px);
+  }
+}
+
+/* ---------- 5. BẢNG THẢ XUỐNG — C "Mở như holocron" ---------- */
+.m-dropdown-panel {
+  transform-origin: top center;
+  animation: m-dd-flip calc(var(--d-short) * 2) var(--ease-spring) both;
+}
+@keyframes m-dd-flip {
+  from {
+    opacity: 0;
+    transform: perspective(600px) rotateX(-75deg);
+  }
+  to {
+    opacity: 1;
+    transform: perspective(600px) rotateX(0);
+  }
+}
+.m-dropdown-option {
+  animation: m-li-in var(--d-short) var(--ease-out) both;
+}
+.m-dropdown-option:nth-child(1) {
+  animation-delay: 120ms;
+}
+.m-dropdown-option:nth-child(2) {
+  animation-delay: 160ms;
+}
+.m-dropdown-option:nth-child(3) {
+  animation-delay: 200ms;
+}
+.m-dropdown-option:nth-child(4) {
+  animation-delay: 240ms;
+}
+.m-dropdown-option:nth-child(n + 5) {
+  animation-delay: 280ms;
+}
+@keyframes m-li-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.m-dropdown-chevron {
+  transition: transform calc(var(--d-short) + 20ms) var(--ease-out);
+}
+[aria-expanded="true"] > .m-dropdown-chevron {
+  transform: rotate(180deg);
+}
+
+/* ---------- 6. CHIP CHỌN — A "Dấu tích hiện" + B "Nảy" + C "Gắn sao" ---------- */
+/* Trạng thái chọn do component đặt class .is-selected (chip bật/tắt lẫn chip radio). */
+.m-chip {
+  position: relative;
+  transition:
+    translate var(--d-micro) var(--ease-out),
+    scale var(--d-micro) var(--ease-out);
+}
+.m-chip:hover {
+  translate: 0 -1px;
+}
+.m-chip:active {
+  scale: 0.97;
+}
+/* B: nảy mỗi lần bấm. Hai keyframes giống nhau, component đổi qua lại data-pop="1"/"2" để chạy lại. */
+.m-chip[data-pop="1"] {
+  animation: m-chip-pop-1 calc(var(--d-micro) * 2) var(--ease-spring);
+}
+.m-chip[data-pop="2"] {
+  animation: m-chip-pop-2 calc(var(--d-micro) * 2) var(--ease-spring);
+}
+@keyframes m-chip-pop-1 {
+  50% {
+    transform: scale(1.09);
+  }
+}
+@keyframes m-chip-pop-2 {
+  50% {
+    transform: scale(1.09);
+  }
+}
+/* A: dấu tích phóng ra. */
+.m-chip-check {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  transform: scale(0);
+  transition: transform var(--d-short) var(--ease-spring);
+}
+.m-chip.is-selected .m-chip-check {
+  transform: none;
+}
+/* C: sao xoay vào góc chip. */
+.m-chip-star {
+  position: absolute;
+  right: -6px;
+  top: -8px;
+  width: 18px;
+  height: 18px;
+  color: var(--star);
+  transform: scale(0) rotate(-90deg);
+  transition: transform var(--d-screen) var(--ease-spring);
+  pointer-events: none;
+}
+.m-chip.is-selected .m-chip-star {
+  transform: none;
+}
+
+/* ---------- 7. Ô ĐÁNH DẤU — B "Lún và bật" + C "Xoay thành sao" ---------- */
+/* Animation chỉ chạy sau lần bấm đầu (component đặt data-animate), không chạy khi màn vừa mở với ô đã đánh dấu. */
+.m-check-box {
+  transition: scale var(--d-micro) var(--ease-out);
+}
+.m-check:active .m-check-box {
+  scale: 0.82;
+}
+.m-check-tick {
+  opacity: 0;
+}
+.m-check input:checked + .m-check-box .m-check-tick {
+  opacity: 1;
+}
+.m-check[data-animate] input:checked + .m-check-box {
+  animation: m-check-star calc(var(--d-short) * 2) var(--ease-spring);
+}
+.m-check[data-animate] input:checked + .m-check-box .m-check-tick {
+  animation:
+    m-check-tick-in var(--d-short) var(--ease-out) 160ms both,
+    m-check-tick-pop calc(var(--d-short) * 1.8) var(--ease-spring) 160ms both;
+}
+@keyframes m-check-star {
+  0% {
+    transform: rotate(0) scale(1);
+  }
+  40% {
+    transform: rotate(45deg) scale(1.15);
+  }
+  100% {
+    transform: rotate(0) scale(1);
+  }
+}
+@keyframes m-check-tick-in {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes m-check-tick-pop {
+  0% {
+    opacity: 0;
+    scale: 0.2;
+  }
+  60% {
+    opacity: 1;
+    scale: 1.3;
+  }
+  100% {
+    scale: 1;
+  }
+}
+/* C: 6 hạt sao bắn ra từ tâm ô. */
+.m-check-burst {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.m-check-burst > span {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+} /* style="transform: rotate(Xdeg)" */
+.m-check-burst i {
+  position: absolute;
+  left: -2.5px;
+  top: -2.5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0;
+}
+.m-check[data-animate] input:checked ~ .m-check-burst i {
+  animation: m-check-spark calc(var(--d-micro) * 4) var(--ease-out);
+}
+@keyframes m-check-spark {
+  0% {
+    opacity: 1;
+    transform: translateY(-10px);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-30px) scale(0.3);
+  }
+}
+
+/* ---------- 8. CÔNG TẮC — B "Kéo giãn" + C "Sao xoay vào" ---------- */
+.m-switch-knob {
+  translate: 0 0;
+  transition: translate calc(var(--d-short) * 1.3) var(--ease-spring);
+}
+.m-switch[aria-checked="true"] .m-switch-knob {
+  translate: 22px 0;
+}
+/* B: núm giãn dài giữa đường. Component đổi qua lại data-pop="1"/"2" mỗi lần bấm để chạy lại. */
+.m-switch[data-pop="1"] .m-switch-knob {
+  animation: m-switch-stretch-1 calc(var(--d-short) * 1.5) var(--ease-out);
+}
+.m-switch[data-pop="2"] .m-switch-knob {
+  animation: m-switch-stretch-2 calc(var(--d-short) * 1.5) var(--ease-out);
+}
+@keyframes m-switch-stretch-1 {
+  45% {
+    scale: 1.4 1;
+  }
+}
+@keyframes m-switch-stretch-2 {
+  45% {
+    scale: 1.4 1;
+  }
+}
+/* C: sao xoay vào núm khi bật. */
+.m-switch-star {
+  transform: rotate(-120deg) scale(0.3);
+  opacity: 0;
+  transition:
+    transform calc(var(--d-short) * 1.8) var(--ease-spring),
+    opacity var(--d-micro);
+}
+.m-switch[aria-checked="true"] .m-switch-star {
+  transform: none;
+  opacity: 1;
+}
+
+/* ---------- 9. Ô NHẬP — B "Nhãn bay lên" (kiểu gạch chân, không khung) ---------- */
+/* Input cần placeholder=" " để nhãn biết ô còn trống (:placeholder-shown). */
+.m-field {
+  position: relative;
+}
+.m-field-label {
+  position: absolute;
+  left: 2px;
+  top: 15px;
+  transform-origin: left top;
+  transition: transform var(--d-short) var(--ease-out);
+  pointer-events: none;
+}
+.m-field input:focus + .m-field-label,
+.m-field input:not(:placeholder-shown) + .m-field-label {
+  transform: translateY(-14px) scale(0.8);
+}
+.m-field::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--accent-ink);
+  transform: scaleX(0);
+  transition: transform calc(var(--d-short) * 1.2) var(--ease-out);
+  pointer-events: none;
+}
+.m-field:focus-within::after {
+  transform: scaleX(1);
+}
+
+/* ---------- 10. TAB — B "Viên nền trượt" ---------- */
+/* Viên nền nằm tuyệt đối sau hàng tab, rộng bằng một tab; style="translate: <chỉ số * 100>% 0". */
+.m-tab-pill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--line);
+  transition: translate var(--d-screen) var(--ease-spring);
+  pointer-events: none;
+}
+
+/* ---------- 11. GỢI Ý NỔI — B "Nổi lên" + C "Chờ rồi bật" ---------- */
+/* Ẩn nhanh; hiện sau 0,4 s rồi bật có nảy, nên rê ngang qua không bị nháy. Esc ẩn (data-dismissed trên host). */
+.m-tooltip-host {
+  position: relative;
+  display: inline-flex;
+}
+.m-tooltip {
+  opacity: 0;
+  transform: translateY(6px) scale(0.7);
+  transition:
+    opacity var(--d-micro) var(--ease-in),
+    transform var(--d-micro) var(--ease-in);
+  pointer-events: none;
+}
+.m-tooltip-host:not([data-dismissed]):hover .m-tooltip,
+.m-tooltip-host:not([data-dismissed]):focus-within .m-tooltip {
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity var(--d-micro) var(--ease-out) 400ms,
+    transform var(--d-screen) var(--ease-spring) 400ms;
+  pointer-events: auto;
+}
+
+/* ---------- 12. THẺ — B "Nghiêng theo chuột" + C "Viền sao chạy" ---------- */
+/* B: component đặt --m-tilt-x/--m-tilt-y (tối đa 8°) theo con trỏ chuột. C: dải màu xoay chạy trong lớp riêng
+ * .m-card-ring (bị cắt theo bo góc của thẻ) nằm dưới lớp nền ::after (inset 2px, cùng nền với thẻ), nên chỉ lộ ra thành
+ * viền khi rê chuột hoặc khi focus bàn phím ở trong thẻ. Thẻ không cắt overflow: bảng thả xuống, gợi ý nổi bên trong
+ * vẫn tràn ra ngoài; thẻ đang rê hoặc có focus nổi lên trên các thẻ bên cạnh. */
+.m-card {
+  position: relative;
+  isolation: isolate;
+  transform: perspective(600px) rotateX(var(--m-tilt-x, 0deg)) rotateY(var(--m-tilt-y, 0deg));
+  transition: transform var(--d-micro) var(--ease-out);
+}
+.m-card:hover,
+.m-card:focus-within {
+  z-index: 1;
+}
+.m-card-ring {
+  position: absolute;
+  z-index: -2;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.m-card-ring::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 200%;
+  aspect-ratio: 1;
+  translate: -50% -50%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    var(--accent) 60deg,
+    transparent 120deg,
+    var(--star) 220deg,
+    transparent 280deg
+  );
+  opacity: 0;
+  transition: opacity var(--d-short) var(--ease-out);
+  animation: m-spin calc(var(--d-celebrate) * 4) linear infinite paused;
+}
+.m-card:hover > .m-card-ring::before,
+.m-card:has(:focus-visible) > .m-card-ring::before,
+.m-card:focus-visible > .m-card-ring::before {
+  opacity: 1;
+  animation-play-state: running;
+}
+.m-card::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 2px;
+  border-radius: inherit;
+  background: inherit;
+  pointer-events: none;
+}
+
+/* ---------- 13. THÔNG BÁO NHANH — C "Rơi xuống, sao xoay" ---------- */
+.m-toast {
+  animation: m-toast-drop calc(var(--d-short) * 2.6) var(--ease-spring) both;
+}
+@keyframes m-toast-drop {
+  0% {
+    opacity: 0;
+    transform: translateY(-30px);
+  }
+  60% {
+    opacity: 1;
+    transform: translateY(4px);
+  }
+  100% {
+    transform: none;
+  }
+}
+.m-toast-star {
+  animation: m-toast-star calc(var(--d-screen) * 2) var(--ease-out) 120ms both;
+}
+@keyframes m-toast-star {
+  from {
+    transform: rotate(-180deg) scale(0.4);
+  }
+  to {
+    transform: none;
+  }
+}
+.m-toast.is-leaving {
+  animation: m-toast-out var(--d-short) var(--ease-in) forwards;
+}
+@keyframes m-toast-out {
+  to {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+
+/* ---------- 14. HỘP THOẠI — C "Mở như holocron" ---------- */
+/* <dialog> gốc mở bằng showModal(); nền mờ là ::backdrop. Đóng: component thêm .is-closing, chờ animationend. */
+.m-dialog[open] {
+  transform-origin: center top;
+  animation: m-dlg-in calc(var(--d-short) * 2.1) var(--ease-spring) both;
+}
+.m-dialog[open]::backdrop {
+  animation: m-fade-in var(--d-short) var(--ease-out) both;
+}
+.m-dialog.is-closing {
+  animation: m-dlg-out var(--d-short) var(--ease-in) forwards;
+}
+.m-dialog.is-closing::backdrop {
+  animation: m-fade-out var(--d-short) var(--ease-in) forwards;
+}
+@keyframes m-dlg-in {
+  from {
+    opacity: 0;
+    transform: perspective(700px) rotateX(-35deg) translateY(10px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: perspective(700px) rotateX(0);
+  }
+}
+@keyframes m-dlg-out {
+  to {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+}
+
+/* ---------- 15. MỤC THU GỌN — B "Trượt xuống" + C "Từng dòng" ---------- */
+.m-accordion > summary .m-chevron {
+  transition: transform var(--d-micro) var(--ease-out);
+}
+.m-accordion[open] > summary .m-chevron {
+  transform: rotate(90deg);
+}
+.m-accordion[open] > .m-accordion-body {
+  animation: m-li-in calc(var(--d-short) * 1.3) var(--ease-out) both;
+}
+.m-accordion[open] > .m-accordion-body > * {
+  animation: m-li-in calc(var(--d-short) * 1.2) var(--ease-out) both;
+}
+.m-accordion[open] > .m-accordion-body > :nth-child(2) {
+  animation-delay: 50ms;
+}
+.m-accordion[open] > .m-accordion-body > :nth-child(3) {
+  animation-delay: 100ms;
+}
+.m-accordion[open] > .m-accordion-body > :nth-child(4) {
+  animation-delay: 150ms;
+}
+.m-accordion[open] > .m-accordion-body > :nth-child(n + 5) {
+  animation-delay: 200ms;
+}
+
+/* ---------- 16. THANH TIẾN ĐỘ — B "Có sọc chạy" + C "Sao ở đầu" ---------- */
+.m-progress {
+  position: relative;
+}
+.m-progress-fill {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  transform-origin: left center;
+  transition: transform calc(var(--d-screen) * 2) var(--ease-out);
+} /* style="transform: scaleX(p)" */
+/* B: sọc chạy chỉ khi đang làm (data-active="true"). */
+.m-progress[data-active="true"] .m-progress-fill::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 200%;
+  background: repeating-linear-gradient(110deg, transparent 0 10px, var(--stripe) 10px 18px);
+  animation: m-progress-stripes calc(var(--d-screen) * 3) linear infinite;
+}
+@keyframes m-progress-stripes {
+  to {
+    transform: translateX(-28px);
+  }
+}
+/* C: ngôi sao nhỏ đi ở đầu thanh. */
+.m-progress-tip {
+  position: absolute;
+  inset: 0;
+  transition: transform calc(var(--d-screen) * 2) var(--ease-out);
+  pointer-events: none;
+} /* style="transform: translateX(p*100%)" */
+.m-progress-tip svg {
+  position: absolute;
+  left: -9px;
+  top: 50%;
+  width: 18px;
+  height: 18px;
+  margin-top: -9px;
+  color: var(--glint);
+  filter: drop-shadow(0 0 4px var(--accent));
+}
+/* ---------- Hạt sao dùng chung (nút chính, logo HolocronCube) ---------- */
 .m-burst {
   position: absolute;
   left: 50%;
@@ -181,13 +837,11 @@
   border-radius: 50%;
   opacity: 0;
   background: var(--accent);
-}
+  animation: m-burst calc(var(--d-micro) * 4) var(--ease-out);
+} /* chỉ render .m-burst sau lần bấm đầu; đổi React key mỗi lần bấm để chạy lại */
 .m-burst > span:nth-child(even) i {
   background: var(--star-pending);
 }
-.m-burst i {
-  animation: m-burst 560ms var(--ease-out);
-} /* chỉ render .m-burst sau lần bấm đầu; đổi React key mỗi lần bấm để chạy lại */
 @keyframes m-burst {
   0% {
     opacity: 1;
@@ -198,367 +852,10 @@
     transform: translateY(-52px) scale(0.3);
   }
 }
+/* ================== THÀNH PHẦN — KẾT THÚC ================== */
 
-/* ================== 2. NÚT PHỤ — B "Gạch chân mọc" ================== */
-.m-btn-secondary {
-  position: relative;
-  transition: transform var(--d-micro) var(--ease-out);
-}
-.m-btn-secondary::after {
-  content: "";
-  position: absolute;
-  left: 22px;
-  right: 22px;
-  bottom: 9px;
-  height: 2px;
-  border-radius: 2px;
-  background: var(--accent-ink);
-  transform: scaleX(0);
-  transition: transform 220ms var(--ease-out);
-}
-.m-btn-secondary:hover::after,
-.m-btn-secondary:focus-visible::after {
-  transform: scaleX(1);
-}
-.m-btn-secondary:active {
-  transform: scale(0.97);
-}
-
-/* ================== 3. NÚT ICON — A "Nền nở ra" ================== */
-.m-btn-icon {
-  position: relative;
-  overflow: hidden;
-  border-radius: 50%;
-}
-.m-btn-icon > * {
-  position: relative;
-}
-.m-btn-icon::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  background: var(--surface-2);
-  transform: scale(0.4);
-  opacity: 0;
-  transition:
-    transform var(--d-short) var(--ease-spring),
-    opacity 160ms;
-}
-.m-btn-icon:hover::before,
-.m-btn-icon:focus-visible::before {
-  transform: none;
-  opacity: 1;
-}
-.m-btn-icon:active {
-  transform: scale(0.94);
-}
-
-/* ================== 4. BẢNG THẢ XUỐNG — B "Mở từ mép" ================== */
-.m-dropdown-panel {
-  transform-origin: top center;
-  animation: m-dd-open 240ms var(--ease-out) both;
-}
-@keyframes m-dd-open {
-  from {
-    opacity: 0;
-    transform: scaleY(0.8);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-.m-dropdown-panel > * {
-  animation: m-li-in 220ms var(--ease-out) both;
-}
-.m-dropdown-panel > *:nth-child(2) {
-  animation-delay: 30ms;
-}
-.m-dropdown-panel > *:nth-child(3) {
-  animation-delay: 60ms;
-}
-.m-dropdown-panel > *:nth-child(4) {
-  animation-delay: 90ms;
-}
-.m-dropdown-panel > *:nth-child(5) {
-  animation-delay: 120ms;
-}
-.m-dropdown-panel.is-closing {
-  animation: m-fade-out 140ms var(--ease-in) forwards;
-}
-@keyframes m-li-in {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-.m-dropdown-chevron {
-  transition: transform 220ms var(--ease-out);
-}
-[aria-expanded="true"] > .m-dropdown-chevron {
-  transform: rotate(180deg);
-}
-
-/* ================== 5. CHIP — C "Gắn sao" ================== */
-.m-chip {
-  position: relative;
-  transition: transform var(--d-micro) var(--ease-out);
-}
-.m-chip:hover {
-  transform: translateY(-1px);
-}
-.m-chip:active {
-  transform: scale(0.97);
-}
-.m-chip-star {
-  position: absolute;
-  right: -6px;
-  top: -8px;
-  width: 18px;
-  height: 18px;
-  color: var(--cite);
-  transform: scale(0) rotate(-90deg);
-  transition: transform 320ms var(--ease-spring);
-  pointer-events: none;
-}
-.m-chip[aria-pressed="true"] .m-chip-star,
-.m-chip[aria-checked="true"] .m-chip-star {
-  transform: none;
-}
-
-/* ================== 6. Ô ĐÁNH DẤU — B "Lún và bật" ================== */
-.m-check-box {
-  transition: transform 120ms var(--ease-out);
-}
-.m-check:active .m-check-box {
-  transform: scale(0.82);
-}
-.m-check input:checked + .m-check-box .m-check-tick {
-  animation: m-tick 360ms var(--ease-spring) both;
-}
-@keyframes m-tick {
-  0% {
-    opacity: 0;
-    transform: scale(0.2);
-  }
-  60% {
-    opacity: 1;
-    transform: scale(1.3);
-  }
-  100% {
-    transform: none;
-  }
-}
-
-/* ================== 7. CÔNG TẮC — C "Sao xoay vào" ================== */
-.m-switch-knob {
-  transition: transform 260ms var(--ease-spring);
-}
-.m-switch[aria-checked="true"] .m-switch-knob {
-  transform: translateX(22px);
-}
-.m-switch-knob svg {
-  transform: rotate(-120deg) scale(0.3);
-  opacity: 0;
-  transition:
-    transform 360ms var(--ease-spring),
-    opacity 160ms;
-}
-.m-switch[aria-checked="true"] .m-switch-knob svg {
-  transform: none;
-  opacity: 1;
-}
-
-/* ================== 8. Ô NHẬP — A "Viền sáng" ================== */
-.m-field {
-  position: relative;
-}
-.m-field::after {
-  content: "";
-  position: absolute;
-  inset: -4px;
-  border-radius: calc(var(--r-sm) + 4px);
-  box-shadow: 0 0 0 3px var(--glow);
-  opacity: 0;
-  transition: opacity 180ms var(--ease-out);
-  pointer-events: none;
-}
-.m-field:focus-within::after {
-  opacity: 1;
-}
-
-/* ================== 9. TAB — C "Gạch chân có sao" ================== */
-/* Vạch nằm tuyệt đối dưới hàng tab, style="transform: translateX(<index * tabWidth>px)" */
-.m-tab-indicator {
-  position: absolute;
-  left: 0;
-  bottom: 0;
-  height: 3px;
-  display: flex;
-  justify-content: center;
-  transition: transform 280ms var(--ease-out);
-}
-.m-tab-indicator::before {
-  content: "";
-  width: 72%;
-  height: 3px;
-  border-radius: 3px;
-  background: var(--accent-ink);
-  box-shadow: 0 0 12px var(--glow);
-}
-.m-tab-indicator::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: -3px;
-  width: 9px;
-  height: 9px;
-  margin-left: -4.5px;
-  background: var(--accent-ink);
-  transform: rotate(45deg) scale(0.7);
-  border-radius: 2px;
-}
-
-/* ================== 10. GỢI Ý NỔI — B "Nổi lên" ================== */
-.m-tooltip {
-  opacity: 0;
-  transform: translateY(6px) scale(0.96);
-  transition:
-    opacity 180ms var(--ease-out),
-    transform 220ms var(--ease-out);
-  pointer-events: none;
-}
-.m-tooltip-host:hover .m-tooltip,
-.m-tooltip-host:focus-within .m-tooltip,
-.m-tooltip[data-open="true"] {
-  opacity: 1;
-  transform: none;
-}
-
-/* ================== 11. THẺ — A "Nhấc lên" ================== */
-.m-card {
-  position: relative;
-  transition: transform var(--d-short) var(--ease-out);
-}
-.m-card::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  box-shadow: var(--sh-2);
-  opacity: 0;
-  transition: opacity var(--d-short) var(--ease-out);
-  pointer-events: none;
-}
-.m-card:hover,
-.m-card:focus-within {
-  transform: translateY(-4px);
-}
-.m-card:hover::after,
-.m-card:focus-within::after {
-  opacity: 1;
-}
-
-/* ================== 12. THÔNG BÁO NHANH — B "Lướt từ phải" ================== */
-.m-toast {
-  animation: m-toast-in 380ms var(--ease-spring) both;
-}
-.m-toast.is-leaving {
-  animation: m-toast-out 180ms var(--ease-in) forwards;
-}
-@keyframes m-toast-in {
-  from {
-    opacity: 0;
-    transform: translateX(60px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-@keyframes m-toast-out {
-  to {
-    opacity: 0;
-    transform: translateX(24px);
-  }
-}
-
-/* ================== 13. HỘP THOẠI — C "Mở như holocron" ================== */
-.m-backdrop {
-  animation: m-fade-in var(--d-short) var(--ease-out) both;
-}
-.m-backdrop.is-closing {
-  animation: m-fade-out var(--d-short) var(--ease-in) forwards;
-}
-.m-dialog-stage {
-  perspective: 700px;
-}
-.m-dialog {
-  transform-origin: center top;
-  animation: m-dlg-in 420ms var(--ease-spring) both;
-}
-.m-backdrop.is-closing .m-dialog {
-  animation: m-dlg-out var(--d-short) var(--ease-in) forwards;
-}
-@keyframes m-dlg-in {
-  from {
-    opacity: 0;
-    transform: rotateX(-35deg) translateY(10px) scale(0.95);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-@keyframes m-dlg-out {
-  to {
-    opacity: 0;
-    transform: translateY(8px) scale(0.97);
-  }
-}
-
-/* ================== 14. MỤC THU GỌN — B "Trượt xuống" ================== */
-.m-accordion summary .m-chevron {
-  transition: transform var(--d-micro) var(--ease-out);
-}
-.m-accordion[open] summary .m-chevron {
-  transform: rotate(90deg);
-}
-.m-accordion[open] > :not(summary) {
-  animation: m-li-in 260ms var(--ease-out) both;
-}
-
-/* ================== 15. THANH TIẾN ĐỘ — C "Sao ở đầu" ================== */
-.m-progress {
-  position: relative;
-}
-.m-progress-fill {
-  transform-origin: left center;
-  transition: transform 260ms var(--ease-out);
-} /* style="transform: scaleX(p)" */
-.m-progress-tip {
-  position: absolute;
-  inset: 0;
-  transition: transform 260ms var(--ease-out);
-  pointer-events: none;
-} /* style="transform: translateX(p*100%)" */
-.m-progress-tip svg {
-  position: absolute;
-  left: -9px;
-  top: 50%;
-  width: 18px;
-  height: 18px;
-  margin-top: -9px;
-  color: #ffffff;
-  filter: drop-shadow(0 0 4px var(--accent));
-}
-
-/* ================== 16. NÚT ĐANG XỬ LÝ — B "Khối Holocron xoay" ================== */
+/* ================== CHỈ BÁO TẢI TOÀN MÀN — Khối Holocron xoay ================== */
+/* HolocronMark spinning; không dùng trong nút (nút đang xử lý dùng .m-dots). */
 .m-cube-spin g {
   transform-box: fill-box;
   transform-origin: center;
@@ -830,12 +1127,9 @@
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+  background: linear-gradient(90deg, transparent, var(--shimmer), transparent);
   transform: translateX(-100%);
   animation: m-shimmer 1200ms linear infinite;
-}
-:root[data-theme="dark"] .m-skeleton::after {
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.07), transparent);
 }
 
 /* Màn chào: sao lấp lánh nền */
@@ -853,7 +1147,9 @@
 }
 
 /* ================== GIẢM CHUYỂN ĐỘNG ================== */
-/* Giữ fade ngắn; tắt trượt, nảy, rung, hạt, sao băng, lặp vô hạn. */
+/* Giữ fade ngắn (≤ 160 ms); tắt trượt, nảy, rung, hạt, sao, sao băng, lặp vô hạn. Hai khối dưới đây PHẢI giống nhau
+ * (khối 1: theo Windows, trừ khi người dùng chọn "đầy đủ"; khối 2: công tắc trong Cài đặt). Mọi class thành phần ở
+ * trên có mặt trong cả hai khối (src/lib/motion-css.test.ts). */
 @media (prefers-reduced-motion: reduce) {
   :root:not([data-motion="full"]) *,
   :root:not([data-motion="full"]) *::before,
@@ -865,6 +1161,8 @@
     transition-delay: 0ms !important;
   }
   :root:not([data-motion="full"]) .m-burst,
+  :root:not([data-motion="full"]) .m-check-burst,
+  :root:not([data-motion="full"]) .m-btn-sheen,
   :root:not([data-motion="full"]) .m-meteor {
     display: none;
   }
@@ -872,8 +1170,54 @@
   :root:not([data-motion="full"]) .m-star-pending,
   :root:not([data-motion="full"]) .m-skeleton::after,
   :root:not([data-motion="full"]) .m-cube-spin g,
-  :root:not([data-motion="full"]) .m-option.is-wrong {
+  :root:not([data-motion="full"]) .m-option.is-wrong,
+  :root:not([data-motion="full"]) .m-dots i,
+  :root:not([data-motion="full"]) .m-dropdown-panel,
+  :root:not([data-motion="full"]) .m-dropdown-option,
+  :root:not([data-motion="full"]) .m-chip,
+  :root:not([data-motion="full"]) .m-check .m-check-box,
+  :root:not([data-motion="full"]) .m-check-tick,
+  :root:not([data-motion="full"]) .m-switch .m-switch-knob,
+  :root:not([data-motion="full"]) .m-card-ring::before,
+  :root:not([data-motion="full"]) .m-toast,
+  :root:not([data-motion="full"]) .m-toast-star,
+  :root:not([data-motion="full"]) .m-dialog,
+  :root:not([data-motion="full"]) .m-dialog::backdrop,
+  :root:not([data-motion="full"]) .m-accordion > .m-accordion-body,
+  :root:not([data-motion="full"]) .m-accordion > .m-accordion-body > *,
+  :root:not([data-motion="full"]) .m-progress .m-progress-fill::after {
     animation: none !important;
+  }
+  /* Nhấc, lún, nghiêng, nhích theo thao tác: tắt hẳn. Vị trí theo trạng thái (núm công tắc, viên nền tab, độ dài
+     thanh) giữ nguyên, chỉ bỏ chuyển tiếp. */
+  :root:not([data-motion="full"]) .m-btn-primary,
+  :root:not([data-motion="full"]) .m-btn-secondary,
+  :root:not([data-motion="full"]) .m-btn-label,
+  :root:not([data-motion="full"]) .m-btn-arrow,
+  :root:not([data-motion="full"]) .m-chip,
+  :root:not([data-motion="full"]) .m-check-box {
+    translate: none !important;
+    scale: none !important;
+  }
+  :root:not([data-motion="full"]) .m-btn-icon,
+  :root:not([data-motion="full"]) .m-card,
+  :root:not([data-motion="full"]) .m-tooltip,
+  :root:not([data-motion="full"]) .m-tooltip-host .m-tooltip {
+    transform: none !important;
+  }
+  :root:not([data-motion="full"]) .m-btn-icon::before,
+  :root:not([data-motion="full"]) .m-chip-check,
+  :root:not([data-motion="full"]) .m-chip-star,
+  :root:not([data-motion="full"]) .m-switch-knob,
+  :root:not([data-motion="full"]) .m-switch-star,
+  :root:not([data-motion="full"]) .m-field-label,
+  :root:not([data-motion="full"]) .m-field::after,
+  :root:not([data-motion="full"]) .m-tab-pill,
+  :root:not([data-motion="full"]) .m-dropdown-chevron,
+  :root:not([data-motion="full"]) .m-accordion > summary .m-chevron,
+  :root:not([data-motion="full"]) .m-progress-fill,
+  :root:not([data-motion="full"]) .m-progress-tip {
+    transition: none !important;
   }
   :root:not([data-motion="full"]) .m-option.is-right::before {
     animation: none;
@@ -890,6 +1234,8 @@
   transition-delay: 0ms !important;
 }
 :root[data-motion="reduce"] .m-burst,
+:root[data-motion="reduce"] .m-check-burst,
+:root[data-motion="reduce"] .m-btn-sheen,
 :root[data-motion="reduce"] .m-meteor {
   display: none;
 }
@@ -897,8 +1243,52 @@
 :root[data-motion="reduce"] .m-star-pending,
 :root[data-motion="reduce"] .m-skeleton::after,
 :root[data-motion="reduce"] .m-cube-spin g,
-:root[data-motion="reduce"] .m-option.is-wrong {
+:root[data-motion="reduce"] .m-option.is-wrong,
+:root[data-motion="reduce"] .m-dots i,
+:root[data-motion="reduce"] .m-dropdown-panel,
+:root[data-motion="reduce"] .m-dropdown-option,
+:root[data-motion="reduce"] .m-chip,
+:root[data-motion="reduce"] .m-check .m-check-box,
+:root[data-motion="reduce"] .m-check-tick,
+:root[data-motion="reduce"] .m-switch .m-switch-knob,
+:root[data-motion="reduce"] .m-card-ring::before,
+:root[data-motion="reduce"] .m-toast,
+:root[data-motion="reduce"] .m-toast-star,
+:root[data-motion="reduce"] .m-dialog,
+:root[data-motion="reduce"] .m-dialog::backdrop,
+:root[data-motion="reduce"] .m-accordion > .m-accordion-body,
+:root[data-motion="reduce"] .m-accordion > .m-accordion-body > *,
+:root[data-motion="reduce"] .m-progress .m-progress-fill::after {
   animation: none !important;
+}
+:root[data-motion="reduce"] .m-btn-primary,
+:root[data-motion="reduce"] .m-btn-secondary,
+:root[data-motion="reduce"] .m-btn-label,
+:root[data-motion="reduce"] .m-btn-arrow,
+:root[data-motion="reduce"] .m-chip,
+:root[data-motion="reduce"] .m-check-box {
+  translate: none !important;
+  scale: none !important;
+}
+:root[data-motion="reduce"] .m-btn-icon,
+:root[data-motion="reduce"] .m-card,
+:root[data-motion="reduce"] .m-tooltip,
+:root[data-motion="reduce"] .m-tooltip-host .m-tooltip {
+  transform: none !important;
+}
+:root[data-motion="reduce"] .m-btn-icon::before,
+:root[data-motion="reduce"] .m-chip-check,
+:root[data-motion="reduce"] .m-chip-star,
+:root[data-motion="reduce"] .m-switch-knob,
+:root[data-motion="reduce"] .m-switch-star,
+:root[data-motion="reduce"] .m-field-label,
+:root[data-motion="reduce"] .m-field::after,
+:root[data-motion="reduce"] .m-tab-pill,
+:root[data-motion="reduce"] .m-dropdown-chevron,
+:root[data-motion="reduce"] .m-accordion > summary .m-chevron,
+:root[data-motion="reduce"] .m-progress-fill,
+:root[data-motion="reduce"] .m-progress-tip {
+  transition: none !important;
 }
 :root[data-motion="reduce"] .m-option.is-right::before {
   animation: none;

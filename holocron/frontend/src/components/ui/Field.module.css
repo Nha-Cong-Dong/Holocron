@@ -1,0 +1,73 @@
+/* Ô nhập gạch chân; chuyển động ở motion.css (.m-field, .m-field-label). */
+.root {
+  display: grid;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.box {
+  min-width: 0;
+}
+
+.input {
+  width: 100%;
+  height: 52px;
+  padding: 18px 2px 6px;
+  border: 0;
+  border-bottom: 1.5px solid var(--line-strong);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--fs-body);
+}
+
+/* Vạch dưới (::after của .m-field) thay cho vòng focus; ô vẫn có đường viền màu nhấn để thấy rõ khi dùng bàn phím. */
+.input:focus {
+  outline: none;
+}
+
+.input:focus-visible {
+  border-bottom-color: var(--accent-ink);
+}
+
+.label {
+  color: var(--ink-2);
+  font-size: var(--fs-body);
+  line-height: 22px;
+}
+
+.box[data-invalid="true"] .input {
+  border-bottom-color: var(--err);
+}
+
+.box[data-invalid="true"]::after {
+  background: var(--err);
+}
+
+.box[data-invalid="true"] .label {
+  color: var(--err);
+}
+
+.hint,
+.error {
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+}
+
+.hint {
+  color: var(--ink-2);
+}
+
+.error {
+  color: var(--err);
+  font-weight: var(--fw-medium);
+}
+
+/* Chế độ tương phản cao (forced colors): nền của vạch dưới bị bỏ, nên dùng outline thật làm dấu focus. */
+@media (forced-colors: active) {
+  .input:focus {
+    outline: 2px solid CanvasText;
+    outline-offset: 2px;
+  }
+}

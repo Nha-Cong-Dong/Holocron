@@ -78,7 +78,7 @@ describe("mặc định MCQ4 khi chưa biết chấm tự luận", () => {
 });
 
 describe("ticketLine", () => {
-  const hint = "Kiểm tra chương đã có tài liệu xác nhận và cặp khái niệm đã xác nhận ở trang Cặp khái niệm.";
+  const hint = "Kiểm tra chương đã có tài liệu xác nhận và khái niệm đã nhận ở tab Khái niệm của môn.";
 
   it("ticket lý thuyết: lý do nguyên văn của backend rồi gợi ý cố định, không phụ thuộc nội dung lý do", () => {
     for (const reason of ["không đủ căn cứ trong Vault: chương ch3", "Lý do bất kỳ khác."]) {

@@ -393,13 +393,13 @@ describe("cặp khái niệm (§6.6)", () => {
     for (const context of ["pair_confirm", "pair_reject"] satisfies ErrorContext[]) {
       const conflict = classifyHttpError(409, { detail: "version lệch" }, { context, versioned: true });
       expect(conflict).toMatchObject({ kind: "version_conflict", action: "reload" });
-      expect(conflict.message).toContain("Cặp này vừa được sửa ở nơi khác");
+      expect(conflict.message).toContain("Khái niệm này vừa được sửa ở nơi khác");
       expectUserFacing(conflict.message);
     }
     for (const context of ["pair_create", "pair_confirm", "pair_reject"] satisfies ErrorContext[]) {
       const missing = classifyHttpError(404, { detail: "không tìm thấy chunk" }, { context });
       expect(missing.kind).toBe("not_found");
-      expect(missing.message).toContain("Cặp hoặc chunk không còn (tài liệu có thể đã bị xoá)");
+      expect(missing.message).toContain("Khái niệm hoặc đoạn nguồn không còn (tài liệu có thể đã bị xoá)");
       expectUserFacing(missing.message);
     }
   });

@@ -5,7 +5,7 @@
 
 import type { UiError } from "@/lib/errors";
 import { crumbTitleForPath } from "@/lib/navigation";
-import { parseSubjectLocation } from "@/lib/subject-route";
+import { type PracticeSessionKind, parsePracticeSession, parseSubjectLocation, subjectHref } from "@/lib/subject-route";
 import { type SubjectsState, selectedSubject } from "@/lib/subjects";
 import type { Subject } from "@/types/holocron";
 
@@ -34,6 +34,14 @@ export function canShowPanes(view: SubjectView): view is Exclude<SubjectView, { 
   return view.kind === "loading" || view.kind === "list_unavailable" || view.kind === "ready";
 }
 
+/**
+ * Bầu trời kiến thức chỉ hiện khi môn chắc chắn có trong danh sách môn (`ready`): mã sai, môn không có, danh sách
+ * chưa tải xong hay không tải được thì không vẽ bầu trời và không gọi `GET /v1/vault/concept-pairs`.
+ */
+export function canShowSky(view: SubjectView): view is Extract<SubjectView, { kind: "ready" }> {
+  return view.kind === "ready";
+}
+
 /** Tên hiển thị của môn; chưa tải được tên ⇒ mã môn; không có mã ⇒ `null`. */
 export function subjectTitle(view: SubjectView): string | null {
   if (view.kind === "invalid_code") return null;
@@ -45,6 +53,11 @@ export interface BreadcrumbItem {
   label: string;
   /** `null` ⇒ không phải liên kết (mục cuối, trang đang mở). */
   href: string | null;
+  /**
+   * `true` ⇒ liên kết thay mục lịch sử hiện tại (`router.replace`) thay vì thêm mục mới: tên môn khi đang làm bài, để
+   * Back sau đó rời trang môn chứ không quay lại đề đang làm. Vắng ⇒ thêm mục lịch sử như liên kết thường.
+   */
+  replace?: true;
 }
 
 export const HOME_CRUMB: BreadcrumbItem = { label: "Môn học", href: "/" };
@@ -52,24 +65,38 @@ export const HOME_CRUMB: BreadcrumbItem = { label: "Môn học", href: "/" };
 /** Nhãn mục cuối khi trang môn chưa biết môn nào. */
 export const UNKNOWN_SUBJECT_LABEL = "Chưa rõ môn";
 
-/** Breadcrumb của trang môn: "Môn học" (về trang chủ) › tên môn (trang đang mở). */
-export function subjectBreadcrumb(view: SubjectView): BreadcrumbItem[] {
-  return [HOME_CRUMB, { label: subjectTitle(view) ?? UNKNOWN_SUBJECT_LABEL, href: null }];
+/** Nhãn mục cuối của breadcrumb khi đang làm đề hoặc xem kết quả trong tab Ôn tập. */
+export const SESSION_CRUMB_LABEL: Record<PracticeSessionKind, string> = { quiz: "Đang ôn", result: "Kết quả" };
+
+/**
+ * Breadcrumb của trang môn: "Môn học" (về trang chủ) › tên môn (trang đang mở). Đang làm đề hoặc xem kết quả
+ * (`session` khác `null`, cần biết mã môn): tên môn thành liên kết về tab Ôn tập (không kèm `session`, thay mục lịch
+ * sử hiện tại chứ không thêm mục mới), thêm mục "Đang ôn" hoặc "Kết quả".
+ */
+export function subjectBreadcrumb(view: SubjectView, session: PracticeSessionKind | null = null): BreadcrumbItem[] {
+  const label = subjectTitle(view) ?? UNKNOWN_SUBJECT_LABEL;
+  if (session === null || view.kind === "invalid_code") return [HOME_CRUMB, { label, href: null }];
+  return [
+    HOME_CRUMB,
+    { label, href: subjectHref(view.code, "practice"), replace: true },
+    { label: SESSION_CRUMB_LABEL[session], href: null },
+  ];
 }
 
 /**
  * Breadcrumb của thanh trên theo đường dẫn: trang chủ không có breadcrumb; trang môn dùng `subjectBreadcrumb` với
- * `subjectCode` là mã môn đã kiểm mẫu lấy từ địa chỉ (`null` khi thiếu hoặc sai); trang khác là "Môn học" › tiêu đề
- * breadcrumb của trang (`crumbTitleForPath`).
+ * `subjectCode` là mã môn đã kiểm mẫu lấy từ địa chỉ (`null` khi thiếu hoặc sai) và `session` là phần làm bài của tab
+ * Ôn tập (mặc định không có); trang khác là "Môn học" › tiêu đề breadcrumb của trang (`crumbTitleForPath`).
  */
 export function breadcrumbForPath(
   pathname: string,
   subjectCode: string | null,
   subjects: SubjectsState,
+  session: PracticeSessionKind | null = null,
 ): BreadcrumbItem[] {
   const path = pathname.replace(/\/+$/, "") || "/";
   if (path === "/") return [];
-  if (path === "/subject") return subjectBreadcrumb(subjectViewOf(subjectCode, subjects));
+  if (path === "/subject") return subjectBreadcrumb(subjectViewOf(subjectCode, subjects), session);
   return [HOME_CRUMB, { label: crumbTitleForPath(path), href: null }];
 }
 
@@ -79,12 +106,13 @@ interface SearchParamsLike {
 
 /**
  * Breadcrumb suy hoàn toàn từ địa chỉ hiện tại (đường dẫn + query) và danh sách môn: môn của trang `/subject` lấy từ
- * `?code=` chứ không từ state của khung, nên mã sai không hiện môn cũ và đổi môn không nháy tên môn trước.
+ * `?code=` chứ không từ state của khung, nên mã sai không hiện môn cũ và đổi môn không nháy tên môn trước; phần làm
+ * bài lấy từ `?session=` của tab Ôn tập.
  */
 export function breadcrumbForLocation(
   pathname: string,
   params: SearchParamsLike,
   subjects: SubjectsState,
 ): BreadcrumbItem[] {
-  return breadcrumbForPath(pathname, parseSubjectLocation(params).code, subjects);
+  return breadcrumbForPath(pathname, parseSubjectLocation(params).code, subjects, parsePracticeSession(params));
 }

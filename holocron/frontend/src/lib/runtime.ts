@@ -170,7 +170,7 @@ export const CAPABILITY_LABEL_VI: Record<CapabilityName, string> = {
   ocr: "Đọc trang scan bằng Tesseract",
   ocr_cross_check: "Đối chiếu số bằng lượt đọc thứ hai",
   vault_search: "Tìm trong kho tri thức",
-  theory_generation: "Sinh câu hỏi lý thuyết từ cặp khái niệm",
+  theory_generation: "Soạn câu hỏi lý thuyết từ khái niệm đã nhận",
   concept_pair_llm_proposal: "LLM đề xuất cặp khái niệm",
   essay_grading_offline: "Chấm tự luận offline",
   essay_grading_llm: "Chấm tự luận bằng LLM",

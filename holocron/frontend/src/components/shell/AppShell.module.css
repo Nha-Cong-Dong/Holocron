@@ -1,7 +1,7 @@
-/* Khung: thanh trên, thân (băng offline nếu có + vùng nội dung cuộn), thanh trạng thái. Không còn thanh bên. */
+/* Khung: thanh trên, thân (băng offline nếu có + vùng nội dung cuộn). Không còn thanh bên hay thanh trạng thái. */
 .root {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) var(--statusbar-height);
+  grid-template-rows: auto minmax(0, 1fr);
   height: 100vh;
   min-width: 1024px;
 }

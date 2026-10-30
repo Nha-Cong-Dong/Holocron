@@ -6,17 +6,23 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { EmptyState } from "@/components/common/LoadState";
 import { type TabItem, Tabs } from "@/components/common/Tabs";
+import { DocumentsTab } from "@/components/documents/DocumentsTab";
 import { PairsView } from "@/components/pairs/PairsView";
 import { PracticeView } from "@/components/practice/PracticeView";
 import { useShell } from "@/components/shell/ShellContext";
 import { SkyView } from "@/components/sky/SkyView";
-import { DocumentsPanel } from "@/components/vault/DocumentsPanel";
-import { PageReview } from "@/components/vault/PageReview";
 import { api } from "@/lib/api";
 import type { UiError } from "@/lib/errors";
 import type { PairsLocation } from "@/lib/pairs";
 import { writeRecentSubject } from "@/lib/recent-subject";
-import { buildSkyLayout, type SkyPair } from "@/lib/sky";
+import { buildSkyLayout } from "@/lib/sky";
+import {
+  INITIAL_SKY_LOAD,
+  SKY_LOAD_TIMEOUT_MS,
+  type SkyLoadEvent,
+  type SkyLoadState,
+  skyLoadReducer,
+} from "@/lib/sky-load";
 import {
   parseSubjectDocumentLocation,
   parseSubjectLocation,
@@ -32,6 +38,9 @@ import type { VaultLocation } from "@/lib/vault";
 
 import styles from "./SubjectPage.module.css";
 
+/** `idPrefix` của hàng tab môn. */
+const TABS_ID_PREFIX = "subject";
+
 const TAB_ITEMS: readonly TabItem<SubjectTab>[] = [
   { id: "documents", label: "Tài liệu", icon: "document" },
   { id: "concepts", label: "Khái niệm", icon: "concept" },
@@ -39,10 +48,17 @@ const TAB_ITEMS: readonly TabItem<SubjectTab>[] = [
 ];
 
 /**
+ * `id` của tab Khái niệm (`Tabs` đặt `${idPrefix}-tab-${chỉ số}`), tính từ vị trí tab trong `TAB_ITEMS`: xem lại xong
+ * thì focus vào đây.
+ */
+const CONCEPTS_TAB_ID = `${TABS_ID_PREFIX}-tab-${TAB_ITEMS.findIndex((item) => item.id === "concepts")}`;
+
+/**
  * Trang môn `/subject?code=&tab=` (design-handoff/README.md màn 3): tiêu đề là tên môn (chưa tải ⇒ mã môn), bầu trời
  * kiến thức của môn, rồi ba phần Tài liệu · Khái niệm · Ôn tập. Mã môn đọc từ địa chỉ và truyền làm prop cho từng
  * phần; khung được báo qua `selectSubject` (và mã được lưu làm môn gần nhất cho trang chủ) để hộp lệnh và các route cũ
- * biết môn mở gần nhất. Phần Tài liệu đọc thêm `?doc=&page=` để xem lại một trang ngay trong tab. Phải nằm trong
+ * biết môn mở gần nhất. Phần Tài liệu (`DocumentsTab`, màn 4–6) đọc thêm `?doc=&page=` để xem lại một tài liệu ngay
+ * trong tab; xem lại xong thì sang tab Khái niệm. Phải nằm trong
  * `<Suspense>` vì đọc `useSearchParams()`.
  */
 export function SubjectPage() {
@@ -117,15 +133,6 @@ export function SubjectPage() {
   );
 }
 
-/** Thời gian chờ tối đa một lần tải bầu trời trước khi báo lỗi. */
-const SKY_LOAD_TIMEOUT_MS = 15_000;
-
-type SkyState =
-  | { kind: "loading" }
-  | { kind: "error" }
-  /** `stale`: lần tải lại gần nhất lỗi, đang giữ bầu trời của lần trước. */
-  | { kind: "ready"; pairs: readonly SkyPair[]; stale: boolean };
-
 interface SkyRequest {
   code: string;
   tab: SubjectTab;
@@ -139,7 +146,7 @@ interface SkyRequest {
  * trời cũ kèm dòng "Chưa cập nhật được", chưa có thì hiện ô tối với một câu và nút "Thử lại".
  */
 function SubjectSky({ code, title, tab }: { code: string; title: string; tab: SubjectTab }) {
-  const [state, setState] = useState<SkyState>({ kind: "loading" });
+  const [state, setState] = useState<SkyLoadState>(INITIAL_SKY_LOAD);
   const [request, setRequest] = useState<SkyRequest>({ code, tab, attempt: 0 });
   if (request.code !== code || request.tab !== tab) setRequest({ code, tab, attempt: request.attempt + 1 });
 
@@ -153,21 +160,22 @@ function SubjectSky({ code, title, tab }: { code: string; title: string; tab: Su
 
   useEffect(() => {
     let alive = true;
-    function fail(): void {
-      if (!alive) return;
-      setState((previous) => (previous.kind === "ready" ? { ...previous, stale: true } : { kind: "error" }));
+    function send(event: SkyLoadEvent): void {
+      if (alive) setState((previous) => skyLoadReducer(previous, event));
     }
-    // Lời gọi treo (không trả lời, không lỗi) không được giữ ô trời ở "Đang tải" mãi: hết giờ thì báo lỗi; nếu sau đó
-    // backend vẫn trả lời thì bầu trời hiện như thường.
-    const timer = window.setTimeout(fail, SKY_LOAD_TIMEOUT_MS);
+    // Chuyển trạng thái ở `lib/sky-load.ts`; ở đây chỉ nối sự kiện. Lời gọi treo thì hết giờ báo lỗi, trả lời đến muộn
+    // vẫn hiện bầu trời. `lib/api.ts` chưa nhận `AbortSignal` nên lời gọi hết giờ không huỷ được, chỉ bị bỏ qua khi rời
+    // màn hoặc khi có lần tải mới.
+    send({ type: "started" });
+    const timer = window.setTimeout(() => send({ type: "timedOut" }), SKY_LOAD_TIMEOUT_MS);
     api.listConceptPairs({ subjectCode: request.code, chapterCode: null, status: null }).then(
       (list) => {
         window.clearTimeout(timer);
-        if (alive) setState({ kind: "ready", pairs: list.pairs, stale: false });
+        send({ type: "succeeded", pairs: list.pairs });
       },
       () => {
         window.clearTimeout(timer);
-        fail();
+        send({ type: "failed" });
       },
     );
     return () => {
@@ -188,7 +196,7 @@ function SubjectSky({ code, title, tab }: { code: string; title: string; tab: Su
         size="full"
         status="error"
         onRetry={() => {
-          setState({ kind: "loading" });
+          setState((previous) => skyLoadReducer(previous, { type: "started" }));
           setRequest((previous) => ({ ...previous, attempt: previous.attempt + 1 }));
         }}
       />
@@ -216,27 +224,28 @@ function SubjectPanes({ code, tab, documentLocation, listError, onReloadSubjects
     (vaultLocation: Partial<VaultLocation>) => subjectDocumentsHref(code, vaultLocation),
     [code],
   );
+  // Xem lại xong một tài liệu: sang tab Khái niệm và đặt focus vào tab đó (design-handoff/README.md màn 6).
+  const onDocumentFinished = useCallback(() => {
+    router.push(subjectHref(code, "concepts"));
+    requestAnimationFrame(() => document.getElementById(CONCEPTS_TAB_ID)?.focus());
+  }, [router, code]);
 
   return (
     <Tabs
       label="Phần của môn"
-      idPrefix="subject"
+      idPrefix={TABS_ID_PREFIX}
       items={TAB_ITEMS}
       selected={tab}
       onSelect={(next) => router.push(subjectHref(code, next))}
     >
-      {tab === "documents" &&
-        (documentLocation.doc === null ? (
-          <DocumentsPanel subjectCode={code} hrefFor={documentsHref} />
-        ) : (
-          <PageReview
-            key={documentLocation.doc}
-            documentId={documentLocation.doc}
-            pageNumber={documentLocation.page ?? 1}
-            hrefFor={documentsHref}
-            expectedSubjectCode={code}
-          />
-        ))}
+      {tab === "documents" && (
+        <DocumentsTab
+          subjectCode={code}
+          location={documentLocation}
+          hrefFor={documentsHref}
+          onFinished={onDocumentFinished}
+        />
+      )}
       {tab === "concepts" && <PairsView subjectCode={code} hrefFor={conceptsHref} documentsHrefFor={documentsHref} />}
       {tab === "practice" &&
         (listError === null ? (

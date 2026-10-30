@@ -319,7 +319,11 @@ export function hasTextLine(lines: readonly LineView[]): boolean {
   return lines.some((line) => line.text.trim() !== "");
 }
 
-export type ConfirmPageBlock = EditBlock | "no_text";
+/**
+ * Lý do chưa xác nhận trang được. `unsaved_lines` (ô thêm dòng còn chữ hoặc ô sửa dòng đang mở) không suy từ dữ liệu
+ * trang nên `confirmPageBlock` không trả; nút xác nhận tính lý do này ở `lib/review-confirm.ts`.
+ */
+export type ConfirmPageBlock = EditBlock | "no_text" | "unsaved_lines";
 
 /** Vì sao chưa xác nhận trang được; `null` khi xác nhận được (trang `ok` hoặc `needs_review`, chưa xác nhận, có chữ). */
 export function confirmPageBlock(page: PageStateInput): ConfirmPageBlock | null {
@@ -336,6 +340,7 @@ export const CONFIRM_PAGE_BLOCK_MESSAGE_VI: Record<ConfirmPageBlock, string> = {
   ...EDIT_BLOCK_MESSAGE_VI,
   confirmed: "Trang đã được xác nhận.",
   no_text: "Trang chưa có dòng nào có chữ nên chưa xác nhận được. Thêm dòng ở dưới nếu trang có nội dung.",
+  unsaved_lines: "Còn dòng chưa lưu. Lưu hoặc xoá trước khi xác nhận",
 };
 
 export type ConfirmDocumentBlock = "processing" | "nothing_to_confirm";

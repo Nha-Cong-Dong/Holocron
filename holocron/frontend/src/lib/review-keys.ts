@@ -1,0 +1,105 @@
+/**
+ * Phím tắt của màn Xem lại (design-handoff/README.md màn 6): E = sửa dòng, ←/→ = trang cần xem trước/sau. Quyết định
+ * bằng hàm thuần để test; component chỉ mô tả phím và nơi đang focus.
+ *
+ * Không có phím nào xác nhận trang (I5, quyết định 2026-10-29 câu 17 A): trang chỉ được xác nhận bằng nút, và nút bỏ
+ * qua mọi kích hoạt trong `CONFIRM_GUARD_MS` đầu sau khi trang hiện (`lib/review-session.ts`, `lib/review-confirm.ts`).
+ * Enter trên vùng xem lại không làm gì; Enter/Space trên một nút để trình duyệt bấm đúng nút đó.
+ *
+ * - Phím có Ctrl/Alt/Meta, phím giữ lặp lại, hoặc khi có hộp thoại/bảng lệnh đang mở thì không làm gì.
+ * - ←/→ và E chỉ chạy khi focus ở trong vùng xem lại (không ở hàng tab, không ở ô nhập).
+ */
+
+/** Nơi đang focus so với vùng xem lại. */
+export type ReviewFocus =
+  /** Chính vùng xem lại, hoặc phần tử không tương tác bên trong. */
+  | "region"
+  /** Nút, liên kết hay điều khiển khác bên trong vùng. */
+  | "control"
+  /** Ô nhập, ô chọn, vùng sửa chữ bên trong vùng. */
+  | "editable"
+  /** Ngoài vùng xem lại (hàng tab, thanh trên…). */
+  | "outside";
+
+export interface FocusTarget {
+  /** Phần tử đang focus nằm trong vùng xem lại (kể cả chính vùng). */
+  insideRegion: boolean;
+  /** Phần tử đang focus là chính vùng xem lại. */
+  isRegion: boolean;
+  /** `tagName` viết hoa như DOM trả. */
+  tagName: string;
+  isContentEditable: boolean;
+  /** Thuộc tính `role`, nếu có. */
+  role: string | null;
+}
+
+const EDITABLE_TAGS: ReadonlySet<string> = new Set(["INPUT", "TEXTAREA", "SELECT"]);
+const CONTROL_TAGS: ReadonlySet<string> = new Set(["BUTTON", "A", "SUMMARY", "DETAILS"]);
+const EDITABLE_ROLES: ReadonlySet<string> = new Set(["textbox", "combobox", "listbox", "searchbox", "spinbutton"]);
+const CONTROL_ROLES: ReadonlySet<string> = new Set([
+  "button",
+  "link",
+  "tab",
+  "checkbox",
+  "radio",
+  "switch",
+  "menuitem",
+  "option",
+  "slider",
+]);
+
+/** Phân loại phần tử đang focus. */
+export function classifyReviewFocus(target: FocusTarget): ReviewFocus {
+  if (!target.insideRegion) return "outside";
+  if (target.isRegion) return "region";
+  const tag = target.tagName.toUpperCase();
+  const role = target.role?.trim().toLowerCase() ?? "";
+  if (target.isContentEditable || EDITABLE_TAGS.has(tag) || EDITABLE_ROLES.has(role)) return "editable";
+  if (CONTROL_TAGS.has(tag) || CONTROL_ROLES.has(role)) return "control";
+  return "region";
+}
+
+export interface ReviewKeyInput {
+  key: string;
+  repeat: boolean;
+  altKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  focus: ReviewFocus;
+  /** Hộp thoại, bảng lệnh hay bảng phím tắt đang mở. */
+  overlayOpen: boolean;
+  /** Đang có thao tác ghi (lưu dòng, xác nhận). */
+  busy: boolean;
+  /** Có dòng đang sửa hoặc dòng gõ thêm chưa lưu. */
+  hasDraft: boolean;
+  /** Trang sửa được (`lineEditBlock === null`) và có dòng để sửa. */
+  canEdit: boolean;
+  hasPrevious: boolean;
+  hasNext: boolean;
+}
+
+/** Không có hành động xác nhận: trang chỉ được xác nhận bằng nút (`lib/review-confirm.ts`). */
+export type ReviewKeyAction = { type: "edit" } | { type: "previous" } | { type: "next" };
+
+/** Hành động của một phím ở màn Xem lại; `null` khi phím không làm gì (để trình duyệt xử lý như thường). */
+export function reviewKeyAction(input: ReviewKeyInput): ReviewKeyAction | null {
+  if (input.altKey || input.ctrlKey || input.metaKey || input.repeat || input.overlayOpen) return null;
+  if (input.focus === "outside" || input.focus === "editable") return null;
+  switch (input.key) {
+    case "e":
+    case "E":
+      return input.canEdit && !input.busy && !input.hasDraft ? { type: "edit" } : null;
+    case "ArrowLeft":
+      return input.hasPrevious && !input.hasDraft ? { type: "previous" } : null;
+    case "ArrowRight":
+      return input.hasNext && !input.hasDraft ? { type: "next" } : null;
+    default:
+      return null;
+  }
+}
+
+/** Dòng mở để sửa khi bấm E: dòng nghi ngờ đầu tiên (conf thấp hoặc lệch giữa hai lượt đọc), không có thì dòng đầu. */
+export function lineToEdit(lines: readonly { lineIndex: number; flagged: boolean }[]): number | null {
+  const flagged = lines.find((line) => line.flagged);
+  return (flagged ?? lines[0])?.lineIndex ?? null;
+}

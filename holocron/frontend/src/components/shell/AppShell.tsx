@@ -12,12 +12,12 @@ import {
   freshRuntime,
   hasPendingLocalCheck,
   INITIAL_RUNTIME_STATE,
-  LOCAL_CHECK_POLL_MS,
   logDirOf,
   runtimeReducer,
   selectOfflineMode,
   selectStatusItems,
 } from "@/lib/runtime";
+import { createRuntimePoller } from "@/lib/runtime-poll";
 import { GLOBAL_SCOPE, resolveShortcut, targetKindOf } from "@/lib/shortcuts";
 import { subjectHref } from "@/lib/subject-route";
 import type { SubjectsState } from "@/lib/subjects";
@@ -63,26 +63,15 @@ export function AppShell({ children }: { children: ReactNode }) {
       });
   }, []);
 
-  // Backend còn kiểm OCR nền (`local_check_pending`): hỏi lại im lặng, không đổi sang "đang kết nối" để ô trạng thái
-  // không nhấp nháy.
-  const pollRuntime = useCallback(() => {
-    const ticket = runtimeCalls.current.begin();
-    api
-      .getRuntime()
-      .then((info) => {
-        if (runtimeCalls.current.isLatest(ticket)) dispatch({ type: "load_succeeded", runtime: info });
-      })
-      .catch((error: unknown) => {
-        if (runtimeCalls.current.isLatest(ticket)) dispatch({ type: "load_failed", error: toUiError(error) });
-      });
-  }, []);
-
+  // Backend còn kiểm OCR nền (`local_check_pending`): hỏi lại im lặng (không đổi sang "đang kết nối" để ô trạng thái
+  // không nhấp nháy); một lần lỗi mạng giữ nguyên runtime, lỗi liên tiếp đủ ngưỡng mới báo lỗi và hiện "Kiểm tra lại".
   const localCheckPending = hasPendingLocalCheck(freshRuntime(runtime));
   useEffect(() => {
     if (!localCheckPending) return;
-    const timer = window.setInterval(pollRuntime, LOCAL_CHECK_POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [localCheckPending, pollRuntime]);
+    const poller = createRuntimePoller({ load: api.getRuntime, dispatch, toUiError });
+    poller.start();
+    return () => poller.stop();
+  }, [localCheckPending]);
 
   const reloadSubjects = useCallback(() => {
     const ticket = subjectCalls.current.begin();

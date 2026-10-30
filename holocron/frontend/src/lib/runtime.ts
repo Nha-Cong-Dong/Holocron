@@ -325,9 +325,6 @@ export function mockExtractorNotice(runtime: RuntimeView | null): MockExtractorN
   return runtime.demo_mode ? "assumed" : null;
 }
 
-/** Khoảng chờ (ms) giữa hai lần hỏi lại runtime khi backend còn kiểm OCR nền. */
-export const LOCAL_CHECK_POLL_MS = 3000;
-
 /** Backend còn đang kiểm OCR nền: có khả năng báo `local_check_pending`. */
 export function hasPendingLocalCheck(runtime: RuntimeView | null): boolean {
   return (capabilitiesOf(runtime) ?? []).some((entry) => !entry.available && entry.reason === "local_check_pending");

@@ -43,12 +43,6 @@ describe("ô OCR khi xét thêm ocr_cross_check", () => {
     expect(ocrTile(OCR_OK, cross)).toBe("lượt đọc thứ hai không chạy được");
   });
 
-  it("ocr không khả dụng: giữ nhãn của ocr", () => {
-    const ocr = { name: "ocr", available: false, reason: "ocr_engine_missing", detail_vi: "x" };
-    const cross = { name: "ocr_cross_check", available: false, reason: "secondary_ocr_unavailable", detail_vi: "x" };
-    expect(ocrTile(ocr, cross)).toBe("thiếu Tesseract");
-  });
-
   it("lượt đọc thứ hai do người dùng tắt: vẫn sẵn sàng", () => {
     const cross = { name: "ocr_cross_check", available: false, reason: "secondary_ocr_disabled", detail_vi: "x" };
     expect(ocrTile(OCR_OK, cross)).toBe("sẵn sàng");

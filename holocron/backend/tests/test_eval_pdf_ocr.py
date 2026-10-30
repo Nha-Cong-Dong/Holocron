@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from holocron_core.infrastructure.document_readers.config import PdfReaderConfig
-from holocron_core.infrastructure.document_readers.protocol import RawPdfPage, RawTextLine
+from holocron_core.infrastructure.document_readers.protocol import RawOcrPage, RawPdfPage, RawTextLine
 from scripts.eval_pdf_ocr import digit_accuracy_micro, digit_correct, digits, edit_distance
-from scripts.eval_pdf_tiers import old_text_score, page_row
+from scripts.eval_pdf_tiers import (
+    PageRow,
+    app_page,
+    is_text_layer_with_image,
+    is_unflagged_figure,
+    old_text_score,
+    page_row,
+)
 
 
 def test_digit_correct_clamps_insertions_per_page() -> None:
@@ -51,3 +60,68 @@ def test_tier_eval_compares_old_and_new_rules() -> None:
     image_page = title.model_copy(update={"image_area_ratio": 0.9})
     row = page_row("a.pdf", image_page, config)
     assert (row.old_tier, row.new_tier, row.new_reason) == ("ocr", "ocr", "sparse_text_on_image")
+
+
+def _row(**changes: object) -> PageRow:
+    base = PageRow(
+        file="a.pdf",
+        page_number=1,
+        non_ws=40,
+        clean=1.0,
+        valid=1.0,
+        image_area_ratio=0.5,
+        path_area_ratio=0.0,
+        old_score=0.2,
+        old_tier="ocr",
+        new_tier="text_layer",
+        new_reason=None,
+        status="needs_review",
+        review_reasons=["TIER3_UNAVAILABLE"],
+        has_figure=True,
+        has_table=False,
+        has_formula=False,
+    )
+    return replace(base, **changes)
+
+
+def test_tier_eval_rows_carry_app_review_reasons_and_flags() -> None:
+    config = PdfReaderConfig()
+    lines = [RawTextLine(text="Chương 1", bbox=None, words=[])]
+    framed = RawPdfPage(page_index=0, width_pt=720, height_pt=540, lines=lines, image_area_ratio=0.1, path_area_ratio=0)
+    row = page_row("a.pdf", framed, config)
+    assert (row.status, row.review_reasons, row.has_figure, row.has_table, row.has_formula) == (
+        "needs_review",
+        ["TIER3_UNAVAILABLE"],
+        True,
+        False,
+        False,
+    )
+    assert row.path_area_ratio == 0.0
+    # Cùng kết quả với hàm dựng trang của app.
+    assert row.review_reasons == app_page(framed, config).review_reasons
+    plain = page_row("a.pdf", framed.model_copy(update={"image_area_ratio": 0.0}), config)
+    assert (plain.status, plain.review_reasons, plain.has_figure) == ("ok", [], False)
+    long_title = [RawTextLine(text="x" * 64, bbox=None, words=[])]
+    covered = framed.model_copy(update={"lines": long_title, "image_area_ratio": 0.98})
+    row = page_row("a.pdf", covered, config)
+    assert (row.new_tier, row.new_reason, row.status, row.review_reasons) == ("ocr", "image_covers_page", "failed", [])
+
+
+def test_tier_eval_app_page_ignores_ocr_result() -> None:
+    # Script không gọi OCR: kể cả trang có sẵn kết quả OCR cũng được dựng như khi không có engine.
+    config = PdfReaderConfig()
+    lines = [RawTextLine(text="x" * 64, bbox=None, words=[])]
+    raw = RawPdfPage(page_index=0, width_pt=720, height_pt=540, lines=lines, image_area_ratio=0.98, path_area_ratio=0)
+    ocr = RawOcrPage(dpi=300.0, lines=[], ink_outside_text_ratio=0.0, secondary=None)
+    page = app_page(raw.model_copy(update={"ocr": ocr}), config)
+    assert (page.status, page.failure_reason) == ("failed", "OCR_ENGINE_MISSING")
+
+
+def test_tier_eval_figure_table_filter() -> None:
+    assert is_text_layer_with_image(_row(image_area_ratio=0.30), 0.30)
+    assert not is_text_layer_with_image(_row(image_area_ratio=0.2999), 0.30)
+    assert not is_text_layer_with_image(_row(new_tier="ocr", image_area_ratio=0.98), 0.30)
+    assert not is_unflagged_figure(_row())
+    assert is_unflagged_figure(_row(review_reasons=[], status="ok"))
+    assert not is_unflagged_figure(_row(review_reasons=[], has_figure=False))
+    assert not is_unflagged_figure(_row(new_tier="ocr", review_reasons=[]))

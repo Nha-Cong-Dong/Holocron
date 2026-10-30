@@ -125,6 +125,14 @@ class PdfReaderConfig(BaseModel):
     # lớp chữ gần biên nhất có 34 ký tự / 0,542. Giá trị khởi đầu, hiệu chỉnh tiếp bằng `scripts/eval_pdf_tiers`.
     text_sparse_chars: int = Field(default=32, ge=1)
     text_sparse_image_min: float = Field(default=0.40, gt=0.0, le=1.0)
+    # Trang ảnh phủ gần kín (sửa đổi 2026-10-30): lớp chữ sạch, có dưới `text_full_image_max_chars` ký tự không trắng
+    # (so sánh `<`) trong khi ảnh nhúng phủ ít nhất `text_full_image_min` diện tích trang (diện tích hợp) ⇒ OCR cả
+    # trang, vì phần chữ còn lại chỉ là tiêu đề, header, số trang nằm dưới ảnh. Trần ký tự giữ lớp chữ cho PDF scan đã
+    # có lớp chữ đầy đủ (ảnh phủ cả trang, chữ ẩn bên trên). Đo trên 3 chương slide thật: ch4 tr.22 (sơ đồ là ảnh) có
+    # 64 ký tự / ảnh 0,98; trang giữ lớp chữ có ảnh lớn nhất là 0,74. `text_full_image_min` phải ≥
+    # `text_sparse_image_min` (luật này chỉ nới luật trang ảnh ít chữ, không thay nó).
+    text_full_image_min: float = Field(default=0.90, gt=0.0, le=1.0)
+    text_full_image_max_chars: int = Field(default=200, ge=1)
 
     # `has_formula` (mục 6, 9): tỉ lệ ký hiệu toán trên số ký tự không trắng, kèm số ký hiệu tối thiểu.
     formula_density_min: float = Field(default=0.03, gt=0.0, le=1.0)
@@ -146,6 +154,13 @@ class PdfReaderConfig(BaseModel):
         """Hạn của một lần chạy Tesseract phải nhỏ hơn hạn của cả trang OCR, để còn thời gian cho lượt thứ hai."""
         if self.tesseract_timeout_s >= self.ocr_page_timeout_s:
             raise ValueError("tesseract_timeout_s phải nhỏ hơn ocr_page_timeout_s")
+        return self
+
+    @model_validator(mode="after")
+    def _full_image_not_below_sparse_image(self) -> PdfReaderConfig:
+        """Ngưỡng trang ảnh phủ gần kín không được thấp hơn ngưỡng ảnh của luật trang ảnh ít chữ."""
+        if self.text_full_image_min < self.text_sparse_image_min:
+            raise ValueError("text_full_image_min phải lớn hơn hoặc bằng text_sparse_image_min")
         return self
 
 

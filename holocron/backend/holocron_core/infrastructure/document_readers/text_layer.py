@@ -290,7 +290,7 @@ def page_text(lines: Sequence[RawTextLine]) -> str:
     return "\n".join(line.text for line in lines)
 
 
-OcrReason = Literal["empty_text_layer", "garbled_text_layer", "sparse_text_on_image"]
+OcrReason = Literal["empty_text_layer", "garbled_text_layer", "sparse_text_on_image", "image_covers_page"]
 
 
 def ocr_reason(raw: RawPdfPage, config: PdfReaderConfig) -> OcrReason | None:
@@ -302,7 +302,11 @@ def ocr_reason(raw: RawPdfPage, config: PdfReaderConfig) -> OcrReason | None:
     - `garbled_text_layer`: lớp chữ rác (`text_score < TEXT_LAYER_MIN`: ký tự rác, mã TCVN3/VNI).
     - `sparse_text_on_image`: lớp chữ sạch nhưng chỉ có dưới `text_sparse_chars` ký tự không trắng trong khi ảnh
       nhúng phủ ít nhất `text_sparse_image_min` diện tích trang: nội dung nằm trong ảnh, lớp chữ chỉ là phần khung.
-    Ít chữ trên trang không có ảnh lớn KHÔNG phải lý do bỏ lớp chữ.
+    - `image_covers_page` (sửa đổi 2026-10-30): lớp chữ sạch, có dưới `text_full_image_max_chars` ký tự không trắng,
+      ảnh nhúng phủ ít nhất `text_full_image_min` diện tích trang: nội dung nằm trong ảnh, chữ còn lại chỉ là tiêu
+      đề, header, số trang dưới ảnh. Lớp chữ đầy đủ trên ảnh phủ kín (PDF scan đã có lớp chữ) vẫn giữ lớp chữ.
+    Thứ tự xét: rỗng, rác, trang ảnh ít chữ, ảnh phủ gần kín. Ít chữ trên trang không có ảnh lớn KHÔNG phải lý do bỏ
+    lớp chữ.
     """
     text = page_text(raw.lines)
     non_ws = non_whitespace_count(text)
@@ -312,6 +316,8 @@ def ocr_reason(raw: RawPdfPage, config: PdfReaderConfig) -> OcrReason | None:
         return "garbled_text_layer"
     if non_ws < config.text_sparse_chars and raw.image_area_ratio >= config.text_sparse_image_min:
         return "sparse_text_on_image"
+    if non_ws < config.text_full_image_max_chars and raw.image_area_ratio >= config.text_full_image_min:
+        return "image_covers_page"
     return None
 
 

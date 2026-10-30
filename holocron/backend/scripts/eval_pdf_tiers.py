@@ -10,7 +10,13 @@ clean × valid`, OCR khi < 0.85; hai hằng ghi cứng ở đây chỉ để so)
 (`text_layer.ocr_reason` với `PdfReaderConfig()` mặc định). Báo cáo theo từng thư mục: số trang theo tầng cũ/mới,
 số trang đổi tầng, danh sách trang còn đi OCR kèm lý do và các số `clean`, `valid`, `non_ws`, `image_area_ratio`;
 riêng bảng "lớp chữ ít + ảnh phủ lớn" (lớp chữ sạch, có chữ, ít hơn `--sparse-report-chars` ký tự, ảnh phủ ít nhất
-`--sparse-report-image`) kèm quyết định và độ phủ ảnh.
+`--sparse-report-image`) kèm quyết định và độ phủ ảnh, và bảng "trang giữ lớp chữ có ảnh phủ ít nhất
+`--figure-report-image`" kèm `review_reasons`.
+
+Mỗi trang ghi `review_reasons`, `status` và cờ `has_figure`, `has_table`, `has_formula` theo đúng đường của app khi
+không có engine OCR: `tiers.assemble_text_layer_page` (cờ `page_flags`, chọn tầng `select_tier` với
+`layout_available=False` như app mặc định). Trang đi OCR thì thành `failed` (`OCR_ENGINE_MISSING`), `review_reasons`
+rỗng: lý do xem lại của trang đó do tầng 2 quyết, script không gọi OCR.
 
 Kết quả chỉ gồm số liệu (không chép văn bản tài liệu), ghi ra `results.json` và `results.md`; script từ chối ghi
 vào trong repo. Script đọc PDF ngay trong tiến trình này (không qua worker có giới hạn), nên chỉ dùng cho tài liệu
@@ -29,6 +35,7 @@ import unicodedata
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from holocron_core.domain.documents import PageExtraction
 from holocron_core.infrastructure.document_readers.config import PdfReaderConfig
 from holocron_core.infrastructure.document_readers.pdfium_adapter import PdfiumBackend
 from holocron_core.infrastructure.document_readers.protocol import RawPdfPage
@@ -39,12 +46,16 @@ from holocron_core.infrastructure.document_readers.text_layer import (
     page_text,
     valid_word_ratio,
 )
+from holocron_core.infrastructure.document_readers.tiers import assemble_text_layer_page
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # Công thức cũ (trước 2026-10-29), chỉ để so sánh.
 OLD_TEXT_FULL_CHARS = 200
 OLD_TEXT_LAYER_MIN = 0.85
+
+# `document_id` giả để dựng `PageExtraction` bằng hàm của app; không ghi ra kết quả.
+EVAL_DOCUMENT_ID = "doc_0000000000000000"
 
 
 @dataclass
@@ -55,10 +66,16 @@ class PageRow:
     clean: float
     valid: float
     image_area_ratio: float
+    path_area_ratio: float
     old_score: float
     old_tier: str
     new_tier: str
     new_reason: str | None
+    status: str
+    review_reasons: list[str]
+    has_figure: bool
+    has_table: bool
+    has_formula: bool
 
 
 @dataclass
@@ -76,10 +93,16 @@ def old_text_score(text: str) -> float:
     return sufficiency * clean_char_ratio(normalized) * valid_word_ratio(normalized)
 
 
+def app_page(raw: RawPdfPage, config: PdfReaderConfig) -> PageExtraction:
+    """Trang như app dựng khi không có engine OCR (`assemble_text_layer_page`, tầng 3 chưa có)."""
+    return assemble_text_layer_page(raw.model_copy(update={"ocr": None}), EVAL_DOCUMENT_ID, config)
+
+
 def page_row(file_name: str, raw: RawPdfPage, config: PdfReaderConfig) -> PageRow:
     text = unicodedata.normalize("NFC", page_text(raw.lines))
     old_score = old_text_score(text)
     reason = ocr_reason(raw, config)
+    page = app_page(raw, config)
     return PageRow(
         file=file_name,
         page_number=raw.page_index + 1,
@@ -87,10 +110,16 @@ def page_row(file_name: str, raw: RawPdfPage, config: PdfReaderConfig) -> PageRo
         clean=clean_char_ratio(text),
         valid=valid_word_ratio(text),
         image_area_ratio=raw.image_area_ratio,
+        path_area_ratio=raw.path_area_ratio,
         old_score=old_score,
         old_tier="ocr" if old_score < OLD_TEXT_LAYER_MIN else "text_layer",
         new_tier="text_layer" if reason is None else "ocr",
         new_reason=reason,
+        status=page.status,
+        review_reasons=list(page.review_reasons),
+        has_figure=page.has_figure,
+        has_table=page.has_table,
+        has_formula=page.has_formula,
     )
 
 
@@ -98,6 +127,16 @@ def is_sparse_on_image(row: PageRow, config: PdfReaderConfig, max_chars: int, mi
     """Trang cho bảng riêng: lớp chữ sạch, có chữ nhưng ít, ảnh phủ lớn."""
     clean_layer = row.clean * row.valid >= config.text_layer_min
     return clean_layer and 0 < row.non_ws < max_chars and row.image_area_ratio >= min_image
+
+
+def is_text_layer_with_image(row: PageRow, min_image: float) -> bool:
+    """Trang cho bảng "giữ lớp chữ có ảnh lớn": tầng mới là lớp chữ, ảnh phủ ít nhất `min_image`."""
+    return row.new_tier == "text_layer" and row.image_area_ratio >= min_image
+
+
+def is_unflagged_figure(row: PageRow) -> bool:
+    """Trang giữ lớp chữ có cờ hình mà không có lý do xem lại: vi phạm `TIER3_UNAVAILABLE` (ADR-008 mục 9)."""
+    return row.new_tier == "text_layer" and row.has_figure and not row.review_reasons
 
 
 def summary(report: DirReport) -> dict[str, object]:
@@ -116,6 +155,7 @@ def summary(report: DirReport) -> dict[str, object]:
         "ocr_to_text_layer": sum(1 for r in pages if (r.old_tier, r.new_tier) == ("ocr", "text_layer")),
         "text_layer_to_ocr": sum(1 for r in pages if (r.old_tier, r.new_tier) == ("text_layer", "ocr")),
         "new_ocr_reasons": dict(sorted(reasons.items())),
+        "unflagged_figure_pages": sum(1 for r in pages if is_unflagged_figure(r)),
     }
 
 
@@ -126,7 +166,16 @@ def _row_cells(row: PageRow) -> str:
     )
 
 
-def markdown(reports: list[DirReport], config: PdfReaderConfig, max_chars: int, min_image: float) -> str:
+def _figure_cells(row: PageRow) -> str:
+    reasons = ", ".join(row.review_reasons) or "(rỗng)"
+    return (
+        f"{row.file} | {row.page_number} | {row.non_ws} | {row.image_area_ratio * 100:.1f} | {row.new_tier} | {reasons}"
+    )
+
+
+def markdown(
+    reports: list[DirReport], config: PdfReaderConfig, max_chars: int, min_image: float, figure_image: float
+) -> str:
     lines = [
         "# Luật chọn tầng: công thức cũ và luật mới",
         "",
@@ -134,7 +183,8 @@ def markdown(reports: list[DirReport], config: PdfReaderConfig, max_chars: int, 
         (
             f"- Mới: `non_ws = 0` ⇒ OCR; `clean × valid < {config.text_layer_min}` ⇒ OCR; "
             f"`non_ws < {config.text_sparse_chars}` và `image_area_ratio ≥ {config.text_sparse_image_min}` ⇒ OCR; "
-            "còn lại giữ lớp chữ."
+            f"`non_ws < {config.text_full_image_max_chars}` và `image_area_ratio ≥ {config.text_full_image_min}` "
+            "⇒ OCR; còn lại giữ lớp chữ."
         ),
         "",
         "## Tổng",
@@ -164,6 +214,15 @@ def markdown(reports: list[DirReport], config: PdfReaderConfig, max_chars: int, 
             "|---|---|---|---|---|---|---|---|",
         ]
         lines += [f"| {r.page_number} | {_row_cells(r)} |" for r in sparse]
+        figures = [r for r in report.pages if is_text_layer_with_image(r, figure_image)]
+        lines += [
+            "",
+            f"## {name}: trang giữ lớp chữ có ảnh ≥ {figure_image} ({len(figures)})",
+            "",
+            "| File | Trang | non_ws | % ảnh | tier | review_reasons |",
+            "|---|---|---|---|---|---|",
+        ]
+        lines += [f"| {_figure_cells(r)} |" for r in figures]
         if report.skipped:
             lines += ["", f"## {name}: file bỏ qua", ""]
             lines += [f"- {item['file']}: {item['reason']}" for item in report.skipped]
@@ -220,6 +279,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("pdf_dirs", type=Path, nargs="+")
     parser.add_argument("--sparse-report-chars", type=int, default=120, help="trần non_ws của bảng trang ít chữ")
     parser.add_argument("--sparse-report-image", type=float, default=0.30, help="độ phủ ảnh tối thiểu của bảng đó")
+    parser.add_argument(
+        "--figure-report-image", type=float, default=0.30, help="độ phủ ảnh tối thiểu của bảng trang giữ lớp chữ"
+    )
     args = parser.parse_args(argv)
 
     out_dir = args.out_dir.resolve()
@@ -229,13 +291,16 @@ def main(argv: list[str] | None = None) -> int:
     config = PdfReaderConfig()
     backend = PdfiumBackend.load()
     reports = [evaluate_dir(backend, pdf_dir, config) for pdf_dir in args.pdf_dirs]
-    text = markdown(reports, config, args.sparse_report_chars, args.sparse_report_image)
+    text = markdown(reports, config, args.sparse_report_chars, args.sparse_report_image, args.figure_report_image)
     payload = {
         "old_formula": {"text_full_chars": OLD_TEXT_FULL_CHARS, "text_layer_min": OLD_TEXT_LAYER_MIN},
         "new_config": {
             "text_layer_min": config.text_layer_min,
             "text_sparse_chars": config.text_sparse_chars,
             "text_sparse_image_min": config.text_sparse_image_min,
+            "text_full_image_min": config.text_full_image_min,
+            "text_full_image_max_chars": config.text_full_image_max_chars,
+            "figure_image_area_min": config.figure_image_area_min,
         },
         "dirs": [{"summary": summary(report), **asdict(report)} for report in reports],
     }

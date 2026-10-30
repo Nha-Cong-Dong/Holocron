@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import re
 import unicodedata
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -28,6 +28,7 @@ from ..domain.documents import (
     PageExtraction,
     normalize_chapter_title,
 )
+from ..domain.repositories import ImportedDocument
 
 # `chapter_code` giữ mẫu `^ch[0-9]{1,2}(\.[0-9]{1,2})?$` (§5.7): số chương tự động là 1..99.
 MIN_CHAPTER_NUMBER = 1
@@ -221,3 +222,17 @@ def select_title_with_llm(selector: ChapterTitleSelector, candidates: Sequence[s
         _LOGGER.exception("bộ chọn tên chương lỗi; giữ tên tất định")
         return None
     return checked_selection(sent, proposal)
+
+
+def auto_chapter(filename: str, subject_documents: Iterable[ImportedDocument], document_id: str) -> ChapterChoice:
+    """`choose_chapter_code` với các chương đã có của môn: `subject_documents` là tài liệu nhập cùng `subject_code`;
+    chính tài liệu `document_id` và bản ghi chưa có `chapter_code` không tính là "chương đã có" (§5.7).
+
+    Tầng gọi PHẢI đọc `subject_documents` và tạo tài liệu dưới CÙNG khoá của môn (§6.5 bước 5).
+    """
+    taken = {
+        document.chapter_code
+        for document in subject_documents
+        if document.meta.doc_id != document_id and document.chapter_code is not None
+    }
+    return choose_chapter_code(filename, taken)

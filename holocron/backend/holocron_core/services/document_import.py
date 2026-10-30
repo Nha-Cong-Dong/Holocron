@@ -69,6 +69,7 @@ from ..infrastructure.document_readers.config import PdfReaderConfig
 from ..infrastructure.document_readers.pdf_reader import PDF_MAGIC, PdfInputError, PdfReader, PdfWorkerError
 from ..infrastructure.document_readers.tiers import failed_page
 from ..infrastructure.storage.original_files import StagedFile
+from .chapter_naming import auto_chapter
 from .vault import ingest_confirmed_text
 
 MAX_FILENAME_LENGTH = 255
@@ -339,6 +340,9 @@ class ImportRuntime:
     locks: KeyedLocks = field(default_factory=KeyedLocks)
     gate: AdmissionGate = field(default_factory=AdmissionGate)
     retry: RetryPolicy = field(default_factory=RetryPolicy)
+    # Khoá theo `subject_code` (§6.5 bước 5, GĐ1 1A): chọn chương tự động và tạo tài liệu dưới khoá của môn. Thứ tự
+    # cố định: khoá môn TRƯỚC, khoá tài liệu (`locks`) SAU; không lấy khoá môn khi đang giữ khoá tài liệu.
+    subject_locks: KeyedLocks = field(default_factory=KeyedLocks)
 
     def close(self, timeout_s: float | None = None) -> bool:
         """Ngừng nhận tài liệu, dừng hàng đợi rồi dọn kho file gốc; `True` khi mọi luồng đã dừng hẳn.
@@ -367,7 +371,7 @@ class ImportRequest:
     declared_type: str | None
     subject_code: str
     source_kind: SourceKind
-    chapter_code: str
+    chapter_code: str | None = None  # tuỳ chọn từ 2026-10-31: `None` ⇒ chương tự động (§5.7)
     output_language: OutputLanguage = "vi"
     title: str | None = None
 
@@ -499,7 +503,9 @@ def _existing_outcome(store: DocumentRepository, existing: ImportedDocument, req
     tài liệu hiện có. Không ghi gì xuống kho."""
     if existing.meta.subject_code != request.subject_code:
         raise DocumentImportError("SUBJECT_CONFLICT")
-    if _chapter_code(existing) != request.chapter_code:
+    existing_chapter = _chapter_code(existing)
+    # Form không có `chapter_code` ⇒ trả bản ghi cũ, không tính lại chương (§5.7, GĐ1 1A)
+    if request.chapter_code is not None and existing_chapter != request.chapter_code:
         raise DocumentImportError("CHAPTER_CONFLICT")
     return ImportOutcome(created=False, document=document_view(store, existing))
 
@@ -535,7 +541,14 @@ def _undo_create(
 
 
 def _new_document(
-    request: ImportRequest, *, filename: str, document_id: str, sha256: str, page_count: int, now: datetime
+    request: ImportRequest,
+    *,
+    filename: str,
+    document_id: str,
+    sha256: str,
+    page_count: int,
+    now: datetime,
+    chapter_code: str,
 ) -> ImportedDocument:
     """Bản ghi tài liệu mới (`processing`); dựng và validate TRƯỚC khi lưu file gốc, để dữ liệu sai không để lại file."""
     return ImportedDocument(
@@ -552,7 +565,7 @@ def _new_document(
         filename=filename,
         size_bytes=len(request.content),
         output_language=request.output_language,
-        chapter_code=request.chapter_code,
+        chapter_code=chapter_code,
         status="processing",
     )
 
@@ -572,7 +585,8 @@ def accept_document(
     Vault ngay (xem `read_document`).
 
     Sau bước kiểm byte (§6.5 bước 1–2), lần nhận đi qua cổng `runtime.gate` cho tới khi xong, nên `runtime.close`
-    chờ cả lượt đang ghi file tạm hay mở thử. Phần còn lại chạy dưới khoá của `document_id` (`runtime.locks`):
+    chờ cả lượt đang ghi file tạm hay mở thử. Phần còn lại chạy dưới khoá của môn (`runtime.subject_locks`, để hai
+    file nhập cùng lúc không nhận cùng chương trống, §5.7) rồi khoá của `document_id` (`runtime.locks`):
     request thứ hai cùng nội dung chờ request đầu xong rồi thấy tài liệu đã có (200, hoặc 409 theo
     `_existing_outcome`). Tài liệu
     cùng mọi trang `pending` được tạo trong MỘT giao dịch (`create_imported_document`); nếu một tiến trình khác vẫn
@@ -594,7 +608,7 @@ def accept_document(
     document_id = f"doc_{sha256[:16]}"
     runtime.gate.enter()
     try:
-        with runtime.locks.hold(document_id):
+        with runtime.subject_locks.hold(request.subject_code), runtime.locks.hold(document_id):
             existing = store.get_imported_document(document_id)
             if existing is not None:
                 return _existing_outcome(store, existing, request)
@@ -602,6 +616,12 @@ def accept_document(
             staged = runtime.files.stage(request.content)
             try:
                 page_count = _probe(reader, staged)
+                chapter_code = (
+                    request.chapter_code
+                    or auto_chapter(
+                        filename, store.list_imported_documents(request.subject_code), document_id
+                    ).chapter_code
+                )
                 document = _new_document(
                     request,
                     filename=filename,
@@ -609,6 +629,7 @@ def accept_document(
                     sha256=staged.sha256,
                     page_count=page_count,
                     now=now,
+                    chapter_code=chapter_code,
                 )
             except BaseException:
                 runtime.files.discard(staged)

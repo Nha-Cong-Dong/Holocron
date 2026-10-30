@@ -503,7 +503,8 @@ export interface PageSummary {
 
 /**
  * `POST /v1/documents` (202 hoặc 200), `GET /v1/documents/{document_id}` và `POST /v1/documents/{document_id}/confirm`;
- * `pages` đủ `page_count` phần tử. `chapter_code` là field form bắt buộc khi nhập (một file = một chương).
+ * `pages` đủ `page_count` phần tử. `chapter_code` luôn có giá trị (một file = một chương): field form tuỳ chọn khi
+ * nhập; không gửi thì backend chọn theo tên file hoặc chương trống nhỏ nhất (§5.7 "Chương tự động").
  */
 export interface DocumentImport {
   meta: DocumentMeta;

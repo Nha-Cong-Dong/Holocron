@@ -169,7 +169,8 @@ def import_document(
     file: Annotated[UploadFile, File(description=FILE_FIELD_DESCRIPTION)],
     subject_code: Annotated[str, Form(pattern=SUBJECT_CODE_PATTERN)],
     source_kind: Annotated[SourceKind, Form()],
-    chapter_code: Annotated[str, Form(pattern=CHAPTER_CODE_PATTERN)],
+    # Tuỳ chọn từ 2026-10-31 (§6.5, GĐ1 1A): không gửi hoặc chuỗi rỗng ⇒ chương tự động (§5.7)
+    chapter_code: Annotated[str | None, Form(pattern=CHAPTER_CODE_PATTERN)] = None,
     output_language: Annotated[OutputLanguage, Form()] = "vi",
     title: Annotated[str | None, Form(min_length=1, max_length=MAX_TITLE_LENGTH)] = None,
 ) -> DocumentImport:

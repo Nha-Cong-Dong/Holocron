@@ -779,10 +779,12 @@ class SQLiteStore:
             self._drop_implicit_subject(conn, implicit_subject)
         return True
 
-    # Cột chỉ bộ nhập §6.5 ghi; dòng chỉ do upload đề §6.1 tạo có mọi cột này là NULL.
+    # Cột chỉ bộ nhập §6.5 ghi; dòng chỉ do upload đề §6.1 tạo có mọi cột này là NULL (cột có mặc định của migration
+    # 0004 trở về mặc định: `chapter_flags_json = '[]'`, `auto_confirm = 1`).
     _IMPORT_ONLY_RESET = (
         "subject_code = NULL, title = NULL, source_kind = NULL, output_language = NULL, page_count = NULL, "
-        "has_text_layer = NULL, status = NULL, chapter_code = NULL"
+        "has_text_layer = NULL, status = NULL, chapter_code = NULL, chapter_title = NULL, chapter_code_source = NULL, "
+        "chapter_title_source = NULL, chapter_flags_json = '[]', auto_confirm = 1"
     )
 
     def add_page(

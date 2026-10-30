@@ -142,14 +142,50 @@ class PdfReaderConfig(BaseModel):
     figure_ink_min: float = Field(default=0.10, ge=0.0, le=1.0)
     cross_line_cer_warn: float = Field(default=0.05, ge=0.0, le=1.0)
 
-    # `text_score` (ADR-008 mục 6): độ đủ chữ = min(1, số ký tự không trắng / text_full_chars).
-    text_full_chars: int = Field(default=200, ge=1)
+    # Chọn tầng (ADR-008 mục 6; sửa đổi 2026-10-29): `text_score` chỉ đo lớp chữ có rác hay không, ít chữ không phải
+    # lý do bỏ lớp chữ. Ngoại lệ là trang ảnh: lớp chữ sạch nhưng có dưới `text_sparse_chars` ký tự không trắng
+    # (thường chỉ còn tiêu đề khung slide và số trang) trong khi ảnh nhúng phủ ít nhất `text_sparse_image_min` diện
+    # tích trang (diện tích hợp) ⇒ OCR cả trang; "dưới" là so sánh `<`. Đo trên 3 chương slide thật (ADR-008 mục 6):
+    # trang ảnh có 2–31 ký tự, ảnh phủ 0,434–0,86 (ch2 tr.32: 31 ký tự / 0,558; tr.46: 2 ký tự / 0,434); trang giữ
+    # lớp chữ gần biên nhất có 34 ký tự / 0,542. Giá trị khởi đầu, hiệu chỉnh tiếp bằng `scripts/eval_pdf_tiers`.
+    text_sparse_chars: int = Field(default=32, ge=1)
+    text_sparse_image_min: float = Field(default=0.40, gt=0.0, le=1.0)
+    # Trang ảnh phủ gần kín (sửa đổi 2026-10-30): lớp chữ sạch, có dưới `text_full_image_max_chars` ký tự không trắng
+    # (so sánh `<`) trong khi ảnh nhúng phủ ít nhất `text_full_image_min` diện tích trang (diện tích hợp) ⇒ OCR cả
+    # trang, vì phần chữ còn lại chỉ là tiêu đề, header, số trang nằm dưới ảnh. Trần ký tự giữ lớp chữ cho PDF scan đã
+    # có lớp chữ đầy đủ (ảnh phủ cả trang, chữ ẩn bên trên). Đo trên 3 chương slide thật: ch4 tr.22 (sơ đồ là ảnh) có
+    # 64 ký tự / ảnh 0,98; trang giữ lớp chữ có ảnh lớn nhất là 0,74. `text_full_image_min` phải ≥
+    # `text_sparse_image_min` (luật này chỉ nới luật trang ảnh ít chữ, không thay nó).
+    text_full_image_min: float = Field(default=0.90, gt=0.0, le=1.0)
+    text_full_image_max_chars: int = Field(default=200, ge=1)
 
     # `has_formula` (mục 6, 9): tỉ lệ ký hiệu toán trên số ký tự không trắng, kèm số ký hiệu tối thiểu.
     formula_density_min: float = Field(default=0.03, gt=0.0, le=1.0)
     formula_min_symbols: int = Field(default=3, ge=1)
 
-    # `has_figure` trên PDF số (mục 9): diện tích ảnh nhúng đủ lớn; diện tích đường vẽ chỉ tính khi trang có ảnh.
+    # Ảnh template (sửa đổi 2026-10-30): ảnh nhúng cùng nội dung (SHA-256 dữ liệu thô của luồng ảnh + kích thước
+    # điểm ảnh, số bit mỗi điểm ảnh, bộ lọc) và cùng vị trí, kích thước trên trang (hộp chuẩn hoá theo khổ trang đã
+    # xoay, làm tròn theo bước `template_image_bbox_step`) xuất hiện trên ít nhất `template_image_min_pages` trang VÀ
+    # ít nhất `template_image_min_page_ratio` tổng số trang của tài liệu (so sánh `≥`). Ảnh template không được tính
+    # vào độ phủ ảnh của mọi luật dựa trên độ phủ (trang ảnh ít chữ, ảnh phủ gần kín, phần ảnh của cờ hình). Tài liệu
+    # dưới `template_image_min_pages` trang không có ảnh template; trần dưới là 3 để tài liệu 1–2 trang luôn như vậy.
+    template_image_min_page_ratio: float = Field(default=0.60, gt=0.0, le=1.0)
+    template_image_min_pages: int = Field(default=3, ge=3)
+    template_image_bbox_step: float = Field(default=0.01, ge=1e-4, le=0.1)
+    # Lượt quét ảnh cấp tài liệu trong worker, trước trang đầu, không render: hạn riêng `template_scan_timeout_s`,
+    # không tính vào `open_timeout_s` hay hạn trang; thời gian chờ lượt quét được cộng vào hạn tổng của tài liệu, và
+    # `ceil(template_scan_timeout_s)` giây CPU được cộng vào giới hạn CPU của worker có quét. Trần số ảnh mỗi trang và
+    # cả tài liệu, số byte đem băm mỗi ảnh và cả tài liệu. Vượt trần của trang hay của tài liệu, quá hạn hoặc lỗi ⇒
+    # không ảnh nào là template (hành vi cũ). Ảnh lớn hơn `template_scan_max_image_bytes` không có khoá nên không bao
+    # giờ là template.
+    template_scan_timeout_s: float = Field(default=20.0, gt=0)
+    template_scan_max_images_per_page: int = Field(default=256, ge=1)
+    template_scan_max_images: int = Field(default=20_000, ge=1)
+    template_scan_max_image_bytes: int = Field(default=16 * MIB, ge=1)
+    template_scan_max_bytes: int = Field(default=512 * MIB, ge=1)
+
+    # `has_figure` trên PDF số (mục 9): nhánh ảnh dùng diện tích ảnh nhúng KHÔNG phải template; nhánh đường vẽ tính
+    # mọi ảnh, kể cả template, như develop (sửa đổi 2026-10-30).
     figure_image_area_min: float = Field(default=0.10, gt=0.0, le=1.0)
     figure_path_area_min: float = Field(default=0.25, gt=0.0, le=1.0)
 
@@ -173,6 +209,22 @@ class PdfReaderConfig(BaseModel):
         if not self.ocr_charset_allowed_missing <= OCR_CHARSET_APPROVED_MISSING:
             approved = ", ".join(sorted(OCR_CHARSET_APPROVED_MISSING))
             raise ValueError(f"ocr_charset_allowed_missing chỉ được chứa các chữ đã duyệt ({approved})")
+        return self
+
+    @model_validator(mode="after")
+    def _full_image_not_below_sparse_image(self) -> PdfReaderConfig:
+        """Ngưỡng trang ảnh phủ gần kín không được thấp hơn ngưỡng ảnh của luật trang ảnh ít chữ."""
+        if self.text_full_image_min < self.text_sparse_image_min:
+            raise ValueError("text_full_image_min phải lớn hơn hoặc bằng text_sparse_image_min")
+        return self
+
+    @model_validator(mode="after")
+    def _template_scan_caps_are_ordered(self) -> PdfReaderConfig:
+        """Trần mỗi trang (mỗi ảnh) không vượt trần cả tài liệu, cho số ảnh và số byte đem băm."""
+        if self.template_scan_max_images_per_page > self.template_scan_max_images:
+            raise ValueError("template_scan_max_images_per_page phải nhỏ hơn hoặc bằng template_scan_max_images")
+        if self.template_scan_max_image_bytes > self.template_scan_max_bytes:
+            raise ValueError("template_scan_max_image_bytes phải nhỏ hơn hoặc bằng template_scan_max_bytes")
         return self
 
 

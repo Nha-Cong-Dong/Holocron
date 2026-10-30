@@ -7,22 +7,33 @@ Chỉ chạy trong worker có giới hạn (`_pdf_worker.py`), không bao giờ 
 An toàn: không gọi `init_forms()` (không khởi tạo form), wheel PDFium không có V8/XFA nên không chạy JavaScript,
 không đọc file đính kèm, liên kết hay nội dung nhúng; chỉ đọc lớp chữ và khung bao của đối tượng trang, và render
 trang ra ảnh xám cho OCR (tầng 2, không vẽ form và annotation; không giải nén ảnh nhúng trực tiếp).
+Khoá ảnh template (`page_image_keys`, sửa đổi 2026-10-30) không giải mã ảnh: băm dữ liệu THÔ của luồng ảnh (chưa
+giải mã bộ lọc nào, có trần byte kiểm TRƯỚC khi cấp bộ nhớ đệm), cùng kích thước điểm ảnh và tên bộ lọc đọc từ từ điển
+của luồng ảnh. Không gọi metadata ảnh của PDFium (`FPDFImageObj_GetImageMetadata` có thể giải mã JPX, JBIG2).
 """
 
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import importlib
+import itertools
 from collections.abc import Iterable
 from types import ModuleType
 from typing import Literal, Self
 
-from .config import DEFAULT_RENDER_SHRINK_FACTOR
-from .protocol import RawPdfPage
+from .config import DEFAULT_RENDER_SHRINK_FACTOR, PdfReaderConfig
+from .protocol import ImageKey, RawPdfPage
 from .raster import POINTS_PER_INCH, GrayImage, pack_rows, render_scale
-from .text_layer import PdfBox, PdfChar, group_lines
+from .template_images import READ_ERRORS, PageImageKeys, TemplateFilter, image_key
+from .text_layer import PdfBox, PdfChar, group_lines, normalize_box
 
 OpenFailure = Literal["PASSWORD_REQUIRED", "OPEN_FAILED"]
+
+# Giới hạn hiệu năng: số hộp ảnh tối đa của một trang khi tính diện tích hợp (`union_area_ratio`, O(n² log n)).
+# Vượt trần thì dùng cận trên là tổng diện tích, nghiêng về OCR (có người xem lại). Trang scan cắt thành dải vẫn đúng
+# vì các dải không chồng nhau (tổng = hợp).
+MAX_UNION_BOXES = 256
 
 _HIGH_SURROGATES = range(0xD800, 0xDC00)
 _LOW_SURROGATES = range(0xDC00, 0xE000)
@@ -51,16 +62,60 @@ def _as_box(value: object) -> PdfBox:
     return (left, bottom, right, top)
 
 
-def _area_ratio(boxes: list[PdfBox], page_box: PdfBox) -> float:
-    """Tổng diện tích các hộp (cắt theo khổ trang) chia diện tích trang, chặn ở 1."""
+def _page_area(page_box: PdfBox) -> float:
     left, bottom, right, top = page_box
-    page_area = max((right - left) * (top - bottom), 1e-9)
-    total = 0.0
+    return max((right - left) * (top - bottom), 1e-9)
+
+
+def _clip_boxes(boxes: list[PdfBox], page_box: PdfBox) -> list[PdfBox]:
+    """Cắt các hộp theo khổ trang, bỏ hộp rỗng hoặc nằm hẳn ngoài trang."""
+    left, bottom, right, top = page_box
+    clipped: list[PdfBox] = []
     for bl, bb, br, bt in boxes:
-        width = max(0.0, min(br, right) - max(bl, left))
-        height = max(0.0, min(bt, top) - max(bb, bottom))
-        total += width * height
-    return min(1.0, total / page_area)
+        box = (max(bl, left), max(bb, bottom), min(br, right), min(bt, top))
+        if box[2] > box[0] and box[3] > box[1]:
+            clipped.append(box)
+    return clipped
+
+
+def _area_ratio(boxes: list[PdfBox], page_box: PdfBox) -> float:
+    """Tổng diện tích các hộp (cắt theo khổ trang) chia diện tích trang, chặn ở 1 (cận trên của độ phủ)."""
+    total = sum((br - bl) * (bt - bb) for bl, bb, br, bt in _clip_boxes(boxes, page_box))
+    return min(1.0, total / _page_area(page_box))
+
+
+def _covered_length(spans: list[tuple[float, float]]) -> float:
+    """Độ dài hợp của các đoạn `[low, high]` đã sắp theo `low`."""
+    covered = 0.0
+    current_low, current_high = spans[0]
+    for low, high in spans[1:]:
+        if low > current_high:
+            covered += current_high - current_low
+            current_low, current_high = low, high
+        else:
+            current_high = max(current_high, high)
+    return covered + current_high - current_low
+
+
+def union_area_ratio(boxes: list[PdfBox], page_box: PdfBox) -> float:
+    """Diện tích HỢP của các hộp (cắt theo khổ trang) chia diện tích trang, ∈ [0, 1] (ADR-008 mục 6).
+
+    Hai ảnh chồng lên nhau chỉ được tính một lần, nên độ phủ không bị thổi lên bởi ảnh xếp lớp (ảnh nền khung slide
+    vẽ hai lần, ảnh đè lên nền). Quét theo các dải dọc giữa hai mép trái/phải liên tiếp: O(n² log n) với n hộp. Quá
+    `MAX_UNION_BOXES` hộp thì trả tổng diện tích chặn ở 1 (`_area_ratio`), là cận trên: trang nhiều ảnh bị coi là
+    phủ nhiều hơn thực tế, nghiêng về OCR (có người xem lại) thay vì giữ lớp chữ. Không tính vùng cắt (clip path)
+    của ảnh: hộp là khung bao của đối tượng ảnh.
+    """
+    clipped = _clip_boxes(boxes, page_box)
+    if len(clipped) > MAX_UNION_BOXES:
+        return _area_ratio(clipped, page_box)
+    edges = sorted({x for box in clipped for x in (box[0], box[2])})
+    total = 0.0
+    for x_low, x_high in itertools.pairwise(edges):
+        spans = sorted((box[1], box[3]) for box in clipped if box[0] <= x_low and box[2] >= x_high)
+        if spans:
+            total += (x_high - x_low) * _covered_length(spans)
+    return min(1.0, total / _page_area(page_box))
 
 
 def decode_code_units(codes: list[int]) -> list[tuple[str, int]]:
@@ -100,7 +155,12 @@ class PdfiumDocument:
     def page_count(self) -> int:
         return _as_int(self._backend.call(self._handle, "__len__"))
 
-    def read_page(self, index: int) -> RawPdfPage:
+    def read_page(self, index: int, templates: TemplateFilter | None = None) -> RawPdfPage:
+        """Dữ liệu thô của trang; có `templates` thì thêm độ phủ của các ảnh không phải template.
+
+        `templates` là tập ảnh template của lượt quét (`template_images.TemplateFilter.from_scan`); None ⇒
+        `content_image_area_ratio` là None (không có ảnh template, độ phủ như cũ).
+        """
         backend = self._backend
         page = backend.call(self._handle, "get_page", index)
         try:
@@ -111,7 +171,11 @@ class PdfiumDocument:
                 raise PdfiumDataError("get_size phải trả (width, height)")
             width_pt, height_pt = _as_float(size[0]), _as_float(size[1])
             chars = self._read_chars(page)
-            image_boxes, path_boxes = self._object_boxes(page)
+            images, path_boxes = self._object_boxes(page)
+            content_ratio = None
+            if templates is not None:
+                content_boxes = self._content_image_boxes(images, page_box, rotation, templates)
+                content_ratio = union_area_ratio(content_boxes, page_box)
         finally:
             backend.call(page, "close")
         return RawPdfPage(
@@ -119,9 +183,38 @@ class PdfiumDocument:
             width_pt=width_pt,
             height_pt=height_pt,
             lines=group_lines(chars, page_box, rotation),
-            image_area_ratio=_area_ratio(image_boxes, page_box),
+            image_area_ratio=union_area_ratio([box for _, box in images], page_box),
             path_area_ratio=_area_ratio(path_boxes, page_box),
+            content_image_area_ratio=content_ratio,
         )
+
+    def page_image_keys(self, index: int, config: PdfReaderConfig) -> PageImageKeys | None:
+        """Khoá các ảnh nhúng của trang `index` cho lượt quét ảnh template; không render, không đọc lớp chữ.
+
+        Trang có quá `template_scan_max_images_per_page` ảnh ⇒ None (vượt trần). Ảnh có dữ liệu thô rỗng hoặc lớn hơn
+        `template_scan_max_image_bytes` không có khoá. Lỗi đọc trang hay ảnh được ném ra (lượt quét thành `error`).
+        """
+        backend = self._backend
+        page = backend.call(self._handle, "get_page", index)
+        try:
+            page_box = _as_box(backend.call(page, "get_bbox"))
+            rotation = _as_int(backend.call(page, "get_rotation"))
+            objects = backend.call(page, "get_objects", [backend.image_object_type])
+            if not isinstance(objects, Iterable):
+                raise PdfiumDataError("get_objects phải trả iterable")
+            keys: list[ImageKey | None] = []
+            hashed_bytes = 0
+            for obj in objects:
+                if len(keys) >= config.template_scan_max_images_per_page:
+                    return None
+                box = _as_box(backend.call(obj, "get_bounds"))
+                step, max_bytes = config.template_image_bbox_step, config.template_scan_max_image_bytes
+                key, hashed = self._image_key(obj, box, page_box, rotation, step, max_bytes)
+                keys.append(key)
+                hashed_bytes += hashed
+            return PageImageKeys(keys=keys, hashed_bytes=hashed_bytes)
+        finally:
+            backend.call(page, "close")
 
     def render_gray(
         self, index: int, dpi: int, max_pixels: int, *, shrink_factor: float = DEFAULT_RENDER_SHRINK_FACTOR
@@ -154,10 +247,11 @@ class PdfiumDocument:
         finally:
             backend.call(textpage, "close")
 
-    def _object_boxes(self, page: object) -> tuple[list[PdfBox], list[PdfBox]]:
+    def _object_boxes(self, page: object) -> tuple[list[tuple[object, PdfBox]], list[PdfBox]]:
+        """(đối tượng ảnh kèm hộp, hộp đường vẽ); đối tượng ảnh chỉ dùng được khi trang còn mở."""
         backend = self._backend
         image_type, path_type = backend.image_object_type, backend.path_object_type
-        images: list[PdfBox] = []
+        images: list[tuple[object, PdfBox]] = []
         paths: list[PdfBox] = []
         objects = backend.call(page, "get_objects", [image_type, path_type])
         if not isinstance(objects, Iterable):
@@ -165,8 +259,57 @@ class PdfiumDocument:
         for obj in objects:
             kind = _as_int(getattr(obj, "type", None))
             box = _as_box(backend.call(obj, "get_bounds"))
-            (images if kind == image_type else paths).append(box)
+            if kind == image_type:
+                images.append((obj, box))
+            else:
+                paths.append(box)
         return images, paths
+
+    def _content_image_boxes(
+        self, images: list[tuple[object, PdfBox]], page_box: PdfBox, rotation: int, templates: TemplateFilter
+    ) -> list[PdfBox]:
+        """Hộp các ảnh không phải template; trang có quá `max_images_per_page` ảnh giữ mọi ảnh (không loại ảnh nào).
+
+        Khoá được tính đúng như lượt quét; ảnh không có khoá (quá trần byte, dữ liệu rỗng, đọc lỗi) là ảnh nội dung.
+        """
+        if len(images) > templates.max_images_per_page:
+            return [box for _, box in images]
+        content: list[PdfBox] = []
+        for obj, box in images:
+            try:
+                key, _ = self._image_key(obj, box, page_box, rotation, templates.bbox_step, templates.max_image_bytes)
+            except READ_ERRORS:
+                key = None
+            if key is None or key not in templates.keys:
+                content.append(box)
+        return content
+
+    def _image_key(
+        self, obj: object, box: PdfBox, page_box: PdfBox, rotation: int, step: float, max_bytes: int
+    ) -> tuple[ImageKey | None, int]:
+        """(khoá của ảnh, số byte đã băm); dữ liệu thô rỗng hoặc lớn hơn `max_bytes` ⇒ (None, 0), không băm.
+
+        Chỉ đọc dữ liệu thô, kích thước điểm ảnh (`get_px_size`) và tên bộ lọc: không lời gọi nào giải mã ảnh.
+        """
+        backend = self._backend
+        digest = backend.image_digest(obj, max_bytes)
+        if digest is None:
+            return None, 0
+        size = backend.call(obj, "get_px_size")
+        if not isinstance(size, tuple | list) or len(size) != 2:
+            raise PdfiumDataError("get_px_size phải trả (width, height)")
+        filters = backend.call(obj, "get_filters")
+        if not isinstance(filters, list) or not all(isinstance(name, str) for name in filters):
+            raise PdfiumDataError("get_filters phải trả danh sách chuỗi")
+        key = image_key(
+            digest[0],
+            _as_int(size[0]),
+            _as_int(size[1]),
+            [str(name) for name in filters],
+            normalize_box(box, page_box, rotation),
+            step,
+        )
+        return key, digest[1]
 
 
 class PdfiumBackend:
@@ -220,6 +363,20 @@ class PdfiumBackend:
             code = getattr(exc, "err_code", None)
             return "PASSWORD_REQUIRED" if code == self.password_error_code else "OPEN_FAILED"
         return PdfiumDocument(self, handle)
+
+    def image_digest(self, image: object, max_bytes: int) -> tuple[str, int] | None:
+        """(SHA-256 hex, số byte) của dữ liệu thô của luồng ảnh; rỗng hoặc lớn hơn `max_bytes` ⇒ None.
+
+        Hỏi độ dài trước, kiểm trần, rồi mới cấp bộ nhớ đệm và chép dữ liệu (không giải mã bộ lọc nào).
+        """
+        raw_image: object = getattr(image, "raw", None)
+        size = _as_int(self._raw.FPDFImageObj_GetImageDataRaw(raw_image, None, 0))
+        if size < 1 or size > max_bytes:
+            return None
+        buffer = (ctypes.c_ubyte * size)()
+        if _as_int(self._raw.FPDFImageObj_GetImageDataRaw(raw_image, buffer, size)) != size:
+            raise PdfiumDataError("độ dài dữ liệu ảnh thay đổi giữa hai lần đọc")
+        return hashlib.sha256(memoryview(buffer)).hexdigest(), size
 
     def unicode_at(self, raw_textpage: object, index: int) -> int:
         return _as_int(self._raw.FPDFText_GetUnicode(raw_textpage, index))

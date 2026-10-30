@@ -10,9 +10,10 @@ import itertools
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 from .config import PdfReaderConfig
-from .protocol import MAX_RAW_LINE_CHARS, RawTextLine, RawWord, UnitBBox
+from .protocol import MAX_RAW_LINE_CHARS, RawPdfPage, RawTextLine, RawWord, UnitBBox
 
 PdfBox = tuple[float, float, float, float]  # (left, bottom, right, top), toạ độ PDF gốc dưới-trái
 
@@ -25,8 +26,23 @@ LEGACY_VIETNAMESE_MARKERS: frozenset[str] = frozenset(
 )
 
 # Các dấu trên cũng là ký hiệu toán hay đơn vị thông dụng (`x−1`, `a×b`, `2·3`, `a÷b`, `µs`), nên được xét theo
-# vị trí trong từ (xem `_legacy_marker_at`).
+# vị trí trong từ (xem `_counts_as_legacy_marker`).
 MATH_LIKE_MARKERS: frozenset[str] = frozenset("−×·÷µ")
+
+# Ký hiệu nhãn hiệu hay đứng CUỐI tên riêng Latin (`ARM®`, `Intel©`, `ARM®-based`) nhưng cũng là chữ TCVN3 (`®` = đ,
+# `©` = â), hay đứng ĐẦU từ (`®iÒu`, `®a`). Chỉ được miễn khi đứng cuối từ (không có chữ cái theo sau) VÀ cụm chữ ngay
+# trước nó toàn chữ Latin ASCII; mọi vị trí khác vẫn là dấu TCVN3 (`Hà®`, `x®y`). `™` không phải dấu TCVN3 nên không
+# cần miễn. Các chữ TCVN3 khác (`¶` = ả, `§` = Đ, `«` = ô, `»` = ằ) không được miễn ở vị trí nào (`qu¶`, `m«`).
+TRAILING_SYMBOL_MARKERS: frozenset[str] = frozenset("©®")
+
+# Phụ âm đầu và phụ âm cuối (chữ Latin ASCII) của âm tiết tiếng Việt; dùng để phân biệt từ TCVN3/VNI (`häc`,
+# `ViÖt`, `Vieät`) với từ tiếng nước ngoài có chữ Latin-1 hợp lệ (`Müller`, `Größe`, `Köln`).
+_VIETNAMESE_INITIALS: frozenset[str] = frozenset(
+    {"", "b", "c", "ch", "d", "g", "gh", "h", "k", "kh", "l", "m", "n", "ng", "ngh", "nh", "p", "ph", "q", "r", "s"}
+    | {"t", "th", "tr", "v", "x"}
+)
+_VIETNAMESE_FINALS: frozenset[str] = frozenset({"", "c", "ch", "m", "n", "ng", "nh", "p", "t"})
+_ASCII_VOWELS: frozenset[str] = frozenset("aeiouy")
 
 _MATH_RANGES: tuple[tuple[int, int], ...] = (
     (0x0391, 0x03A9),  # chữ Hy Lạp hoa
@@ -152,22 +168,66 @@ def _is_plain_latin(run: str) -> bool:
     return run.isascii() and run.isalpha()
 
 
+def is_vietnamese_syllable_shape(run: str) -> bool:
+    """Cụm chữ có dạng một âm tiết tiếng Việt: phụ âm đầu ASCII + MỘT cụm nguyên âm liền nhau + phụ âm cuối ASCII.
+
+    Chữ ngoài ASCII (chữ có dấu, chữ Latin-1 của TCVN3/VNI) được coi là nguyên âm. `Müller` (hai cụm nguyên âm, phụ
+    âm cuối `r`), `Größe` (phụ âm đầu `gr`) và `Köln` (phụ âm cuối `ln`) không có dạng này; `häc`, `ViÖt`, `Vieät`,
+    `ñöôïc` thì có.
+    """
+    lowered = run.lower()
+    nucleus = [index for index, char in enumerate(lowered) if not char.isascii() or char in _ASCII_VOWELS]
+    if not nucleus:
+        return False
+    start, end = nucleus[0], nucleus[-1] + 1
+    if len(nucleus) != end - start:
+        return False
+    return lowered[:start] in _VIETNAMESE_INITIALS and lowered[end:] in _VIETNAMESE_FINALS
+
+
+def _alpha_run(token: str, index: int) -> str:
+    """Cụm chữ cái liền nhau chứa vị trí `index`."""
+    return token[index - _letter_run(token, index - 1, -1) : index + _letter_run(token, index, 1)]
+
+
+def _is_latin_trailing_symbol(token: str, index: int) -> bool:
+    """Ký hiệu ở `index` đứng cuối một cụm chữ Latin ASCII (`ARM®`, `ARM®-based`): không có chữ cái theo sau."""
+    left = _letter_run(token, index - 1, -1)
+    return left > 0 and token[index - left : index].isascii() and not _precedes_letter(token, index)
+
+
+def _precedes_letter(token: str, index: int) -> bool:
+    """Sau `index` có chữ cái, chỉ cách bởi các dấu TCVN3/VNI không phải chữ cái (không qua dấu câu, chữ số)."""
+    end = index + 1
+    while end < len(token) and not token[end].isalpha():
+        if token[end] not in LEGACY_VIETNAMESE_MARKERS:
+            return False
+        end += 1
+    return end < len(token)
+
+
 def _counts_as_legacy_marker(token: str, index: int) -> bool:
     """Ký tự ở `index` có được tính là dấu TCVN3/VNI hay không.
 
-    Dấu thường (`®`, `¸`, `Ö`…) luôn được tính. Ký hiệu toán trùng mã TCVN3 (`MATH_LIKE_MARKERS`) được xét theo vị
-    trí: `µ` chỉ được tính khi đứng ngay sau một chữ cái (chữ `à` của TCVN3: `hµnh`, `vµ`); đứng đầu từ hay sau chữ
-    số là tiền tố đơn vị (`µs`, `10µs`). `−`, `×`, `·`, `÷` chỉ được tính khi nằm giữa hai chữ cái và một bên là
-    cụm từ hai chữ cái trở lên (`Tr−êng`, `tr×nh`). Toán hạng là số (`x−1`, `2·3`) hoặc biến một chữ (`a×b`) không
-    bị tính. Riêng `·` nằm giữa hai cụm chữ Latin không dấu là dấu nhân của đơn vị (`kg·m`, `kW·h`), không bị tính;
-    đổi lại, từ TCVN3 mà `·` (chữ `ã`) chỉ đứng cạnh chữ không dấu (`l·nh`) không được tính ở ký tự này, các dấu
-    khác của trang vẫn kéo `valid_word_ratio` xuống.
+    Dấu không phải chữ cái (`¸`, `¬`, `¹`, `¶`, `«`…) luôn được tính, trừ `TRAILING_SYMBOL_MARKERS` (`®`, `©`) đứng
+    cuối một cụm chữ Latin ASCII (`ARM®`, `Intel©`, `ARM®-based`); `®iÒu`, `®a`, `x®y`, `Hà®` vẫn bị tính.
+    Chữ Latin-1 (`Ö`, `ä`, `ü`…) chỉ được tính khi cụm chữ chứa nó có dạng một âm tiết tiếng Việt
+    (`is_vietnamese_syllable_shape`: `ViÖt`, `häc`), không phải từ nước ngoài (`Müller`).
+    Ký hiệu toán trùng mã TCVN3 (`MATH_LIKE_MARKERS`) được xét theo vị trí: `µ` chỉ được tính khi đứng ngay sau một
+    chữ cái (chữ `à` của TCVN3: `hµnh`, `vµ`); đứng đầu từ hay sau chữ số là tiền tố đơn vị (`µs`, `10µs`). `−`,
+    `×`, `·`, `÷` chỉ được tính khi nằm giữa hai chữ cái và một bên là cụm từ hai chữ cái trở lên (`Tr−êng`,
+    `tr×nh`). Toán hạng là số (`x−1`, `2·3`) hoặc biến một chữ (`a×b`) không bị tính. Riêng `·` nằm giữa hai cụm
+    chữ Latin không dấu là dấu nhân của đơn vị (`kg·m`, `kW·h`), không bị tính; đổi lại, từ TCVN3 mà `·` (chữ `ã`)
+    chỉ đứng cạnh chữ không dấu (`l·nh`) không được tính ở ký tự này, các dấu khác của trang vẫn kéo
+    `valid_word_ratio` xuống.
     """
     char = token[index]
     if char not in LEGACY_VIETNAMESE_MARKERS:
         return False
+    if char in TRAILING_SYMBOL_MARKERS:
+        return not _is_latin_trailing_symbol(token, index)
     if char not in MATH_LIKE_MARKERS:
-        return True
+        return not char.isalpha() or is_vietnamese_syllable_shape(_alpha_run(token, index))
     if char == "µ":
         return index > 0 and token[index - 1].isalpha()
     left = _letter_run(token, index - 1, -1)
@@ -184,21 +244,21 @@ def _counts_as_legacy_marker(token: str, index: int) -> bool:
 def is_legacy_encoded_word(token: str) -> bool:
     """Từ có dấu TCVN3/VNI (theo `_counts_as_legacy_marker`) lẫn với chữ cái khác ⇒ không hợp lệ.
 
-    Một dấu đứng riêng (`®`) và biểu thức toán (`x−1`, `a×b`, `2·3`, `µs`, `P(A∩B)`) vẫn hợp lệ.
+    Một dấu đứng riêng (`®`), ký hiệu nhãn hiệu cuối tên Latin (`ARM®`), từ nước ngoài có chữ Latin-1 (`Müller`)
+    và biểu thức toán (`x−1`, `a×b`, `2·3`, `µs`, `P(A∩B)`) vẫn hợp lệ.
     """
     has_marker = any(_counts_as_legacy_marker(token, index) for index in range(len(token)))
     has_other_letter = any(c.isalpha() and c not in LEGACY_VIETNAMESE_MARKERS for c in token)
     return has_marker and has_other_letter
 
 
-def text_sufficiency(text: str, config: PdfReaderConfig) -> float:
-    """(a) min(1, số ký tự không trắng / `text_full_chars`)."""
-    non_ws = sum(1 for c in text if not c.isspace())
-    return min(1.0, non_ws / config.text_full_chars)
+def non_whitespace_count(text: str) -> int:
+    """Số ký tự không trắng của văn bản đã chuẩn hoá NFC."""
+    return sum(1 for c in unicodedata.normalize("NFC", text) if not c.isspace())
 
 
 def clean_char_ratio(text: str) -> float:
-    """(b) 1 − tỉ lệ ký tự rác trên số ký tự không trắng; trang không có chữ cho 1.0 (đã bị (a) chặn)."""
+    """(a) 1 − tỉ lệ ký tự rác trên số ký tự không trắng; trang không có chữ cho 1.0 (`text_score` tự xử lý)."""
     non_ws = [c for c in text if not c.isspace()]
     if not non_ws:
         return 1.0
@@ -206,7 +266,7 @@ def clean_char_ratio(text: str) -> float:
 
 
 def valid_word_ratio(text: str) -> float:
-    """(c) tỉ lệ từ hợp lệ; "từ" là cụm không trắng có ít nhất một chữ cái."""
+    """(b) tỉ lệ từ hợp lệ; "từ" là cụm không trắng có ít nhất một chữ cái."""
     words = [token for token in text.split() if any(c.isalpha() for c in token)]
     if not words:
         return 1.0
@@ -214,19 +274,68 @@ def valid_word_ratio(text: str) -> float:
 
 
 def text_score(text: str, config: PdfReaderConfig) -> float:
-    """Tích ba thành phần (a)·(b)·(c), ∈ [0, 1]; tính trên văn bản đã chuẩn hoá NFC."""
+    """Chất lượng lớp chữ: tích (a)·(b) ∈ [0, 1], tính trên văn bản đã chuẩn hoá NFC (ADR-008 mục 6).
+
+    Chỉ đo lớp chữ có rác hay không (ký tự rác, từ mã TCVN3/VNI), không đo lớp chữ nhiều hay ít: slide ít chữ mà
+    lớp chữ sạch vẫn được 1.0 (sửa đổi 2026-10-29). Trang không có ký tự không trắng nào được 0.0, nên luôn cần OCR.
+    `config` giữ trong chữ ký cho các nơi gọi; công thức hiện không dùng ngưỡng nào của nó.
+    """
     normalized = unicodedata.normalize("NFC", text)
-    score = text_sufficiency(normalized, config) * clean_char_ratio(normalized) * valid_word_ratio(normalized)
-    return _clamp(score)
+    if not any(not c.isspace() for c in normalized):
+        return 0.0
+    return _clamp(clean_char_ratio(normalized) * valid_word_ratio(normalized))
 
 
 def page_text(lines: Sequence[RawTextLine]) -> str:
     return "\n".join(line.text for line in lines)
 
 
-def needs_ocr(lines: Sequence[RawTextLine], config: PdfReaderConfig) -> bool:
-    """Lớp chữ không đủ tốt (`text_score < TEXT_LAYER_MIN`) ⇒ trang cần OCR (ADR-008 mục 6)."""
-    return text_score(page_text(lines), config) < config.text_layer_min
+OcrReason = Literal["empty_text_layer", "garbled_text_layer", "sparse_text_on_image", "image_covers_page"]
+
+
+def content_image_area(raw: RawPdfPage) -> float:
+    """Độ phủ ảnh dùng cho mọi luật dựa trên độ phủ: diện tích hợp của các ảnh KHÔNG phải template.
+
+    `content_image_area_ratio` là None khi tài liệu không có ảnh template (tài liệu 1–2 trang, lượt quét không `ok`):
+    khi đó là `image_area_ratio`, đúng hành vi cũ.
+    """
+    return raw.image_area_ratio if raw.content_image_area_ratio is None else raw.content_image_area_ratio
+
+
+def ocr_reason(raw: RawPdfPage, config: PdfReaderConfig) -> OcrReason | None:
+    """Lý do trang phải OCR cả trang, hoặc None khi dùng lớp chữ (ADR-008 mục 6; sửa đổi 2026-10-29).
+
+    Hàm duy nhất quyết định trang có đi tầng 2 hay không, dùng chung cho worker (có OCR trang hay không) và tiến
+    trình cha (dựng `PageExtraction`), để hai nơi không thể lệch nhau.
+    - `empty_text_layer`: lớp chữ không có ký tự không trắng nào (`text_score = 0.0`).
+    - `garbled_text_layer`: lớp chữ rác (`text_score < TEXT_LAYER_MIN`: ký tự rác, mã TCVN3/VNI).
+    - `sparse_text_on_image`: lớp chữ sạch nhưng chỉ có dưới `text_sparse_chars` ký tự không trắng trong khi ảnh
+      nhúng phủ ít nhất `text_sparse_image_min` diện tích trang: nội dung nằm trong ảnh, lớp chữ chỉ là phần khung.
+    - `image_covers_page` (sửa đổi 2026-10-30): lớp chữ sạch, có dưới `text_full_image_max_chars` ký tự không trắng,
+      ảnh nhúng phủ ít nhất `text_full_image_min` diện tích trang: nội dung nằm trong ảnh, chữ còn lại chỉ là tiêu
+      đề, header, số trang dưới ảnh. Lớp chữ đầy đủ trên ảnh phủ kín (PDF scan đã có lớp chữ) vẫn giữ lớp chữ.
+    Thứ tự xét: rỗng, rác, trang ảnh ít chữ, ảnh phủ gần kín. Ít chữ trên trang không có ảnh lớn KHÔNG phải lý do bỏ
+    lớp chữ. "Ảnh" ở hai luật cuối là ảnh KHÔNG phải template (`content_image_area`, sửa đổi 2026-10-30): ảnh nền,
+    dải tiêu đề lặp lại trên đa số trang không làm trang thành trang ảnh. Hai luật đầu không dùng độ phủ ảnh, nên ảnh
+    template không bao giờ làm trang có lớp chữ rỗng hay rác thoát OCR.
+    """
+    text = page_text(raw.lines)
+    non_ws = non_whitespace_count(text)
+    if non_ws == 0:
+        return "empty_text_layer"
+    if text_score(text, config) < config.text_layer_min:
+        return "garbled_text_layer"
+    image = content_image_area(raw)
+    if non_ws < config.text_sparse_chars and image >= config.text_sparse_image_min:
+        return "sparse_text_on_image"
+    if non_ws < config.text_full_image_max_chars and image >= config.text_full_image_min:
+        return "image_covers_page"
+    return None
+
+
+def needs_ocr_page(raw: RawPdfPage, config: PdfReaderConfig) -> bool:
+    """Trang cần OCR cả trang (tầng 2) theo `ocr_reason`."""
+    return ocr_reason(raw, config) is not None
 
 
 # --------------------------------------------------------------------------- #
@@ -250,9 +359,22 @@ def has_formula(text: str, config: PdfReaderConfig) -> bool:
     return symbols >= config.formula_min_symbols and symbols / len(non_ws) >= config.formula_density_min
 
 
-def has_figure(image_area_ratio: float, path_area_ratio: float, config: PdfReaderConfig) -> bool:
-    """PDF số: ảnh nhúng đủ lớn; diện tích đường vẽ chỉ được tính khi trang có ảnh (không dùng một mình)."""
-    if image_area_ratio >= config.figure_image_area_min:
+def has_figure(
+    image_area_ratio: float,
+    path_area_ratio: float,
+    config: PdfReaderConfig,
+    *,
+    content_image_area_ratio: float | None = None,
+) -> bool:
+    """PDF số: ảnh nhúng đủ lớn; diện tích đường vẽ chỉ được tính khi trang có ảnh (không dùng một mình).
+
+    Nhánh ảnh (`figure_image_area_min`) dùng độ phủ ảnh KHÔNG phải template `content_image_area_ratio` (None ⇒
+    `image_area_ratio`; sửa đổi 2026-10-30). Nhánh đường vẽ giữ như trước (người dùng quyết 2026-10-30): điều kiện
+    "có ảnh" tính MỌI ảnh, kể cả ảnh template, và `path_area_ratio` không trừ gì. Hệ quả tạm: slide có khung template
+    vẽ bằng vector trên ảnh nền template bị gắn cờ hình thừa, đến khi loại đường vẽ template (nợ ADR-008).
+    """
+    content = image_area_ratio if content_image_area_ratio is None else content_image_area_ratio
+    if content >= config.figure_image_area_min:
         return True
     return image_area_ratio > 0.0 and path_area_ratio >= config.figure_path_area_min
 

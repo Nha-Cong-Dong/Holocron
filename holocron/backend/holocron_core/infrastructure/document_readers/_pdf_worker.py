@@ -5,10 +5,14 @@ tối thiểu, stdin/stdout UTF-8. Thứ tự: đọc `WorkerRequest` (dòng đ�
 viết sẵn trong bộ nhớ (`pdfium_adapter.WARMUP_PDF`, bỏ qua khi `page_budget == 0`), nếu có cấu hình OCR thì kiểm
 Tesseract (`--version`, `--list-langs`), kiểm bộ chữ của `vie.traineddata` (cùng hàm với kiểm lúc khởi động app,
 `tesseract.check_vie_charset`) và nạp RapidOCR, TỰ áp giới hạn OS (RAM, CPU, `RLIMIT_FSIZE` = 0 trên Unix;
-Job Object trên Windows), báo `ready`, mở file, báo `opened`, rồi đọc từng trang khi nhận `PageRequest`.
+Job Object trên Windows), báo `ready`, mở file, báo `opened`, quét ảnh template của cả tài liệu khi được yêu cầu
+(`WorkerRequest.scan_templates`, báo `template_scan_started` rồi `template_scan`; worker dựng lại thì nhận sẵn kết
+quả quét trong `WorkerRequest.template_scan` và không quét lại), rồi đọc từng trang khi nhận `PageRequest`.
 
-Trang có lớp chữ kém (`text_score < TEXT_LAYER_MIN`) được OCR khi có engine: worker báo `ocr_started` (tiến trình
-cha chuyển sang hạn của tầng 2), render trang ra ảnh xám, chạy Tesseract (tiến trình con của worker, chịu cùng
+Trang cần OCR theo `text_layer.needs_ocr_page` (lớp chữ rỗng, lớp chữ rác `text_score < TEXT_LAYER_MIN`, trang ảnh
+chỉ có ít chữ (luật (c)), hoặc ảnh phủ gần kín với ít chữ (luật (d)); độ phủ ảnh của hai luật sau không tính ảnh
+template; cùng hàm tiến trình cha dùng để dựng trang) được OCR khi có engine: worker báo `ocr_started` (tiến
+trình cha chuyển sang hạn của tầng 2), render trang ra ảnh xám, chạy Tesseract (tiến trình con của worker, chịu cùng
 giới hạn OS) rồi RapidOCR, và gửi kết quả trong `RawPdfPage.ocr`. Mỗi kết quả là một dòng stdout có tiền tố
 `MESSAGE_PREFIX`; tiến trình cha validate và giữ wall-clock timeout theo trang.
 """
@@ -18,6 +22,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import io
+import math
 import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -40,13 +45,17 @@ from .protocol import (
     RawPdfPage,
     RawSecondaryPass,
     ReadyMessage,
+    TemplateScan,
+    TemplateScanMessage,
+    TemplateScanStartedMessage,
     WorkerRequest,
     encode_message,
 )
 from .rapidocr_adapter import RapidOcrBackend
 from .raster import GrayImage, PixelBox, encode_png_gray, ink_outside_text_ratio
+from .template_images import READ_ERRORS, TemplateFilter, scan_template_images
 from .tesseract import Runner, TesseractEngine, check_vie_charset, run_bounded
-from .text_layer import needs_ocr
+from .text_layer import needs_ocr_page
 
 Emit = Callable[[BaseModel], None]
 
@@ -54,7 +63,7 @@ PDF_MAGIC = b"%PDF-"
 
 # Lỗi ở một trang không làm hỏng các trang khác (ADR-008 mục 4). Lỗi khác làm worker thoát; tiến trình cha thấy
 # EOF, đánh dấu trang PAGE_ERROR và dựng worker mới.
-PAGE_ERRORS = (RuntimeError, ValueError, LookupError, ArithmeticError, TypeError, MemoryError, OSError)
+PAGE_ERRORS = READ_ERRORS
 
 
 class PrimaryOcr(Protocol):
@@ -139,15 +148,8 @@ def _read_bounded(path: str, max_bytes: int) -> bytes | None:
 
 
 def _with_ocr(raw: RawPdfPage, ocr: RawOcrPage) -> RawPdfPage:
-    return RawPdfPage(
-        page_index=raw.page_index,
-        width_pt=raw.width_pt,
-        height_pt=raw.height_pt,
-        lines=raw.lines,
-        image_area_ratio=raw.image_area_ratio,
-        path_area_ratio=raw.path_area_ratio,
-        ocr=ocr,
-    )
+    """Trang kèm kết quả OCR; giữ nguyên mọi field khác (kể cả `content_image_area_ratio`)."""
+    return raw.model_copy(update={"ocr": ocr})
 
 
 def _read_one(
@@ -157,12 +159,14 @@ def _read_one(
     config: PdfReaderConfig,
     ocr: OcrRunner | None,
     emit: Emit,
+    templates: TemplateFilter | None = None,
 ) -> PageMessage | PageErrorMessage:
     if index >= page_count:
         return PageErrorMessage(page_index=index, message="trang ngoài phạm vi tài liệu")
     try:
-        raw = document.read_page(index)
-        if ocr is not None and needs_ocr(raw.lines, config):
+        # Không có ảnh template thì đọc trang đúng như trước (`content_image_area_ratio` là None).
+        raw = document.read_page(index) if templates is None else document.read_page(index, templates)
+        if ocr is not None and needs_ocr_page(raw, config):
             emit(OcrStartedMessage(page_index=index))
             image = document.render_gray(
                 index, config.ocr_dpi, config.ocr_max_pixels, shrink_factor=config.render_shrink_factor
@@ -185,6 +189,30 @@ def _fit_message(message: PageMessage | PageErrorMessage, max_message_bytes: int
     return PageErrorMessage(page_index=message.page.page_index, message="MessageTooLarge")
 
 
+def template_scan_for(request: WorkerRequest, document: PdfiumDocument, page_count: int, emit: Emit) -> TemplateScan:
+    """Kết quả quét ảnh template mà worker dùng cho mọi trang của tài liệu.
+
+    Có sẵn trong yêu cầu (worker dựng lại) ⇒ dùng đúng kết quả đó, không quét lại. Được yêu cầu quét và có trang để
+    đọc (`page_budget ≥ 1`; worker của `probe` không quét) ⇒ báo `template_scan_started`, quét, rồi báo
+    `template_scan`. Còn lại ⇒ `skipped`.
+    """
+    if request.template_scan is not None:
+        return request.template_scan
+    if not request.scan_templates or request.page_budget < 1:
+        return TemplateScan(status="skipped")
+    emit(TemplateScanStartedMessage())
+    scan = scan_template_images(document, page_count, request.config)
+    emit(TemplateScanMessage(scan=scan))
+    return scan
+
+
+def scan_cpu_seconds(request: WorkerRequest) -> int:
+    """Giây CPU cộng thêm vào giới hạn của worker có quét ảnh template (`ceil(template_scan_timeout_s)`)."""
+    if request.scan_templates and request.page_budget >= 1:
+        return math.ceil(request.config.template_scan_timeout_s)
+    return 0
+
+
 def run(
     request: WorkerRequest,
     backend: PdfiumBackend,
@@ -192,7 +220,7 @@ def run(
     emit: Emit,
     ocr: OcrRunner | None = None,
 ) -> None:
-    """Mở tài liệu, báo số trang, rồi đọc tối đa `page_budget` trang theo thứ tự được yêu cầu."""
+    """Mở tài liệu, báo số trang, quét ảnh template (khi được yêu cầu), rồi đọc tối đa `page_budget` trang."""
     data = _read_bounded(request.path, request.config.max_bytes)
     if data is None:
         emit(OpenFailedMessage(code="OPEN_FAILED"))
@@ -206,10 +234,11 @@ def run(
         emit(OpenedMessage(page_count=page_count))
         if page_count > request.config.max_pages:
             return
+        templates = TemplateFilter.from_scan(template_scan_for(request, opened, page_count, emit), request.config)
         for served, page_request in enumerate(requests):
             if served >= request.page_budget:
                 return
-            page = _read_one(opened, page_request.page_index, page_count, request.config, ocr, emit)
+            page = _read_one(opened, page_request.page_index, page_count, request.config, ocr, emit, templates)
             emit(_fit_message(page, request.config.max_message_bytes))
 
 
@@ -234,7 +263,7 @@ def start(
             warm(backend)
     ocr = build_ocr(request.ocr, config) if request.ocr is not None else None
     cpu_per_page = config.ocr_cpu_seconds_per_page if ocr is not None else config.worker_cpu_seconds_per_page
-    limit(config.worker_mem_bytes, cpu_per_page * (request.page_budget + 1))
+    limit(config.worker_mem_bytes, cpu_per_page * (request.page_budget + 1) + scan_cpu_seconds(request))
     emit(ReadyMessage())
     return backend, ocr
 

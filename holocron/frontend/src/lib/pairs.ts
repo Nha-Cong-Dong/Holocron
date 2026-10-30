@@ -83,7 +83,8 @@ export function termLengthOk(term: string): LengthCheck {
  */
 export function quoteLengthOk(quote: string): LengthCheck {
   const stripped = pyStrip(quote);
-  if (stripped === "") return { ok: false, message: "Chưa có đoạn định nghĩa. Bôi một đoạn trong văn bản của chunk." };
+  if (stripped === "")
+    return { ok: false, message: "Chưa có đoạn định nghĩa. Bôi một đoạn hoặc chọn một câu trong văn bản tài liệu." };
   const rawLength = charLength(stripped);
   if (rawLength > PAIR_QUOTE_MAX_CHARS) {
     return {
@@ -373,9 +374,9 @@ export function lookupChunk(
 
 /** Nhãn khi trích dẫn của cặp không hiện được như trích dẫn đã kiểm chứng (không có chunk nguồn trong map). */
 export function lookupLabel(lookup: Exclude<ChunkLookup, { kind: "found" }>): string {
-  if (lookup.kind === "missing") return "Không tìm thấy chunk nguồn — chưa kiểm chứng được trang";
-  if (lookup.kind === "not_loaded") return "Chưa tải hết chunk của môn — chưa kiểm chứng được trang";
-  return "Chưa tải được chunk của môn — chưa kiểm chứng được trang";
+  if (lookup.kind === "missing") return "Không tìm thấy đoạn nguồn — chưa kiểm chứng được trang";
+  if (lookup.kind === "not_loaded") return "Chưa tải hết các đoạn của môn — chưa kiểm chứng được trang";
+  return "Chưa tải được các đoạn của môn — chưa kiểm chứng được trang";
 }
 
 /**
@@ -423,12 +424,12 @@ const ENABLED: ActionGate = { shown: true, enabled: true };
 function blockedReason(lookup: ChunkLookup): string | null {
   if (lookup.kind === "found") return null;
   if (lookup.kind === "missing") {
-    return "Không tìm thấy chunk nguồn của cặp này nên chưa sửa hay xác nhận được; vẫn có thể từ chối.";
+    return "Không tìm thấy đoạn nguồn của khái niệm này nên chưa sửa hay nhận được; vẫn bỏ được.";
   }
   if (lookup.kind === "not_loaded") {
-    return "Chưa tải hết chunk của môn nên chưa kiểm chứng được chunk nguồn; chưa sửa hay xác nhận được, vẫn có thể từ chối.";
+    return "Chưa tải hết các đoạn của môn nên chưa kiểm chứng được đoạn nguồn; chưa sửa hay nhận được, vẫn bỏ được.";
   }
-  return "Chưa tải được chunk của môn nên chưa sửa hay xác nhận được cặp này; vẫn có thể từ chối.";
+  return "Chưa tải được các đoạn của môn nên chưa sửa hay nhận được khái niệm này; vẫn bỏ được.";
 }
 
 /**

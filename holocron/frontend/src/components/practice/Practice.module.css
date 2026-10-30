@@ -30,16 +30,10 @@
   font-size: var(--text-md);
 }
 
-/* ------------------------------------------------------------------ form tạo đề */
+/* ------------------------------------------------------------------ form */
 
 .form {
   display: grid;
-  gap: var(--space-4);
-}
-
-.fields {
-  display: flex;
-  flex-wrap: wrap;
   gap: var(--space-4);
 }
 
@@ -49,47 +43,9 @@
   font-size: var(--text-md);
 }
 
-.input {
-  min-height: 36px;
-  padding: var(--space-1) var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-sunken);
-}
-
-.chapterInput {
-  width: 140px;
-  font-family: var(--font-mono);
-}
-
-.countInput {
-  width: 96px;
-}
-
 .hint {
   color: var(--text-muted);
   font-size: var(--text-sm);
-}
-
-.choices {
-  display: grid;
-  gap: var(--space-2);
-  margin: 0;
-  padding: var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-}
-
-.choices legend {
-  padding: 0 var(--space-1);
-  font-size: var(--text-md);
-  font-weight: 600;
-}
-
-.choice {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
 }
 
 .actions {
@@ -132,11 +88,6 @@
   color: var(--accent-ink);
   text-decoration: underline;
   cursor: pointer;
-}
-
-.formError {
-  color: var(--danger);
-  font-size: var(--text-md);
 }
 
 /* --------------------------------------------------------------- phiên làm bài */
@@ -468,4 +419,22 @@
   .stepButton {
     transition: none;
   }
+}
+
+/* ------------------------------------------------------------------ đang soạn đề (màn 8) */
+
+.busy {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-6) 0;
+  color: var(--ink-2);
+  font-size: var(--fs-body);
+}
+
+.technical {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-caption);
 }

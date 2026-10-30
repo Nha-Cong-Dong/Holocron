@@ -137,13 +137,15 @@ const MESSAGES: Record<Exclude<ErrorKind, "network" | "capability" | "blocking">
 };
 
 /** 404 khi tạo, xác nhận hay từ chối cặp khái niệm (§6.6). */
-const PAIR_NOT_FOUND_VI = "Cặp hoặc chunk không còn (tài liệu có thể đã bị xoá). Tải lại để xem dữ liệu mới nhất.";
+const PAIR_NOT_FOUND_VI =
+  "Khái niệm hoặc đoạn nguồn không còn (tài liệu có thể đã bị xoá). Tải lại để xem dữ liệu mới nhất.";
 
 /** 409 lệch phiên bản khi xác nhận hay từ chối cặp khái niệm (§6.6). */
-const PAIR_CONFLICT_VI = "Cặp này vừa được sửa ở nơi khác nên thao tác chưa được ghi. Tải lại để xem bản mới nhất.";
+const PAIR_CONFLICT_VI =
+  "Khái niệm này vừa được sửa ở nơi khác nên thao tác chưa được ghi. Tải lại để xem bản mới nhất.";
 
 /** 422 của tạo, xác nhận cặp theo field lỗi (`detail[].loc`, §6.0); số lấy từ `lib/limits.ts`. */
-export const PAIR_QUOTE_INVALID_VI = `Đoạn định nghĩa chưa hợp lệ: phải trùng nguyên văn với chunk, dài từ ${PAIR_QUOTE_MIN_CHARS} đến ${PAIR_QUOTE_MAX_CHARS} ký tự.`;
+export const PAIR_QUOTE_INVALID_VI = `Đoạn định nghĩa chưa hợp lệ: phải trùng nguyên văn với đoạn trong tài liệu, dài từ ${PAIR_QUOTE_MIN_CHARS} đến ${PAIR_QUOTE_MAX_CHARS} ký tự.`;
 export const PAIR_TERM_INVALID_VI = `Thuật ngữ phải có từ ${PAIR_TERM_MIN_CHARS} đến ${PAIR_TERM_MAX_CHARS} ký tự.`;
 
 type ContextualKind = "bad_request" | "not_found" | "too_large" | "unsupported_media" | "validation";
@@ -173,13 +175,13 @@ const CONTEXT_MESSAGES: Record<ErrorContext, Partial<Record<ContextualKind, stri
     bad_request: "Đề này đã được duyệt hoặc đã bị đánh dấu không nhân bản được, nên không làm được thao tác này.",
   },
   blueprint_create: {
-    not_found:
-      "Backend đang chạy chưa hỗ trợ tạo bộ đề luyện tập. Cập nhật backend lên bản có tính năng này rồi thử lại.",
-    validation: `Không tạo được bộ đề với lựa chọn hiện tại. Kiểm tra mã chương (ví dụ ch1 hoặc ch2.1) và số câu (từ 1 đến ${MAX_THEORY_SLOTS}).`,
+    not_found: "Bản Holocron đang chạy chưa hỗ trợ tạo bộ đề ôn tập. Cập nhật Holocron lên bản mới hơn rồi thử lại.",
+    validation: `Chưa tạo được đề vì có mã chương hoặc số câu không hợp lệ (số câu từ 1 đến ${MAX_THEORY_SLOTS}). Chọn lại chương và số câu rồi thử lại.`,
   },
   twin_generation: {
-    not_found: "Không tìm thấy bộ đề này ở backend. Có thể backend vừa khởi động lại; tạo lại bộ đề rồi thử lại.",
-    validation: `Yêu cầu sinh câu không hợp lệ. Số câu mỗi lần phải từ ${MIN_TWIN_COUNT} đến ${MAX_TWIN_COUNT}.`,
+    not_found:
+      "Chưa soạn được câu hỏi vì không tìm thấy bộ đề này (Holocron có thể vừa khởi động lại). Hãy tạo lại bộ đề rồi thử lại.",
+    validation: `Chưa soạn được câu hỏi vì yêu cầu không hợp lệ: số câu mỗi lần phải từ ${MIN_TWIN_COUNT} đến ${MAX_TWIN_COUNT}. Tạo đề khác rồi thử lại.`,
   },
   essay_grade: {
     not_found: "Không tìm thấy câu hỏi này ở backend. Có thể backend vừa khởi động lại; tạo lại bộ đề rồi làm lại.",
@@ -190,13 +192,13 @@ const CONTEXT_MESSAGES: Record<ErrorContext, Partial<Record<ContextualKind, stri
     not_found: "Backend đang chạy chưa cho xem văn bản nguồn trong kho tri thức. Trích dẫn ở trên vẫn là nguyên văn.",
   },
   vault_browse: {
-    not_found: "Backend đang chạy chưa có kho tri thức (Vault). Cập nhật backend lên bản có Vault rồi thử lại.",
-    validation: `Bộ lọc hoặc từ cần tìm không hợp lệ. Mã chương có dạng ch1 hoặc ch2.1; từ cần tìm dài 1–${VAULT_SEARCH_MAX_CHARS} ký tự.`,
+    not_found:
+      "Bản Holocron đang chạy chưa cho xem đoạn văn của tài liệu. Cập nhật Holocron lên bản mới hơn rồi thử lại.",
+    validation: `Chưa tìm được vì bộ lọc hoặc từ cần tìm không hợp lệ: mã chương có dạng ch1 hoặc ch2.1, từ cần tìm dài 1–${VAULT_SEARCH_MAX_CHARS} ký tự. Sửa lại rồi tìm lại.`,
   },
   document_list: {
-    not_found:
-      "Backend đang chạy chưa hỗ trợ nhập tài liệu PDF. Cập nhật backend lên bản có bộ nhập tài liệu rồi thử lại.",
-    validation: "Mã môn không hợp lệ. Chọn lại môn ở thanh bên.",
+    not_found: "Bản Holocron đang chạy chưa hỗ trợ nhập tài liệu PDF. Cập nhật Holocron lên bản mới hơn rồi thử lại.",
+    validation: "Chưa mở được danh sách tài liệu vì mã môn không hợp lệ. Mở lại môn từ trang chủ.",
   },
   document_review: {
     not_found:
@@ -225,9 +227,9 @@ const CONTEXT_MESSAGES: Record<ErrorContext, Partial<Record<ContextualKind, stri
     validation: "Mã môn hoặc tên môn không hợp lệ. Mã môn gồm 2–6 chữ cái in hoa rồi 2–4 chữ số, ví dụ MAU101.",
   },
   pairs_list: {
-    not_found:
-      "Backend đang chạy chưa có cặp khái niệm trong kho tri thức. Cập nhật backend lên bản có Vault rồi thử lại.",
-    validation: "Bộ lọc không hợp lệ. Mã chương có dạng ch1 hoặc ch2.1; chọn lại môn ở thanh bên nếu vẫn lỗi.",
+    not_found: "Bản Holocron đang chạy chưa có phần khái niệm. Cập nhật Holocron lên bản mới hơn rồi thử lại.",
+    validation:
+      "Chưa tải được khái niệm vì bộ lọc không hợp lệ: mã chương có dạng ch1 hoặc ch2.1. Mở lại môn từ trang chủ nếu vẫn chưa được.",
   },
   pair_create: { not_found: PAIR_NOT_FOUND_VI },
   pair_confirm: { not_found: PAIR_NOT_FOUND_VI },

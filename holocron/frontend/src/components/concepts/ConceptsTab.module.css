@@ -1,0 +1,488 @@
+/* Tab Khái niệm của trang môn (màn 7): hai cột, thẻ đề xuất, cột "Đã nhận", khung tự tạo khái niệm. */
+.root {
+  display: grid;
+  gap: var(--sp-5);
+  min-width: 0;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: var(--sp-6);
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.main {
+  display: grid;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+
+.note {
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--warn-soft);
+  color: var(--ink);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.muted {
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.h2 {
+  font-size: var(--fs-h3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-h3);
+}
+
+.h2:focus {
+  outline: none;
+}
+
+.h2:focus-visible {
+  outline: 2px solid var(--focus, var(--accent));
+  outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------------- đang tải */
+.loading {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.skeletonGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: var(--sp-6);
+}
+
+.skeletonCol {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.loadingText {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+}
+
+/* ---------------------------------------------------------------- đề xuất */
+.blockHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp-4);
+}
+
+.cards {
+  display: grid;
+  gap: var(--sp-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.card {
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-5);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--sh-1);
+}
+
+.card:focus {
+  outline: none;
+}
+
+.card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.cardHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.term {
+  font-size: var(--fs-h3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-h3);
+  overflow-wrap: anywhere;
+}
+
+.source {
+  color: var(--ink-2);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+}
+
+.plainQuote {
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.unverified {
+  color: var(--warn);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.reason {
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.error {
+  color: var(--err);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+.textButton {
+  min-height: var(--tap-min);
+  padding: 0 var(--sp-4);
+  border: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+
+.textButton:hover {
+  background: var(--surface-2);
+}
+
+.textButton[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.editHint {
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.invite {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-5);
+  border-radius: var(--r-lg);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.invite:focus {
+  outline: none;
+}
+
+.invite:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.inviteText {
+  flex: 1;
+  min-width: 200px;
+}
+
+/* ---------------------------------------------------------------- cột đã nhận */
+.aside {
+  position: sticky;
+  top: 84px;
+  display: grid;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .aside {
+    position: static;
+  }
+}
+
+.placeholder {
+  padding: var(--sp-4);
+  border: 1.5px dashed var(--line-strong);
+  border-radius: var(--r-md);
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.rows {
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--sh-1);
+}
+
+.row:focus {
+  outline: none;
+}
+
+.rowSummary {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.rowStar {
+  width: 16px;
+  height: 16px;
+  color: var(--accent-ink);
+  align-self: center;
+}
+
+.rowTerm {
+  font-weight: var(--fw-medium);
+  overflow-wrap: anywhere;
+}
+
+.rowCaption {
+  color: var(--ink-2);
+  font-size: var(--fs-caption);
+}
+
+.rowBody {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.rejectedRow {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+/* ---------------------------------------------------------------- tự tạo khái niệm */
+.panel {
+  display: grid;
+  gap: var(--sp-4);
+  margin-top: var(--sp-2);
+  padding: var(--sp-5);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--sh-1);
+  min-width: 0;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--sp-3);
+}
+
+.nav {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.position {
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+}
+
+.search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--sp-3);
+}
+
+.searchField {
+  flex: 1;
+  min-width: 220px;
+}
+
+.results {
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.result {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  min-height: var(--tap-min);
+  padding: var(--sp-2) var(--sp-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.result:hover {
+  box-shadow: inset 0 0 0 1.5px var(--line-strong);
+}
+
+.resultMeta {
+  color: var(--ink-2);
+  font-size: var(--fs-caption);
+}
+
+.passage {
+  font-family: var(--font-quote);
+  font-size: var(--fs-quote);
+  line-height: 30px;
+}
+
+.sentences {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.sentence {
+  min-height: var(--tap-min);
+  max-width: 100%;
+  padding: 0 var(--sp-4);
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--fs-small);
+  text-align: left;
+  cursor: pointer;
+  transition: transform var(--d-micro) var(--ease-out);
+}
+
+.sentence:hover {
+  transform: translateY(-1px);
+}
+
+.sentence[aria-pressed="true"] {
+  background: var(--cite-soft);
+  box-shadow: inset 0 0 0 1.5px var(--cite);
+  color: var(--cite);
+}
+
+.popover {
+  margin: 0;
+  border: 0;
+  min-width: 0;
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border-radius: var(--r-lg);
+  background: var(--surface-2);
+  box-shadow: var(--sh-2);
+  animation: concepts-pop-in var(--d-short) var(--ease-out) both;
+}
+
+@keyframes concepts-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.selectedQuote {
+  max-height: 160px;
+  overflow: auto;
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--cite-soft);
+  color: var(--ink);
+  font-family: var(--font-quote);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.popoverActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-motion="full"]) .popover {
+    animation-duration: 1ms;
+  }
+
+  :root:not([data-motion="full"]) .sentence {
+    transition: none;
+  }
+}
+
+:root[data-motion="reduce"] .popover {
+  animation-duration: 1ms;
+}
+
+:root[data-motion="reduce"] .sentence {
+  transition: none;
+}
+
+.renameFrame {
+  margin: 0;
+  border: 0;
+  padding: 0;
+  min-width: 0;
+  display: grid;
+  gap: var(--sp-3);
+}

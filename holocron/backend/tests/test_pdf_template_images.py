@@ -38,6 +38,7 @@ from holocron_core.infrastructure.document_readers.protocol import (
 )
 from holocron_core.infrastructure.document_readers.raster import GrayImage, PixelBox
 from holocron_core.infrastructure.document_readers.template_images import (
+    UNREAD_BITS_PER_PIXEL,
     PageImageKeys,
     TemplateFilter,
     find_template_images,
@@ -154,14 +155,17 @@ def test_quantize_bbox_rounds_half_up_on_the_configured_grid() -> None:
 
 
 def test_image_key_uses_content_and_rounded_position() -> None:
-    first = image_key("f" * 64, 4, 4, 8, ["FlateDecode"], (0.0, 0.0, 0.5, 0.5), 0.01)
+    # Sửa 2026-10-30 (review ảnh template): khoá không còn số bit mỗi điểm ảnh (chỉ đọc được qua metadata của PDFium,
+    # lời gọi có thể giải mã ảnh); trường `bits_per_pixel` luôn là `UNREAD_BITS_PER_PIXEL`.
+    first = image_key("f" * 64, 4, 4, ["FlateDecode"], (0.0, 0.0, 0.5, 0.5), 0.01)
     assert first.bbox == (0, 0, 50, 50) and first.filters == ("FlateDecode",)
-    assert first == image_key("f" * 64, 4, 4, 8, ["FlateDecode"], (0.001, 0.0, 0.5, 0.5), 0.01)
-    assert first != image_key("e" * 64, 4, 4, 8, ["FlateDecode"], (0.0, 0.0, 0.5, 0.5), 0.01)
-    assert first != image_key("f" * 64, 4, 4, 8, ["FlateDecode"], (0.0, 0.0, 0.5, 0.6), 0.01)
-    assert first != image_key("f" * 64, 4, 4, 8, [], (0.0, 0.0, 0.5, 0.5), 0.01)
-    assert first != image_key("f" * 64, 4, 4, 24, ["FlateDecode"], (0.0, 0.0, 0.5, 0.5), 0.01)
-    assert first != image_key("f" * 64, 8, 4, 8, ["FlateDecode"], (0.0, 0.0, 0.5, 0.5), 0.01)
+    assert first.bits_per_pixel == UNREAD_BITS_PER_PIXEL
+    assert first == image_key("f" * 64, 4, 4, ["FlateDecode"], (0.001, 0.0, 0.5, 0.5), 0.01)
+    assert first != image_key("e" * 64, 4, 4, ["FlateDecode"], (0.0, 0.0, 0.5, 0.5), 0.01)
+    assert first != image_key("f" * 64, 4, 4, ["FlateDecode"], (0.0, 0.0, 0.5, 0.6), 0.01)
+    assert first != image_key("f" * 64, 4, 4, [], (0.0, 0.0, 0.5, 0.5), 0.01)
+    assert first != image_key("f" * 64, 8, 4, ["FlateDecode"], (0.0, 0.0, 0.5, 0.5), 0.01)
+    assert first != image_key("f" * 64, 4, 8, ["FlateDecode"], (0.0, 0.0, 0.5, 0.5), 0.01)
 
 
 @pytest.mark.parametrize(
@@ -203,7 +207,9 @@ def test_template_thresholds_are_configurable() -> None:
 
 
 def test_only_identical_keys_are_counted_together() -> None:
-    pages = [[_key("a")], [_key("a", (0, 0, 100, 99))], [_key("b")], [_key("a")], [_key("a")]]
+    # Sửa 2026-10-30 (dung sai đối xứng): hộp lệch MỘT ô lưới nay là cùng chỗ (xem test dung sai bên dưới), nên ca
+    # "khác chỗ" dùng hộp lệch hai ô.
+    pages = [[_key("a")], [_key("a", (0, 0, 100, 98))], [_key("b")], [_key("a")], [_key("a")]]
     assert find_template_images(pages, 5, CONFIG) == {_key("a")}
 
 
@@ -385,7 +391,7 @@ def test_same_pixels_in_different_objects_are_a_template(tmp_path: Path) -> None
     scan = _scan_file(path)
     assert scan.status == "ok" and len(scan.keys) == 1
     [key] = scan.keys
-    assert (key.width_px, key.height_px, key.bits_per_pixel, key.filters) == (4, 4, 8, ("FlateDecode",))
+    assert (key.width_px, key.height_px, key.bits_per_pixel, key.filters) == (4, 4, 0, ("FlateDecode",))
     assert key.bbox == (0, 0, 100, 100)
 
 
@@ -792,7 +798,7 @@ OK_SCAN = TemplateScan(status="ok", keys=[_key()])
 def test_failed_scan_wait_kills_worker_and_asks_for_rerun(after_start: object, status: str) -> None:
     session = FakeSession([TemplateScanStartedMessage(), after_start])
     config = _config(template_scan_timeout_s=3.0)
-    outcome = WorkerPdfReader(config)._read_page(session, 0, DOC_ID, 1.0, 2.0)
+    outcome = WorkerPdfReader(config)._read_page(session, 0, DOC_ID, 1.0, 2.0, accept_scan=True)
     assert outcome.rerun and not outcome.healthy and session.killed
     assert outcome.template_scan == TemplateScan(status=status)
     assert session.timeouts == [1.0, 3.0]
@@ -802,7 +808,8 @@ def test_successful_scan_wait_then_reads_page_with_page_timeout() -> None:
     session = FakeSession(
         [TemplateScanStartedMessage(), TemplateScanMessage(scan=OK_SCAN), PageMessage(page=_good_page(0))]
     )
-    outcome = WorkerPdfReader(_config(template_scan_timeout_s=3.0))._read_page(session, 0, DOC_ID, 1.0, 2.0)
+    reader = WorkerPdfReader(_config(template_scan_timeout_s=3.0))
+    outcome = reader._read_page(session, 0, DOC_ID, 1.0, 2.0, accept_scan=True)
     assert (outcome.page.status, outcome.healthy, outcome.rerun, outcome.template_scan) == ("ok", True, False, OK_SCAN)
     assert session.timeouts == [1.0, 3.0, 1.0] and not session.killed
     assert outcome.scan_wait_s >= 0.0

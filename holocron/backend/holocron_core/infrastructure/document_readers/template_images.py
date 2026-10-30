@@ -3,8 +3,14 @@
 Ảnh template là phần khung của slide (ảnh nền, dải tiêu đề, logo), không phải nội dung: độ phủ ảnh dùng cho mọi luật
 dựa trên độ phủ (trang ảnh ít chữ, ảnh phủ gần kín, phần ảnh của cờ hình) chỉ tính ảnh KHÔNG phải template.
 `find_template_images` là hàm DUY NHẤT xác định ảnh template (khung VLM dùng lại khi che template); hàm thuần, không
-gọi PDFium. Khoá của một ảnh (`ImageKey`) gồm SHA-256 dữ liệu thô của luồng ảnh, kích thước điểm ảnh, số bit mỗi
-điểm ảnh, bộ lọc và hộp chuẩn hoá đã làm tròn (`image_key`); worker lấy khoá bằng `pdfium_adapter` mà không render.
+gọi PDFium. Khoá của một ảnh (`ImageKey`) gồm SHA-256 dữ liệu thô của luồng ảnh (chưa giải mã), kích thước điểm
+ảnh khai trong từ điển của luồng ảnh, bộ lọc và hộp chuẩn hoá đã làm tròn (`image_key`); worker lấy khoá bằng
+`pdfium_adapter` mà không render và không giải mã ảnh. `ImageKey.bits_per_pixel` luôn là `UNREAD_BITS_PER_PIXEL`: số
+bit mỗi điểm ảnh chỉ đọc được qua metadata của PDFium, mà lời gọi đó có thể giải mã ảnh (JPX, JBIG2).
+
+Dung sai vị trí đối xứng (`find_template_images`): hai lần vẽ cùng nội dung được coi là cùng chỗ khi mọi toạ độ của
+hộp đã làm tròn lệch nhau tối đa một ô lưới, nên hai hộp lệch không quá một bước `template_image_bbox_step` luôn cùng
+chỗ kể cả khi vắt qua biên ô lưới.
 
 `scan_template_images` là lượt quét cấp tài liệu của worker, chạy một lần trước trang đầu: mọi nhánh lỗi (vượt trần
 số ảnh hay số byte, quá hạn, lỗi đọc trang hay ảnh) cho kết quả không có ảnh template, tức hành vi cũ. Ảnh template
@@ -14,10 +20,11 @@ OCR khi lớp chữ rỗng hoặc rác (I5).
 
 from __future__ import annotations
 
+import itertools
 import math
 import time
-from collections import Counter
-from collections.abc import Callable, Iterable, Sequence
+from collections import defaultdict
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import NamedTuple, Protocol
 
@@ -28,9 +35,19 @@ from .protocol import MAX_GRID_INDEX, MAX_TEMPLATE_KEYS, GridBox, ImageKey, Temp
 # không có ảnh template. Khi đọc trang: ảnh lỗi không có khoá, được tính là ảnh nội dung.
 READ_ERRORS = (RuntimeError, ValueError, LookupError, ArithmeticError, TypeError, MemoryError, OSError)
 
+# Giá trị `ImageKey.bits_per_pixel` của mọi khoá: số bit mỗi điểm ảnh không được đọc (xem docstring của module).
+UNREAD_BITS_PER_PIXEL = 0
+
+# Độ lệch tối đa (số ô lưới) giữa hai hộp được coi là cùng chỗ, trên mỗi toạ độ.
+GRID_TOLERANCE = 1
+_GRID_OFFSETS = tuple(itertools.product(range(-GRID_TOLERANCE, GRID_TOLERANCE + 1), repeat=4))
+
+# Nội dung của một ảnh: mọi trường của `ImageKey` trừ hộp.
+_Content = tuple[str, int, int, int, tuple[str, ...]]
+
 
 def quantize_bbox(bbox: UnitBBox, step: float) -> GridBox:
-    """Làm tròn hộp chuẩn hoá về ô lưới bước `step` (dung sai vị trí và kích thước), làm tròn nửa lên."""
+    """Làm tròn hộp chuẩn hoá về ô lưới bước `step`, làm tròn nửa lên (dung sai: `find_template_images`)."""
     x0, y0, x1, y1 = (min(MAX_GRID_INDEX, math.floor(value / step + 0.5)) for value in bbox)
     return (x0, y0, x1, y1)
 
@@ -39,17 +56,16 @@ def image_key(
     digest: str,
     width_px: int,
     height_px: int,
-    bits_per_pixel: int,
     filters: Sequence[str],
     bbox: UnitBBox,
     step: float,
 ) -> ImageKey:
-    """Khoá của một lần vẽ ảnh: nội dung (`digest` cùng metadata của luồng ảnh) và vị trí đã làm tròn."""
+    """Khoá của một lần vẽ ảnh: nội dung (`digest` của dữ liệu thô, kích thước điểm ảnh, bộ lọc) và vị trí đã làm tròn."""
     return ImageKey(
         digest=digest,
         width_px=width_px,
         height_px=height_px,
-        bits_per_pixel=bits_per_pixel,
+        bits_per_pixel=UNREAD_BITS_PER_PIXEL,
         filters=tuple(filters),
         bbox=quantize_bbox(bbox, step),
     )
@@ -58,22 +74,49 @@ def image_key(
 def find_template_images(
     page_keys: Sequence[Iterable[ImageKey]], page_count: int, config: PdfReaderConfig
 ) -> frozenset[ImageKey]:
-    """Ảnh template: khoá có mặt trên ≥ `template_image_min_pages` trang VÀ ≥ `template_image_min_page_ratio` trang.
+    """Ảnh template: khoá mà số trang có ảnh CÙNG NỘI DUNG ở CÙNG CHỖ đạt ≥ `template_image_min_pages` trang VÀ
+    ≥ `template_image_min_page_ratio` tổng số trang.
 
-    `page_keys[i]` là khoá các ảnh của một trang đã quét; một khoá xuất hiện nhiều lần trên cùng trang chỉ tính một
-    trang. Mẫu số của tỉ lệ là `page_count`, tổng số trang của tài liệu (không phải số trang đã quét). Tài liệu ít
-    hơn `template_image_min_pages` trang (1–2 trang với mặc định) không có ảnh template.
+    "Cùng chỗ" là mọi toạ độ của hộp đã làm tròn lệch tối đa `GRID_TOLERANCE` ô lưới (quan hệ đối xứng, kể cả trang
+    của chính khoá đó). Mỗi khoá được xét riêng theo các trang lân cận của nó, không gom bắc cầu: ảnh trôi dần qua
+    nhiều trang không thành template. Kết quả chỉ phụ thuộc tập khoá của từng trang, không phụ thuộc thứ tự trang hay
+    thứ tự ảnh. `page_keys[i]` là khoá các ảnh của một trang đã quét; một khoá xuất hiện nhiều lần trên cùng trang chỉ
+    tính một trang. Mẫu số của tỉ lệ là `page_count`, tổng số trang của tài liệu (không phải số trang đã quét). Tài
+    liệu ít hơn `template_image_min_pages` trang (1–2 trang với mặc định) không có ảnh template.
     """
     if len(page_keys) > page_count:
         raise ValueError("số trang đã quét vượt số trang của tài liệu")
     if page_count < config.template_image_min_pages:
         return frozenset()
-    pages_with_key = Counter(key for keys in page_keys for key in set(keys))
-    return frozenset(
-        key
-        for key, pages in pages_with_key.items()
-        if pages >= config.template_image_min_pages and pages / page_count >= config.template_image_min_page_ratio
-    )
+    pages_at: defaultdict[tuple[_Content, GridBox], set[int]] = defaultdict(set)
+    keys_seen: set[ImageKey] = set()
+    for page, keys in enumerate(page_keys):
+        for key in keys:
+            pages_at[(_content(key), key.bbox)].add(page)
+            keys_seen.add(key)
+    templates: set[ImageKey] = set()
+    for key in keys_seen:
+        content = _content(key)
+        pages: set[int] = set()
+        for bbox in _nearby_boxes(key.bbox):
+            pages |= pages_at.get((content, bbox), set())
+        if (
+            len(pages) >= config.template_image_min_pages
+            and len(pages) / page_count >= config.template_image_min_page_ratio
+        ):
+            templates.add(key)
+    return frozenset(templates)
+
+
+def _content(key: ImageKey) -> _Content:
+    return (key.digest, key.width_px, key.height_px, key.bits_per_pixel, key.filters)
+
+
+def _nearby_boxes(bbox: GridBox) -> Iterator[GridBox]:
+    """Các hộp lệch tối đa `GRID_TOLERANCE` ô lưới trên mỗi toạ độ (kể cả chính `bbox`)."""
+    x0, y0, x1, y1 = bbox
+    for dx0, dy0, dx1, dy1 in _GRID_OFFSETS:
+        yield (x0 + dx0, y0 + dy0, x1 + dx1, y1 + dy1)
 
 
 @dataclass(frozen=True)

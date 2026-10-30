@@ -7,8 +7,9 @@ Chỉ chạy trong worker có giới hạn (`_pdf_worker.py`), không bao giờ 
 An toàn: không gọi `init_forms()` (không khởi tạo form), wheel PDFium không có V8/XFA nên không chạy JavaScript,
 không đọc file đính kèm, liên kết hay nội dung nhúng; chỉ đọc lớp chữ và khung bao của đối tượng trang, và render
 trang ra ảnh xám cho OCR (tầng 2, không vẽ form và annotation; không giải nén ảnh nhúng trực tiếp).
-Khoá ảnh template (`page_image_keys`, sửa đổi 2026-10-30) băm dữ liệu THÔ của luồng ảnh (chưa giải mã), có trần byte
-kiểm TRƯỚC khi cấp bộ nhớ đệm.
+Khoá ảnh template (`page_image_keys`, sửa đổi 2026-10-30) không giải mã ảnh: băm dữ liệu THÔ của luồng ảnh (chưa
+giải mã bộ lọc nào, có trần byte kiểm TRƯỚC khi cấp bộ nhớ đệm), cùng kích thước điểm ảnh và tên bộ lọc đọc từ từ điển
+của luồng ảnh. Không gọi metadata ảnh của PDFium (`FPDFImageObj_GetImageMetadata` có thể giải mã JPX, JBIG2).
 """
 
 from __future__ import annotations
@@ -286,7 +287,10 @@ class PdfiumDocument:
     def _image_key(
         self, obj: object, box: PdfBox, page_box: PdfBox, rotation: int, step: float, max_bytes: int
     ) -> tuple[ImageKey | None, int]:
-        """(khoá của ảnh, số byte đã băm); dữ liệu thô rỗng hoặc lớn hơn `max_bytes` ⇒ (None, 0), không băm."""
+        """(khoá của ảnh, số byte đã băm); dữ liệu thô rỗng hoặc lớn hơn `max_bytes` ⇒ (None, 0), không băm.
+
+        Chỉ đọc dữ liệu thô, kích thước điểm ảnh (`get_px_size`) và tên bộ lọc: không lời gọi nào giải mã ảnh.
+        """
         backend = self._backend
         digest = backend.image_digest(obj, max_bytes)
         if digest is None:
@@ -294,7 +298,6 @@ class PdfiumDocument:
         size = backend.call(obj, "get_px_size")
         if not isinstance(size, tuple | list) or len(size) != 2:
             raise PdfiumDataError("get_px_size phải trả (width, height)")
-        metadata = backend.call(obj, "get_metadata")
         filters = backend.call(obj, "get_filters")
         if not isinstance(filters, list) or not all(isinstance(name, str) for name in filters):
             raise PdfiumDataError("get_filters phải trả danh sách chuỗi")
@@ -302,7 +305,6 @@ class PdfiumDocument:
             digest[0],
             _as_int(size[0]),
             _as_int(size[1]),
-            _as_int(getattr(metadata, "bits_per_pixel", None)),
             [str(name) for name in filters],
             normalize_box(box, page_box, rotation),
             step,

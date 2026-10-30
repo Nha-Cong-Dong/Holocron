@@ -16,6 +16,12 @@ thời gian chờ được cộng vào hạn tổng của tài liệu). Tiến t
 ảnh nào là template, trang đang chờ được đọc lại bằng worker mới (không `failed`). Trạng thái quét khác `ok` và
 `skipped` được ghi đúng một dòng log, không có đường dẫn.
 
+Tiến trình cha chỉ nhận lượt quét đúng lúc: worker được yêu cầu quét (chưa có kết quả quét nào được giữ), trong lượt
+chờ trang ĐẦU của worker đó. `template_scan_started` đến lúc khác (worker không được yêu cầu quét, hay đã qua trang
+đầu) là vi phạm giao thức: kill worker, trang đang chờ thành `failed` (`PAGE_ERROR`), không chờ thêm, không cộng hạn
+và không đổi kết quả quét đã giữ. Vì kết quả quét được giữ ngay khi nhận, thời gian chờ quét được cộng vào hạn tổng
+tối đa một lần cho cả tài liệu.
+
 Tiến trình cha không có giới hạn OS, nên stdout của worker được đọc theo khối với giới hạn byte mỗi thông điệp
 (`PdfReaderConfig.max_message_bytes`) và hàng đợi có kích thước cố định: worker xả dòng quá dài, byte không phải
 UTF-8 hay quá nhiều dòng lạ thì bị kill, trang đang đọc thành `PAGE_ERROR`.
@@ -441,12 +447,14 @@ class WorkerPdfReader:
         document_id: str,
         timeout_s: float | None,
         ocr_timeout_s: float | None,
+        accept_scan: bool = False,
     ) -> _PageOutcome:
         """Như `_next_page`, kèm lượt chờ đã hết hạn để `read_pages` biết hạn nào đã chạm.
 
-        Worker đang quét ảnh template (`template_scan_started` trước trang đầu) ⇒ chờ kết quả quét theo hạn riêng
-        (`_await_template_scan`) rồi mới chờ trang theo hạn của trang. Lượt quét quá hạn hay lỗi ⇒ kill worker, trang
-        cần đọc lại (`rerun`).
+        `accept_scan` là True chỉ ở lượt chờ trang đầu của worker được yêu cầu quét ảnh template. Khi đó worker báo
+        `template_scan_started` ⇒ chờ kết quả quét theo hạn riêng (`_await_template_scan`) rồi mới chờ trang theo hạn
+        của trang; lượt quét quá hạn hay lỗi ⇒ kill worker, trang cần đọc lại (`rerun`). `accept_scan` là False mà
+        worker báo `template_scan_started` ⇒ kill worker, trang `failed` (`PAGE_ERROR`), không chờ lượt quét.
         """
         page_number = index + 1
         session.request_page(index)
@@ -459,6 +467,9 @@ class WorkerPdfReader:
         try:
             message = session.receive(page_timeout_s)
             if isinstance(message, TemplateScanStartedMessage):
+                if not accept_scan:
+                    session.kill()
+                    return _PageOutcome(failed_page(document_id, page_number, "PAGE_ERROR"), False, None)
                 scan, scan_done, scan_wait_s = self._await_template_scan(session)
                 if not scan_done:
                     session.kill()
@@ -529,6 +540,9 @@ class WorkerPdfReader:
         document_expired = False
         # Kết quả quét ảnh template giữ cho mọi worker dựng lại; None khi chưa có worker nào bắt đầu quét.
         held_scan: TemplateScan | None = None
+        # True khi lượt chờ kế tiếp là lượt chờ trang đầu của worker được yêu cầu quét (`_start` không có kết quả
+        # quét đã giữ và có trang để đọc). Hết ngay sau lượt chờ đó, dù worker có quét hay không.
+        scan_expected = budget >= 1
         try:
             pending = list(range(page_count)) if requested is None else requested
             if any(index >= page_count for index in pending):
@@ -546,9 +560,12 @@ class WorkerPdfReader:
                 else:
                     page_timeout = min(self.config.text_layer_page_timeout_s, remaining)
                     ocr_timeout = min(self.config.ocr_page_timeout_s, remaining)
-                    outcome = self._read_page(session, index, document_id, page_timeout, ocr_timeout)
+                    outcome = self._read_page(session, index, document_id, page_timeout, ocr_timeout, scan_expected)
+                    scan_expected = False
                     page, healthy = outcome.page, outcome.healthy
-                    deadline += outcome.scan_wait_s  # lượt quét có hạn riêng, không ăn vào hạn tổng
+                    # Lượt quét có hạn riêng, không ăn vào hạn tổng. Chỉ khác 0 khi lượt quét được nhận, mà khi đó
+                    # kết quả được giữ ngay dưới đây và không lượt quét nào được nhận nữa: cộng tối đa một lần.
+                    deadline += outcome.scan_wait_s
                     if outcome.template_scan is not None:
                         held_scan = outcome.template_scan
                         if held_scan.status not in ("ok", "skipped"):
@@ -562,6 +579,7 @@ class WorkerPdfReader:
                         session = self._restart(path, len(pending) + 1, deadline, held_scan)
                         if session is not None:
                             pending.insert(0, index)
+                            scan_expected = held_scan is None
                             continue
                     # Lượt chờ hết hạn bị giới hạn bởi hạn tổng ⇒ hạn tổng đã hết (ADR-008 mục 4), không đọc lại đồng hồ.
                     document_expired = self._wait_capped_by_deadline(outcome.expired_wait, remaining)
@@ -572,6 +590,7 @@ class WorkerPdfReader:
                     session.close()
                     restart = bool(pending) and not document_expired
                     session = self._restart(path, len(pending), deadline, held_scan) if restart else None
+                    scan_expected = held_scan is None  # worker mới được yêu cầu quét khi chưa giữ kết quả nào
         finally:
             if session is not None:
                 session.close()

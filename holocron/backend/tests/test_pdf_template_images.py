@@ -593,19 +593,74 @@ def test_vector_figure_keeps_its_flag(tmp_path: Path) -> None:
     pages = [_slide() for _ in range(6)]
     pages[1].rects.append(diagram)
     pages[1].rasters.append(small)
-    # Trang có đường vẽ nhưng chỉ có ảnh template: điều kiện "có ảnh" của nhánh đường vẽ dùng ảnh không-template.
+    # Trang có đường vẽ và chỉ có ảnh template: nhánh đường vẽ tính mọi ảnh (người dùng quyết 30/10) ⇒ có cờ.
     pages[4].rects.append(diagram)
     path = write_pdf(tmp_path / "vector.pdf", pages)
     pages_read = list(WorkerPdfReader(CONFIG).read_pages(path, DOC_ID))
-    assert (pages_read[1].status, pages_read[1].has_figure, pages_read[1].review_reasons) == (
-        "needs_review",
-        True,
-        ["TIER3_UNAVAILABLE"],
-    )
-    assert (pages_read[4].status, pages_read[4].has_figure) == ("ok", False)
+    flagged = ("needs_review", True, ["TIER3_UNAVAILABLE"])
+    assert (pages_read[1].status, pages_read[1].has_figure, pages_read[1].review_reasons) == flagged
+    assert (pages_read[4].status, pages_read[4].has_figure, pages_read[4].review_reasons) == flagged
     # Cùng trang vector trong tài liệu không có ảnh template: cờ như cũ.
     alone = write_pdf(tmp_path / "alone.pdf", [Page(texts=[_title()], rects=[diagram], rasters=[small])])
     assert _summary(alone) == [("needs_review", "text_layer", None, True)]
+
+
+def test_shape_diagram_on_template_background_is_flagged(tmp_path: Path) -> None:
+    """Chốt (1), người dùng quyết 30/10: sơ đồ vẽ bằng shape trên slide chỉ có ảnh nền template ⇒ CÓ cờ hình.
+
+    Nhánh đường vẽ của `has_figure` giữ như develop: điều kiện "có ảnh" tính mọi ảnh, kể cả ảnh template.
+    """
+    pages = [_slide() for _ in range(6)]
+    pages[2].rects.append(Box(80.0, 80.0, 450.0, 500.0))  # ≈ 0,46 trang, không có ảnh nội dung
+    path = write_pdf(tmp_path / "shapes.pdf", pages)
+    raws = _pages(_run_worker(path, 6, _config()))
+    assert raws[2].content_image_area_ratio == 0.0 and raws[2].image_area_ratio == pytest.approx(1.0)
+    assert raws[2].path_area_ratio >= CONFIG.figure_path_area_min
+    pages_read = list(WorkerPdfReader(CONFIG).read_pages(path, DOC_ID))
+    assert [(p.status, p.tier_used, p.has_figure, p.review_reasons) for p in pages_read] == [
+        ("ok", "text_layer", False, [])
+    ] * 2 + [("needs_review", "text_layer", True, ["TIER3_UNAVAILABLE"])] + [("ok", "text_layer", False, [])] * 3
+
+
+def test_template_frame_drawn_as_paths_is_flagged_for_now(tmp_path: Path) -> None:
+    """Chốt (2), người dùng quyết 30/10: trang chỉ có khung template (ảnh nền template + khung vẽ vector) ⇒ CÓ cờ.
+
+    Hành vi tạm, sẽ đổi khi loại đường vẽ template (nợ ADR-008: đường vẽ lặp cùng vị trí trên đa số trang, dùng chung
+    hàm xác định template với ảnh, làm cùng việc che template ở khung VLM).
+    """
+    frame = Box(18.0, 18.0, 576.0, 720.0)  # khung slide lặp trên mọi trang, ≈ 0,86 trang
+    pages = [Page(texts=[_title()], rasters=[gray_raster(FULL, BACKGROUND)], rects=[frame]) for _ in range(6)]
+    path = write_pdf(tmp_path / "frames.pdf", pages)
+    raws = _pages(_run_worker(path, 6, _config()))
+    assert [r.content_image_area_ratio for r in raws] == [0.0] * 6
+    assert all(r.path_area_ratio >= CONFIG.figure_path_area_min for r in raws)
+    assert _summary(path) == [("needs_review", "text_layer", None, True)] * 6
+
+
+@pytest.mark.parametrize(
+    ("image", "content", "path", "expected"),
+    [
+        (1.0, 0.0, 0.25, True),  # chỉ ảnh template + đường vẽ đúng ngưỡng: nhánh đường vẽ tính mọi ảnh
+        (1.0, 0.0, 0.24, False),
+        (1.0, None, 0.25, True),
+        (0.0, 0.0, 0.9, False),  # không ảnh nào: đường vẽ không dùng một mình
+        (1.0, 0.10, 0.0, True),  # nhánh ảnh: ảnh nội dung đúng ngưỡng
+        (1.0, 0.09, 0.0, False),  # nhánh ảnh dùng độ phủ không-template, không dùng độ phủ toàn bộ
+    ],
+)
+def test_figure_branches_use_their_own_image_coverage(
+    image: float, content: float | None, path: float, expected: bool
+) -> None:
+    raw = RawPdfPage(
+        page_index=0,
+        width_pt=612,
+        height_pt=792,
+        lines=[],
+        image_area_ratio=image,
+        path_area_ratio=path,
+        content_image_area_ratio=content,
+    )
+    assert page_flags(raw, "", CONFIG).has_figure is expected
 
 
 def test_scanned_pages_with_different_images_have_no_template(tmp_path: Path) -> None:

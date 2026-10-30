@@ -359,13 +359,22 @@ def has_formula(text: str, config: PdfReaderConfig) -> bool:
     return symbols >= config.formula_min_symbols and symbols / len(non_ws) >= config.formula_density_min
 
 
-def has_figure(image_area_ratio: float, path_area_ratio: float, config: PdfReaderConfig) -> bool:
+def has_figure(
+    image_area_ratio: float,
+    path_area_ratio: float,
+    config: PdfReaderConfig,
+    *,
+    content_image_area_ratio: float | None = None,
+) -> bool:
     """PDF số: ảnh nhúng đủ lớn; diện tích đường vẽ chỉ được tính khi trang có ảnh (không dùng một mình).
 
-    Nơi gọi truyền độ phủ ảnh KHÔNG phải template (`content_image_area`, sửa đổi 2026-10-30) cho cả ngưỡng
-    `figure_image_area_min` lẫn điều kiện "có ảnh" của nhánh đường vẽ; `path_area_ratio` không trừ gì.
+    Nhánh ảnh (`figure_image_area_min`) dùng độ phủ ảnh KHÔNG phải template `content_image_area_ratio` (None ⇒
+    `image_area_ratio`; sửa đổi 2026-10-30). Nhánh đường vẽ giữ như trước (người dùng quyết 2026-10-30): điều kiện
+    "có ảnh" tính MỌI ảnh, kể cả ảnh template, và `path_area_ratio` không trừ gì. Hệ quả tạm: slide có khung template
+    vẽ bằng vector trên ảnh nền template bị gắn cờ hình thừa, đến khi loại đường vẽ template (nợ ADR-008).
     """
-    if image_area_ratio >= config.figure_image_area_min:
+    content = image_area_ratio if content_image_area_ratio is None else content_image_area_ratio
+    if content >= config.figure_image_area_min:
         return True
     return image_area_ratio > 0.0 and path_area_ratio >= config.figure_path_area_min
 

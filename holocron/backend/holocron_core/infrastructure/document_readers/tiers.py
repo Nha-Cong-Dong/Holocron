@@ -72,11 +72,19 @@ def select_tier(score: float, flags: PageFlags, config: PdfReaderConfig, *, layo
 
 
 def page_flags(raw: RawPdfPage, text: str, config: PdfReaderConfig) -> PageFlags:
-    """Cờ trang PDF số; phần ảnh của cờ hình dùng độ phủ ảnh không phải template (sửa đổi 2026-10-30)."""
+    """Cờ trang PDF số; nhánh ảnh của cờ hình dùng độ phủ ảnh không phải template, nhánh đường vẽ dùng mọi ảnh.
+
+    Sửa đổi 2026-10-30 (người dùng duyệt): xem `has_figure`.
+    """
     return PageFlags(
         has_table=has_table(raw.lines, raw.width_pt, raw.height_pt, config),
         has_formula=has_formula(text, config),
-        has_figure=has_figure(content_image_area(raw), raw.path_area_ratio, config),
+        has_figure=has_figure(
+            raw.image_area_ratio,
+            raw.path_area_ratio,
+            config,
+            content_image_area_ratio=content_image_area(raw),
+        ),
     )
 
 

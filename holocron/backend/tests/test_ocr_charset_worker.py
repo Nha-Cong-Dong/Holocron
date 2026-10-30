@@ -16,8 +16,10 @@ Fixture `.traineddata` ở đây là file tự tạo tối thiểu (chỉ có un
 
 from __future__ import annotations
 
+import logging
 import os
 import struct
+import subprocess
 import sys
 import unicodedata
 from collections.abc import Callable, Sequence
@@ -30,6 +32,8 @@ from holocron_core.domain.documents import PageExtraction
 from holocron_core.infrastructure.document_readers import _pdf_worker
 from holocron_core.infrastructure.document_readers._pdf_worker import build_ocr
 from holocron_core.infrastructure.document_readers.config import (
+    ENV_TESSDATA_DIR,
+    ENV_TESSERACT_CMD,
     OCR_CHARSET_APPROVED_MISSING,
     TESSDATA_DEFAULT_DIRS,
     OcrSettings,
@@ -56,6 +60,7 @@ from holocron_core.infrastructure.document_readers.tesseract import (
     passed_tessdata_dir,
     read_bounded,
     resolve_tessdata_dir,
+    run_bounded,
     vietnamese_letters,
 )
 from holocron_core.infrastructure.document_readers.tiers import assemble_text_layer_page
@@ -560,3 +565,98 @@ def test_official_vie_traineddata_passes_the_charset_check(variant: str) -> None
     assert check.status == "ok", sorted(check.outside)
     assert check.missing <= OCR_CHARSET_APPROVED_MISSING
     assert build_ocr(settings, PdfReaderConfig(), _runner(None)) is not None
+
+
+# --------------------------------------------------------------------------- #
+# Đường dẫn tương đối trong cấu hình (duyệt 2026-10-30): khởi động và worker phải thấy cùng một đường dẫn
+# --------------------------------------------------------------------------- #
+
+
+def _no_which(name: str) -> str | None:
+    return None
+
+
+def test_relative_paths_become_absolute_and_command_names_stay_bare(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    no_which = _no_which
+    settings = load_ocr_settings({ENV_TESSDATA_DIR: "td", ENV_TESSERACT_CMD: "./bin/tesseract"}, no_which)
+    assert settings.tessdata_dir == os.path.abspath("td")
+    assert settings.tesseract_cmd == os.path.abspath("./bin/tesseract")
+    assert load_ocr_settings({ENV_TESSERACT_CMD: "tesseract"}, no_which).tesseract_cmd == "tesseract"
+    absolute = str(tmp_path / "abs")
+    kept = load_ocr_settings({ENV_TESSDATA_DIR: absolute, ENV_TESSERACT_CMD: absolute + "/tesseract"}, no_which)
+    assert (kept.tessdata_dir, kept.tesseract_cmd) == (absolute, absolute + "/tesseract")
+
+
+def test_relative_config_gives_startup_and_worker_the_same_verdict_from_another_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Cấu hình đọc ở cwd của app; sau đó cwd đổi (worker chạy ở thư mục tạm) mà hai bên vẫn cùng kết quả."""
+    app_cwd = tmp_path / "app"
+    _tessdata(app_cwd / "td", ALL_LETTERS)
+    monkeypatch.chdir(app_cwd)
+    settings = load_ocr_settings({ENV_TESSDATA_DIR: "td", ENV_TESSERACT_CMD: "./bin/tesseract"}, _no_which)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    seen: list[list[str]] = []
+    outcomes = _outcomes(None)
+
+    def run(args: Sequence[str], stdin_data: bytes, timeout_s: float, max_output_bytes: int) -> RunResult:
+        seen.append(list(args))
+        return outcomes[args[1]]
+
+    with caplog.at_level(logging.DEBUG):
+        startup = capability_checks.probe_tesseract(settings, CONFIG, run).vie_available
+        worker = build_ocr(settings, CONFIG, run) is not None
+    assert (startup, worker) == (True, True)
+    assert all(args[0] == settings.tesseract_cmd for args in seen)
+    assert all(str(app_cwd / "td") == args[-1] for args in seen if "--tessdata-dir" in args)
+    assert str(tmp_path) not in caplog.text
+
+
+# --------------------------------------------------------------------------- #
+# Giới hạn byte và loại file của `tesseract` (đột biến đã sống ở vòng 5)
+# --------------------------------------------------------------------------- #
+
+
+def _writer(size: int) -> list[str]:
+    return [sys.executable, "-c", f"import sys; sys.stdout.buffer.write(b'x' * {size})"]
+
+
+def test_run_bounded_output_limit_is_inclusive() -> None:
+    """Đúng N byte với `max_output_bytes=N` ⇒ ok đủ N byte; N+1 byte ⇒ overflow."""
+    size = 4096
+    exact = run_bounded(_writer(size), b"", 30.0, size)
+    assert exact.status == "ok" and len(exact.stdout) == size
+    assert run_bounded(_writer(size + 1), b"", 30.0, size).status == "overflow"
+
+
+def test_read_bounded_rejects_a_device_file() -> None:
+    """File thiết bị (`NUL` trên Windows, `/dev/null` trên POSIX) mở được nhưng không phải file thường ⇒ None."""
+    assert read_bounded(Path(os.devnull), 1024) is None
+
+
+@POSIX_ONLY
+def test_read_bounded_never_blocks_on_a_fifo(tmp_path: Path) -> None:
+    """Chạy trong tiến trình con có hạn ngắn: thiếu `O_NONBLOCK` thì `open` chặn mãi và test báo fail rõ thay vì treo."""
+    fifo = _fifo_named_vie(tmp_path / "fifo") / VIE_TRAINEDDATA
+    source_root = Path(read_bounded.__code__.co_filename).parents[3]
+    code = (
+        "import sys; from pathlib import Path; "
+        "from holocron_core.infrastructure.document_readers.tesseract import read_bounded; "
+        "print(read_bounded(Path(sys.argv[1]), 1024))"
+    )
+    try:
+        done = subprocess.run(
+            [sys.executable, "-c", code, str(fifo)],
+            capture_output=True,
+            timeout=15,
+            env={**os.environ, "PYTHONPATH": str(source_root)},
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("read_bounded bị chặn trên FIFO (thiếu O_NONBLOCK)")
+    assert done.stdout.strip() == b"None"

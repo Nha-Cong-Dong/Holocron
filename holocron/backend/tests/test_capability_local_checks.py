@@ -1870,3 +1870,35 @@ def test_child_probe_runs_inside_its_own_job_object_on_windows(tmp_path: Path) -
     config = PdfReaderConfig(worker_mem_bytes=768 * 1024 * 1024)
     source = FAKE_CHECKS_JOB_OBJECT.replace("{mem_bytes}", str(config.worker_mem_bytes))
     assert _child_probe(_fake_rapidocr(tmp_path, source), config) == LOADED
+
+
+def test_lazy_check_that_raises_is_treated_like_the_background_branch(
+    install_check: Callable[[LocalCapabilityCheck], None], caplog: pytest.LogCaptureFixture
+) -> None:
+    """Nhánh kiểm lười (không qua lifespan): bộ kiểm ném lỗi ⇒ `ocr_engine_missing`, đúng một cảnh báo chỉ có tên
+    lớp lỗi (không thông điệp), không 500; request sau dùng kết quả đã lưu."""
+
+    class BoomError(Exception):
+        pass
+
+    calls: list[int] = []
+
+    def crashing(config: PdfReaderConfig, /) -> Failures:
+        calls.append(1)
+        raise BoomError("C:/Users/secret-user/token-abc123")
+
+    install_check(crashing)
+    client = TestClient(app)
+    with caplog.at_level(logging.WARNING):
+        first = client.get("/v1/runtime")
+        second = client.get("/v1/runtime")
+    assert first.status_code == 200 and second.status_code == 200
+    for response in (first, second):
+        assert _ocr_pair(response.json()) == {
+            "ocr": (False, "ocr_engine_missing"),
+            "ocr_cross_check": (False, "ocr_engine_missing"),
+        }
+        assert "secret-user" not in response.text
+    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == 1 and "BoomError" in warnings[0].getMessage()
+    assert "secret-user" not in caplog.text and calls == [1]

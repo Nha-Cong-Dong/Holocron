@@ -13,6 +13,7 @@ Engine OCR (tầng 2) cấu hình bằng biến môi trường `HOLOCRON_PDF_OCR
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from collections.abc import Callable, Mapping
 from typing import Literal
@@ -200,6 +201,25 @@ def _read_env(env: Mapping[str, str], name: str) -> str | None:
     return value or None
 
 
+_WINDOWS_DRIVE_PATH = re.compile(r"[A-Za-z]:[\\/]")
+
+
+def _absolute_path(value: str) -> str:
+    """Đường dẫn tương đối đổi sang tuyệt đối theo cwd hiện tại; đã tuyệt đối (kể cả dạng gốc hay có ổ đĩa) giữ nguyên.
+
+    Lần kiểm lúc khởi động (cwd của app) và worker (cwd tạm) phải thấy cùng một đường dẫn.
+    """
+    if os.path.isabs(value) or value[:1] in ("/", "\\") or _WINDOWS_DRIVE_PATH.match(value):
+        return value
+    return os.path.abspath(value)
+
+
+def _absolute_command(command: str) -> str:
+    """Lệnh có dấu phân cách đường dẫn mà tương đối ⇒ tuyệt đối; tên lệnh trần giữ nguyên để tra PATH."""
+    has_separator = "/" in command or "\\" in command
+    return _absolute_path(command) if has_separator else command
+
+
 def load_ocr_settings(
     env: Mapping[str, str] | None = None,
     which: Callable[[str], str | None] = shutil.which,
@@ -210,7 +230,9 @@ def load_ocr_settings(
     - `HOLOCRON_PDF_OCR_SECONDARY`: chưa đặt thì là `rapidocr`; ĐẶT RỖNG thì không có lượt thứ hai (spec §11.2 ghi
       riêng cho biến này, ưu tiên hơn quy tắc chung "rỗng coi như chưa đặt"); giá trị khác là `ConfigError`.
     - `HOLOCRON_TESSERACT_CMD`: mặc định `tesseract`, tìm trong PATH của tiến trình cha bằng `which`; không tìm
-      thấy thì giữ nguyên, worker sẽ không chạy được binary và coi như thiếu engine.
+      thấy thì giữ nguyên, worker sẽ không chạy được binary và coi như thiếu engine. Dạng đường dẫn tương đối (có dấu
+      phân cách) đổi sang tuyệt đối theo cwd lúc đọc; tên lệnh trần giữ nguyên.
+    - `HOLOCRON_TESSDATA_DIR`: dạng tương đối đổi sang tuyệt đối theo cwd lúc đọc.
     """
     source = os.environ if env is None else env
     primary = _read_env(source, ENV_PDF_OCR_PRIMARY) or "tesseract"
@@ -223,9 +245,10 @@ def load_ocr_settings(
             secondary = None
         elif raw_secondary != "rapidocr":
             raise ConfigError(f"{ENV_PDF_OCR_SECONDARY} không hợp lệ: chỉ nhận 'rapidocr' hoặc để rỗng")
-    command = _read_env(source, ENV_TESSERACT_CMD) or DEFAULT_TESSERACT_CMD
+    command = _absolute_command(_read_env(source, ENV_TESSERACT_CMD) or DEFAULT_TESSERACT_CMD)
+    tessdata_dir = _read_env(source, ENV_TESSDATA_DIR)
     return OcrSettings(
         tesseract_cmd=which(command) or command,
-        tessdata_dir=_read_env(source, ENV_TESSDATA_DIR),
+        tessdata_dir=None if tessdata_dir is None else _absolute_path(tessdata_dir),
         secondary=secondary,
     )

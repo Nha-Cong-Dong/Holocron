@@ -197,7 +197,15 @@ def get_local_failures(
             return PENDING_LOCAL_FAILURES
         import_runtime = getattr(application.state, RUNTIME_STATE_ATTR, None)
         config = import_runtime.reader_config if isinstance(import_runtime, ImportRuntime) else PdfReaderConfig()
-        return _store_local_failures(application, check(config))
+        failures: Mapping[CapabilityName, CapabilityReason] = CHECK_CRASHED_FAILURES
+        try:
+            failures = check(config)
+        except BaseException as exc:
+            if not isinstance(exc, Exception):
+                raise  # KeyboardInterrupt, SystemExit…: không nuốt
+            # Giống nhánh nền (`_run_check`): đúng một cảnh báo chỉ gồm tên lớp lỗi, coi như thiếu engine OCR.
+            _LOGGER.warning("kiểm cục bộ OCR lúc khởi động bị lỗi (%s): coi như thiếu engine OCR", error_name(exc))
+        return _store_local_failures(application, failures)
 
 
 LocalFailuresDep = Annotated[LocalFailures, Depends(get_local_failures)]

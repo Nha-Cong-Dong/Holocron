@@ -540,7 +540,7 @@ class TwinBatch(BaseModel):
 
 ### 5.7 Bộ nhập PDF: `PageExtraction` (ADR-008 mục 13)
 
-Nguồn: worker đọc PDF (ADR-008 mục 3) trả JSON theo từng trang; tiến trình cha validate bằng các model dưới đây. Ngưỡng là cấu hình (ADR-008 mục 12): `TEXT_LAYER_MIN=0.85`, `TEXT_SPARSE_CHARS=32`, `TEXT_SPARSE_IMAGE_MIN=0.40`, `TEXT_FULL_IMAGE_MIN=0.90`, `TEXT_FULL_IMAGE_MAX_CHARS=200` (thêm 2026-10-30, người dùng duyệt: điều kiện (d), lớp chữ sạch VÀ `non_ws < TEXT_FULL_IMAGE_MAX_CHARS` VÀ `image_area_ratio ≥ TEXT_FULL_IMAGE_MIN` thì OCR cả trang, lý do `image_covers_page`; lớp chữ ≥ 200 ký tự trên ảnh phủ kín giữ lớp chữ; thứ tự xét rỗng, rác, thưa, `image_covers_page`; hai ngưỡng đầu thêm 2026-10-29, người dùng duyệt: trang ảnh có `non_ws < TEXT_SPARSE_CHARS` VÀ `image_area_ratio ≥ TEXT_SPARSE_IMAGE_MIN` thì OCR cả trang; xem công thức `text_score = clean_char_ratio × valid_word_ratio` và luật chọn tầng ở ADR-008 mục 6, sửa đổi 2026-10-29), `TEXT_SCORE_MIN=0.80`, `OCR_SCORE_MIN=0.80`, `LINE_CONF_MIN=0.70`, `COVERAGE_MIN=0.85`, `FIGURE_INK_MIN=0.10`, `CROSS_LINE_CER_WARN=0.05`. **Ảnh template (thêm 2026-10-30, người dùng duyệt; ADR-008 mục 6, 9):** độ phủ ảnh dùng cho điều kiện (c), điều kiện (d) và phần ảnh của `has_figure` trên PDF số chỉ tính ảnh KHÔNG phải template. Ảnh template là ảnh nhúng (khoá: SHA-256 dữ liệu thô của luồng ảnh (chưa giải mã), kích thước điểm ảnh, bộ lọc, hộp bao chuẩn hoá làm tròn theo `TEMPLATE_IMAGE_BBOX_STEP=0.01`; không dùng bits-per-pixel, field `ImageKey.bits_per_pixel` luôn 0 và không tham gia so khớp; dung sai vị trí ±1 ô đối xứng, hai hộp lệch ≤ một bước là cùng nhóm kể cả khi vắt qua biên ô, không bắc cầu) có mặt trên ≥ `TEMPLATE_IMAGE_MIN_PAGES=3` trang VÀ ≥ `TEMPLATE_IMAGE_MIN_PAGE_RATIO=0.60` tổng số trang; tài liệu 1–2 trang không có ảnh template; một hàm duy nhất `find_template_images` xác định (khung VLM dùng lại). Ảnh nền phủ kín vẫn bị trừ nếu là template; `path_area_ratio` giữ nguyên; lớp chữ rỗng hoặc rác vẫn OCR bất kể ảnh. Lượt quét ảnh một lần ở worker trước trang đầu, không render, có hạn và trần riêng (`TEMPLATE_SCAN_TIMEOUT_S=20.0`, `TEMPLATE_SCAN_MAX_IMAGES_PER_PAGE=256`, `TEMPLATE_SCAN_MAX_IMAGES=20000`, `TEMPLATE_SCAN_MAX_IMAGE_BYTES=16 MiB`, `TEMPLATE_SCAN_MAX_BYTES=512 MiB`); vượt trần, quá hạn hoặc lỗi thì không ảnh nào là template (hành vi cũ). Cờ hình trên PDF số: `has_figure` khi độ phủ ảnh không-template `≥ FIGURE_IMAGE_AREA_MIN=0.10` (nhánh ảnh), hoặc trang có ảnh (tính MỌI ảnh, kể cả template) VÀ `path_area_ratio ≥ FIGURE_PATH_AREA_MIN=0.25` (nhánh đường vẽ, giữ như develop; người dùng quyết 2026-10-30). Nợ: chưa loại đường vẽ template, nên slide có khung template vẽ bằng vector trên ảnh nền template bị gắn cờ hình thừa (ADR-008 Hệ quả; ADR-004 BE-007). Không đổi `ReviewReason` hay contract JSON. Cùng model cấu hình có `OCR_CHARSET_ALLOWED_MISSING` (mặc định `Ỵ`, `ỵ`; duyệt 2026-10-25, ADR-008 mục 14): danh sách chữ tiếng Việt được phép thiếu trong unicharset của engine chính, kèm cảnh báo. Danh sách chỉ được chứa các chữ hiếm đã duyệt (hiện `Ỵ`, `ỵ`); mở rộng danh sách cần người dùng duyệt riêng. Đây là field có giá trị mặc định ở `infrastructure/`, không phải biến môi trường (ADR-008 mục 12). Không có ràng buộc `TEXT_LAYER_MIN ≥ TEXT_SCORE_MIN` giữa hai ngưỡng (duyệt 2026-10-25): cấu hình được phép đặt `TEXT_LAYER_MIN` thấp hơn `TEXT_SCORE_MIN`, khi đó trang dùng lớp chữ với `text_score` nằm giữa hai ngưỡng nhận lý do `LOW_TEXT_SCORE`.
+Nguồn: worker đọc PDF (ADR-008 mục 3) trả JSON theo từng trang; tiến trình cha validate bằng các model dưới đây. Ngưỡng là cấu hình (ADR-008 mục 12): `TEXT_LAYER_MIN=0.85`, `TEXT_SPARSE_CHARS=32`, `TEXT_SPARSE_IMAGE_MIN=0.40`, `TEXT_FULL_IMAGE_MIN=0.90`, `TEXT_FULL_IMAGE_MAX_CHARS=200` (thêm 2026-10-30, người dùng duyệt: điều kiện (d), lớp chữ sạch VÀ `non_ws < TEXT_FULL_IMAGE_MAX_CHARS` VÀ `image_area_ratio ≥ TEXT_FULL_IMAGE_MIN` thì OCR cả trang, lý do `image_covers_page`; lớp chữ ≥ 200 ký tự trên ảnh phủ kín giữ lớp chữ; thứ tự xét rỗng, rác, thưa, `image_covers_page`; hai ngưỡng đầu thêm 2026-10-29, người dùng duyệt: trang ảnh có `non_ws < TEXT_SPARSE_CHARS` VÀ `image_area_ratio ≥ TEXT_SPARSE_IMAGE_MIN` thì OCR cả trang; xem công thức `text_score = clean_char_ratio × valid_word_ratio` và luật chọn tầng ở ADR-008 mục 6, sửa đổi 2026-10-29), `TEXT_SCORE_MIN=0.80`, `OCR_SCORE_MIN=0.80`, `LINE_CONF_MIN=0.70`, `COVERAGE_MIN=0.85`, `FIGURE_INK_MIN=0.10`, `CROSS_LINE_CER_WARN=0.05`. **Ảnh template (thêm 2026-10-30, người dùng duyệt; ADR-008 mục 6, 9):** độ phủ ảnh dùng cho điều kiện (c), điều kiện (d) và phần ảnh của `has_figure` trên PDF số chỉ tính ảnh KHÔNG phải template. Ảnh template là ảnh nhúng (khoá: SHA-256 dữ liệu thô của luồng ảnh (chưa giải mã), kích thước điểm ảnh, bộ lọc, hộp bao chuẩn hoá làm tròn theo `TEMPLATE_IMAGE_BBOX_STEP=0.01`; không dùng bits-per-pixel, field `ImageKey.bits_per_pixel` luôn 0 và không tham gia so khớp; dung sai vị trí ±1 ô đối xứng, hai hộp lệch ≤ một bước là cùng nhóm kể cả khi vắt qua biên ô, không bắc cầu) có mặt trên ≥ `TEMPLATE_IMAGE_MIN_PAGES=3` trang VÀ ≥ `TEMPLATE_MIN_PAGE_RATIO` tổng số trang (đổi tên 2026-10-31 từ `TEMPLATE_IMAGE_MIN_PAGE_RATIO`; mặc định 0.60 tới khi phép đo GĐ0 chọn giá trị, ADR-008 "Kết quả đo"; tên cũ ở §11.2 là cùng một ngưỡng); tài liệu 1–2 trang không có ảnh template; một hàm duy nhất `find_template_images` xác định (khung VLM dùng lại; từ 2026-10-31 hàm này xác định cả đường vẽ template và dòng header/footer, mục GĐ0 dưới đây). Ảnh nền phủ kín vẫn bị trừ nếu là template; `path_area_ratio` toàn phần không còn dùng cho cờ hình từ 2026-10-31 (GĐ0); lớp chữ rỗng hoặc rác vẫn OCR bất kể ảnh. Lượt quét ảnh một lần ở worker trước trang đầu, không render, có hạn và trần riêng (`TEMPLATE_SCAN_TIMEOUT_S=20.0`, `TEMPLATE_SCAN_MAX_IMAGES_PER_PAGE=256`, `TEMPLATE_SCAN_MAX_IMAGES=20000`, `TEMPLATE_SCAN_MAX_IMAGE_BYTES=16 MiB`, `TEMPLATE_SCAN_MAX_BYTES=512 MiB`); vượt trần, quá hạn hoặc lỗi thì không ảnh nào là template (hành vi cũ). Cờ hình trên PDF số: luật hiện hành ở mục "Khử nhiễu trang và vai trò trang (GĐ0)" dưới đây (sửa đổi 2026-10-31, người dùng duyệt). Luật 2026-10-30 (nhánh đường vẽ tính mọi ảnh, kể cả template, và `path_area_ratio` toàn phần) đã thay 2026-10-31; câu "Không đổi `ReviewReason` hay contract JSON" của 2026-10-30 cũng đã thay 2026-10-31, vì GĐ0 thêm `ReviewReason`, cờ dòng và field. Cùng model cấu hình có `OCR_CHARSET_ALLOWED_MISSING` (mặc định `Ỵ`, `ỵ`; duyệt 2026-10-25, ADR-008 mục 14): danh sách chữ tiếng Việt được phép thiếu trong unicharset của engine chính, kèm cảnh báo. Danh sách chỉ được chứa các chữ hiếm đã duyệt (hiện `Ỵ`, `ỵ`); mở rộng danh sách cần người dùng duyệt riêng. Đây là field có giá trị mặc định ở `infrastructure/`, không phải biến môi trường (ADR-008 mục 12). Không có ràng buộc `TEXT_LAYER_MIN ≥ TEXT_SCORE_MIN` giữa hai ngưỡng (duyệt 2026-10-25): cấu hình được phép đặt `TEXT_LAYER_MIN` thấp hơn `TEXT_SCORE_MIN`, khi đó trang dùng lớp chữ với `text_score` nằm giữa hai ngưỡng nhận lý do `LOW_TEXT_SCORE`.
 
 ```python
 LineEngine = Literal["text_layer", "tesseract", "vlm", "human"]
@@ -548,7 +548,16 @@ LineEngine = Literal["text_layer", "tesseract", "vlm", "human"]
     # chiều). Dòng người dùng sửa GIỮ engine gốc, không đổi thành "human"; dòng đã sửa được nhận biết qua
     # edited_by_human (duyệt 2026-10-26 chiều). Trang failed không sửa được trong MVP (duyệt 2026-10-26)
 TierUsed = Literal["text_layer", "ocr", "layout", "vlm"] # tầng 1, 2, 3, 4 (ADR-008 mục 6, 9)
-LineFlag = Literal["LOW_LINE_CONF", "TOKEN_MISMATCH", "HIGH_LINE_CER"]
+LineFlag = Literal[
+    "LOW_LINE_CONF", "TOKEN_MISMATCH", "HIGH_LINE_CER",
+    # thêm 2026-10-31 (GĐ0, người dùng duyệt; mục "Khử nhiễu trang" dưới đây), chỉ gắn cho dòng engine "text_layer":
+    "LOW_TEXT_CONTRAST",        # 0B(1): tương phản chữ/nền nằm giữa HIDDEN_TEXT_DROP_MAX và HIDDEN_TEXT_KEEP_MIN
+    "TEXT_OCCLUDED",            # 0B(2): dòng có chữ bị ảnh hoặc PATH tô đặc vẽ sau che ≥ OCCLUSION_MIN_COVER hộp chữ
+    "FONT_ENCODING_SUSPECT",    # 0B(3): cổng glyph
+]
+PageRole = Literal[                               # thêm 2026-10-31 (GĐ0, 0D)
+    "content", "cover_or_course_nav", "chapter_nav", "build_step", "parallel_visual_series", "exercise",
+]
 ReviewReason = Literal[
     "LOW_TEXT_SCORE",           # trang dùng lớp chữ mà text_score < TEXT_SCORE_MIN (mục 6; duyệt 2026-10-25)
     "LOW_OCR_SCORE",            # ocr_score < OCR_SCORE_MIN (mục 6)
@@ -556,12 +565,20 @@ ReviewReason = Literal[
     "HIGH_INK_OUTSIDE_TEXT",    # không có lượt thứ hai và ink_outside_text_ratio ≥ FIGURE_INK_MIN (mục 10)
     "FIGURE_ON_SCAN",           # has_figure trên trang OCR (mục 9)
     "FORMULA_ON_SCAN",          # has_formula trên trang OCR (mục 9)
-    "TIER3_UNAVAILABLE",        # trang lẽ ra lên tầng 3 nhưng tầng 3 chưa có (mục 9)
+    "TIER3_UNAVAILABLE",        # trang lẽ ra lên tầng 3 nhưng tầng 3 chưa có (mục 9): bảng, công thức. Từ 2026-10-31
+                                # hình trên PDF số không còn sinh lý do này (luật 0C, mục GĐ0 dưới đây)
     "LOW_CONF_LINES",           # có dòng conf < LINE_CONF_MIN, nghi chữ viết tay hoặc chữ mờ (mục 10)
     "TOKEN_MISMATCH",           # cross_check.status = "mismatch" (mục 11)
     "CROSS_CHECK_UNAVAILABLE",  # trang OCR không có lượt đọc thứ hai (mục 11)
     "HIGH_PAGE_CER",            # CER văn bản giữa hai lượt ≥ 0.15; ngưỡng chưa xác minh (mục 11)
     "OCR_ENGINE_MISSING",       # thiếu Tesseract/vie.traineddata, trang đã được đọc bằng VLM (mục 8)
+    # thêm 2026-10-31 (GĐ0, người dùng duyệt; khai báo SAU các lý do cũ để thứ tự sắp của trang cũ không đổi):
+    "LOW_TEXT_CONTRAST",        # có dòng cờ LOW_TEXT_CONTRAST (0B(1))
+    "TEXT_OCCLUDED",            # có dòng cờ TEXT_OCCLUDED (0B(2))
+    "FONT_ENCODING_SUSPECT",    # có dòng cờ FONT_ENCODING_SUSPECT (0B(3))
+    "IMAGE_NEEDS_READING",      # luật 0C: < FIGURE_TEXT_MIN_TOKENS token VÀ ảnh nội dung ≥ IMAGE_READ_AREA_MIN
+    "PAGE_ROLE_UNCERTAIN",      # 0D: vùng giữa của luật build_step (dHash BUILD_STEP_DHASH_SAME_MAX+1 .. PARALLEL_SERIES_DHASH_MIN-1)
+    "DENOISE_UNAVAILABLE",      # lượt quét cấp tài liệu không `ok` và trang giữ lớp chữ có has_figure (đề xuất, chờ duyệt)
 ]
 FailureReason = Literal["PAGE_TIMEOUT", "PAGE_ERROR", "OCR_ENGINE_MISSING", "TOO_MANY_LINES"]
 # TOO_MANY_LINES (duyệt 2026-10-28, câu 18 (a)): trang có số dòng có chữ vượt giới hạn trang của Vault (5000, §5.13)
@@ -582,6 +599,31 @@ class ExtractedLine(StrictModel):
     flags: list[LineFlag] = []                    # code
     edited_by_human: bool = False
         # code: true sau khi người dùng sửa dòng qua PATCH …/lines (§6.5), và true với dòng gõ thêm (duyệt 2026-10-26 chiều)
+    is_header_footer: bool = False
+        # code (thêm 2026-10-31, GĐ0 0B(5)): dòng engine "text_layer" khớp một khoá TEXT template (header/footer) của tài
+        # liệu. Dòng vẫn nằm trong `lines` (tương thích, line_index liên tục) nhưng KHÔNG vào văn bản xác nhận hay chunk,
+        # không tính là "dòng có chữ" (§5.7 "Chốt trạng thái") và không đếm vào token của 0C, 0D. Sửa dòng qua
+        # PATCH …/lines giữ nguyên giá trị (đề xuất suy ra, chờ duyệt). Dòng gõ thêm luôn false
+
+class PageImage(StrictModel):                     # thêm 2026-10-31 (GĐ0 0A, 0D); một ảnh nội dung (không-template) của trang
+    bbox: tuple[float, float, float, float]       # worker: hộp thật qua form XObject (0A), chuẩn hoá [0, 1], gốc trên-trái
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+        # worker: SHA-256 dữ liệu thô của luồng ảnh (cùng digest của ImageKey); null khi ảnh vượt TEMPLATE_SCAN_MAX_IMAGE_BYTES
+    dhash: str | None = Field(default=None, pattern=r"^[0-9a-f]{16}$")
+        # worker: dHash 64 bit (hex) của vùng `bbox` trên ảnh render HIDDEN_TEXT_RENDER_DPI (ảnh xám 9×8, so cột kề nhau);
+        # null khi trang không render được ở bước này
+
+class PageRef(StrictModel):                       # thêm 2026-10-31 (GĐ0 0D)
+    document_id: str = Field(pattern=r"^doc_[0-9a-f]{16}$")
+    page_number: int = Field(ge=1)
+
+class PageRoleEvidence(StrictModel):              # thêm 2026-10-31 (GĐ0 0D); code: lý do của page_role / bỏ mềm / cờ vùng giữa
+    rule: Literal["cover_or_course_nav", "chapter_nav", "build_step", "parallel_visual_series", "build_step_uncertain"]
+    related_pages: list[PageRef] = Field(min_length=1, max_length=300)
+        # trang so sánh: trang tài liệu khác (cover), các trang cùng cụm (chapter_nav), trang i+1 (build_step,
+        # build_step_uncertain), trang kề cùng chuỗi (parallel_visual_series)
+    jaccard: float | None = Field(default=None, ge=0.0, le=1.0)   # độ trùng token với trang liên quan gần nhất
+    dhash_distance: int | None = Field(default=None, ge=0, le=64) # build_step*, parallel_visual_series: khoảng cách lớn nhất
 
 class TokenMismatch(StrictModel):
     line_index: int = Field(ge=0)
@@ -619,9 +661,29 @@ class PageExtraction(StrictModel):
     failure_reason: FailureReason | None = None   # bắt buộc khi status = "failed", ngược lại null
     confirmed: bool = False                       # người dùng (§6.5)
     confirmed_at: datetime | None = None
+    # --- thêm 2026-10-31 (GĐ0, người dùng duyệt; mục "Khử nhiễu trang và vai trò trang" dưới đây). Mọi field có mặc định,
+    # nên JSON trang lưu trước GĐ0 vẫn validate được (page_role = "content", không bỏ mềm) mà không cần migration (§5.13).
+    own_images: list[PageImage] = Field(default=[], max_length=256)
+        # worker: ảnh không-template, không-nền của trang (0A), theo thứ tự vẽ; trần = TEMPLATE_SCAN_MAX_IMAGES_PER_PAGE
+    hidden_chars_dropped: int = Field(default=0, ge=0)
+        # worker: số ký tự lớp chữ bị loại vì chữ ẩn (0B(1)); ký tự bị loại không có trong `lines`
+    scan_text_layer: bool = False
+        # worker: trang được nhận là lớp OCR của PDF scan (0B(1)): không lọc chữ ẩn, không xét TEXT_OCCLUDED
+    content_token_count: int | None = Field(default=None, ge=0)
+        # code: số token (định nghĩa token ở 0C) của lớp chữ sau lọc chữ ẩn, không tính dòng header/footer; có cả ở trang
+        # đi OCR (đếm trên lớp chữ trước khi OCR); null khi trang pending, hoặc failed trước khi đọc được lớp chữ
+    page_role: PageRole = "content"               # code (service, 0D), sau khi đọc xong tài liệu; "exercise" chỉ do LLM (GĐ1)
+    role_evidence: PageRoleEvidence | None = None # code (0D); null ⇔ page_role = "content" và không có PAGE_ROLE_UNCERTAIN
+    dropped: bool = False
+        # code (0D): bỏ mềm. true chỉ khi page_role ∈ {cover_or_course_nav, chapter_nav, build_step}; trang bỏ mềm không vào
+        # chunk, không tính needs_review, không xác nhận được cho tới khi hoàn tác (§6.5 POST …/restore)
+    restored: bool = False
+        # người dùng (§6.5 POST …/restore): true sau khi hoàn tác bỏ mềm; trang restored KHÔNG BAO GIỜ bị bỏ mềm lại tự động
 ```
 
 - Validator: `status = "needs_review"` ⇔ `review_reasons` không rỗng và trang chưa `failed`; `failure_reason` có giá trị ⇔ `status = "failed"`; `line_index` liên tục `0..n-1`; mỗi `TokenMismatch.line_index` trỏ tới một dòng có cờ `TOKEN_MISMATCH`.
+- Validator thêm 2026-10-31 (GĐ0; đề xuất suy ra, chờ duyệt): `dropped = true` ⇒ `page_role ∈ {cover_or_course_nav, chapter_nav, build_step}`, `role_evidence.rule = page_role`, `confirmed = false`, `restored = false`, `status ∈ {ok, needs_review}`; `restored = true` ⇒ `dropped = false`; `page_role ∈ {cover_or_course_nav, chapter_nav, build_step, parallel_visual_series}` ⇒ `role_evidence` khác null và `role_evidence.rule = page_role`; `PAGE_ROLE_UNCERTAIN` trong `review_reasons` ⇔ `role_evidence.rule = "build_step_uncertain"` (khi đó `page_role = "content"`); `is_header_footer = true` chỉ ở dòng `engine = "text_layer"`; cờ dòng `LOW_TEXT_CONTRAST`, `TEXT_OCCLUDED`, `FONT_ENCODING_SUSPECT` chỉ ở dòng `engine = "text_layer"`.
+- `status` của trang bỏ mềm vẫn tính như thường từ `review_reasons` (validator trên); "không tính `needs_review`" nghĩa là các bộ đếm (`DocumentImport`, `DocumentSummary`) và điều kiện chốt tài liệu bỏ qua trang `dropped = true`, không phải đổi `status`.
 - Trang `failed` vì `OCR_ENGINE_MISSING`: màn hình xem lại hiện hướng dẫn cài Tesseract và `vie.traineddata` (ADR-008 mục 8). Trang `failed` (mọi `failure_reason`) không sửa và không xác nhận được trong MVP (duyệt 2026-10-26, §6.5): người dùng nhập lại file, tức xoá tài liệu (`DELETE /v1/documents/{document_id}`) rồi tải lên lại, vì tải lên cùng nội dung khi tài liệu còn trả bản ghi cũ mà không đọc lại (§6.5 bước 3). Thao tác "đọc lại trang" thay cho việc nhập lại cả file là việc sau MVP (duyệt 2026-10-26 chiều, §1.6).
 - Màn hình xem lại cần đúng các dữ liệu trên: ảnh trang (render phía client bằng pdfjs từ file gốc; sau MVP, duyệt 2026-10-26 chiều, §1.6: MVP chỉ hiện văn bản theo dòng, chưa có ảnh trang), `lines[].bbox` để đặt dòng lên ảnh, `flags` và `review_reasons` để tô, `cross_check.mismatches` để hiện hai giá trị. Frontend không tự tính điểm hay ngưỡng nào. Điểm OCR (`text_score`, `ocr_score`, `coverage_ratio`, `conf` của dòng): frontend chỉ định dạng giá trị backend trả để hiển thị, không tính lại (duyệt 2026-10-26 chiều).
 - **Ghi chú cho tầng 3 (đo ngày 2026-10-25 trên slide PDF thật):** `pdfplumber.find_tables` báo bảng ở hầu như mọi trang slide, vì khung viền của slide bị nhận nhầm là bảng. Vì vậy `has_table` PHẢI lọc thêm, không lấy thẳng kết quả `find_tables`. Cách lọc (đề xuất, chờ duyệt): bỏ bảng có đúng một ô, và bỏ bảng có khung bao phủ phần lớn diện tích trang; chỉ bật cờ khi bảng còn lại có ít nhất 2 hàng và 2 cột chứa chữ, đồng thời khớp với lưới toạ độ chữ của tầng 1–2 (ADR-008 mục 6). Ngưỡng là cấu hình (ADR-008 mục 12), hiệu chỉnh trên cùng bộ slide đã đo.
@@ -635,6 +697,9 @@ class PageSummary(StrictModel):
     tier_used: TierUsed | None
     review_reasons: list[ReviewReason]
     confirmed: bool
+    page_role: PageRole = "content"               # thêm 2026-10-31 (GĐ0): chép từ PageExtraction.page_role
+    dropped: bool = False                         # thêm 2026-10-31 (GĐ0): chép từ PageExtraction.dropped
+        # kho SQLite đọc hai field này bằng json_extract từ cột extraction_json như tier_used, review_reasons (§5.13)
 
 class DocumentImport(StrictModel):
     meta: DocumentMeta                            # §5.8
@@ -653,14 +718,112 @@ class DocumentImport(StrictModel):
         # Tài liệu failed vẫn chuyển sang confirmed khi mọi trang có văn bản đã xác nhận (duyệt 2026-10-26 chiều;
         # quy tắc chốt trạng thái dưới đây)
     pages: list[PageSummary]                      # đủ page_count phần tử, theo page_number tăng dần
+    # --- thêm 2026-10-31 (GĐ0): số đếm tóm tắt do backend đếm từ `pages`; frontend chỉ hiển thị, không tự đếm (I1, §3.3)
+    pages_kept: int = Field(ge=0)                 # "lấy": trang không pending, không failed, không dropped
+    pages_dropped: int = Field(ge=0)              # "bỏ": trang dropped = true
+    pages_needs_review: int = Field(ge=0)         # "cần xem": status = needs_review, không dropped, chưa confirmed
 ```
 
 **Chốt trạng thái tài liệu (duyệt 2026-10-26 chiều).** Bước chốt trạng thái (settle) chạy sau mỗi lần xác nhận trang hoặc xác nhận cả tài liệu (§6.5), và chạy cả ở đường `failed` (khi `status` vừa thành `failed` vì worker không mở lại được tài liệu), không chỉ ở đường đọc xong bình thường (`review`):
 - Mọi trang có văn bản đã xác nhận ⇒ `status = "confirmed"`, kể cả khi `status` trước đó là `failed`; tài liệu khác `past_exam` khi đó được cắt chunk vào Vault (§6.5 "Xác nhận", §12.1).
 - Trang "có văn bản" là trang không `failed` và có ít nhất một dòng có chữ (dòng có chữ = `text` sau khi bỏ khoảng trắng đầu/cuối khác rỗng; dòng chỉ gồm khoảng trắng coi như không có văn bản; theo code `_has_text`, PR #83) (suy ra từ điều kiện 409 "trang không có dòng nào có văn bản" của `POST …/confirm`, §6.5); trang `failed` không có văn bản để xác nhận nên không chặn việc chốt.
+- Thêm 2026-10-31 (GĐ0; đề xuất suy ra, chờ duyệt): dòng `is_header_footer = true` không phải dòng có chữ và không vào văn bản xác nhận hay chunk (§12.1); trang `dropped = true` không tính là trang có văn bản nên không chặn việc chốt, và không bao giờ vào văn bản xác nhận hay chunk khi chưa hoàn tác rồi xác nhận (I5, ADR-008 mục 7).
 - Đề xuất (chi tiết), chờ duyệt: tài liệu không có trang nào có văn bản (ví dụ mọi trang `failed`) KHÔNG chuyển sang `confirmed`, vì không có gì để cắt chunk; nó giữ `review` hoặc `failed`, người dùng xoá rồi nhập lại.
 
 **Tài liệu nhập trước khi có `chapter_code` (duyệt 2026-10-26 chiều).** Bản ghi nhập qua §6.5 trước khi có field form `chapter_code` có `documents.chapter_code = null` trong kho, nên không dựng được `DocumentImport` (field bắt buộc). Với các bản ghi này, `GET /v1/documents/{document_id}`, `POST /v1/documents` cùng nội dung, `POST …/pages/{page_number}/confirm` và `POST /v1/documents/{document_id}/confirm` trả 409 (§6.5). `DELETE /v1/documents/{document_id}` vẫn chạy để người dùng xoá rồi nhập lại. `detail` (đề xuất (chi tiết), chờ duyệt): chuỗi cố định "Tài liệu được nhập trước khi có chapter_code; hãy xoá tài liệu rồi nhập lại".
+
+**Khử nhiễu trang và vai trò trang (GĐ0; người dùng duyệt 2026-10-31; ADR-008 mục 6 "Khử nhiễu trang và vai trò trang", mục 9, 12).** Thay các câu 2026-10-30 "trang giữ lớp chữ có `has_figure` mang `TIER3_UNAVAILABLE`" và "nhánh đường vẽ của `has_figure` tính mọi ảnh" (đã thay 2026-10-31). Chỗ ghi "suy ra" là thiết kế của người viết spec để code không phải đoán, chờ người dùng xác nhận.
+
+*Nguyên tắc chung*
+- **Không viết lại chữ (I3).** Lọc chỉ được (i) bỏ trọn các ký tự của một đối tượng chữ bị loại vì chữ ẩn, TRƯỚC khi dựng dòng, và (ii) bỏ ký tự trắng hay ngắt dòng do PDFium tự sinh (`FPDFText_IsGenerated`) giữa các ký tự rời được ghép. Không thêm, đổi hay sắp lại ký tự nào của lớp chữ: mọi `ExtractedLine.text` còn lại vẫn là chuỗi ký tự của lớp chữ theo thứ tự đọc (NFC). Đánh dấu (header/footer, cờ dòng, cờ trang, vai trò trang) không đổi `text`. Không tự sửa lỗi font, không vẽ lại hình, không tóm tắt.
+- **Không chuỗi theo môn hay ngôn ngữ trong code** (CLAUDE.md §1): luật GĐ0 chỉ dùng hình học, màu, hash và tập token; không có mẫu như "Chương", "ARM". Nếu sau này cần mẫu ngôn ngữ thì chỉ nằm trong tệp cấu hình theo ngôn ngữ (vi/en).
+- **Vùng ngưỡng ở giữa không bỏ gì, chỉ gắn cờ** (chữ ẩn 1.25–2.0, dHash 5–8 bit).
+- **Nơi chạy:** 0A, 0B, 0C chạy trong worker đọc PDF (ADR-008 mục 3; tài liệu không tin cậy chỉ mở trong worker) bằng hàm thuần ở `infrastructure/document_readers/`, dùng chung với tiến trình cha như `ocr_reason` hiện nay; dữ liệu cấp tài liệu (template, header/footer) lấy từ lượt quét trước trang đầu (ADR-008 mục 3). 0D chạy ở service (`services/document_import`), không ở worker (đề xuất suy ra, chờ duyệt; lý do: 0D cần mọi trang đã đọc và trang của tài liệu khác trong kho, worker không được truy cập kho).
+- 0A–0C áp cho trang PDF số đọc lớp chữ (kể cả bước quyết định OCR); trang OCR giữ nguyên luật tầng 2, chỉ thêm `own_images`. Dữ liệu thô mới của worker (`content_path_area_ratio`, đối tượng theo thứ tự vẽ, khoá PATH/TEXT) là giao thức nội bộ của `document_readers/protocol.py`, không phải contract API.
+
+*0A Đối tượng PDF, template, nền, cờ hình*
+- **Duyệt đối tượng:** worker duyệt đệ quy `FPDF_PAGEOBJ_FORM` tới độ sâu `PDF_FORM_MAX_DEPTH`, ma trận của đối tượng = ma trận form nhân ma trận cha; hộp của IMAGE, PATH, TEXT là hộp sau biến đổi, chuẩn hoá về [0, 1] theo khổ trang đã xoay (cùng cách `normalize_box`), cắt theo trang. Thứ tự vẽ (z-order) là chỉ số theo thứ tự duyệt sâu (nội dung form ở đúng vị trí của form). Trả nợ đo form XObject (ADR-004 BE-008): ch3 tr.25–27, 80–82 phải đo khoảng 0.4–0.5, không phải 0.12 (ADR-008 "Kết quả đo GĐ0").
+- **Trần:** trang có quá `PAGE_OBJECTS_MAX` đối tượng sau khi duyệt (hoặc form sâu quá `PDF_FORM_MAX_DEPTH`) thì không lọc chữ ẩn, không xét `TEXT_OCCLUDED`, không nhận nền PATH, mọi ảnh và đường vẽ đã duyệt tính là nội dung, và trang giữ lớp chữ có `has_figure` mang `DENOISE_UNAVAILABLE` (đề xuất suy ra, chờ duyệt).
+- **Template (một hàm `find_template_images` cho ba loại):** chữ ký lặp ở cùng chỗ (hộp lượng tử theo `TEMPLATE_IMAGE_BBOX_STEP`, dung sai ±1 ô đối xứng, không bắc cầu, như ảnh template ở trên) trên ≥ `TEMPLATE_IMAGE_MIN_PAGES` trang:
+  - IMAGE: khoá `ImageKey` như trên; ngưỡng tỉ lệ `TEMPLATE_MIN_PAGE_RATIO`.
+  - PATH: (hộp lượng tử, màu tô RGBA hoặc null khi không tô, màu viền RGBA hoặc null khi không viền, số đoạn của path); ngưỡng tỉ lệ `TEMPLATE_MIN_PAGE_RATIO`. Trang có quá `TEMPLATE_SCAN_MAX_PATHS_PER_PAGE` PATH: PATH của trang đó không có khoá (không bao giờ là template), lượt quét vẫn tiếp tục (đề xuất suy ra).
+  - TEXT: (hộp lượng tử của dòng, chuỗi chuẩn hoá: NFC, mọi chữ số Unicode `Nd` thành `#`, gộp chuỗi khoảng trắng thành một dấu cách, bỏ khoảng trắng đầu/cuối; dòng rỗng sau chuẩn hoá không có khoá). Dòng của lượt quét dựng bằng CÙNG hàm dựng dòng của lúc đọc trang (kể cả ghép ký tự rời) nhưng không lọc chữ ẩn (lượt quét không render). Ngưỡng của TEXT là của header/footer (0B(5)): ≥ `HEADER_FOOTER_MIN_PAGE_RATIO` số trang VÀ `(p_max − p_min) / N ≥ HEADER_FOOTER_MIN_SPREAD`, với `p_max`, `p_min` là số trang lớn nhất, nhỏ nhất có khoá và `N = page_count` (dùng ngưỡng riêng cho TEXT trong cùng hàm: đề xuất suy ra, chờ duyệt).
+  - `MAX_TEMPLATE_KEYS` áp riêng cho mỗi loại. Lượt quét vượt trần, quá hạn hoặc lỗi ⇒ không có template loại nào và không có header/footer (hành vi an toàn, kèm `DENOISE_UNAVAILABLE` ở 0C).
+- **Nền:** CHỈ gồm (i) PATH tô đặc (có chế độ tô, alpha màu tô = 255) phủ ≥ `BACKGROUND_PATH_MIN_AREA` diện tích trang VÀ vẽ trước (z-order nhỏ hơn) mọi đối tượng chữ có hộp giao với nó, HOẶC (ii) ảnh đã là template. Ảnh KHÔNG phải template thì KHÔNG BAO GIỜ là nền. Test bắt buộc: ch4 tr.22 (ảnh nội dung phủ 0.98 vẽ dưới header) vẫn OCR theo điều kiện (d) `image_covers_page`; cùng test trên PDF tổng hợp tương đương (ảnh không-template phủ ≥ 0.98 vẽ trước một dòng header).
+- **`has_figure` trên PDF số** (thay luật 2026-10-30; trả ADR-004 BE-007): chỉ tính đối tượng không-template, không-nền. Bật khi độ phủ ảnh nội dung (diện tích hợp của ảnh không-template) `≥ FIGURE_IMAGE_AREA_MIN`, hoặc khi trang có ít nhất một ảnh nội dung VÀ `content_path_area_ratio` (tổng diện tích chặn ở 1 của PATH không-template, không-nền) `≥ FIGURE_PATH_AREA_MIN` (giữ điều kiện "có ảnh" để khung viền quanh code không bật cờ một mình: đề xuất suy ra). `own_images` là các ảnh nội dung của trang.
+
+*0B Chất lượng chữ (chỉ dòng engine `text_layer`)*
+1. **Chữ ẩn** (đơn vị: đối tượng chữ, kể cả trong form). CHỈ áp cho chữ được vẽ (render mode ≠ 3). Màu chữ là màu tô, hoặc màu viền khi đối tượng chỉ viền. Nền thật là màu trung vị các điểm ảnh trong hộp đối tượng chữ trên ảnh render `HIDDEN_TEXT_RENDER_DPI` của trang khi không vẽ chữ (worker ẩn đối tượng chữ trong bộ nhớ trước khi render, không ghi file; cách ẩn là đề xuất suy ra). Tương phản = `(L_sáng + 0.05) / (L_tối + 0.05)`, `L` là độ chói tương đối sRGB (công thức WCAG 2.x; đề xuất suy ra). Tương phản `≤ HIDDEN_TEXT_DROP_MAX` ⇒ ký tự của đối tượng bị loại trước khi dựng dòng, cộng vào `hidden_chars_dropped`; `≥ HIDDEN_TEXT_KEEP_MIN` ⇒ giữ; ở giữa ⇒ giữ, dòng chứa ký tự của đối tượng mang cờ `LOW_TEXT_CONTRAST`. Chữ trắng trên nền màu (ch3 tr.13, 52, 61, 86) phải được GIỮ.
+   - **Lớp OCR của PDF scan:** trang có tỉ lệ ký tự render mode 3 `> SCAN_TEXT_LAYER_MODE3_MIN` VÀ `image_area_ratio` (mọi ảnh) `≥ SCAN_TEXT_LAYER_IMAGE_MIN` ⇒ `scan_text_layer = true`: giữ nguyên, không loại ký tự nào, không xét `TEXT_OCCLUDED` (cổng glyph và header/footer vẫn áp vì không bỏ chữ). Test phủ định bắt buộc: PDF tổng hợp dạng scan (ảnh phủ cả trang) có lớp chữ mode 3 không mất ký tự nào. Chữ mode 3 ở trang khác cũng không bị loại và không xét tương phản (đề xuất suy ra).
+2. **Chữ bị che:** đối tượng chữ (mode ≠ 3, trang không `scan_text_layer`) mà hợp các hộp của ảnh (mọi ảnh) và PATH tô đặc có z-order lớn hơn nó che `≥ OCCLUSION_MIN_COVER` diện tích hộp của nó ⇒ dòng chứa ký tự của nó mang cờ `TEXT_OCCLUDED`. Chữ được giữ.
+3. **Cổng glyph:** dòng có ký tự U+FFFD, ký tự điều khiển (`Cc`, trừ tab), ký tự vùng PUA U+E000–U+F8FF, hoặc ký tự U+00A1–U+00BF, U+00D7 (`×`), U+00F7 (`÷`) mà ký tự liền trước hoặc liền sau là chữ cái (`L*`) ⇒ cờ `FONT_ENCODING_SUSPECT`. Không sửa chữ. Giới hạn đã biết: ký hiệu đơn vị dính chữ (`25°C`, `µs`, `a×b`) cũng bị gắn cờ; trên ba chương đo, cổng bắt 1/1 lỗi (`¼q`, ch2 tr.42), 0 báo nhầm.
+4. **Ghép ký tự rời** TRƯỚC khi dựng dòng: chuỗi ≥ `CHAR_MERGE_MIN_CHARS` ký tự liên tiếp theo thứ tự đọc, mỗi ký tự đứng riêng (bị PDFium tách bằng ký tự trắng hay ngắt dòng tự sinh), cùng baseline (mép dưới lệch ≤ `CHAR_MERGE_BASELINE_TOL` × chiều cao ký tự), khoảng cách giữa hai ký tự kề nhau lệch khỏi trung vị khoảng cách của chuỗi ≤ `CHAR_MERGE_GAP_TOL` × chiều cao ký tự ⇒ ghép thành một dòng, bỏ ký tự tự sinh giữa chúng; chỗ khoảng cách lớn hơn trung vị cộng dung sai là ranh giới từ, giữ một ký tự trắng tự sinh. Chi tiết luật là đề xuất suy ra (yêu cầu gốc: "cùng baseline, khoảng cách đều"); test: header chương bị tách thành từng chữ (ch4) thành một dòng, dòng thường không đổi.
+5. **Header/footer:** dòng khớp một khoá TEXT template (0A; cùng chuỗi chuẩn hoá, hộp trong ±1 ô) ⇒ `is_header_footer = true`. Dòng vẫn nằm trong `lines` để tương thích nhưng không vào văn bản xác nhận hay chunk, không đếm vào token của 0C, 0D, và không đếm vào `non_ws` của điều kiện (c).
+
+*0C Khi nào phải đọc ảnh (thay luật 2026-10-30)*
+- **Token** (dùng chung 0C, 0D): các chuỗi con tối đa khớp `\w+` (Unicode) của văn bản đã NFC và `casefold` (đề xuất suy ra). `content_token_count` đếm trên các dòng lớp chữ sau lọc chữ ẩn, trừ dòng header/footer.
+- **Luật chọn tầng** (ADR-008 mục 6; thứ tự xét): (a) rỗng; (b) rác; (c) thưa: `non_ws` (sau lọc chữ ẩn, trừ dòng header/footer; trả BE-009) `< TEXT_SPARSE_CHARS` VÀ độ phủ ảnh nội dung `≥ TEXT_SPARSE_IMAGE_MIN`; (d) `image_covers_page` như cũ (`non_ws` của mọi dòng sau lọc chữ ẩn); (e) mới, `image_needs_reading`: `content_token_count < FIGURE_TEXT_MIN_TOKENS` VÀ độ phủ ảnh nội dung (không-template) `≥ IMAGE_READ_AREA_MIN` ⇒ OCR cả trang ở tầng 2 hiện có (OCR riêng vùng ảnh và VLM là việc sau; đề xuất suy ra). Trang thoả điều kiện của (e), dù được đưa đi OCR bởi luật nào, mang `IMAGE_NEEDS_READING` ("vùng ảnh cần đọc + cờ"). Thiếu engine OCR ⇒ `failed` `OCR_ENGINE_MISSING` như mọi trang OCR. Phải bắt được ch3 tr.24–27, 42–43, 51, 62–66, 73, 80–82, 85 và ch4 tr.22.
+- **Trang giữ lớp chữ có `has_figure`:** `content_token_count ≥ FIGURE_TEXT_MIN_TOKENS` ⇒ hình chỉ được ghi vùng (`own_images`) để sau này CẮT PNG gắn vào khái niệm; không OCR, không VLM, không lý do xem lại nào vì hình. Việc cắt PNG và gắn vào khái niệm thuộc GĐ1 (đề xuất suy ra). Trường hợp còn lại (`< FIGURE_TEXT_MIN_TOKENS` token nhưng ảnh nội dung `< IMAGE_READ_AREA_MIN`, ví dụ hình chỉ là đường vẽ) xử lý như `≥ FIGURE_TEXT_MIN_TOKENS` (đề xuất suy ra). Hình trên PDF số không còn sinh `TIER3_UNAVAILABLE`; `TIER3_UNAVAILABLE` chỉ còn cho bảng và công thức.
+- **Lượt quét không xong:** lượt quét cấp tài liệu có trạng thái khác `ok` (`over_cap`, `timeout`, `error`), hoặc trang vượt trần đối tượng (0A) ⇒ trang giữ lớp chữ có `has_figure` mang `DENOISE_UNAVAILABLE` thay cho việc được miễn ở trên (vì header lặp chưa được trừ, số token có thể bị thổi lên) (đề xuất suy ra, chờ duyệt). Tài liệu 1–2 trang (lượt quét `ok`, không có template) không thuộc trường hợp này.
+
+*0D Vai trò trang và bỏ mềm*
+- **Khi nào:** ở bước kết thúc lần đọc (`_finish` của `services/document_import`), dưới khoá của tài liệu, TRƯỚC khi ghi trạng thái cuối và trước bước chốt (settle). Tính lại cho cả tài liệu mỗi lần kết thúc lần đọc (kể cả lần xếp lại khi khởi động), bằng hàm thuần trên các `PageExtraction` đã lưu. Không đổi: trang `pending`, `failed` (giữ `content`), trang đã `confirmed`, trang `restored`. Tài liệu đã `confirmed`, hoặc Vault đã có chunk của tài liệu ⇒ không bỏ mềm trang nào. Ghi trang đổi qua `update_page` có so version (version + 1); lệch version ⇒ đọc lại và thử lại tối đa `SETTLE_ATTEMPTS` lần, hết lượt thì ghi cảnh báo và trang giữ như cũ (không bỏ mềm là phía an toàn) (đề xuất suy ra).
+- **Tập token:** `R(p)` = tập token của các dòng không phải header/footer của trang `p` (mọi engine); `T(p)` = `R(p)` trừ các token có trên ≥ `PAGE_ROLE_COMMON_TOKEN_RATIO` × `page_count` trang của tài liệu. Jaccard = `|A ∩ B| / |A ∪ B|`. Trang có `|T(p)| < PAGE_ROLE_MIN_TOKENS` không tham gia `chapter_nav`, `build_step`; trang có `|R(p)| < PAGE_ROLE_MIN_TOKENS` không tham gia `cover_or_course_nav` (đề xuất suy ra).
+- **Luật chặn theo ảnh:** ảnh `a` của trang `p` "xuất hiện" ở trang `q` khi `q` có ảnh `b` cùng `sha256` (khác null), hoặc khoảng cách Hamming giữa `dhash` ≤ `BUILD_STEP_DHASH_SAME_MAX`. Trang có ảnh riêng (`own_images`) không xuất hiện ở trang so sánh KHÔNG BAO GIỜ là `cover_or_course_nav`, `chapter_nav` hay `build_step`.
+- **Thứ tự xét:** `cover_or_course_nav`, rồi `chapter_nav`, rồi `build_step`/`parallel_visual_series`; trang đã có vai trò ở bước trước không xét tiếp.
+- **`cover_or_course_nav`:** tồn tại trang `q` của tài liệu KHÁC cùng `subject_code` (nhập qua §6.5, còn trong kho, `q` không `pending`/`failed`) với `Jaccard(R(p), R(q)) ≥ COVER_JACCARD_MIN` và luật chặn theo ảnh không chặn ⇒ `page_role = cover_or_course_nav`, bỏ mềm, `related_pages` = các trang `q` đạt (sắp theo `document_id`, `page_number`). **Thứ tự nhập:** tài liệu nhập trước chưa có tài liệu khác để so. Khi tài liệu sau đọc xong mà trang `p` của nó khớp trang `q` của tài liệu trước `D'`, service đánh giá lại `q` theo cùng luật (chiều `q` so với `p`): nếu `D'` chưa `confirmed`, Vault chưa có chunk của `D'`, `q` chưa `confirmed`, chưa `restored` thì `q` cũng bị bỏ mềm với `related_pages = [p]`. Bước này chạy SAU khi nhả khoá của tài liệu đang đọc, lấy khoá từng `D'` một (không giữ hai khoá cùng lúc). `D'` đã `confirmed` hoặc đã có chunk ⇒ không đổi gì, không xoá chunk (đề xuất suy ra, chờ duyệt). Tài liệu bị xoá sau đó không làm trang đã bỏ mềm tự hoàn tác; người dùng hoàn tác nếu cần.
+- **`chapter_nav`:** ứng viên là trang tham gia có mọi dòng (không phải header/footer) dài ≤ `CHAPTER_NAV_MAX_LINE_CHARS` ký tự, `has_table = false`, `own_images` rỗng. Gom cụm theo `page_number` tăng dần: trang vào cụm đầu tiên mà `Jaccard(T)` với MỌI thành viên ≥ `CHAPTER_NAV_JACCARD_MIN` (không bắc cầu), không có thì mở cụm mới. Cụm có ≥ `CHAPTER_NAV_MIN_PAGES` thành viên VÀ trung vị khoảng cách `page_number` giữa hai thành viên liên tiếp ≥ `CHAPTER_NAV_MIN_MEDIAN_GAP` (thành viên rải rác) ⇒ mọi thành viên là `chapter_nav`, bỏ mềm, `related_pages` = các thành viên khác.
+- **`build_step` / `parallel_visual_series`:** xét từng cặp kề `(i, i+1)` cùng tài liệu, cả hai tham gia và chưa có vai trò. Điều kiện chữ: (1) `|T(i) ∩ T(i+1)| / |T(i)| ≥ BUILD_STEP_SUBSET_MIN`; (2) mọi dòng có chữ (không phải header/footer) của `i` có một dòng ở `i+1` cùng `text` (sau bỏ khoảng trắng đầu/cuối) và mọi toạ độ `bbox` lệch ≤ `BUILD_STEP_POSITION_TOL` ("khối" ở GĐ0 là dòng; dòng `bbox` null làm (2) sai) (đề xuất suy ra). Khoảng cách ảnh `D`: với mỗi ảnh riêng `a` của `i`, `d(a) = 0` nếu `i+1` có ảnh cùng `sha256`, ngược lại là khoảng cách dHash nhỏ nhất tới ảnh của `i+1` (không có ảnh hay `dhash` null ⇒ không xác định); `D = max d(a)`, `i` không có ảnh riêng ⇒ `D = 0`. Khi (1) và (2) đúng:
+  - `D ≤ BUILD_STEP_DHASH_SAME_MAX` ⇒ `i` là `build_step`, bỏ mềm, `related_pages = [i+1]`, `dhash_distance = D`. Chuỗi bước `i, i+1, i+2` ⇒ bỏ `i`, `i+1`, giữ bước cuối.
+  - `D ≥ PARALLEL_SERIES_DHASH_MIN` (dHash > 8) ⇒ `i` và `i+1` là `parallel_visual_series`, GIỮ cả hai (ví dụ ch3 tr.62–66: chữ lặp nhưng mỗi trang một ảnh riêng).
+  - Ở giữa ⇒ `i` GIỮ `content`, thêm `PAGE_ROLE_UNCERTAIN`, `role_evidence.rule = "build_step_uncertain"`, `related_pages = [i+1]`.
+  - `D` không xác định ⇒ giữ `content`, không cờ (luật chặn theo ảnh).
+- **`exercise`:** chỉ LLM gắn (GĐ1). GĐ0 không sinh giá trị này và không bỏ trang vì nó. Luật nhận trang bài tập theo dấu "?" không dùng (đúng 2/16, nhầm 7).
+- **Bỏ mềm:** `dropped = true`, `page_role` và `role_evidence` như trên. Trang bỏ mềm: không vào văn bản xác nhận, chunk hay Vault; không tính vào `pages_needs_review`; không chặn bước chốt tài liệu; không xác nhận, sửa dòng hay tạo item được cho tới khi hoàn tác (§6.5). Màn hình xem lại vẫn hiện trang bỏ mềm kèm lý do từ `role_evidence` (luật, trang liên quan); frontend chỉ hiển thị field, không tự suy luật. Hoàn tác một chạm: `POST …/pages/{page_number}/restore` (§6.5).
+- **Lưu trữ:** mọi field mới nằm trong `PageExtraction` (cột `pages.extraction_json`, §5.13); không cần migration.
+
+*Bất biến*
+- **I3:** dòng còn lại là nguyên văn lớp chữ (nguyên tắc chung ở trên); trích dẫn vẫn kiểm trên văn bản đã xác nhận. Test bắt buộc (đề xuất): mọi `ExtractedLine.text` tầng 1 sau GĐ0 là chuỗi con theo thứ tự của văn bản lớp chữ thô của trang trên các PDF tổng hợp có chữ ẩn, ký tự rời, header/footer.
+- **I5:** trang hoặc dòng còn cờ thì trang `needs_review` (validator), không xác nhận theo lô được; trang bỏ mềm không bao giờ vào Vault hay chunk khi chưa hoàn tác rồi xác nhận; số đếm tóm tắt (lấy, bỏ, cần xem) do backend đếm (`DocumentImport`, `DocumentSummary`), frontend chỉ hiển thị (I1).
+- **I4:** tài liệu đã nhập giữ văn bản, lý do xem lại và vai trò đã lưu (trang lưu trước GĐ0 đọc ra với `page_role = "content"`, không bỏ mềm); luật GĐ0 chỉ áp khi nhập, nên chỉ xoá rồi nhập lại mới đổi kết quả. Không có bước tự đọc lại. Cùng file và cùng cấu hình cho cùng kết quả (hàm thuần, không ngẫu nhiên); câu hỏi và cặp khái niệm đã sinh từ chunk cũ không đổi.
+
+*Ngưỡng GĐ0* (field có giá trị mặc định của `PdfReaderConfig` ở `infrastructure/document_readers/config.py`, không phải biến môi trường, ADR-008 mục 12; tên trong code viết thường; service đọc qua `ImportRuntime.reader_config`):
+
+| Tên | Mặc định | Ý nghĩa (so sánh) | Nguồn |
+|---|---|---|---|
+| `TEMPLATE_MIN_PAGE_RATIO` | 0.60 | Tỉ lệ trang tối thiểu của template IMAGE, PATH (`≥`, `(0, 1]`); đổi tên từ `TEMPLATE_IMAGE_MIN_PAGE_RATIO`. Giá trị chọn bằng phép đo GĐ0 (0.40 hay 0.60), ghi ở ADR-008 "Kết quả đo"; 0.60 giữ tới khi có số đo | Người dùng 2026-10-31 (a) |
+| `TEMPLATE_IMAGE_MIN_PAGES` | 3 | Số trang tối thiểu của template mọi loại (`≥`, `≥ 3`); giữ tên | Người dùng 2026-10-31 (a) |
+| `TEMPLATE_IMAGE_BBOX_STEP` | 0.01 | Bước lượng tử hộp cho mọi loại (1% trang); giữ tên | Duyệt 2026-10-30; yêu cầu GĐ0 0A |
+| `TEMPLATE_SCAN_MAX_PATHS_PER_PAGE` | 4096 | Trang có nhiều PATH hơn: PATH của trang không có khoá | Đề xuất suy ra |
+| `PDF_FORM_MAX_DEPTH` | 16 | Độ sâu tối đa khi duyệt form XObject | Đề xuất suy ra |
+| `PAGE_OBJECTS_MAX` | 20000 | Số đối tượng tối đa mỗi trang sau khi duyệt (`>` là vượt trần, 0A) | Đề xuất suy ra |
+| `BACKGROUND_PATH_MIN_AREA` | 0.50 | PATH tô đặc phủ `≥` mức này và vẽ trước chữ là nền | Người dùng 2026-10-31 (b) |
+| `FIGURE_IMAGE_AREA_MIN` | 0.10 | Như cũ, nay trên ảnh nội dung (`≥`) | Duyệt 2026-10-30 |
+| `FIGURE_PATH_AREA_MIN` | 0.25 | Như cũ, nay trên PATH nội dung (`≥`) | Duyệt 2026-10-30 |
+| `HIDDEN_TEXT_RENDER_DPI` | 72 | DPI ảnh render để đo tương phản và dHash | Yêu cầu GĐ0 0B |
+| `HIDDEN_TEXT_DROP_MAX` | 1.25 | Tương phản `≤` ⇒ loại chữ | Yêu cầu GĐ0 0B |
+| `HIDDEN_TEXT_KEEP_MIN` | 2.0 | Tương phản `≥` ⇒ giữ; validator `HIDDEN_TEXT_DROP_MAX < HIDDEN_TEXT_KEEP_MIN` | Yêu cầu GĐ0 0B |
+| `SCAN_TEXT_LAYER_MODE3_MIN` | 0.50 | Tỉ lệ ký tự render mode 3 `>` ("phần lớn") | Người dùng 2026-10-31 (c); giá trị suy ra |
+| `SCAN_TEXT_LAYER_IMAGE_MIN` | 0.90 | `image_area_ratio` (mọi ảnh) `≥` ("ảnh phủ gần hết trang"; cùng giá trị `TEXT_FULL_IMAGE_MIN`) | Người dùng 2026-10-31 (c); giá trị suy ra |
+| `OCCLUSION_MIN_COVER` | 0.50 | Tỉ lệ hộp chữ bị che `≥` ⇒ `TEXT_OCCLUDED` | Yêu cầu GĐ0 0B |
+| `CHAR_MERGE_MIN_CHARS` | 3 | Số ký tự rời tối thiểu để ghép (`≥`) | Đề xuất suy ra |
+| `CHAR_MERGE_BASELINE_TOL` | 0.20 | Lệch baseline tối đa, × chiều cao ký tự (`≤`) | Đề xuất suy ra |
+| `CHAR_MERGE_GAP_TOL` | 0.25 | Lệch khoảng cách so với trung vị, × chiều cao ký tự (`≤`) | Đề xuất suy ra |
+| `HEADER_FOOTER_MIN_PAGE_RATIO` | 0.60 | Tỉ lệ trang có dòng lặp (`≥`) | Yêu cầu GĐ0 0B |
+| `HEADER_FOOTER_MIN_SPREAD` | 0.60 | `(p_max − p_min) / N` (`≥`) | Yêu cầu GĐ0 0B |
+| `FIGURE_TEXT_MIN_TOKENS` | 8 | Token lớp chữ đã trừ chuỗi lặp: `≥` ⇒ hình chỉ cắt PNG; `<` là một vế của (e) | Yêu cầu GĐ0 0C |
+| `IMAGE_READ_AREA_MIN` | 0.30 | Độ phủ ảnh nội dung `≥`, vế còn lại của (e) | Yêu cầu GĐ0 0C |
+| `PAGE_ROLE_MIN_TOKENS` | 8 | Trang có ít token hơn (`<`) không tham gia luật trùng | Yêu cầu GĐ0 0D |
+| `PAGE_ROLE_COMMON_TOKEN_RATIO` | 0.60 | Token có trên `≥` tỉ lệ này số trang bị trừ khỏi `T(p)` | Yêu cầu GĐ0 0D |
+| `COVER_JACCARD_MIN` | 0.80 | `Jaccard(R)` với trang tài liệu khác `≥` | Yêu cầu GĐ0 0D |
+| `CHAPTER_NAV_JACCARD_MIN` | 0.85 | `Jaccard(T)` trong cụm `≥` | Yêu cầu GĐ0 0D |
+| `CHAPTER_NAV_MIN_MEDIAN_GAP` | 3 | Trung vị khoảng cách thành viên `≥` | Yêu cầu GĐ0 0D |
+| `CHAPTER_NAV_MAX_LINE_CHARS` | 90 | Mọi dòng `≤` | Yêu cầu GĐ0 0D |
+| `CHAPTER_NAV_MIN_PAGES` | 2 | Số thành viên tối thiểu của cụm (`≥`) | Đề xuất suy ra |
+| `BUILD_STEP_SUBSET_MIN` | 0.90 | Tỉ lệ token của trang `i` có ở trang `i+1` (`≥`) | Yêu cầu GĐ0 0D |
+| `BUILD_STEP_POSITION_TOL` | 0.02 | Lệch toạ độ dòng `≤` | Yêu cầu GĐ0 0D |
+| `BUILD_STEP_DHASH_SAME_MAX` | 4 | dHash `≤` ⇒ cùng ảnh | Yêu cầu GĐ0 0D |
+| `PARALLEL_SERIES_DHASH_MIN` | 9 | dHash `≥` (tức > 8) ⇒ chuỗi ảnh song song; giữa hai ngưỡng ⇒ giữ + cờ; validator `BUILD_STEP_DHASH_SAME_MAX < PARALLEL_SERIES_DHASH_MIN` | Yêu cầu GĐ0 0D |
 
 ### 5.8 Knowledge Vault (ADR-006, ADR-007)
 
@@ -1264,6 +1427,7 @@ Toàn bộ mục này đã duyệt 2026-10-25, trừ bảng `subjects` (đề xu
 | `templates` | `template_id` | `topic_key`, `tier` (`candidate` \| `verified`), `provenance`, `source_sha256` UNIQUE, `generator_source`, `metadata_json`, `verification_json`, `approved_by`, `approved_at`, `created_at`, `version` | — | `(topic_key, tier)` |
 
 - Cột `*_json` chứa `model_dump_json()` của model Pydantic tương ứng và được validate lại khi đọc; cột tách riêng chỉ để lọc và làm khoá.
+- **GĐ0 (thêm 2026-10-31):** field mới của `PageExtraction` (`page_role`, `dropped`, `restored`, `role_evidence`, `own_images`, …; §5.7) chỉ nằm trong `pages.extraction_json`, không thêm cột và không thêm migration. Tóm tắt trang (`PageSummary.page_role`, `dropped`) đọc bằng `json_extract` như `tier_used`, `review_reasons`; JSON trang lưu trước GĐ0 thiếu các field này đọc ra giá trị mặc định (`content`, `false`).
 - **Idempotency 24 h (§6.3):** tra `(blueprint_id, idempotency_key)` với `created_at` trong 24 h. Bản ghi hết hạn được đặt `idempotency_key = NULL` trong cùng giao dịch trước khi ghi bản ghi mới, để giữ index UNIQUE.
 - **Kiểm FTS5:** khi khởi động, đọc `PRAGMA compile_options`; thiếu `ENABLE_FTS5` thì dùng BM25 tự cài trên cùng bộ token (ADR-006 mục 4), không lỗi.
 - **Kết quả chấm tự luận** (§5.14) không được lưu trong MVP (đề xuất, chờ duyệt): chấm lại cùng câu trả lời cho cùng kết quả (tái lập của bộ chấm, §5.14), nên không cần bảng riêng. Lịch sử làm bài và ôn lại câu sai thuộc MVP-1 (chốt 2026-10-26, §1.5); bảng lưu và contract của nó là đề xuất riêng, chờ duyệt, chưa có trong bảng trên.
@@ -1593,7 +1757,9 @@ Tên và đường dẫn endpoint ở mục này đã duyệt 2026-10-25. MVP ch
 4. Thử mở trong worker (timeout 5 s, như tầng 1): cần mật khẩu để mở → 422 "PDF có mật khẩu" (không thử phá); không mở được hoặc quá hạn → 422 "không mở được tài liệu"; quá 300 trang → 422. PDF chỉ có mật khẩu chủ vẫn được nhận (ADR-008 mục 4).
 5. Tạo ngầm môn `subject_code` nếu chưa có (§5.14, đề xuất). Lưu file gốc (§5.13), tạo `page_count` trang `pending`, xếp hàng đợi, trả `202 DocumentImport` (`status = "processing"`) kèm header `Location: /v1/documents/{document_id}`. App đang tắt hoặc hàng đợi nội bộ đã đóng → giữ 500 với `detail = IMPORT_UNAVAILABLE_DETAIL`, không tạo bản ghi (giữ 500, câu 3, duyệt 2026-10-28, §6.0).
 
-**Đọc từng trang (ADR-008 mục 3, 6, 8, 9):** tầng 1 (timeout 5 s); tầng 2 (OCR cả trang, timeout 30 s) khi lớp chữ rỗng (`non_ws == 0`), hoặc lớp chữ rác (`text_score < TEXT_LAYER_MIN`, gồm TCVN3/VNI), hoặc trang ảnh (`non_ws < TEXT_SPARSE_CHARS` VÀ `image_area_ratio ≥ TEXT_SPARSE_IMAGE_MIN`), hoặc ảnh phủ gần hết trang với lớp chữ sạch (điều kiện (d): `non_ws < TEXT_FULL_IMAGE_MAX_CHARS=200` VÀ `image_area_ratio ≥ TEXT_FULL_IMAGE_MIN=0.90`, duyệt 2026-10-30), còn lại giữ lớp chữ; `image_area_ratio` của hai điều kiện ảnh chỉ tính ảnh không phải template, và nhánh ảnh của `has_figure` trên PDF số cũng vậy (nhánh đường vẽ của `has_figure` tính mọi ảnh, kể cả template, như develop; quyết 2026-10-30) (ảnh template: ≥ 60% số trang VÀ ≥ 3 trang, cùng nội dung và vị trí; tài liệu 1–2 trang không có; một lượt quét nhẹ trước trang đầu, không render, vượt trần/quá hạn/lỗi thì không loại ảnh nào; duyệt 2026-10-30; ADR-008 mục 3, 6, 9; ngưỡng ở §5.7); `text_score = clean_char_ratio × valid_word_ratio` (Sửa đổi 2026-10-29, người dùng duyệt; ADR-008 mục 6); cờ trang chọn tầng 3 hoặc 4. Trang quá hạn hoặc lỗi thành `failed` (`PAGE_TIMEOUT`, `PAGE_ERROR`); trang có số dòng có chữ vượt giới hạn trang của Vault (5000) thành `failed` (`TOO_MANY_LINES`, `lines` rỗng; duyệt 2026-10-28); các trang khác vẫn đọc tiếp. Render tối đa 300 DPI và 25 megapixel mỗi trang.
+**Đọc từng trang (ADR-008 mục 3, 6, 8, 9):** tầng 1 (timeout 5 s); tầng 2 (OCR cả trang, timeout 30 s) khi lớp chữ rỗng (`non_ws == 0`), hoặc lớp chữ rác (`text_score < TEXT_LAYER_MIN`, gồm TCVN3/VNI), hoặc trang ảnh (`non_ws < TEXT_SPARSE_CHARS` VÀ `image_area_ratio ≥ TEXT_SPARSE_IMAGE_MIN`), hoặc ảnh phủ gần hết trang với lớp chữ sạch (điều kiện (d): `non_ws < TEXT_FULL_IMAGE_MAX_CHARS=200` VÀ `image_area_ratio ≥ TEXT_FULL_IMAGE_MIN=0.90`, duyệt 2026-10-30), còn lại giữ lớp chữ; `image_area_ratio` của hai điều kiện ảnh chỉ tính ảnh không phải template, và `has_figure` trên PDF số chỉ tính ảnh và đường vẽ không-template, không-nền (sửa đổi 2026-10-31, GĐ0; luật 2026-10-30 "nhánh đường vẽ tính mọi ảnh" đã thay 2026-10-31); từ 2026-10-31 thêm điều kiện (e) `image_needs_reading` và các luật khử nhiễu, vai trò trang ở §5.7 "Khử nhiễu trang và vai trò trang" (ảnh template: ≥ `TEMPLATE_MIN_PAGE_RATIO` số trang VÀ ≥ 3 trang, cùng nội dung và vị trí; tài liệu 1–2 trang không có; một lượt quét nhẹ trước trang đầu, không render, vượt trần/quá hạn/lỗi thì không loại ảnh nào; duyệt 2026-10-30; ADR-008 mục 3, 6, 9; ngưỡng ở §5.7); `text_score = clean_char_ratio × valid_word_ratio` (Sửa đổi 2026-10-29, người dùng duyệt; ADR-008 mục 6); cờ trang chọn tầng 3 hoặc 4. Trang quá hạn hoặc lỗi thành `failed` (`PAGE_TIMEOUT`, `PAGE_ERROR`); trang có số dòng có chữ vượt giới hạn trang của Vault (5000) thành `failed` (`TOO_MANY_LINES`, `lines` rỗng; duyệt 2026-10-28); các trang khác vẫn đọc tiếp. Render tối đa 300 DPI và 25 megapixel mỗi trang.
+
+**Sau khi đọc xong (thêm 2026-10-31, GĐ0 0D):** ở bước kết thúc lần đọc, service gán `page_role` và bỏ mềm trang theo §5.7 "Khử nhiễu trang và vai trò trang", trước khi tài liệu thành `review`; rồi đánh giá lại trang bìa của các tài liệu nhập trước cùng môn (cùng mục đó). Trong lúc tài liệu còn `processing`, mọi trang đã đọc có `page_role = "content"`, `dropped = false`.
 
 **Bất biến:** file là đầu vào không tin cậy, chỉ được mở trong worker có giới hạn (CLAUDE.md §2.2, ADR-008 mục 3). Không văn bản nào vào Vault hay Gate trước khi người dùng xác nhận (ADR-008 mục 7); I3 và I5 được kiểm sau bước này.
 
@@ -1610,6 +1776,10 @@ class DocumentSummary(StrictModel):              # đề xuất
     meta: DocumentMeta
     status: Literal["processing", "review", "confirmed", "failed"]
     pages_pending: int; pages_needs_review: int; pages_failed: int; pages_confirmed: int   # code: đếm từ pages
+    pages_dropped: int                            # code (thêm 2026-10-31, GĐ0): số trang dropped = true
+    # Sửa đổi 2026-10-31 (GĐ0; đề xuất suy ra, chờ duyệt): pages_needs_review đếm trang status = needs_review, KHÔNG
+    # dropped và chưa confirmed, cùng định nghĩa với DocumentImport.pages_needs_review (§5.7); trước đó đếm mọi trang
+    # status = needs_review
 ```
 
 #### `PATCH /v1/documents/{document_id}/pages/{page_number}/lines`
@@ -1633,21 +1803,36 @@ Sửa văn bản của một trang trước khi xác nhận.
 **Tính lại `review_reasons` sau khi sửa thành công (duyệt 2026-10-26):**
 - Bỏ `TOKEN_MISMATCH` khi `cross_check.mismatches` không còn phần tử nào (không còn token lệch).
 - Bỏ `LOW_CONF_LINES` khi không còn dòng nào có `conf < LINE_CONF_MIN`; dòng có `edited_by_human = true` không tính là dòng conf thấp, bất kể `conf` ("dòng người dùng sửa không tính conf thấp"). Dòng gõ thêm cũng không tính, vì có `edited_by_human = true` và `conf = 1.0` (duyệt 2026-10-26 chiều). Dòng đã sửa giữ `conf` cũ của engine (duyệt 2026-10-26 chiều), nên `conf` vẫn cho biết engine đọc dòng đó chắc đến đâu.
-- Các lý do cấp trang khác (`LOW_TEXT_SCORE`, `LOW_OCR_SCORE`, `LOW_LINE_COVERAGE`, `HIGH_INK_OUTSIDE_TEXT`, `FIGURE_ON_SCAN`, `FORMULA_ON_SCAN`, `TIER3_UNAVAILABLE`, `CROSS_CHECK_UNAVAILABLE`, `HIGH_PAGE_CER`, `OCR_ENGINE_MISSING`) giữ nguyên.
+- Thêm 2026-10-31 (GĐ0; đề xuất suy ra, chờ duyệt): bỏ `LOW_TEXT_CONTRAST`, `TEXT_OCCLUDED`, `FONT_ENCODING_SUSPECT` khi không còn dòng nào mang cờ dòng cùng tên; dòng được sửa đã bị xoá `flags` (ở trên) nên không còn mang cờ đó. Sửa dòng không đổi `is_header_footer`.
+- Các lý do cấp trang khác (`LOW_TEXT_SCORE`, `LOW_OCR_SCORE`, `LOW_LINE_COVERAGE`, `HIGH_INK_OUTSIDE_TEXT`, `FIGURE_ON_SCAN`, `FORMULA_ON_SCAN`, `TIER3_UNAVAILABLE`, `CROSS_CHECK_UNAVAILABLE`, `HIGH_PAGE_CER`, `OCR_ENGINE_MISSING`, và từ 2026-10-31 `IMAGE_NEEDS_READING`, `PAGE_ROLE_UNCERTAIN`, `DENOISE_UNAVAILABLE`) giữ nguyên.
 - `status` tính lại từ `review_reasons` theo validator ở §5.7: rỗng ⇒ `ok`, không rỗng ⇒ `needs_review`.
 
-**Response:** `200 PageExtraction`. **Lỗi:** 404; 409 khi `expected_version` lệch, trang còn `pending`, trang `failed` (không sửa được trong MVP, người dùng nhập lại file theo §5.7; duyệt 2026-10-26) hoặc đã xác nhận; 409 `SETTLE_PENDING_DETAIL` ("Văn bản của tài liệu đã vào Knowledge Vault nhưng tài liệu chưa hoàn tất xác nhận; hãy gọi lại xác nhận tài liệu, không sửa thêm được") khi Vault đã có chunk của tài liệu mà tài liệu chưa `confirmed` (duyệt 2026-10-28); 422 khi body sai, `line_index` không tồn tại, hoặc trang sau sửa vượt 5000 dòng (`MAX_PAGE_LINES`; theo code `apply_line_edits`, tổng số dòng hiện có cộng `appended_lines` tính mọi dòng, kể cả dòng rỗng; PR #83). Bộ nhập chưa sẵn sàng: 500 như §6.0.
+**Response:** `200 PageExtraction`. **Lỗi:** 404; 409 khi `expected_version` lệch, trang còn `pending`, trang `failed` (không sửa được trong MVP, người dùng nhập lại file theo §5.7; duyệt 2026-10-26), đã xác nhận, hoặc đang bỏ mềm (`dropped = true`; thêm 2026-10-31, GĐ0, `detail` đề xuất: "Trang đang bị bỏ qua; hãy hoàn tác trước khi sửa"); 409 `SETTLE_PENDING_DETAIL` ("Văn bản của tài liệu đã vào Knowledge Vault nhưng tài liệu chưa hoàn tất xác nhận; hãy gọi lại xác nhận tài liệu, không sửa thêm được") khi Vault đã có chunk của tài liệu mà tài liệu chưa `confirmed` (duyệt 2026-10-28); 422 khi body sai, `line_index` không tồn tại, hoặc trang sau sửa vượt 5000 dòng (`MAX_PAGE_LINES`; theo code `apply_line_edits`, tổng số dòng hiện có cộng `appended_lines` tính mọi dòng, kể cả dòng rỗng; PR #83). Bộ nhập chưa sẵn sàng: 500 như §6.0.
 
 #### Xác nhận
 
 | Method | Path | Body | Ngữ nghĩa | Lỗi |
 |---|---|---|---|---|
-| POST | `/v1/documents/{document_id}/pages/{page_number}/confirm` | `{editor_id, expected_version}` | Nhận trang `ok` và `needs_review`; với trang `needs_review`, xác nhận nghĩa là người dùng đã xem lại (duyệt 2026-10-26). `confirmed = true`, ghi `confirmed_at`; trả `200 PageExtraction`. Gọi lại trên trang đã xác nhận trả 200, không đổi gì | 404; 409 khi trang `pending`, trang `failed` (duyệt 2026-10-26), version lệch, trang không có dòng nào có văn bản, hoặc tài liệu nhập trước khi có `chapter_code` (duyệt 2026-10-26 chiều, §5.7); 409 `SETTLE_PENDING_DETAIL` khi Vault đã có chunk của tài liệu mà tài liệu chưa `confirmed` (duyệt 2026-10-28); 422 khi trang vượt giới hạn trang của Vault (tối đa 5000 dòng có văn bản, mỗi dòng tối đa 2000 ký tự; nay chỉ là kiểm tra phòng thủ vì trang quá nhiều dòng đã thành `failed` lúc đọc, `TOO_MANY_LINES`; duyệt 2026-10-28) |
-| POST | `/v1/documents/{document_id}/confirm` | `{editor_id}` | Xác nhận mọi trang `ok` chưa xác nhận; trả `200 DocumentImport`. Xác nhận theo lô chỉ nhận trang `ok` (duyệt 2026-10-26, theo ADR-008 mục 7): trang `needs_review` phải được xác nhận từng trang; trang `failed` không xác nhận được | 404; 409 khi còn trang `pending`, hoặc tài liệu nhập trước khi có `chapter_code` (duyệt 2026-10-26 chiều, §5.7); 409 `SETTLE_PENDING_DETAIL` khi còn trang cần xác nhận mà Vault đã có chunk của tài liệu và tài liệu chưa `confirmed` (nếu không còn trang nào cần xác nhận thì chỉ chạy lại bước chốt, §5.7); trang vượt giới hạn trang của Vault bị bỏ qua (không 422; code ghi cảnh báo vào log), trang `failed` do `TOO_MANY_LINES` không chặn việc chốt và các trang còn lại xác nhận như thường (duyệt 2026-10-28) |
+| POST | `/v1/documents/{document_id}/pages/{page_number}/confirm` | `{editor_id, expected_version}` | Nhận trang `ok` và `needs_review`; với trang `needs_review`, xác nhận nghĩa là người dùng đã xem lại (duyệt 2026-10-26). `confirmed = true`, ghi `confirmed_at`; trả `200 PageExtraction`. Gọi lại trên trang đã xác nhận trả 200, không đổi gì | 404; 409 khi trang `pending`, trang `failed` (duyệt 2026-10-26), version lệch, trang không có dòng nào có văn bản (dòng header/footer không tính, thêm 2026-10-31), trang đang bỏ mềm (`dropped = true`; thêm 2026-10-31, GĐ0, `detail` đề xuất: "Trang đang bị bỏ qua; hãy hoàn tác trước khi xác nhận"), hoặc tài liệu nhập trước khi có `chapter_code` (duyệt 2026-10-26 chiều, §5.7); 409 `SETTLE_PENDING_DETAIL` khi Vault đã có chunk của tài liệu mà tài liệu chưa `confirmed` (duyệt 2026-10-28); 422 khi trang vượt giới hạn trang của Vault (tối đa 5000 dòng có văn bản, mỗi dòng tối đa 2000 ký tự; nay chỉ là kiểm tra phòng thủ vì trang quá nhiều dòng đã thành `failed` lúc đọc, `TOO_MANY_LINES`; duyệt 2026-10-28) |
+| POST | `/v1/documents/{document_id}/confirm` | `{editor_id}` | Xác nhận mọi trang `ok` chưa xác nhận; trả `200 DocumentImport`. Xác nhận theo lô chỉ nhận trang `ok` (duyệt 2026-10-26, theo ADR-008 mục 7): trang `needs_review` phải được xác nhận từng trang; trang `failed` không xác nhận được; trang bỏ mềm (`dropped = true`) bị bỏ qua, không xác nhận và không chặn việc chốt (thêm 2026-10-31, GĐ0) | 404; 409 khi còn trang `pending`, hoặc tài liệu nhập trước khi có `chapter_code` (duyệt 2026-10-26 chiều, §5.7); 409 `SETTLE_PENDING_DETAIL` khi còn trang cần xác nhận mà Vault đã có chunk của tài liệu và tài liệu chưa `confirmed` (nếu không còn trang nào cần xác nhận thì chỉ chạy lại bước chốt, §5.7); trang vượt giới hạn trang của Vault bị bỏ qua (không 422; code ghi cảnh báo vào log), trang `failed` do `TOO_MANY_LINES` không chặn việc chốt và các trang còn lại xác nhận như thường (duyệt 2026-10-28) |
 
 - MVP không có bỏ xác nhận (đề xuất); muốn đọc lại thì xoá tài liệu và nhập lại. Đọc lại riêng một trang `failed` là việc sau MVP (duyệt 2026-10-26 chiều, §1.6).
 - Khi mọi trang có văn bản đều đã xác nhận, `DocumentImport.status = "confirmed"`, kể cả khi tài liệu đang `failed`; bước chốt trạng thái chạy cả ở đường `failed` (duyệt 2026-10-26 chiều, quy tắc ở §5.7 "Chốt trạng thái tài liệu"). Tài liệu có `source_kind` khác `past_exam` khi đó được cắt chunk vào Vault (§12.1), rồi LLM đề xuất nhãn và cặp khái niệm nếu đã có key (§6.6). Đề xuất: tài liệu `past_exam` không cắt chunk; trang đã xác nhận được dùng để tạo item (dưới đây).
 - **Nhãn ban đầu của chunk (duyệt 2026-10-26):** mọi chunk cắt từ tài liệu nhận `chapter_code = DocumentImport.chapter_code` (form ở trên), `category = THEORY`, `topic_keys = []`, `label_status = "proposed"`. Người dùng xác nhận hoặc sửa nhãn bằng `PATCH /v1/vault/chunks/{chunk_id}/labels` (§6.6), sau đó `label_status = "confirmed"`.
+
+#### `POST /v1/documents/{document_id}/pages/{page_number}/restore` (thêm 2026-10-31, GĐ0 0D; tên và đường dẫn là đề xuất suy ra, chờ duyệt)
+
+Hoàn tác bỏ mềm một trang bằng một lời gọi (§5.7 "Khử nhiễu trang và vai trò trang").
+
+```python
+class PageRestoreRequest(StrictModel):
+    editor_id: str = Field(min_length=1, max_length=128)   # người dùng, như PageConfirmRequest
+    expected_version: int = Field(ge=1)                    # người dùng: PHẢI bằng PageExtraction.version hiện tại
+```
+
+**Ngữ nghĩa:** trang `dropped = true` ⇒ `dropped = false`, `restored = true`, `version` tăng đúng 1; `page_role` và `role_evidence` giữ nguyên để màn hình vẫn hiện lý do máy đã đề xuất; `review_reasons` và `status` không đổi. Trang trở lại như mọi trang chưa xác nhận: được tính vào `pages_needs_review` nếu `needs_review`, phải xác nhận (từng trang hoặc theo lô nếu `ok`) thì mới vào Vault, và không bao giờ bị bỏ mềm lại tự động (§5.7). Gọi trên trang không bỏ mềm (kể cả đã hoàn tác) ⇒ `200`, không đổi gì, không kiểm `expected_version` (như xác nhận lại trang đã xác nhận). Không ghi `PageEditAudit` (không đổi dòng nào; đề xuất suy ra).
+
+**Response:** `200 PageExtraction`. **Lỗi:** 404 (tài liệu hoặc trang); 409 khi `expected_version` lệch, khi tài liệu đã `confirmed` hoặc Vault đã có chunk của tài liệu mà tài liệu chưa `confirmed` (`SETTLE_PENDING_DETAIL`; văn bản tài liệu đã đóng, như PATCH …/lines), hoặc tài liệu nhập trước khi có `chapter_code` (§5.7); 422 khi body sai. Bộ nhập chưa sẵn sàng: 500 như §6.0.
 
 #### `POST /v1/documents/{document_id}/pages/{page_number}/items` (đã duyệt 2026-10-25)
 

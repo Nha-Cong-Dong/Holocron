@@ -159,8 +159,8 @@ class PdfReaderConfig(BaseModel):
     template_scan_max_image_bytes: int = Field(default=16 * MIB, ge=1)
     template_scan_max_bytes: int = Field(default=512 * MIB, ge=1)
 
-    # `has_figure` trên PDF số (mục 9): diện tích ảnh nhúng KHÔNG phải template đủ lớn; diện tích đường vẽ chỉ tính
-    # khi trang có ảnh không phải template (sửa đổi 2026-10-30).
+    # `has_figure` trên PDF số (mục 9): nhánh ảnh dùng diện tích ảnh nhúng KHÔNG phải template; nhánh đường vẽ tính
+    # mọi ảnh, kể cả template, như develop (sửa đổi 2026-10-30).
     figure_image_area_min: float = Field(default=0.10, gt=0.0, le=1.0)
     figure_path_area_min: float = Field(default=0.25, gt=0.0, le=1.0)
 

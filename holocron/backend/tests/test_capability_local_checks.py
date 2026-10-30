@@ -2198,3 +2198,63 @@ def test_concurrent_clears_leave_one_valid_fresh_state() -> None:
     final_state = getattr(application.state, LOCAL_CHECK_STATE_ATTR)
     assert isinstance(final_state, runtime.LocalCheckState)
     assert final_state is not old_state and final_state.started is False
+
+
+def test_clear_installs_the_new_state_inside_the_lock_so_no_half_state_is_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Xoá kết quả cũ và cài state mới là MỘT bước dưới `old_state.lock`: lần kiểm cũ chạm khoá (luồng nền) bị chặn
+    cho tới khi clear xong, và luồng đọc (giữ khoá của state hiện hành như `get_local_failures`) mỗi lần thấy hoặc
+    (state cũ + kết quả cũ) hoặc (state mới, không kết quả cũ), không bao giờ state mới kèm kết quả cũ. Cài state mới
+    ngoài khoá ⇒ luồng cũ ghi kết quả vào lúc state cũ còn hiện hành rồi state mới được cài ⇒ test đỏ."""
+    application = FastAPI()
+    old_state = runtime.install_local_check_state(application, started=True)
+    old_result = MappingProxyType[CapabilityName, CapabilityReason]({"ocr": "ocr_engine_missing"})
+    setattr(application.state, LOCAL_FAILURES_STATE_ATTR, old_result)
+    stale_check_ran = threading.Event()
+    stop = threading.Event()
+    observations: list[tuple[bool, bool]] = []  # (state hiện hành là state mới, có kết quả cũ)
+    blocked: list[bool] = []
+    real_install = runtime.install_local_check_state
+
+    def stale_check(config: PdfReaderConfig, /) -> Failures:
+        stale_check_ran.set()
+        return {"ocr": "ocr_engine_missing", "ocr_cross_check": "secondary_ocr_unavailable"}
+
+    def reader() -> None:
+        while not stop.is_set():
+            state = getattr(application.state, LOCAL_CHECK_STATE_ATTR)
+            with state.lock:
+                current = getattr(application.state, LOCAL_CHECK_STATE_ATTR)
+                if current is not state:
+                    continue  # state đã bị thay trước khi lấy được khoá: lần đọc này bỏ
+                stored = getattr(application.state, LOCAL_FAILURES_STATE_ATTR, None)
+                observations.append((state is not old_state, stored is not None))
+
+    stale = threading.Thread(target=runtime._run_check, args=(application, old_state, stale_check, CONFIG), daemon=True)
+
+    def install_after_starting_the_stale_check(target: FastAPI, *, started: bool = False) -> runtime.LocalCheckState:
+        stale.start()
+        assert stale_check_ran.wait(5.0)
+        stale.join(timeout=0.3)
+        blocked.append(stale.is_alive())  # đúng: khoá còn được clear giữ ⇒ luồng cũ chưa ghi được
+        return real_install(target, started=started)
+
+    monkeypatch.setattr(runtime, "install_local_check_state", install_after_starting_the_stale_check)
+    reader_thread = threading.Thread(target=reader, daemon=True)
+    reader_thread.start()
+    try:
+        runtime.clear_local_capability_check(application)
+    finally:
+        stop.set()
+        reader_thread.join(timeout=5.0)
+    assert old_state.done.wait(5.0)
+    stale.join(timeout=5.0)
+    assert not stale.is_alive()
+    assert blocked == [True], "luồng kiểm cũ phải bị chặn tới khi clear nhả khoá"
+    assert not reader_thread.is_alive()
+    assert (True, True) not in observations, "state mới không được đi kèm kết quả cũ"
+    assert not hasattr(application.state, LOCAL_FAILURES_STATE_ATTR)
+    new_state = getattr(application.state, LOCAL_CHECK_STATE_ATTR)
+    assert isinstance(new_state, runtime.LocalCheckState) and new_state is not old_state
+    assert new_state.started is False

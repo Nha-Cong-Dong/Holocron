@@ -776,3 +776,23 @@ def test_drive_letter_in_the_middle_of_a_relative_path_is_not_a_root(
     monkeypatch.chdir(tmp_path)
     settings = load_ocr_settings({ENV_TESSDATA_DIR: "sub/C:/td"}, _no_which)
     assert settings.tessdata_dir == os.path.abspath("sub/C:/td")
+
+
+@pytest.mark.parametrize("value", ["c:/td", r"c:\td", "z:/td", "Z:/td"])
+def test_lowercase_drive_letter_is_a_root_on_every_platform(value: str) -> None:
+    """Chữ cái ổ đĩa viết thường cũng là gốc (`[A-Za-z]`, không chỉ `[A-Z]`)."""
+    assert _has_root(value, sep="/", altsep=None) is True
+
+
+@pytest.mark.parametrize("value", ["1:/td", "9:/td", r"1:	d"])
+def test_digit_before_a_colon_is_not_a_drive_letter(value: str) -> None:
+    """Chỉ chữ cái mới là ổ đĩa: `1:/td` không có gốc theo `_has_root` (không kiểm qua `load_ocr_settings` vì
+    `os.path.isabs` trên Windows coi mọi ký tự trước dấu hai chấm là ổ đĩa)."""
+    assert _has_root(value, sep="/", altsep=None) is False
+
+
+@pytest.mark.parametrize("altsep", ["/", ":"])
+def test_backslash_root_needs_backslash_among_the_separators(altsep: str) -> None:
+    """`altsep` không chứa gạch ngược (kể cả khác None) và `sep="/"` ⇒ gạch ngược đầu chuỗi vẫn là tên tương đối."""
+    assert _has_root(r"\opt\tessdata", sep="/", altsep=altsep) is False
+    assert _has_root(r"\opt\tessdata", sep="/", altsep="\\") is True

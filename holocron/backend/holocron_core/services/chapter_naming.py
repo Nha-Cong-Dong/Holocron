@@ -24,6 +24,7 @@ from typing import Literal, Protocol
 
 from ..domain.documents import (
     MAX_CHAPTER_TITLE_CHARS,
+    ChapterCodeSource,
     ChapterFlag,
     PageExtraction,
     normalize_chapter_title,
@@ -236,3 +237,26 @@ def auto_chapter(filename: str, subject_documents: Iterable[ImportedDocument], d
         if document.meta.doc_id != document_id and document.chapter_code is not None
     }
     return choose_chapter_code(filename, taken)
+
+
+@dataclass(frozen=True)
+class InitialChapter:
+    """Chương và tên tạm của tài liệu lúc nhận file (202, §5.7): tên là tên file đã làm sạch (nguồn `file_name`);
+    ứng viên header được xét ở bước kết thúc lần đọc."""
+
+    chapter_code: str
+    code_source: ChapterCodeSource
+    flags: tuple[ChapterFlag, ...]
+    title: str
+    title_source: Literal["file_name"] = "file_name"
+
+
+def initial_chapter(
+    filename: str, chapter_code: str | None, subject_documents: Iterable[ImportedDocument], document_id: str
+) -> InitialChapter:
+    """`chapter_code` của form (nguồn `user`, không cờ, được trùng chương khác) hoặc chương tự động (`auto_chapter`)."""
+    title = clean_filename_title(filename)
+    if chapter_code:  # chuỗi rỗng như không gửi (§6.5)
+        return InitialChapter(chapter_code=chapter_code, code_source="user", flags=(), title=title)
+    choice = auto_chapter(filename, subject_documents, document_id)
+    return InitialChapter(chapter_code=choice.chapter_code, code_source=choice.source, flags=choice.flags, title=title)

@@ -150,6 +150,29 @@ OutputLanguage = Literal["vi", "en"]
 DOCUMENT_ID_PATTERN = r"^doc_[0-9a-f]{16}$"
 CHAPTER_CODE_PATTERN = r"^ch[0-9]{1,2}(\.[0-9]{1,2})?$"  # cùng mẫu với `KnowledgeChunk.chapter_code` (§5.8)
 
+# Chương tự động (§5.7 "Chương tự động", §6.5; GĐ1 1A, duyệt 2026-10-31)
+
+ChapterFlag = Literal[
+    "CHAPTER_NUMBER_NOT_IN_FILENAME",  # tên file không có số nguyên 1–2 chữ số ⇒ dùng chương trống nhỏ nhất
+    "CHAPTER_NUMBER_TAKEN",  # số trong tên file trùng chương đã có của môn ⇒ dùng chương trống nhỏ nhất
+]
+CHAPTER_FLAG_ORDER: tuple[ChapterFlag, ...] = get_args(ChapterFlag)
+ChapterCodeSource = Literal["user", "file_name", "next_free"]
+ChapterTitleSource = Literal["user", "repeated_header", "file_name", "llm"]
+MAX_CHAPTER_TITLE_CHARS = 300
+
+
+def normalize_chapter_title(value: str) -> str:
+    """NFC rồi gộp mọi đoạn khoảng trắng thành một dấu cách, bỏ khoảng trắng đầu/cuối (§6.5 `PATCH …/chapter`)."""
+    return " ".join(unicodedata.normalize("NFC", value).split())
+
+
+class ChapterSource(StrictModel):
+    """Nguồn của `chapter_code` và `chapter_title` (§5.7); `title` null ⇔ `chapter_title` null."""
+
+    code: ChapterCodeSource
+    title: ChapterTitleSource | None
+
 
 class PageSummary(StrictModel):
     """Tóm tắt một trang trong `DocumentImport.pages` (§5.7)."""
@@ -181,6 +204,17 @@ class DocumentImport(StrictModel):
     chapter_code: str = Field(pattern=CHAPTER_CODE_PATTERN)
     status: DocumentStatus
     pages: list[PageSummary]
+    # thêm 2026-10-31 (GĐ1 1A, 1B; §5.7 "Chương tự động", §6.5)
+    chapter_title: str | None = Field(default=None, min_length=1, max_length=MAX_CHAPTER_TITLE_CHARS)
+    chapter_source: ChapterSource
+    chapter_flags: list[ChapterFlag] = Field(default_factory=list)
+    auto_confirm: bool = True
+
+    @model_validator(mode="after")
+    def _chapter_title_has_a_source(self) -> DocumentImport:
+        if (self.chapter_title is None) != (self.chapter_source.title is None):
+            raise ValueError("chapter_source.title null khi và chỉ khi chapter_title null")
+        return self
 
     @model_validator(mode="after")
     def _pages_cover_document(self) -> DocumentImport:
@@ -292,29 +326,8 @@ class DocumentConfirmRequest(StrictModel):
 
 
 # --------------------------------------------------------------------------- #
-# Chương tự động (SPECIFICATION §5.7 "Chương tự động", §6.5; GĐ1 1A, duyệt 2026-10-31)
+# Đổi chương (SPECIFICATION §6.5 `PATCH …/chapter`; GĐ1 1A)
 # --------------------------------------------------------------------------- #
-
-ChapterFlag = Literal[
-    "CHAPTER_NUMBER_NOT_IN_FILENAME",  # tên file không có số nguyên 1–2 chữ số ⇒ dùng chương trống nhỏ nhất
-    "CHAPTER_NUMBER_TAKEN",  # số trong tên file trùng chương đã có của môn ⇒ dùng chương trống nhỏ nhất
-]
-CHAPTER_FLAG_ORDER: tuple[ChapterFlag, ...] = get_args(ChapterFlag)
-ChapterCodeSource = Literal["user", "file_name", "next_free"]
-ChapterTitleSource = Literal["user", "repeated_header", "file_name", "llm"]
-MAX_CHAPTER_TITLE_CHARS = 300
-
-
-def normalize_chapter_title(value: str) -> str:
-    """NFC rồi gộp mọi đoạn khoảng trắng thành một dấu cách, bỏ khoảng trắng đầu/cuối (§6.5 `PATCH …/chapter`)."""
-    return " ".join(unicodedata.normalize("NFC", value).split())
-
-
-class ChapterSource(StrictModel):
-    """Nguồn của `chapter_code` và `chapter_title` (§5.7); `title` null ⇔ `chapter_title` null."""
-
-    code: ChapterCodeSource
-    title: ChapterTitleSource | None
 
 
 class DocumentChapterPatch(StrictModel):

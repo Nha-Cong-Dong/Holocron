@@ -611,21 +611,29 @@ class SQLiteStore:
             document.status,
             _ts(meta.uploaded_at),
             document.chapter_code,
+            document.chapter_title,
+            document.chapter_code_source,
+            document.chapter_title_source,
+            json.dumps(document.chapter_flags),
+            int(document.auto_confirm),
         )
 
     def _upsert_imported(self, conn: sqlite3.Connection, document: ImportedDocument) -> sqlite3.Row:
         """Tạo dòng `documents`, hoặc bổ sung thông tin cho dòng cùng `document_id` (version tăng 1); trả dòng đã ghi."""
         conn.execute(
             "INSERT INTO documents (filename, media_type, size_bytes, subject_code, title, source_kind, "
-            "output_language, page_count, has_text_layer, status, uploaded_at, chapter_code, document_id, sha256) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "output_language, page_count, has_text_layer, status, uploaded_at, chapter_code, chapter_title, "
+            "chapter_code_source, chapter_title_source, chapter_flags_json, auto_confirm, document_id, sha256) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (document_id) DO UPDATE SET filename = excluded.filename, "
             "media_type = excluded.media_type, size_bytes = excluded.size_bytes, "
             "subject_code = excluded.subject_code, title = excluded.title, source_kind = excluded.source_kind, "
             "output_language = excluded.output_language, page_count = excluded.page_count, "
             "has_text_layer = excluded.has_text_layer, status = excluded.status, "
             "uploaded_at = excluded.uploaded_at, chapter_code = excluded.chapter_code, "
-            "version = documents.version + 1",
+            "chapter_title = excluded.chapter_title, chapter_code_source = excluded.chapter_code_source, "
+            "chapter_title_source = excluded.chapter_title_source, chapter_flags_json = excluded.chapter_flags_json, "
+            "auto_confirm = excluded.auto_confirm, version = documents.version + 1",
             (*self._imported_columns(document), document.meta.doc_id, document.meta.sha256),
         )
         row: sqlite3.Row = conn.execute(
@@ -665,7 +673,8 @@ class SQLiteStore:
 
     _IMPORTED_SELECT = (
         "SELECT document_id, sha256, filename, size_bytes, subject_code, title, source_kind, output_language, "
-        "page_count, has_text_layer, status, uploaded_at, chapter_code, version FROM documents "
+        "page_count, has_text_layer, status, uploaded_at, chapter_code, chapter_title, chapter_code_source, "
+        "chapter_title_source, chapter_flags_json, auto_confirm, version FROM documents "
         "WHERE subject_code IS NOT NULL"
     )
 
@@ -690,6 +699,11 @@ class SQLiteStore:
                 "chapter_code": row["chapter_code"],
                 "status": row["status"],
                 "version": row["version"],
+                "chapter_code_source": row["chapter_code_source"],
+                "chapter_title": row["chapter_title"],
+                "chapter_title_source": row["chapter_title_source"],
+                "chapter_flags": json.loads(row["chapter_flags_json"]),
+                "auto_confirm": bool(row["auto_confirm"]),
             }
         )
 
@@ -704,7 +718,9 @@ class SQLiteStore:
             cursor = conn.execute(
                 "UPDATE documents SET filename = ?, media_type = ?, size_bytes = ?, subject_code = ?, title = ?, "
                 "source_kind = ?, output_language = ?, page_count = ?, has_text_layer = ?, status = ?, "
-                "uploaded_at = ?, chapter_code = ?, version = version + 1 WHERE document_id = ? AND version = ?",
+                "uploaded_at = ?, chapter_code = ?, chapter_title = ?, chapter_code_source = ?, "
+                "chapter_title_source = ?, chapter_flags_json = ?, auto_confirm = ?, version = version + 1 "
+                "WHERE document_id = ? AND version = ?",
                 (*self._imported_columns(document), document_id, expected_version),
             )
             if cursor.rowcount == 0:

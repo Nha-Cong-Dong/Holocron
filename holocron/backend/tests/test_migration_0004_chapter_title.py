@@ -1,4 +1,4 @@
-"""Migration `0004_document_chapter_title.sql` (SPECIFICATION §5.13 bảng `documents`, §5.7 "Chương tự động").
+"""Migration `0004_document_chapter_title.sql` và đọc/ghi các cột của nó (SPECIFICATION §5.13 bảng `documents`, §5.7 "Chương tự động").
 
 DB tạo ở version 3 (trước migration này): lên version mới thì dữ liệu cũ đọc ra đúng như trước, các cột mới có giá
 trị mặc định của spec (bản ghi có `chapter_code` nhận nguồn `user`), ràng buộc CHECK chặn giá trị lạ, và script lỗi
@@ -10,10 +10,15 @@ from pathlib import Path
 
 import pytest
 
+from holocron_core.domain.documents import CHAPTER_FLAG_ORDER
 from holocron_core.domain.ingestion import UploadedDocument
+from holocron_core.domain.repositories import ImportedDocument
+from holocron_core.domain.schemas import DocumentMeta, SourceKind
 from holocron_core.infrastructure.storage import SQLiteStore
 from holocron_core.infrastructure.storage.connection import connect
 from holocron_core.infrastructure.storage.migrator import current_version, load_migrations, migrate
+from holocron_core.services.document_import import pending_page
+from tests.vault_support import STORE_KINDS, open_store
 
 STAMP = "2026-10-20T08:00:00.000000+00:00"
 IMPORTED = "doc_aaaaaaaaaaaaaaaa"
@@ -188,3 +193,86 @@ def test_revert_over_an_exam_upload_resets_the_new_columns(tmp_path: Path) -> No
     finally:
         opened.close()
     assert _new_columns(path)[IMPORTED] == (None, None, None, "[]", 1)
+
+
+def test_store_reads_the_new_columns_of_old_rows(tmp_path: Path) -> None:
+    path = tmp_path / "v3.sqlite3"
+    _database_at_version_3(path)
+    opened = SQLiteStore.open(path)
+    try:
+        imported = opened.get_imported_document(IMPORTED)
+        assert imported is not None
+        assert (
+            imported.chapter_code_source,
+            imported.chapter_title,
+            imported.chapter_title_source,
+            imported.chapter_flags,
+            imported.auto_confirm,
+        ) == ("user", None, None, [], True)
+        legacy = opened.get_imported_document(LEGACY)
+        assert legacy is not None and legacy.chapter_code_source is None and legacy.chapter_title is None
+    finally:
+        opened.close()
+
+
+def _document(chapter: dict[str, object]) -> ImportedDocument:
+    return ImportedDocument.model_validate(
+        {
+            "meta": DocumentMeta(
+                doc_id=IMPORTED,
+                subject_code="ET4010",
+                title="Chương 2",
+                source_kind=SourceKind.TEXTBOOK,
+                sha256="a" * 64,
+                page_count=1,
+                has_text_layer=True,
+                uploaded_at=STAMP,
+            ),
+            "filename": "chuong2.pdf",
+            "size_bytes": 10,
+            "chapter_code": "ch1",
+            "status": "processing",
+            **chapter,
+        }
+    )
+
+
+@pytest.mark.parametrize("kind", STORE_KINDS)
+def test_chapter_columns_round_trip_through_create_get_list_and_update(
+    kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chapter: dict[str, object] = {
+        "chapter_code_source": "next_free",
+        "chapter_title": "Chương 2 Bộ nhớ",
+        "chapter_title_source": "file_name",
+        "chapter_flags": ["CHAPTER_NUMBER_TAKEN", "CHAPTER_NUMBER_NOT_IN_FILENAME", "CHAPTER_NUMBER_TAKEN"],
+        "auto_confirm": False,
+    }
+    for store in open_store(kind, tmp_path, monkeypatch):
+        created = store.create_imported_document(_document(chapter), [pending_page(IMPORTED, 1)])
+        expected = ("next_free", "Chương 2 Bộ nhớ", "file_name", list(CHAPTER_FLAG_ORDER), False)
+
+        def fields(document: ImportedDocument | None) -> tuple[object, ...]:
+            assert document is not None
+            return (
+                document.chapter_code_source,
+                document.chapter_title,
+                document.chapter_title_source,
+                document.chapter_flags,
+                document.auto_confirm,
+            )
+
+        assert fields(created) == expected
+        assert fields(store.get_imported_document(IMPORTED)) == expected
+        assert [fields(document) for document in store.list_imported_documents("ET4010")] == [expected]
+        changed = created.model_copy(
+            update={"chapter_title": "Ngắt", "chapter_title_source": "user", "chapter_flags": [], "auto_confirm": True}
+        )
+        store.update_imported_document(changed, created.version)
+        assert fields(store.get_imported_document(IMPORTED)) == ("next_free", "Ngắt", "user", [], True)
+
+
+def test_title_and_title_source_go_together() -> None:
+    for bad in ({"chapter_title": "x"}, {"chapter_title_source": "user"}):
+        with pytest.raises(ValueError, match="chapter_title"):
+            _document(bad)

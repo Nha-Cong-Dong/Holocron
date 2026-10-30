@@ -1,4 +1,5 @@
-"""Bộ nhập tài liệu PDF (SPECIFICATION §6.5): nhận file, hỏi trạng thái, xem trang, sửa dòng, xác nhận, xoá.
+"""Bộ nhập tài liệu PDF (SPECIFICATION §6.5): nhận file, hỏi trạng thái, xem trang, sửa dòng, xác nhận, đổi
+chương, xoá.
 
 Chưa có ở đây: tạo item từ trang (`POST …/pages/{n}/items`, cần đổi `IngestionItem`).
 
@@ -24,6 +25,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 
 from ..domain.documents import (
     CHAPTER_CODE_PATTERN,
+    DocumentChapterPatch,
     DocumentConfirmRequest,
     DocumentImport,
     DocumentSummary,
@@ -38,6 +40,7 @@ from ..infrastructure.document_readers.config import MIB, PdfReaderConfig, load_
 from ..infrastructure.document_readers.pdf_reader import PdfReader, PdfWorkerError, WorkerPdfReader
 from ..infrastructure.llm_config import ConfigError
 from ..infrastructure.storage.original_files import OriginalFileStore
+from ..services.document_chapter import ChapterCodeLockedError, update_document_chapter
 from ..services.document_import import (
     IMPORT_UNAVAILABLE_DETAIL,
     MAX_TITLE_LENGTH,
@@ -173,6 +176,8 @@ def import_document(
     chapter_code: Annotated[str | None, Form(pattern=CHAPTER_CODE_PATTERN)] = None,
     output_language: Annotated[OutputLanguage, Form()] = "vi",
     title: Annotated[str | None, Form(min_length=1, max_length=MAX_TITLE_LENGTH)] = None,
+    # §6.5 (GĐ1 1B): chỉ lưu vào `DocumentImport.auto_confirm`; hành vi tự xác nhận chưa có ở nhánh này
+    auto_confirm: Annotated[bool, Form()] = True,
 ) -> DocumentImport:
     if title is not None and not title.strip():
         raise HTTPException(status_code=422, detail="title không được chỉ gồm khoảng trắng")
@@ -186,6 +191,7 @@ def import_document(
         chapter_code=chapter_code,
         output_language=output_language,
         title=title,
+        auto_confirm=auto_confirm,
     )
     try:
         outcome = accept_document(request, store=store, runtime=runtime, reader=reader, now=clock(), vault=vault)
@@ -298,6 +304,19 @@ def confirm_whole_document(
         raise HTTPException(status_code=404, detail=NOT_FOUND_DETAIL) from exc
     except _REVIEW_ERRORS as exc:
         raise _review_error(exc) from exc
+
+
+@router.patch("/v1/documents/{document_id}/chapter", response_model=DocumentImport)
+def patch_document_chapter(
+    store: StoreDep, vault: VaultDep, runtime: RuntimeDep, document_id: str, body: DocumentChapterPatch
+) -> DocumentImport:
+    """Đổi mã hoặc tên chương (§6.5, §5.7 "Chương tự động")."""
+    try:
+        return update_document_chapter(store, vault, runtime, document_id, body)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=NOT_FOUND_DETAIL) from exc
+    except (DocumentChapterMissingError, ChapterCodeLockedError, VersionConflictError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.delete("/v1/documents/{document_id}", status_code=204, response_class=Response)

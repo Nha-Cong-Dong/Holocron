@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 from ..domain.documents import (
+    ChapterSource,
     CrossCheck,
     DocumentConfirmRequest,
     DocumentImport,
@@ -69,7 +70,7 @@ from ..infrastructure.document_readers.config import PdfReaderConfig
 from ..infrastructure.document_readers.pdf_reader import PDF_MAGIC, PdfInputError, PdfReader, PdfWorkerError
 from ..infrastructure.document_readers.tiers import failed_page
 from ..infrastructure.storage.original_files import StagedFile
-from .chapter_naming import auto_chapter
+from .chapter_naming import InitialChapter, initial_chapter
 from .vault import ingest_confirmed_text
 
 MAX_FILENAME_LENGTH = 255
@@ -374,6 +375,7 @@ class ImportRequest:
     chapter_code: str | None = None  # tuỳ chọn từ 2026-10-31: `None` ⇒ chương tự động (§5.7)
     output_language: OutputLanguage = "vi"
     title: str | None = None
+    auto_confirm: bool = True  # field form (§6.5, GĐ1 1B): chỉ lưu; hành vi tự xác nhận chưa có ở nhánh này
 
 
 @dataclass(frozen=True)
@@ -418,6 +420,11 @@ def _view(document: ImportedDocument, pages: list[PageSummary]) -> DocumentImpor
         chapter_code=_chapter_code(document),
         status=document.status,
         pages=pages,
+        chapter_title=document.chapter_title,
+        # Bản ghi có `chapter_code` mà thiếu nguồn là bản ghi nhập trước 2026-10-31 (field form bắt buộc) ⇒ "user"
+        chapter_source=ChapterSource(code=document.chapter_code_source or "user", title=document.chapter_title_source),
+        chapter_flags=list(document.chapter_flags),
+        auto_confirm=document.auto_confirm,
     )
 
 
@@ -505,7 +512,7 @@ def _existing_outcome(store: DocumentRepository, existing: ImportedDocument, req
         raise DocumentImportError("SUBJECT_CONFLICT")
     existing_chapter = _chapter_code(existing)
     # Form không có `chapter_code` ⇒ trả bản ghi cũ, không tính lại chương (§5.7, GĐ1 1A)
-    if request.chapter_code is not None and existing_chapter != request.chapter_code:
+    if request.chapter_code and existing_chapter != request.chapter_code:
         raise DocumentImportError("CHAPTER_CONFLICT")
     return ImportOutcome(created=False, document=document_view(store, existing))
 
@@ -548,7 +555,7 @@ def _new_document(
     sha256: str,
     page_count: int,
     now: datetime,
-    chapter_code: str,
+    chapter: InitialChapter,
 ) -> ImportedDocument:
     """Bản ghi tài liệu mới (`processing`); dựng và validate TRƯỚC khi lưu file gốc, để dữ liệu sai không để lại file."""
     return ImportedDocument(
@@ -565,8 +572,13 @@ def _new_document(
         filename=filename,
         size_bytes=len(request.content),
         output_language=request.output_language,
-        chapter_code=chapter_code,
+        chapter_code=chapter.chapter_code,
         status="processing",
+        chapter_code_source=chapter.code_source,
+        chapter_title=chapter.title,
+        chapter_title_source=chapter.title_source,
+        chapter_flags=list(chapter.flags),
+        auto_confirm=request.auto_confirm,
     )
 
 
@@ -616,11 +628,8 @@ def accept_document(
             staged = runtime.files.stage(request.content)
             try:
                 page_count = _probe(reader, staged)
-                chapter_code = (
-                    request.chapter_code
-                    or auto_chapter(
-                        filename, store.list_imported_documents(request.subject_code), document_id
-                    ).chapter_code
+                chapter = initial_chapter(
+                    filename, request.chapter_code, store.list_imported_documents(request.subject_code), document_id
                 )
                 document = _new_document(
                     request,
@@ -629,7 +638,7 @@ def accept_document(
                     sha256=staged.sha256,
                     page_count=page_count,
                     now=now,
-                    chapter_code=chapter_code,
+                    chapter=chapter,
                 )
             except BaseException:
                 runtime.files.discard(staged)

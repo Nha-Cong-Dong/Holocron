@@ -9,9 +9,9 @@ Mỗi PDF được nhập lần lượt vào CÙNG một môn qua `services.docu
 `WorkerPdfReader` không OCR, không gửi `chapter_code`), đúng thứ tự trên dòng lệnh: tài liệu dev trước, rồi tài liệu
 mù. Hàng đợi đọc của script không đọc trang nào: chương được chọn lúc nhận file (202), không phụ thuộc nội dung trang.
 
-Báo cho từng file: `chapter_code` nhận được (đã lưu trong kho), nguồn và cờ của nó (tính lại bằng đúng hàm của
-service trên các chương đã có trước file đó), tên chương theo luật tất định của §5.7 lúc nhận file (tên file đã làm
-sạch; nhánh này chưa có nguồn ứng viên header lặp) và `chapter_code` đích lấy từ tên thư mục cha `..._chN` nếu có.
+Báo cho từng file đúng các field chương của `DocumentImport` trả về: `chapter_code`, `chapter_source`,
+`chapter_flags`, `chapter_title` (lúc nhận file là tên file đã làm sạch; nhánh này chưa nối nguồn ứng viên header
+lặp), kèm `chapter_code` đích lấy từ tên thư mục cha `..._chN` nếu có.
 Kết quả chỉ gồm tên file, mã và tên chương (không chép nội dung trang), ghi ra `results.json` và `results.md`; script
 từ chối ghi vào trong repo.
 """
@@ -33,7 +33,6 @@ from holocron_core.infrastructure.document_readers.config import PdfReaderConfig
 from holocron_core.infrastructure.document_readers.pdf_reader import WorkerPdfReader
 from holocron_core.infrastructure.memory_store import IngestionStore
 from holocron_core.infrastructure.storage.original_files import OriginalFileStore
-from holocron_core.services.chapter_naming import auto_chapter, choose_chapter_title
 from holocron_core.services.document_import import (
     QUEUE_CLOSE_TIMEOUT_S,
     DocumentImportError,
@@ -92,11 +91,9 @@ def evaluate(pdfs: list[tuple[str, Path]], files_dir: Path) -> list[ChapterRow]:
     runtime = ImportRuntime(files=OriginalFileStore(files_dir), queue=_NoReadQueue(), reader_config=config)
     reader = WorkerPdfReader(config, ocr=None)
     rows: list[ChapterRow] = []
-    titles: list[str] = []
     try:
         for group, path in pdfs:
             content = path.read_bytes()
-            before = store.list_imported_documents(SUBJECT_CODE)
             request = ImportRequest(
                 content=content,
                 filename=path.name,
@@ -109,20 +106,17 @@ def evaluate(pdfs: list[tuple[str, Path]], files_dir: Path) -> list[ChapterRow]:
             except DocumentImportError as exc:
                 rows.append(ChapterRow(group, path.name, _target(path), None, None, [], None, None, exc.code))
                 continue
-            document_id = outcome.document.meta.doc_id
-            choice = auto_chapter(path.name, before, document_id)
-            title = choose_chapter_title(path.name, [], {*titles, SUBJECT_CODE})
-            titles.append(title.title)
+            document = outcome.document
             rows.append(
                 ChapterRow(
                     group=group,
                     filename=path.name,
                     target=_target(path),
-                    chapter_code=outcome.document.chapter_code,
-                    code_source=choice.source,
-                    flags=list(choice.flags),
-                    chapter_title=title.title,
-                    title_source=title.source,
+                    chapter_code=document.chapter_code,
+                    code_source=document.chapter_source.code,
+                    flags=list(document.chapter_flags),
+                    chapter_title=document.chapter_title,
+                    title_source=document.chapter_source.title,
                 )
             )
     finally:

@@ -289,3 +289,53 @@ class DocumentConfirmRequest(StrictModel):
     """Body của `POST /v1/documents/{document_id}/confirm` (§6.5)."""
 
     editor_id: str = Field(min_length=1, max_length=MAX_EDITOR_ID_CHARS)
+
+
+# --------------------------------------------------------------------------- #
+# Chương tự động (SPECIFICATION §5.7 "Chương tự động", §6.5; GĐ1 1A, duyệt 2026-10-31)
+# --------------------------------------------------------------------------- #
+
+ChapterFlag = Literal[
+    "CHAPTER_NUMBER_NOT_IN_FILENAME",  # tên file không có số nguyên 1–2 chữ số ⇒ dùng chương trống nhỏ nhất
+    "CHAPTER_NUMBER_TAKEN",  # số trong tên file trùng chương đã có của môn ⇒ dùng chương trống nhỏ nhất
+]
+CHAPTER_FLAG_ORDER: tuple[ChapterFlag, ...] = get_args(ChapterFlag)
+ChapterCodeSource = Literal["user", "file_name", "next_free"]
+ChapterTitleSource = Literal["user", "repeated_header", "file_name", "llm"]
+MAX_CHAPTER_TITLE_CHARS = 300
+
+
+def normalize_chapter_title(value: str) -> str:
+    """NFC rồi gộp mọi đoạn khoảng trắng thành một dấu cách, bỏ khoảng trắng đầu/cuối (§6.5 `PATCH …/chapter`)."""
+    return " ".join(unicodedata.normalize("NFC", value).split())
+
+
+class ChapterSource(StrictModel):
+    """Nguồn của `chapter_code` và `chapter_title` (§5.7); `title` null ⇔ `chapter_title` null."""
+
+    code: ChapterCodeSource
+    title: ChapterTitleSource | None
+
+
+class DocumentChapterPatch(StrictModel):
+    """Body của `PATCH /v1/documents/{document_id}/chapter` (§6.5); hai field không cùng null."""
+
+    editor_id: str = Field(min_length=1, max_length=MAX_EDITOR_ID_CHARS)
+    chapter_code: str | None = Field(default=None, pattern=CHAPTER_CODE_PATTERN)
+    chapter_title: str | None = Field(default=None, min_length=1, max_length=MAX_CHAPTER_TITLE_CHARS)
+
+    @field_validator("chapter_title")
+    @classmethod
+    def _normalized_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = normalize_chapter_title(value)
+        if not 1 <= len(normalized) <= MAX_CHAPTER_TITLE_CHARS:
+            raise ValueError(f"chapter_title phải dài 1–{MAX_CHAPTER_TITLE_CHARS} ký tự sau chuẩn hoá")
+        return normalized
+
+    @model_validator(mode="after")
+    def _something_to_change(self) -> DocumentChapterPatch:
+        if self.chapter_code is None and self.chapter_title is None:
+            raise ValueError("chapter_code và chapter_title không được cùng null")
+        return self

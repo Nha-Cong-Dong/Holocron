@@ -550,6 +550,29 @@ export interface DocumentConfirmRequest {
   editor_id: string;
 }
 
+// Chương tự động (SPECIFICATION §5.7 "Chương tự động", §6.5; GĐ1 1A)
+
+/** Cờ chương: chỉ để hiển thị, không chặn xác nhận. */
+export type ChapterFlag = "CHAPTER_NUMBER_NOT_IN_FILENAME" | "CHAPTER_NUMBER_TAKEN";
+export type ChapterCodeSource = "user" | "file_name" | "next_free";
+export type ChapterTitleSource = "user" | "repeated_header" | "file_name" | "llm";
+
+/** Nguồn của `chapter_code` và `chapter_title`; `title` null khi và chỉ khi `chapter_title` null. */
+export interface ChapterSource {
+  code: ChapterCodeSource;
+  title: ChapterTitleSource | null;
+}
+
+/**
+ * Body của `PATCH /v1/documents/{document_id}/chapter`; trả `DocumentImport`. `chapter_code` và `chapter_title`
+ * không cùng null; backend chuẩn hoá `chapter_title` (NFC, gộp khoảng trắng).
+ */
+export interface DocumentChapterPatch {
+  editor_id: string;
+  chapter_code?: string | null;
+  chapter_title?: string | null;
+}
+
 // ------------------------------------------------------------------ domain/vault.py
 
 export type ConceptPairStatus = "proposed" | "confirmed" | "rejected";

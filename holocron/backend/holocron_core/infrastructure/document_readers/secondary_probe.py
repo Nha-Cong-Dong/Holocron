@@ -128,7 +128,8 @@ def probe_secondary_ocr(config: PdfReaderConfig, run: Runner | None = None) -> S
     """Nạp RapidOCR một lần trong tiến trình con có giới hạn (xem docstring của module) và trả kết quả.
 
     `run` mặc định là `run_bounded` với `kill_grace_s` của `config` môi trường `probe_env()` và `cwd` là thư mục tạm
-    riêng (dọn khi xong).
+    riêng (dọn khi xong). Không tạo được thư mục tạm đó (`OSError`) ⇒ không chạy tiến trình con, báo "không nạp
+    được" kèm tên lớp lỗi (không thông điệp, không đường dẫn).
     """
     request = SecondaryProbeRequest(mem_bytes=config.worker_mem_bytes, cpu_seconds=config.ocr_cpu_seconds_per_page)
     args = (probe_command(), (request.model_dump_json() + "\n").encode("utf-8"))
@@ -138,7 +139,11 @@ def probe_secondary_ocr(config: PdfReaderConfig, run: Runner | None = None) -> S
     else:
         # Runner mặc định chạy trong thư mục tạm riêng (như worker của `pdf_reader`), không dùng cwd của app. Dọn
         # thư mục lỗi (Windows còn giữ) không làm đổi kết quả thăm dò.
-        with tempfile.TemporaryDirectory(prefix="holocron_probe_", ignore_cleanup_errors=True) as workdir:
+        try:
+            workspace = tempfile.TemporaryDirectory(prefix="holocron_probe_", ignore_cleanup_errors=True)
+        except OSError as exc:
+            return _failure(error_name(exc))
+        with workspace as workdir:
             result = run_bounded(*args, *limits, kill_grace_s=config.ocr_kill_grace_s, env=probe_env(), cwd=workdir)
     if result.status == "timeout":
         return _failure(CHILD_TIMEOUT)

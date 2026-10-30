@@ -204,7 +204,7 @@ def get_local_failures(
             if not isinstance(exc, Exception):
                 raise  # KeyboardInterrupt, SystemExit…: không nuốt
             # Giống nhánh nền (`_run_check`): đúng một cảnh báo chỉ gồm tên lớp lỗi, coi như thiếu engine OCR.
-            _LOGGER.warning("kiểm cục bộ OCR lúc khởi động bị lỗi (%s): coi như thiếu engine OCR", error_name(exc))
+            _LOGGER.warning("kiểm cục bộ OCR ở request đầu tiên bị lỗi (%s): coi như thiếu engine OCR", error_name(exc))
         return _store_local_failures(application, failures)
 
 

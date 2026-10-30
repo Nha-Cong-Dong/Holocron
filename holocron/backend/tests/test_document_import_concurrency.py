@@ -71,7 +71,14 @@ def env(
     request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lifespan_client: None
 ) -> Iterator[ImportEnv]:
     for store in open_store(str(request.param), tmp_path, monkeypatch):
-        yield install(store, tmp_path / "files", SynchronousImportQueue(), BlockingProbeReader(), locks=ObservedLocks())
+        yield install(
+            store,
+            tmp_path / "files",
+            SynchronousImportQueue(),
+            BlockingProbeReader(),
+            locks=ObservedLocks(),
+            subject_locks=ObservedLocks(),
+        )
         app.dependency_overrides.clear()
 
 
@@ -107,7 +114,11 @@ def test_two_concurrent_posts_of_one_file_create_one_document(
             first_thread.start()
             assert reader.entered.wait(WAIT_S), "request đầu chưa tới bước mở thử"
             second_thread.start()
-            assert locks.second_holder.wait(WAIT_S), "request thứ hai chưa xin khoá của tài liệu"
+            # Sửa đổi 2026-10-31 (§6.5 bước 5, GĐ1 1A): khoá môn lấy TRƯỚC khoá tài liệu, nên cùng môn thì request thứ
+            # hai chờ ở khoá môn; khác môn thì chờ ở khoá tài liệu như trước.
+            waiting = env.runtime.subject_locks if second_subject == "ET4010" else locks
+            assert isinstance(waiting, ObservedLocks)
+            assert waiting.second_holder.wait(WAIT_S), "request thứ hai chưa xin khoá của môn hoặc của tài liệu"
         finally:
             reader.release.set()
             first_thread.join(WAIT_S)
@@ -125,6 +136,7 @@ def test_two_concurrent_posts_of_one_file_create_one_document(
     if second[0].status_code == 200:
         assert DocumentImport.model_validate(second[0].json()).meta.doc_id == document_id
     assert len(locks) == 0, "khoá được bỏ khi không còn ai giữ"
+    assert len(env.runtime.subject_locks) == 0, "khoá môn được bỏ khi không còn ai giữ"
 
 
 def test_other_requests_are_served_while_a_probe_is_slow(env: ImportEnv) -> None:

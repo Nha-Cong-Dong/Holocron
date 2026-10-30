@@ -140,7 +140,9 @@ def test_chapter_code_is_required_stored_and_returned(env: ImportEnv) -> None:
     assert stored is not None and stored.chapter_code == "ch3.2"
 
 
-@pytest.mark.parametrize("chapter_code", [None, "", "3", "chuong3", "ch100", "ch3.", "CH3"])
+# Sửa đổi 2026-10-31 (§6.5, GĐ1 1A): `chapter_code` tuỳ chọn, không gửi hoặc chuỗi rỗng ⇒ chương tự động (202), nên
+# hai trường hợp `None` và `""` chuyển sang tests/test_document_import_chapter_auto.py; mã sai mẫu vẫn 422.
+@pytest.mark.parametrize("chapter_code", ["3", "chuong3", "ch100", "ch3.", "CH3"])
 def test_missing_or_invalid_chapter_code_is_422_and_stores_nothing(env: ImportEnv, chapter_code: str | None) -> None:
     content = pdf_bytes(f"sai-{chapter_code}")
     data = {"subject_code": "ET4010", "source_kind": "textbook"}

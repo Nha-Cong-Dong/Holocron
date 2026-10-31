@@ -19,7 +19,7 @@ from holocron_core.services import document_import
 from holocron_core.services.auto_confirm import passes_page_clean
 from holocron_core.services.document_import import SETTLE_ATTEMPTS, SynchronousImportQueue
 from tests.document_import_support import FakePdfReader, ImportEnv, install, ok_page, pdf_bytes
-from tests.test_document_auto_confirm import _doc_id, _document, _page
+from tests.test_document_auto_confirm import _doc_id, _document, _page, _text_page
 from tests.vault_support import NOW, STORE_KINDS, open_store
 
 PAGES = 3
@@ -214,3 +214,90 @@ def test_default_read_job_clock_is_the_module_clock() -> None:
     job_clock = document_import.ReadJob.__dataclass_fields__["clock"].default
     assert job_clock is document_import._utc_now
     assert job_clock().tzinfo is UTC
+
+
+# --------------------------------------------------------------------------- #
+# Phần bổ sung theo báo cáo đột biến e115ca9..e0d26bc (I15, I18, I20, I21, I32)
+# --------------------------------------------------------------------------- #
+
+
+def test_auto_confirm_skips_a_page_that_does_not_fit_the_vault(env: ImportEnv, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_is_page_clean` truyền `_fits_vault` thật: trang vượt giới hạn dòng của Vault không được tự xác nhận (hạ
+    giới hạn xuống 3 dòng sau khi đọc xong, thay vì dựng trang 5001 dòng mà kho SQLite từ chối)."""
+    doc = _open_document(env)
+    page = env.store.get_page(doc, 1, PageExtraction)
+    assert page is not None
+    longer = _text_page(doc, 1, [f"dong mau {n}" for n in range(4)]).model_copy(update={"version": page.version + 1})
+    env.store.update_page(doc, 1, longer, status="ok", confirmed=False, expected_version=page.version)
+    monkeypatch.setattr(document_import, "MAX_PAGE_LINES", 3)
+    document_import._auto_confirm_pages(env.store, env.store, doc, _clock)
+    assert _auto_numbers(env, doc) == [2, 3], "trang 1 quá dài giữ chưa xác nhận, các trang khác vẫn tự xác nhận"
+    assert _page(env, doc, 1).status == "ok" and not _page(env, doc, 1).confirmed
+
+
+def test_finish_passes_the_injected_clock_to_the_auto_confirmed_pages(env: ImportEnv) -> None:
+    doc = _open_document(env)
+    document_import._finish(env.store, doc, "review", env.store, clock=_clock)
+    assert [p.confirmed_at for p in env.store.list_pages(doc, PageExtraction)] == [FIXED] * PAGES
+
+
+def test_mark_document_failed_passes_the_injected_clock(env: ImportEnv) -> None:
+    doc = _open_document(env)
+    document_import.mark_document_failed(env.store, doc, env.runtime.locks, env.store, clock=_clock)
+    assert [p.confirmed_at for p in env.store.list_pages(doc, PageExtraction)] == [FIXED] * PAGES
+    assert _document(env, doc).status == "failed"
+
+
+def test_read_job_passes_its_clock_to_the_finish_step(env: ImportEnv, tmp_path: Path) -> None:
+    content = pdf_bytes("job-clock")
+    assert env.post(content, auto_confirm="true").status_code == 202
+    doc = _doc_id(content)
+    stored = env.store.get_imported_document(doc)
+    assert stored is not None
+    # đặt lại tài liệu như chưa đọc: trang `pending`, `processing`, rồi chạy đúng một `ReadJob` có đồng hồ cố định
+    for page in env.store.list_pages(doc, PageExtraction):
+        env.store.update_page(
+            doc,
+            page.page_number,
+            document_import.pending_page(doc, page.page_number).model_copy(update={"version": page.version + 1}),
+            status="pending",
+            confirmed=False,
+            expected_version=page.version,
+        )
+    env.store.update_imported_document(stored.model_copy(update={"status": "processing"}), stored.version)
+    job = document_import.ReadJob(
+        document_id=doc,
+        path=env.files.path_for(stored.meta.sha256),
+        store=env.store,
+        reader=env.reader,
+        vault=env.store,
+        locks=env.runtime.locks,
+        clock=_clock,
+    )
+    document_import.SynchronousImportQueue().submit(job)
+    assert [p.confirmed_at for p in env.store.list_pages(doc, PageExtraction)] == [FIXED] * PAGES
+
+
+def test_settle_keeps_by_user_on_the_last_attempt(env: ImportEnv) -> None:
+    """Version lệch ở mọi lần thử trừ lần cuối: lần cuối vẫn là lần chốt của NGƯỜI DÙNG (tài liệu có trang tự xác
+    nhận chỉ đóng khi `by_user`)."""
+    content = pdf_bytes("settle")
+    assert env.post(content, auto_confirm="true").status_code == 202
+    doc = _doc_id(content)
+    assert _auto_numbers(env, doc) == [1, 2, 3]
+    calls = {"count": 0}
+    real = env.store.update_imported_document
+
+    class Flaky:
+        def __getattr__(self, name: str) -> Any:
+            return getattr(env.store, name)
+
+        def update_imported_document(self, document: Any, expected_version: int) -> Any:
+            calls["count"] += 1
+            if calls["count"] < SETTLE_ATTEMPTS:
+                raise VersionConflictError("tài liệu", doc, expected_version, expected_version + 1)
+            return real(document, expected_version)
+
+    settled = document_import.settle_document(Flaky(), env.store, doc, by_user=True)
+    assert calls["count"] == SETTLE_ATTEMPTS
+    assert settled.status == "confirmed" and env.store.has_document_chunks(doc)

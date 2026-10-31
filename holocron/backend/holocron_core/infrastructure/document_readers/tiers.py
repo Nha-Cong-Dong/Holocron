@@ -40,7 +40,6 @@ from .config import PdfReaderConfig
 from .cross_check import CrossCheckLimitError, CrossCheckLimits, coverage_ratio, cross_check_lines
 from .protocol import RawOcrLine, RawOcrPage, RawPdfPage, RawTextLine
 from .text_layer import (
-    IMAGE_OCR_REASONS,
     content_image_area,
     content_path_area,
     content_token_count,
@@ -196,7 +195,7 @@ def assemble_text_layer_page(raw: RawPdfPage, document_id: str, config: PdfReade
     page_number = raw.page_index + 1
     if reason is not None:
         if raw.ocr is not None:
-            reading = reason in IMAGE_OCR_REASONS and image_needs_reading(raw, config)
+            reading = image_needs_reading(raw, config)
             return assemble_ocr_page(raw, raw.ocr, document_id, score, config, image_needs_reading=reading)
         return failed_page(document_id, page_number, "OCR_ENGINE_MISSING", score=score, flags=flags, raw=raw)
     tier_flags = PageFlags(has_table=flags.has_table, has_formula=flags.has_formula)
@@ -336,7 +335,7 @@ def assemble_ocr_page(
 ) -> PageExtraction:
     """Dựng trang OCR (tầng 2): văn bản lượt chính, đối chiếu token với lượt thứ hai, lý do xem lại theo §5.7.
 
-    `image_needs_reading` (GĐ0 0C): trang lớp chữ sạch thoả điều kiện (e) ⇒ thêm `IMAGE_NEEDS_READING`. Trang OCR
+    `image_needs_reading` (GĐ0 0C): trang thoả điều kiện (e), dù OCR vì luật nào (spec §5.7) ⇒ thêm `IMAGE_NEEDS_READING`. Trang OCR
     giữ nguyên luật tầng 2, chỉ thêm các field GĐ0 của worker (`own_images`…).
     """
     pieces = _line_pieces(ocr.lines)

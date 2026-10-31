@@ -475,10 +475,6 @@ def page_text(lines: Sequence[RawTextLine]) -> str:
 OcrReason = Literal[
     "empty_text_layer", "garbled_text_layer", "sparse_text_on_image", "image_covers_page", "image_needs_reading"
 ]
-# Luật OCR dựa trên ảnh nội dung của lớp chữ SẠCH; trang OCR vì các luật này mà thoả (e) mang `IMAGE_NEEDS_READING`.
-IMAGE_OCR_REASONS: frozenset[OcrReason] = frozenset(
-    {"sparse_text_on_image", "image_covers_page", "image_needs_reading"}
-)
 
 
 def content_image_area(raw: RawPdfPage) -> float:

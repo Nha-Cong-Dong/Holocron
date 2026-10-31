@@ -402,9 +402,9 @@ class VaultRepository(Protocol):
         """
         ...
 
-    def set_chunk_exercise(self, chunk_id: str, is_exercise: bool, expected_version: int) -> KnowledgeChunk:
-        """So-và-ghi nguyên tử nhãn `is_exercise` của chunk (LLM gắn trong job đề xuất cặp, §5.8); trả chunk đã lưu
-        với `version = expected_version + 1`.
+    def set_chunk_exercise(self, chunk_id: str, is_exercise: bool | None, expected_version: int) -> KnowledgeChunk:
+        """So-và-ghi nguyên tử nhãn `is_exercise` của chunk (LLM gắn trong job đề xuất cặp, §5.8; `None` khi LLM thiếu
+        nhãn, trả null hay nhãn xung đột); trả chunk đã lưu với `version = expected_version + 1`.
 
         Chỉ ghi `is_exercise`; nhãn khác, `label_status` và văn bản giữ nguyên. Lệch version ⇒
         `VersionConflictError`; không có chunk ⇒ `RecordNotFoundError`.

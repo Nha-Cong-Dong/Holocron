@@ -171,10 +171,12 @@ def json_depth_exceeds(text: str, max_depth: int) -> bool:
     return False
 
 
-def json_array(text: str, limits: LlmTaskLimits) -> list[Any]:
-    """Mảng JSON đầu tiên tìm được: trong các khối rào ``` trước, rồi trong toàn bộ văn bản."""
+def _first_json(text: str, limits: LlmTaskLimits, opener: str) -> Any:
+    """Giá trị JSON đầu tiên bắt đầu bằng `opener` (`[` hoặc `{`) parse được thành đúng kiểu đó: trong các khối rào
+    ``` trước, rồi trong toàn bộ văn bản."""
     if len(text) > limits.max_response_chars:
         raise ProposalFormatError("phản hồi dài quá giới hạn")
+    expected: tuple[type, ...] = (list,) if opener == "[" else (dict,)
     decoder = json.JSONDecoder()
     candidates = [match.group(1) for match in _FENCE_RE.finditer(text)] + [text]
     starts_tried = 0
@@ -182,11 +184,11 @@ def json_array(text: str, limits: LlmTaskLimits) -> list[Any]:
         if json_depth_exceeds(candidate, limits.max_json_depth):
             raise ProposalFormatError("phản hồi lồng ngoặc quá sâu")
         for start, char in enumerate(candidate):
-            if char != "[":
+            if char != opener:
                 continue
             starts_tried += 1
             if starts_tried > limits.max_parse_starts:
-                raise ProposalFormatError("phản hồi có quá nhiều chỗ bắt đầu mảng mà không chỗ nào hợp lệ")
+                raise ProposalFormatError("phản hồi có quá nhiều chỗ bắt đầu JSON mà không chỗ nào hợp lệ")
             try:
                 value, _ = decoder.raw_decode(candidate, start)
             except json.JSONDecodeError:
@@ -194,9 +196,21 @@ def json_array(text: str, limits: LlmTaskLimits) -> list[Any]:
             except RecursionError:
                 # Ngoặc nằm trong một chuỗi mà phép đếm ở trên bỏ qua vẫn có thể làm bộ parse đệ quy quá sâu.
                 raise ProposalFormatError("phản hồi lồng ngoặc quá sâu") from None
-            if isinstance(value, list):
+            if isinstance(value, expected):
                 return value
-    raise ProposalFormatError("phản hồi không chứa mảng JSON")
+    raise ProposalFormatError("phản hồi không chứa JSON đúng dạng")
+
+
+def json_array(text: str, limits: LlmTaskLimits) -> list[Any]:
+    """Mảng JSON đầu tiên tìm được: trong các khối rào ``` trước, rồi trong toàn bộ văn bản."""
+    value: list[Any] = _first_json(text, limits, "[")
+    return value
+
+
+def json_object(text: str, limits: LlmTaskLimits) -> dict[str, Any]:
+    """Object JSON đầu tiên tìm được (cùng cách tìm và cùng giới hạn như `json_array`)."""
+    value: dict[str, Any] = _first_json(text, limits, "{")
+    return value
 
 
 def parse_proposals(text: str, limits: LlmTaskLimits = DEFAULT_LIMITS) -> list[RawProposal]:

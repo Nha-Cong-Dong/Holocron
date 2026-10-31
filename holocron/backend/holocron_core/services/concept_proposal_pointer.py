@@ -1,8 +1,8 @@
 """Đề xuất cặp khái niệm theo giao thức con trỏ cho một lô của job nền (spec §5.8 "Giao thức con trỏ"; ADR-007 mục 3).
 
 LLM không chép trích dẫn: nó trỏ vào các dòng có id `S1..Sn` (đánh số liên tục trong lô, chỉ dòng không rỗng của
-`raw_text`, tách theo `\\n`) và trả `{term_span_id, term_exact, def_span_ids, def_start_words, def_end_words,
-is_exercise?}`. Python cắt trích dẫn từ `raw_text`:
+`raw_text`, tách theo `\\n`) và trả MỘT object `{"chunks": [{chunk_id, is_exercise}], "pairs": [{term_span_id,
+term_exact, def_span_ids, def_start_words, def_end_words}]}`. Python cắt trích dẫn từ `raw_text`:
 
 1. `def_span_ids` là các id liền nhau tăng dần của CÙNG một chunk (sai ⇒ `span_cross_chunk`; id lạ ⇒ `unknown_span`);
    `term_span_id` cùng chunk đó (sai ⇒ `term_span_cross_chunk`). `W` = đoạn `raw_text` từ đầu span đầu tới cuối span
@@ -18,10 +18,10 @@ is_exercise?}`. Python cắt trích dẫn từ `raw_text`:
 5. Trích dẫn đã cắt VẪN qua cổng hiện có (`screen_proposal`: kiểm nguyên văn I3, độ dài, bỏ trùng, trần mỗi chunk),
    rồi nhận `failed_gates`/`pre_selected` và được lưu `proposed`, `proposed_by = "llm"`.
 
-Nhãn bài tập: LLM phải trả nhãn `is_exercise` cho MỌI chunk của lô (phần tử `{chunk_id, is_exercise}`, hoặc
-`is_exercise` trên phần tử cặp, gắn cho chunk chứa span định nghĩa). Chunk thiếu nhãn, có nhãn null, hoặc nhãn xung
-đột ⇒ nhãn chưa xác định: không ghi, cổng `EXERCISE` trượt. Nhãn xác định được ghi (so version; lệch thì đọc lại và
-thử lại có giới hạn) TRƯỚC khi tính cổng các cặp của chunk; ghi không được ⇒ coi như chưa xác định.
+Nhãn bài tập: chỉ đọc từ `chunks`; LLM phải trả nhãn true/false cho MỌI chunk của lô. Field `is_exercise` trên phần
+tử của `pairs` (nếu có) bị bỏ qua, không phải phiếu nhãn. Chunk thiếu nhãn, có nhãn null, hoặc nhãn xung đột (cùng
+`chunk_id` hai giá trị) ⇒ lưu `is_exercise = null`, cổng `EXERCISE` trượt. Nhãn được ghi (so version; lệch thì đọc
+lại và thử lại có giới hạn) TRƯỚC khi tính cổng các cặp của chunk; ghi không được ⇒ coi như null.
 LLM KHÔNG BAO GIỜ xác nhận cặp.
 """
 
@@ -55,6 +55,7 @@ from .concept_proposal import (
     RawProposal,
     gate_annotator,
     json_array,
+    json_object,
     pair_key,
     screen_proposal,
 )
@@ -113,7 +114,6 @@ class PointerProposal(BaseModel):
     def_span_ids: list[str] = Field(max_length=MAX_LIST_ITEMS)
     def_start_words: str
     def_end_words: str
-    is_exercise: bool | None = None
 
 
 class ChunkExerciseLabel(BaseModel):
@@ -130,29 +130,23 @@ class AnchorFix(BaseModel):
 
 
 class PointerResponse(BaseModel):
-    proposals: list[PointerProposal]
-    labels: list[ChunkExerciseLabel]
+    """Object LLM trả: `chunks` (nhãn bài tập) và `pairs` (con trỏ); thiếu một trong hai khoá ⇒ sai dạng."""
+
+    chunks: list[ChunkExerciseLabel]
+    pairs: list[PointerProposal]
 
 
-_POINTER = TypeAdapter(PointerProposal)
-_LABEL = TypeAdapter(ChunkExerciseLabel)
+_RESPONSE = TypeAdapter(PointerResponse)
 _FIXES = TypeAdapter(list[AnchorFix])
 
 
 def parse_pointer_response(text: str, limits: LlmTaskLimits) -> PointerResponse:
-    """Tách mảng JSON; phần tử có `term_span_id` là cặp, còn lại là nhãn. Một phần tử sai dạng ⇒ cả phản hồi sai
+    """Tách object JSON `{"chunks": [...], "pairs": [...]}`; một phần tử sai dạng ⇒ cả phản hồi sai
     (`ProposalFormatError`, không kèm nội dung phản hồi)."""
-    proposals: list[PointerProposal] = []
-    labels: list[ChunkExerciseLabel] = []
     try:
-        for element in json_array(text, limits):
-            if isinstance(element, dict) and "term_span_id" in element:
-                proposals.append(_POINTER.validate_python(element))
-            else:
-                labels.append(_LABEL.validate_python(element))
+        return _RESPONSE.validate_python(json_object(text, limits))
     except ValidationError:
-        raise ProposalFormatError("mảng JSON không đúng dạng phần tử con trỏ hoặc nhãn") from None
-    return PointerResponse(proposals=proposals, labels=labels)
+        raise ProposalFormatError("object JSON không đúng dạng {chunks, pairs}") from None
 
 
 def parse_anchor_fixes(text: str, limits: LlmTaskLimits) -> list[AnchorFix]:
@@ -283,21 +277,13 @@ def _cut(located: _Located, start_words: str, end_words: str) -> _Cut | AnchorFa
 # --------------------------------------------------------------------------- #
 
 
-def resolve_exercise_labels(
-    response: PointerResponse, spans: dict[str, Span], chunk_ids: Sequence[str]
-) -> dict[str, bool | None]:
-    """Nhãn của từng chunk trong lô: `True`/`False` khi mọi nhãn LLM trả cho chunk đó cùng một giá trị; `None` khi
-    không có nhãn nào, có nhãn null, hoặc nhãn xung đột."""
+def resolve_exercise_labels(response: PointerResponse, chunk_ids: Sequence[str]) -> dict[str, bool | None]:
+    """Nhãn của từng chunk trong lô, chỉ từ `response.chunks`: `True`/`False` khi mọi nhãn LLM trả cho chunk đó cùng
+    một giá trị; `None` khi không có nhãn nào, có nhãn null, hoặc nhãn xung đột. Nhãn của chunk ngoài lô bị bỏ."""
     votes: dict[str, list[bool | None]] = {chunk_id: [] for chunk_id in chunk_ids}
-    for label in response.labels:
+    for label in response.chunks:
         if label.chunk_id in votes:
             votes[label.chunk_id].append(label.is_exercise)
-    for proposal in response.proposals:
-        if "is_exercise" not in proposal.model_fields_set:
-            continue
-        span = next((spans[s] for s in proposal.def_span_ids if s in spans), spans.get(proposal.term_span_id))
-        if span is not None:
-            votes[span.chunk_id].append(proposal.is_exercise)
     resolved: dict[str, bool | None] = {}
     for chunk_id, values in votes.items():
         distinct = set(values)
@@ -310,10 +296,10 @@ class ChunkLabelWriter(Protocol):
 
     def get_chunk(self, chunk_id: str) -> KnowledgeChunk | None: ...
 
-    def set_chunk_exercise(self, chunk_id: str, is_exercise: bool, expected_version: int) -> KnowledgeChunk: ...
+    def set_chunk_exercise(self, chunk_id: str, is_exercise: bool | None, expected_version: int) -> KnowledgeChunk: ...
 
 
-def write_exercise_label(vault: ChunkLabelWriter, chunk_id: str, label: bool, retries: int) -> bool:
+def write_exercise_label(vault: ChunkLabelWriter, chunk_id: str, label: bool | None, retries: int) -> bool:
     """Ghi nhãn theo version (đọc – so – ghi); lệch version thì đọc lại và thử lại tối đa `retries` lần. Không đổi
     nhãn nào khác của chunk. Trả `True` khi nhãn đang lưu bằng `label` sau cùng."""
     for _ in range(retries + 1):
@@ -504,20 +490,18 @@ def run_pointer_batch(
         return BatchOutcome(error=failure.kind, stats=budget.stats)
 
     # Nhãn bài tập được ghi TRƯỚC khi tính cổng các cặp của chunk.
-    labels = resolve_exercise_labels(response, by_span, list(by_chunk))
+    labels = resolve_exercise_labels(response, list(by_chunk))
     effective: dict[str, bool | None] = {
-        chunk_id: label
-        if label is not None and write_exercise_label(vault, chunk_id, label, retries=label_retries)
-        else None
+        chunk_id: label if write_exercise_label(vault, chunk_id, label, retries=label_retries) else None
         for chunk_id, label in labels.items()
     }
     exercise_chunks = sum(1 for label in labels.values() if label is True)
 
     reasons: dict[ProposalRejectReason, int] = {}
     cap = limits.max_proposals_per_chunk * len(chunks)
-    considered = response.proposals[:cap]
-    if len(response.proposals) > cap:
-        reasons["proposal_limit"] = len(response.proposals) - cap
+    considered = response.pairs[:cap]
+    if len(response.pairs) > cap:
+        reasons["proposal_limit"] = len(response.pairs) - cap
 
     results: list[_Cut | ProposalRejectReason | None] = []
     pending: list[_Pending] = []

@@ -583,7 +583,7 @@ class IngestionStore:
                 self._edits[("chunk", stored.chunk_id)] = edit
             return self._chunks[stored.chunk_id].model_copy(deep=True)
 
-    def set_chunk_exercise(self, chunk_id: str, is_exercise: bool, expected_version: int) -> KnowledgeChunk:
+    def set_chunk_exercise(self, chunk_id: str, is_exercise: bool | None, expected_version: int) -> KnowledgeChunk:
         """Như bản SQLite: chỉ đổi `is_exercise` và `version`, dưới khoá."""
         with self._lock:
             current = self._chunks.get(chunk_id)

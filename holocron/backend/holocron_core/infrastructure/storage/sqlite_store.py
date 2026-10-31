@@ -1121,12 +1121,12 @@ class SQLiteStore:
             stored = self._load_chunks(conn, "WHERE chunk_id = ?", (chunk.chunk_id,))
         return stored[0]
 
-    def set_chunk_exercise(self, chunk_id: str, is_exercise: bool, expected_version: int) -> KnowledgeChunk:
+    def set_chunk_exercise(self, chunk_id: str, is_exercise: bool | None, expected_version: int) -> KnowledgeChunk:
         """Một giao dịch: chỉ cột `is_exercise` và `version` (§5.8); nhãn khác và người sửa giữ nguyên."""
         with self._write() as conn:
             cursor = conn.execute(
                 "UPDATE chunks SET is_exercise = ?, version = version + 1 WHERE chunk_id = ? AND version = ?",
-                (int(is_exercise), chunk_id, expected_version),
+                (None if is_exercise is None else int(is_exercise), chunk_id, expected_version),
             )
             if cursor.rowcount == 0:
                 raise _version_conflict(

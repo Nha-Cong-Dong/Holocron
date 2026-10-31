@@ -143,6 +143,7 @@ EXPECTED_IMAGES = [
 
 
 def _assert_gd0_fields(page: PageExtraction) -> None:
+    assert page.page_number == 3, "trang đọc từ `page_index = 2`"
     assert page.own_images == EXPECTED_IMAGES
     assert page.hidden_chars_dropped == 7
     assert page.scan_text_layer is True

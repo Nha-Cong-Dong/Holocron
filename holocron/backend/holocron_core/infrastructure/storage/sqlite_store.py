@@ -892,13 +892,15 @@ class SQLiteStore:
 
     def list_page_summaries(self, document_id: str) -> list[PageSummary]:
         """Đọc cột `status`, `confirmed` và các field tóm tắt của JSON trang bằng `json_extract` của SQLite (GĐ0 thêm
-        `page_role`, `dropped`; JSON trang lưu trước GĐ0 không có hai field này ⇒ `content`, không bỏ mềm)."""
+        `page_role`, `dropped`; JSON trang lưu trước GĐ0 không có hai field này ⇒ `content`, không bỏ mềm. GĐ1 1B thêm
+        `confirmed_by`; JSON trước GĐ1 không có ⇒ null)."""
         with self._read() as conn:
             rows = conn.execute(
                 "SELECT page_number, status, confirmed, json_extract(extraction_json, '$.tier_used') AS tier_used, "
                 "json_extract(extraction_json, '$.review_reasons') AS review_reasons, "
                 "json_extract(extraction_json, '$.page_role') AS page_role, "
-                "json_extract(extraction_json, '$.dropped') AS dropped "
+                "json_extract(extraction_json, '$.dropped') AS dropped, "
+                "json_extract(extraction_json, '$.confirmed_by') AS confirmed_by "
                 "FROM pages WHERE document_id = ? ORDER BY page_number",
                 (document_id,),
             ).fetchall()
@@ -912,6 +914,7 @@ class SQLiteStore:
                     "confirmed": bool(row["confirmed"]),
                     "page_role": row["page_role"] or "content",
                     "dropped": bool(row["dropped"]),
+                    "confirmed_by": row["confirmed_by"],
                 }
             )
             for row in rows

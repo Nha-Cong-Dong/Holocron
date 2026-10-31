@@ -23,6 +23,12 @@ khoá của tài liệu và trước khi ghi trạng thái cuối, service gán 
 sau khi nhả khoá, đánh giá lại trang bìa của các tài liệu nhập trước cùng môn (`_reassess_previous_covers`, lấy khoá
 từng tài liệu một). Trang bỏ mềm không vào văn bản xác nhận hay chunk, không chặn bước chốt, không sửa hay xác nhận
 được cho tới khi hoàn tác (`restore_page`). Dòng header/footer không phải dòng có chữ và không vào văn bản xác nhận.
+
+GĐ1 1B (thêm 2026-10-31, spec §5.7 "Tự xác nhận cấp trang"): ngay sau bước 0D, cũng dưới khoá của tài liệu,
+`_auto_confirm_pages` tự xác nhận trang đủ sạch theo luật `page_clean_v1` (`auto_confirm.passes_page_clean`). Tự xác
+nhận chỉ đặt trạng thái trang: tài liệu có trang `confirmed_by = "auto"` chỉ được chốt `confirmed` (và cắt chunk) khi
+người dùng gọi `confirm_document` (`settle_document(..., by_user=True)`); bước chốt ở cuối lần đọc, ở đường `failed`
+và sau `confirm_page` không đóng nó. `unconfirm_page` hoàn tác một trang tự xác nhận khi văn bản tài liệu còn mở.
 """
 
 from __future__ import annotations
@@ -37,12 +43,13 @@ import time
 from collections import Counter
 from collections.abc import Callable, Collection, Generator, Iterator
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Protocol
 
 from ..domain.documents import (
     ChapterSource,
+    ConfirmedBy,
     CrossCheck,
     DocumentConfirmRequest,
     DocumentImport,
@@ -57,9 +64,12 @@ from ..domain.documents import (
     PageLinesPatch,
     PageRestoreRequest,
     PageSummary,
+    PageUnconfirmRequest,
     ReviewReason,
+    count_auto_confirmed,
     count_dropped,
     count_kept,
+    count_kept_unconfirmed,
     count_needs_review,
 )
 from ..domain.ingestion import UploadedDocument
@@ -80,6 +90,7 @@ from ..infrastructure.document_readers.config import PdfReaderConfig
 from ..infrastructure.document_readers.pdf_reader import PDF_MAGIC, PdfInputError, PdfReader, PdfWorkerError
 from ..infrastructure.document_readers.tiers import failed_page
 from ..infrastructure.storage.original_files import StagedFile
+from .auto_confirm import AUTO_CONFIRM_RULE, passes_page_clean
 from .chapter_naming import DEFAULT_TITLE, InitialChapter
 from .chapter_reservation import ChapterReservations, ChapterTurn, reserve_chapter
 from .page_roles import RoleDecision, apply_decision, assign_roles, changeable, reassess_cover
@@ -109,6 +120,7 @@ SETTLE_PENDING_DETAIL = (
 # 409 khi thao tác trên trang đang bị bỏ mềm (GĐ0 0D; `detail` đề xuất của §6.5).
 DROPPED_EDIT_DETAIL = "Trang đang bị bỏ qua; hãy hoàn tác trước khi sửa"
 DROPPED_CONFIRM_DETAIL = "Trang đang bị bỏ qua; hãy hoàn tác trước khi xác nhận"
+USER_CONFIRMED_UNDO_DETAIL = "Trang do người dùng xác nhận, không hoàn tác được"
 PAGE_TOO_LARGE_DETAIL = (
     f"Trang vượt giới hạn của Knowledge Vault (tối đa {MAX_PAGE_LINES} dòng có văn bản, mỗi dòng tối đa "
     f"{MAX_LINE_CHARS} ký tự) nên không xác nhận được"
@@ -258,6 +270,8 @@ class ReadJob:
     locks: KeyedLocks | None = None
     # Ngưỡng của 0D (vai trò trang) ở bước kết thúc lần đọc; app truyền `ImportRuntime.reader_config`.
     config: PdfReaderConfig = field(default_factory=PdfReaderConfig)
+    # Đồng hồ cho `confirmed_at` của trang tự xác nhận (GĐ1 1B); test truyền đồng hồ cố định.
+    clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
 
 
 class ImportQueue(Protocol):
@@ -392,7 +406,7 @@ class ImportRequest:
     chapter_code: str | None = None  # tuỳ chọn từ 2026-10-31: `None` ⇒ chương tự động (§5.7)
     output_language: OutputLanguage = "vi"
     title: str | None = None
-    auto_confirm: bool = True  # field form (§6.5, GĐ1 1B): chỉ lưu; hành vi tự xác nhận chưa có ở nhánh này
+    auto_confirm: bool = True  # field form (§6.5, GĐ1 1B): bật luật `page_clean_v1` cho tài liệu này
 
 
 @dataclass(frozen=True)
@@ -446,6 +460,8 @@ def _view(document: ImportedDocument, pages: list[PageSummary]) -> DocumentImpor
         chapter_source=ChapterSource(code=document.chapter_code_source or "user", title=document.chapter_title_source),
         chapter_flags=list(document.chapter_flags),
         auto_confirm=document.auto_confirm,
+        pages_auto_confirmed=count_auto_confirmed(pages),
+        pages_kept_unconfirmed=count_kept_unconfirmed(pages),
     )
 
 
@@ -1019,21 +1035,104 @@ def _after_finish(
         )
 
 
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _is_page_clean(document: ImportedDocument, page: PageExtraction) -> bool:
+    """`page_clean_v1` cho trang của tài liệu này; "có chữ" và "vừa giới hạn Vault" dùng đúng định nghĩa của xác nhận
+    thường (`_has_text`, `_fits_vault`)."""
+    return passes_page_clean(
+        page,
+        auto_confirm=document.auto_confirm,
+        source_kind=document.meta.source_kind,
+        has_text=_has_text(page),
+        fits_vault=_fits_vault(page),
+    )
+
+
+def _auto_confirm_page(
+    store: DocumentRepository, document: ImportedDocument, page: PageExtraction, clock: Callable[[], datetime]
+) -> None:
+    """Tự xác nhận một trang qua `update_page` có so version; lệch version ⇒ đọc lại trang và đánh giá lại tối đa
+    `SETTLE_ATTEMPTS` lần (trang đã đổi thành không đủ sạch thì thôi); hết lượt ⇒ cảnh báo, trang giữ như cũ (chưa
+    xác nhận là phía an toàn). Không ghi `PageEditAudit`: không đổi dòng nào (§5.7)."""
+    current: PageExtraction | None = page
+    for attempt in range(1, SETTLE_ATTEMPTS + 1):
+        if current is None or not _is_page_clean(document, current):
+            return
+        confirmed = PageExtraction.model_validate(
+            {
+                **current.model_dump(),
+                "confirmed": True,
+                "confirmed_at": clock(),
+                "confirmed_by": "auto",
+                "confirm_rule": AUTO_CONFIRM_RULE,
+                "version": current.version + 1,
+            }
+        )
+        try:
+            store.update_page(
+                current.document_id,
+                current.page_number,
+                confirmed,
+                status=confirmed.status,
+                confirmed=True,
+                expected_version=current.version,
+            )
+            return
+        except VersionConflictError:
+            if attempt == SETTLE_ATTEMPTS:
+                break
+            current = store.get_page(current.document_id, current.page_number, PageExtraction)
+    _LOGGER.warning(
+        "chưa tự xác nhận được trang %d của tài liệu %s sau %d lần (version lệch); trang giữ như cũ",
+        page.page_number,
+        page.document_id,
+        SETTLE_ATTEMPTS,
+    )
+
+
+def _auto_confirm_pages(
+    store: DocumentRepository, vault: VaultRepository | None, document_id: str, clock: Callable[[], datetime]
+) -> None:
+    """GĐ1 1B cho cả tài liệu (người gọi giữ khoá của tài liệu), SAU 0D: tự xác nhận trang theo `page_clean_v1`.
+
+    Chỉ đặt trạng thái trang, KHÔNG settle: tài liệu không đổi `status`, Vault không nhận chunk nào. Bỏ qua khi tài
+    liệu tắt `auto_confirm`, thiếu `chapter_code` (nhập trước migration 0002: không hoàn tác được), đã `confirmed`
+    hoặc Vault đã có chunk của nó (`_roles_allowed`)."""
+    document = store.get_imported_document(document_id)
+    if document is None or not document.auto_confirm or document.chapter_code is None:
+        return
+    if not _roles_allowed(store, vault, document_id):
+        return
+    for page in store.list_pages(document_id, PageExtraction):
+        if _is_page_clean(document, page):
+            _auto_confirm_page(store, document, page, clock)
+
+
 def _finish(
     store: DocumentRepository,
     document_id: str,
     status: Literal["review", "failed"],
     vault: VaultRepository | None = None,
     config: PdfReaderConfig | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> None:
-    """Gán vai trò trang (GĐ0 0D, `assign_page_roles`) rồi đặt trạng thái cuối của lần đọc (`_write_final_status`);
-    có `vault` thì settle luôn tài liệu nếu đủ điều kiện (`_settle_after_read`), ở cả đường đọc xong (`review`) lẫn
-    đường `failed` (§5.7 "Chốt trạng thái tài liệu"), để tài liệu không kẹt `review` hay `failed` khi người dùng đã
-    xác nhận mọi trang có văn bản trong lúc các trang còn lại đang đọc (rồi thành `failed` hoặc trắng)."""
+    """Gán vai trò trang (GĐ0 0D, `assign_page_roles`), tự xác nhận trang đủ sạch (GĐ1 1B, `_auto_confirm_pages`) rồi
+    đặt trạng thái cuối của lần đọc (`_write_final_status`); có `vault` thì settle luôn tài liệu nếu đủ điều kiện
+    (`_settle_after_read`), ở cả đường đọc xong (`review`) lẫn đường `failed` (§5.7 "Chốt trạng thái tài liệu"), để
+    tài liệu không kẹt `review` hay `failed` khi người dùng đã xác nhận mọi trang có văn bản trong lúc các trang còn
+    lại đang đọc (rồi thành `failed` hoặc trắng). Tài liệu có trang tự xác nhận KHÔNG được settle ở đây: chỉ
+    `confirm_document` đóng nó (`settle_document`, `by_user`)."""
     try:
         assign_page_roles(store, document_id, PdfReaderConfig() if config is None else config, vault)
     except StorageError as exc:
         _LOGGER.warning("chưa gán được vai trò trang của tài liệu %s: %s", document_id, type(exc).__name__)
+    try:
+        _auto_confirm_pages(store, vault, document_id, _utc_now if clock is None else clock)
+    except StorageError as exc:
+        _LOGGER.warning("chưa tự xác nhận được trang của tài liệu %s: %s", document_id, type(exc).__name__)
     if _write_final_status(store, document_id, status) and vault is not None:
         _settle_after_read(store, vault, document_id, status)
 
@@ -1044,6 +1143,7 @@ def mark_document_failed(
     locks: KeyedLocks | None = None,
     vault: VaultRepository | None = None,
     config: PdfReaderConfig | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> None:
     """Tài liệu không đọc tiếp được: trang còn `pending` thành `failed` (`PAGE_ERROR`), tài liệu thành `failed`;
     có `vault` (thường là `ReadJob.vault`) thì sau đó settle như bước kết thúc lần đọc (`_finish`): mọi trang có văn
@@ -1056,7 +1156,7 @@ def mark_document_failed(
     settings = PdfReaderConfig() if config is None else config
     with locks.hold(document_id) if locks is not None else contextlib.nullcontext():
         _fail_pending(store, document_id, "PAGE_ERROR")
-        _finish(store, document_id, "failed", vault, settings)
+        _finish(store, document_id, "failed", vault, settings, clock)
     _after_finish(store, document_id, settings, locks, vault)
 
 
@@ -1084,7 +1184,7 @@ def _open_pages(
         except (PdfInputError, ValueError, FileNotFoundError):
             _close_pages(pages)
             _LOGGER.warning("không mở lại được tài liệu %s để đọc", job.document_id)
-            mark_document_failed(job.store, job.document_id, job.locks, job.vault, job.config)
+            mark_document_failed(job.store, job.document_id, job.locks, job.vault, job.config, job.clock)
             return None
         except (PdfWorkerError, OSError) as exc:
             _close_pages(pages)
@@ -1161,7 +1261,7 @@ def read_document(
     if should_stop():
         return
     with job.locks.hold(document_id) if job.locks is not None else contextlib.nullcontext():
-        _finish(store, document_id, "review", job.vault, job.config)
+        _finish(store, document_id, "review", job.vault, job.config, job.clock)
     _after_finish(store, document_id, job.config, job.locks, job.vault)
 
 
@@ -1187,7 +1287,7 @@ def run_job(run: Callable[[], None], job: ReadJob, should_stop: Callable[[], boo
             return
         _LOGGER.exception("lỗi khi đọc tài liệu %s", job.document_id)
         try:
-            mark_document_failed(job.store, job.document_id, job.locks, job.vault, job.config)
+            mark_document_failed(job.store, job.document_id, job.locks, job.vault, job.config, job.clock)
         except Exception:
             _LOGGER.exception("không đánh dấu được tài liệu %s là failed", job.document_id)
 
@@ -1484,7 +1584,11 @@ def edit_page_lines(
 
 
 def _store_confirmed(store: DocumentRepository, page: PageExtraction, now: datetime) -> PageExtraction:
-    confirmed = page.model_copy(update={"confirmed": True, "confirmed_at": now, "version": page.version + 1})
+    """Ghi xác nhận của NGƯỜI DÙNG (`confirmed_by = "user"`, từng trang hay theo lô, §6.5)."""
+    user: ConfirmedBy = "user"
+    confirmed = page.model_copy(
+        update={"confirmed": True, "confirmed_at": now, "confirmed_by": user, "version": page.version + 1}
+    )
     store.update_page(
         page.document_id,
         page.page_number,
@@ -1550,8 +1654,14 @@ def _ingest(vault: VaultRepository, document: ImportedDocument, pages: list[Page
         ingest_confirmed_text(vault, text)
 
 
-def settle_document(store: DocumentRepository, vault: VaultRepository, document_id: str) -> ImportedDocument:
+def settle_document(
+    store: DocumentRepository, vault: VaultRepository, document_id: str, *, by_user: bool = False
+) -> ImportedDocument:
     """Khi đủ điều kiện (`_ready_to_confirm`): cắt chunk vào Vault TRƯỚC, rồi đặt tài liệu `confirmed`.
+
+    Tài liệu có ít nhất một trang `confirmed_by = "auto"` chỉ được chốt khi `by_user = True` (người dùng bấm
+    "Chấp nhận", `confirm_document`); ngược lại (cuối lần đọc, đường `failed`, sau `confirm_page`) giữ nguyên, không
+    cắt chunk (§5.7 "Chốt trạng thái tài liệu"). Tài liệu đã `confirmed` luôn chạy lại bước cắt idempotent.
 
     Hai bước không nằm trong một giao dịch (Vault và tài liệu là hai repository). Bù lại:
     - nhập Vault là nguyên tử và idempotent (chunk đã có giữ nguyên bản đang lưu), nên gọi lại chỉ nhập lại đúng
@@ -1566,19 +1676,24 @@ def settle_document(store: DocumentRepository, vault: VaultRepository, document_
     """
     for _ in range(SETTLE_ATTEMPTS - 1):
         try:
-            return _settle_once(store, vault, document_id)
+            return _settle_once(store, vault, document_id, by_user)
         except VersionConflictError:
             continue
-    return _settle_once(store, vault, document_id)
+    return _settle_once(store, vault, document_id, by_user)
 
 
-def _settle_once(store: DocumentRepository, vault: VaultRepository, document_id: str) -> ImportedDocument:
+def _settle_once(
+    store: DocumentRepository, vault: VaultRepository, document_id: str, by_user: bool
+) -> ImportedDocument:
     document = store.get_imported_document(document_id)
     if document is None:
         raise DocumentNotFoundError(document_id)
     pages = store.list_pages(document_id, PageExtraction)
-    if document.status != "confirmed" and not _ready_to_confirm(pages):
-        return document
+    if document.status != "confirmed":
+        if not _ready_to_confirm(pages):
+            return document
+        if not by_user and any(page.confirmed_by == "auto" for page in pages):
+            return document
     _ingest(vault, document, pages)
     if document.status == "confirmed":
         return document
@@ -1588,13 +1703,15 @@ def _settle_once(store: DocumentRepository, vault: VaultRepository, document_id:
     return store.update_imported_document(settled, document.version)
 
 
-def _settle_confirmed(store: DocumentRepository, vault: VaultRepository, document_id: str) -> None:
+def _settle_confirmed(
+    store: DocumentRepository, vault: VaultRepository, document_id: str, *, by_user: bool = False
+) -> None:
     """Settle sau khi request đã ghi xác nhận trang. Hết lượt thử vì version lệch thì KHÔNG trả lỗi cho request
     (trang đã xác nhận thật, báo "version lệch" là sai), chỉ ghi cảnh báo: response mang trạng thái đang lưu, tài
     liệu được settle ở lần xác nhận sau hoặc khi lần đọc nền kết thúc. Lỗi khác (ví dụ `StorageBusyError` ⇒ 503
     theo §6.0) ném nguyên: gọi lại xác nhận là idempotent."""
     try:
-        settle_document(store, vault, document_id)
+        settle_document(store, vault, document_id, by_user=by_user)
     except VersionConflictError:
         _LOGGER.warning(
             "đã xác nhận trang của tài liệu %s nhưng chưa đặt được confirmed sau %d lần (version lệch); tài liệu "
@@ -1692,7 +1809,7 @@ def confirm_document(
             _check_text_open(document, vault)
         for page in to_confirm:
             _store_confirmed(store, page, now)
-        _settle_confirmed(store, vault, document_id)
+        _settle_confirmed(store, vault, document_id, by_user=True)
         return get_document_view(store, document_id)
 
 
@@ -1726,6 +1843,49 @@ def restore_page(
             document_id, page_number, restored, status=restored.status, confirmed=False, expected_version=page.version
         )
         return restored
+
+
+def unconfirm_page(
+    store: DocumentRepository,
+    vault: VaultRepository,
+    runtime: ImportRuntime,
+    document_id: str,
+    page_number: int,
+    request: PageUnconfirmRequest,
+) -> PageExtraction:
+    """`POST …/pages/{n}/unconfirm` (§6.5, GĐ1 1B): hoàn tác tự xác nhận một trang bằng một lời gọi.
+
+    Trang `confirmed_by = "auto"` ⇒ `confirmed = false`, `confirmed_at`, `confirmed_by`, `confirm_rule` về null,
+    `auto_confirm_undone = true` (không bao giờ tự xác nhận lại), `version + 1`; dòng, `review_reasons`, `status` giữ
+    nguyên; không ghi `PageEditAudit`. Trang chưa xác nhận ⇒ trả nguyên trang, không kiểm `expected_version`. Lỗi:
+    `DocumentNotFoundError` (tài liệu hay trang); `DocumentChapterMissingError`; `PageStateError` khi trang do người
+    dùng xác nhận (MVP không có bỏ xác nhận của người dùng) hoặc văn bản tài liệu đã đóng (`_check_text_open`);
+    `VersionConflictError` khi version lệch.
+    """
+    with runtime.locks.hold(document_id):
+        page = get_page_extraction(store, document_id, page_number)
+        document = _confirmable_document(store, document_id)
+        if not page.confirmed:
+            return page
+        if page.confirmed_by != "auto":
+            raise PageStateError(USER_CONFIRMED_UNDO_DETAIL)
+        _check_version(page, request.expected_version)
+        _check_text_open(document, vault)
+        reopened = PageExtraction.model_validate(
+            {
+                **page.model_dump(),
+                "confirmed": False,
+                "confirmed_at": None,
+                "confirmed_by": None,
+                "confirm_rule": None,
+                "auto_confirm_undone": True,
+                "version": page.version + 1,
+            }
+        )
+        store.update_page(
+            document_id, page_number, reopened, status=reopened.status, confirmed=False, expected_version=page.version
+        )
+        return reopened
 
 
 # --------------------------------------------------------------------------- #

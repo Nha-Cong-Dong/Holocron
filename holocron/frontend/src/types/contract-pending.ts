@@ -12,6 +12,7 @@
 import type {
   Citation,
   CognitiveLevel,
+  DocumentImport,
   OptionKey,
   PageExtraction,
   PageSummary,
@@ -77,6 +78,97 @@ export interface PageSummaryPending extends Omit<PageSummary, "review_reasons"> 
 /** `PageExtraction` với `ReviewReason` của §5.7 v0.7 (có `LOW_TEXT_SCORE`). */
 export interface PageExtractionPending extends Omit<PageExtraction, "review_reasons"> {
   review_reasons: ReviewReasonPending[];
+}
+
+// ------------------------------------------------------- §5.7, §5.8, §6.5 màn kết quả nhập (T1e, T1b)
+
+/**
+ * Giá trị của `ProposalJobStatus` (§5.8). `succeeded`, `partial`, `failed` và `cancelled` là trạng thái kết thúc; chỉ
+ * `queued` và `running` còn chạy. Gỡ khi `holocron.ts` có kiểu thật.
+ */
+export type ProposalJobStatus = "queued" | "running" | "succeeded" | "partial" | "failed" | "cancelled";
+
+/** `ProposalRejectReason` (§5.8): lý do một đề xuất cặp bị loại. Gỡ khi `holocron.ts` có kiểu thật. */
+export type ProposalRejectReason =
+  | "quote_not_verbatim"
+  | "unknown_chunk"
+  | "invalid_term"
+  | "invalid_quote"
+  | "duplicate"
+  | "chunk_limit"
+  | "proposal_limit"
+  | "unknown_span"
+  | "span_cross_chunk"
+  | "term_span_cross_chunk"
+  | "term_not_in_span"
+  | "anchor_not_found"
+  | "anchor_ambiguous";
+
+/** `BatchErrorKind` (§5.8): loại lỗi của cả một lô. */
+export type BatchErrorKind = "llm_upstream" | "deadline" | "format";
+
+/**
+ * `ProposalJob` (§5.8, GĐ1 1C; T1b): job nền đề xuất cặp khái niệm. Mọi số do backend đếm. Gỡ khi `holocron.ts` có
+ * field thật.
+ */
+export interface ProposalJob {
+  job_id: string;
+  subject_code: string;
+  trigger: "document_confirmed" | "manual";
+  document_id: string | null;
+  status: ProposalJobStatus;
+  chunk_count: number;
+  batch_size: number;
+  batches_total: number;
+  batches_done: number;
+  batches_failed: number;
+  batch_errors: Partial<Record<BatchErrorKind, number>>;
+  proposed_count: number;
+  pre_selected_count: number;
+  rejected_count: number;
+  rejected_by_reason: Partial<Record<ProposalRejectReason, number>>;
+  exercise_chunks: number;
+  cancel_requested: boolean;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+/** `ProposalJobAbsentReason` (§5.7, T1e; đề xuất suy ra): vì sao `DocumentImport` không có `proposal_job`. */
+export type ProposalJobAbsentReason = "not_confirmed" | "past_exam" | "no_chunks" | "llm_unavailable" | "not_retained";
+
+/** `ReviewReasonCount` (§5.7, T1e): số trang cần xem theo từng lý do; `pages` tăng dần, không trùng. */
+export interface ReviewReasonCount {
+  reason: ReviewReasonPending;
+  count: number;
+  pages: number[];
+}
+
+/** `DroppedRoleCount` (§5.7, T1e): số trang bỏ mềm theo vai trò trang. */
+export interface DroppedRoleCount {
+  reason: "cover_or_course_nav" | "chapter_nav" | "build_step";
+  count: number;
+  pages: number[];
+}
+
+/**
+ * `DocumentImport` với các field T1e (số đếm, lý do, job); backend chưa trả ở nhánh này, `lib/import-result.ts` parse
+ * với mặc định an toàn. Gỡ khi `holocron.ts` có field thật.
+ */
+export type DocumentImportPending = DocumentImport & {
+  pages_auto_confirmed: number;
+  pages_kept_unconfirmed: number;
+  pages_failed: number;
+  review_reason_counts: ReviewReasonCount[];
+  dropped_role_counts: DroppedRoleCount[];
+  proposal_job: ProposalJob | null;
+  proposal_job_absent_reason: ProposalJobAbsentReason | null;
+};
+
+/** Body của `POST /v1/vault/concept-pairs/jobs` (§6.6): đúng một trong `document_id` và `chunk_ids`. */
+export interface ProposalJobCreate {
+  subject_code: string;
+  document_id: string;
 }
 
 // ------------------------------------------------------------------------ §5.9 Blueprint, shape (a)

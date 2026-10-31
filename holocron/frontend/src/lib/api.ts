@@ -26,6 +26,7 @@ import {
   classifyNetworkError,
   invalidResponseError,
 } from "@/lib/errors";
+import { type ImportResultView, type ProposalJobView, parseImportResult, parseProposalJob } from "@/lib/import-result";
 import { type ConceptPairList, parseConceptPair, parseConceptPairList } from "@/lib/pairs";
 import {
   type ChunkPageView,
@@ -53,8 +54,9 @@ import {
   searchQueryString,
 } from "@/lib/vault";
 import { fillRuntimeGaps, mockApi, mockDocumentApi } from "@/mocks";
+import { isImportResultMock, mockImportResultApi } from "@/mocks/import-result";
 import { isMockDocument } from "@/mocks/store";
-import type { EssayGradeRequest } from "@/types/contract-pending";
+import type { EssayGradeRequest, ProposalJobCreate } from "@/types/contract-pending";
 import type {
   BlueprintCreate,
   CellPatch,
@@ -244,6 +246,18 @@ export interface HolocronApi {
   restorePage: (documentId: string, pageNumber: number, expectedVersion: number) => Promise<PageView>;
   /** `POST /v1/documents/{document_id}/confirm` (§6.5; chưa có ở backend của nhánh): chỉ xác nhận trang `ok`. */
   confirmDocument: (documentId: string) => Promise<DocumentView>;
+  /**
+   * `GET /v1/documents/{document_id}` (§6.5) cho màn kết quả nhập: `DocumentImport` với số đếm, lý do và `proposal_job`
+   * (T1e; field chưa có ở `holocron.ts`), đã kiểm dạng với mặc định an toàn.
+   */
+  getImportResult: (documentId: string) => Promise<ImportResultView>;
+  /**
+   * `POST /v1/documents/{document_id}/confirm` (§6.5) cho nút "Chấp nhận tài liệu": cùng endpoint với
+   * `confirmDocument` nhưng trả cả field T1e (job vừa tạo). 409 ném `ApiError`; nơi gọi phân loại bằng cách đọc lại.
+   */
+  confirmImport: (documentId: string) => Promise<ImportResultView>;
+  /** `POST /v1/vault/concept-pairs/jobs` (§6.6): 202 `ProposalJob` (`trigger = "manual"`), đã kiểm dạng. */
+  startProposalJob: (subjectCode: string, documentId: string) => Promise<ProposalJobView>;
   /** `DELETE /v1/documents/{document_id}` (§6.5): 204. */
   deleteDocument: (documentId: string) => Promise<void>;
   /** `GET /v1/vault/chunks` (§6.6) cho màn Vault, đã kiểm dạng. */
@@ -456,6 +470,29 @@ export const realApi: HolocronApi = {
     return validated(parseDocumentImport(raw));
   },
 
+  getImportResult: async (documentId) => {
+    const raw = await request<unknown>(
+      `/v1/documents/${segment(documentId)}`,
+      { method: "GET" },
+      { context: "document_review" },
+    );
+    return validated(parseImportResult(raw));
+  },
+
+  confirmImport: async (documentId) => {
+    const payload: DocumentConfirmRequest = { editor_id: LOCAL_EDITOR_ID };
+    const raw = await request<unknown>(`/v1/documents/${segment(documentId)}/confirm`, jsonSpec("POST", payload), {
+      context: "document_confirm",
+    });
+    return validated(parseImportResult(raw));
+  },
+
+  startProposalJob: async (subjectCode, documentId) => {
+    const payload: ProposalJobCreate = { subject_code: subjectCode, document_id: documentId };
+    const raw = await request<unknown>("/v1/vault/concept-pairs/jobs", jsonSpec("POST", payload));
+    return validated(parseProposalJob(raw));
+  },
+
   deleteDocument: async (documentId) => {
     await send(`/v1/documents/${segment(documentId)}`, { method: "DELETE" }, { context: "document_delete" });
   },
@@ -542,32 +579,69 @@ export const realApi: HolocronApi = {
 export function createApi(useMocks: boolean): HolocronApi {
   if (!useMocks) return realApi;
   const documents = mockDocumentApi;
+  const result = mockImportResultApi;
   return {
     ...realApi,
     ...mockApi,
     getRuntime: () => loadRuntime(fillRuntimeGaps),
     // Các endpoint dưới đây đã có ở backend: chỉ bản ghi do dữ liệu mẫu tạo ra (chọn theo mã) mới lấy fixture.
-    // `GET /v1/documents`: danh sách thật (mới nhất trước), thêm tài liệu mẫu của môn ở cuối để mở được màn xem lại
-    // mẫu.
+    // `GET /v1/documents`: danh sách thật (mới nhất trước), thêm các tài liệu mẫu của môn ở cuối để mở được màn xem lại
+    // và màn kết quả nhập mẫu.
     listDocuments: async (subjectCode) => [
       ...(await realApi.listDocuments(subjectCode)),
       ...documents.listDocuments(subjectCode),
+      ...result.listDocuments(subjectCode),
     ],
-    getDocument: (id) => (isMockDocument(id) ? documents.getDocument(id) : realApi.getDocument(id)),
+    getDocument: (id) =>
+      isImportResultMock(id)
+        ? result.getDocument(id)
+        : isMockDocument(id)
+          ? documents.getDocument(id)
+          : realApi.getDocument(id),
     getDocumentPage: (id, page) =>
-      isMockDocument(id) ? documents.getDocumentPage(id, page) : realApi.getDocumentPage(id, page),
-    deleteDocument: (id) => (isMockDocument(id) ? documents.deleteDocument(id) : realApi.deleteDocument(id)),
+      isImportResultMock(id)
+        ? result.getDocumentPage(id, page)
+        : isMockDocument(id)
+          ? documents.getDocumentPage(id, page)
+          : realApi.getDocumentPage(id, page),
+    deleteDocument: (id) =>
+      isImportResultMock(id)
+        ? result.deleteDocument(id)
+        : isMockDocument(id)
+          ? documents.deleteDocument(id)
+          : realApi.deleteDocument(id),
     // Sửa dòng và xác nhận (§6.5) chưa có ở backend của nhánh: tài liệu mẫu dùng fixture; tài liệu thật vẫn gọi
     // backend (backend chưa có endpoint thì trả 404 và giao diện báo backend chưa hỗ trợ).
     patchPageLines: (id, page, version, edits, appended) =>
-      isMockDocument(id)
-        ? documents.patchPageLines(id, page, version)
-        : realApi.patchPageLines(id, page, version, edits, appended),
+      isImportResultMock(id)
+        ? result.patchPageLines(id, page)
+        : isMockDocument(id)
+          ? documents.patchPageLines(id, page, version)
+          : realApi.patchPageLines(id, page, version, edits, appended),
     confirmPage: (id, page, version) =>
-      isMockDocument(id) ? documents.confirmPage(id, page, version) : realApi.confirmPage(id, page, version),
+      isImportResultMock(id)
+        ? result.confirmPage(id, page, version)
+        : isMockDocument(id)
+          ? documents.confirmPage(id, page, version)
+          : realApi.confirmPage(id, page, version),
     restorePage: (id, page, version) =>
-      isMockDocument(id) ? documents.restorePage(id, page, version) : realApi.restorePage(id, page, version),
-    confirmDocument: (id) => (isMockDocument(id) ? documents.confirmDocument(id) : realApi.confirmDocument(id)),
+      isImportResultMock(id)
+        ? result.restorePage(id, page, version)
+        : isMockDocument(id)
+          ? documents.restorePage(id, page, version)
+          : realApi.restorePage(id, page, version),
+    confirmDocument: (id) =>
+      isImportResultMock(id)
+        ? result.confirmDocument(id)
+        : isMockDocument(id)
+          ? documents.confirmDocument(id)
+          : realApi.confirmDocument(id),
+    // Màn kết quả nhập (T1e, T1b): backend chưa trả field mới nên tài liệu mẫu riêng dùng nhà giả; mọi tài liệu khác
+    // gọi backend thật (backend cũ không trả field mới thì màn vẫn dựng với mặc định an toàn).
+    getImportResult: (id) => (isImportResultMock(id) ? result.getImportResult(id) : realApi.getImportResult(id)),
+    confirmImport: (id) => (isImportResultMock(id) ? result.confirmImport(id) : realApi.confirmImport(id)),
+    startProposalJob: (subjectCode, id) =>
+      isImportResultMock(id) ? result.startProposalJob(subjectCode, id) : realApi.startProposalJob(subjectCode, id),
   };
 }
 

@@ -23,6 +23,50 @@ function doc(status: DocumentStatusView, pages: PageSummaryView[]) {
   return { status, pages };
 }
 
+describe("trang bỏ mềm (dropped) bị loại khỏi hàng đợi và việc còn lại (§5.7)", () => {
+  const dropped = (pageNumber: number, status: PageStatusView, confirmed = false): PageSummaryView => ({
+    ...page(pageNumber, status, confirmed),
+    dropped: true,
+  });
+
+  it("hàng đợi và tiến độ không đếm trang needs_review đã bỏ mềm", () => {
+    const pages = [
+      page(1, "needs_review"),
+      dropped(2, "needs_review"),
+      page(3, "needs_review", true),
+      dropped(4, "ok"),
+    ];
+    expect(reviewQueue({ pages })).toEqual([1]);
+    expect(reviewProgress({ pages })).toEqual({ done: 1, total: 2 });
+  });
+
+  it("việc còn lại không đếm trang bỏ mềm (không chặn việc chốt)", () => {
+    const outcome = reviewOutcome(doc("review", [page(1, "ok", true), dropped(2, "needs_review"), dropped(3, "ok")]));
+    expect(outcome).toEqual({
+      kind: "remaining",
+      work: { needsReview: 0, okUnconfirmed: 0, pending: 0, failed: 0, unknown: 0 },
+    });
+  });
+
+  it("awaitingSettle: mọi trang còn lại đã xác nhận hay bỏ mềm thì chờ chốt", () => {
+    expect(awaitingSettle(doc("review", [page(1, "ok", true), dropped(2, "needs_review")]))).toBe(true);
+    expect(awaitingSettle(doc("review", [page(1, "ok"), dropped(2, "needs_review")]))).toBe(false);
+    expect(awaitingSettle(doc("review", [dropped(1, "ok"), dropped(2, "ok")]))).toBe(false);
+  });
+
+  it("trang `dropped` vắng (dữ liệu cũ) vẫn tính như trang thường", () => {
+    expect(reviewQueue({ pages: [page(1, "needs_review")] })).toEqual([1]);
+  });
+
+  it("trang kế bên và đích sau xác nhận bỏ qua trang bỏ mềm", () => {
+    const pages = [page(1, "needs_review"), dropped(2, "needs_review"), page(3, "needs_review")];
+    const queue = reviewQueue({ pages });
+    expect(queue).toEqual([1, 3]);
+    expect(queueNeighbors(queue, 2)).toEqual({ previous: 1, next: 3 });
+    expect(nextAfterConfirm(queue, 1)).toBe(3);
+  });
+});
+
 describe("reviewQueue", () => {
   it("chỉ gồm trang cần xem kỹ chưa xác nhận, theo thứ tự backend trả", () => {
     const pages = [

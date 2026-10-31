@@ -77,9 +77,10 @@ def test_short_clean_slide_keeps_text_layer() -> None:
     assert ocr_reason(title, CONFIG) is None
     assert assemble_text_layer_page(title, DOC_ID, CONFIG).tier_used == "text_layer"
     # Ảnh nền khung slide (phủ nhỏ hơn ngưỡng trang ảnh) không đổi quyết định; ảnh vẫn bật cờ hình như cũ.
+    # GĐ0 0C (§5.7, 2026-10-31): hình trên PDF số chỉ ghi vùng, không còn lý do xem lại TIER3_UNAVAILABLE.
     framed = _raw(["Chương 1"], image=0.17)
     page = assemble_text_layer_page(framed, DOC_ID, CONFIG)
-    assert (page.tier_used, page.has_figure, page.review_reasons) == ("text_layer", True, ["TIER3_UNAVAILABLE"])
+    assert (page.tier_used, page.has_figure, page.review_reasons) == ("text_layer", True, [])
     # Ít chữ mà không có ảnh lớn: giữ lớp chữ dù chỉ có một ký tự.
     assert ocr_reason(_raw(["7"]), CONFIG) is None
 
@@ -117,10 +118,11 @@ def test_sparse_rule_boundaries() -> None:
     below, at = "x" * (chars - 1), "x" * chars
     assert ocr_reason(_raw([below], image=image), CONFIG) == "sparse_text_on_image"  # biên ảnh thuộc trang ảnh
     assert ocr_reason(_raw([below], image=1.0), CONFIG) == "sparse_text_on_image"
-    assert ocr_reason(_raw([at], image=0.89), CONFIG) is None  # đủ `text_sparse_chars` ký tự: giữ lớp chữ
+    # Đủ `text_sparse_chars` ký tự: luật (c) không áp; một token trên ảnh ≥ 0.30 ⇒ luật (e) của GĐ0 (§5.7 0C).
+    assert ocr_reason(_raw([at], image=0.89), CONFIG) == "image_needs_reading"
     # Đủ ký tự nhưng ảnh phủ gần kín trang: luật `image_covers_page` (sửa đổi 2026-10-30).
     assert ocr_reason(_raw([at], image=1.0), CONFIG) == "image_covers_page"
-    assert ocr_reason(_raw([below], image=image - 1e-6), CONFIG) is None
+    assert ocr_reason(_raw([below], image=image - 1e-6), CONFIG) == "image_needs_reading"  # §5.7 0C luật (e)
     # Khoảng trắng không tính vào số ký tự.
     assert ocr_reason(_raw([" ".join(below)], image=1.0), CONFIG) == "sparse_text_on_image"
     # Đếm sau chuẩn hoá NFC: chữ có dấu tổ hợp (NFD) không bị đếm thành hai ký tự.
@@ -132,8 +134,9 @@ def test_sparse_rule_boundaries() -> None:
 def test_sparse_thresholds_are_configurable_and_validated() -> None:
     raw = _raw(["Chương 1"], image=0.5)
     assert ocr_reason(raw, CONFIG) == "sparse_text_on_image"
-    assert ocr_reason(raw, PdfReaderConfig(text_sparse_chars=7)) is None
-    assert ocr_reason(raw, PdfReaderConfig(text_sparse_image_min=0.6)) is None
+    # Luật (c) không áp; 2 token trên ảnh 0.5 ⇒ luật (e) của GĐ0 (§5.7 0C).
+    assert ocr_reason(raw, PdfReaderConfig(text_sparse_chars=7)) == "image_needs_reading"
+    assert ocr_reason(raw, PdfReaderConfig(text_sparse_image_min=0.6)) == "image_needs_reading"
     assert ocr_reason(_raw(["Chương 1"], image=0.3), PdfReaderConfig(text_sparse_image_min=0.3)) is not None
     # Trang không có ảnh không bao giờ là trang ảnh: ngưỡng ảnh phải > 0.
     for bad in ({"text_sparse_image_min": 0.0}, {"text_sparse_image_min": 1.1}, {"text_sparse_chars": 0}):
@@ -162,13 +165,13 @@ def test_reader_applies_tier_rules_on_generated_pdf(tmp_path: Path) -> None:
     summary = [(p.status, p.tier_used, p.failure_reason) for p in result]
     assert summary == [
         ("ok", "text_layer", None),
-        ("needs_review", "text_layer", None),  # ảnh khung nhỏ: giữ lớp chữ, cờ hình ⇒ TIER3_UNAVAILABLE
+        ("ok", "text_layer", None),  # ảnh khung nhỏ: giữ lớp chữ, cờ hình chỉ ghi vùng (GĐ0 0C)
         ("failed", None, "OCR_ENGINE_MISSING"),
         ("failed", None, "OCR_ENGINE_MISSING"),
         ("failed", None, "OCR_ENGINE_MISSING"),
     ]
     assert [line.text for line in result[0].lines] == ["Bài 1"]
-    assert result[1].review_reasons == ["TIER3_UNAVAILABLE"]
+    assert result[1].review_reasons == [] and result[1].has_figure
     assert result[2].text_score is not None and result[2].text_score < CONFIG.text_layer_min
     assert result[3].text_score == 0.0
     assert result[4].text_score == pytest.approx(1.0)  # lớp chữ sạch nhưng là trang ảnh
@@ -229,6 +232,8 @@ def test_worker_and_parent_agree_at_boundaries(
             "ocr_dpi": 36,
             "text_sparse_chars": non_ws - char_delta,
             "text_sparse_image_min": measured.image_area_ratio + image_delta,
+            # Test này kiểm biên luật (c); luật (e) của GĐ0 (§5.7 0C) tắt bằng cấu hình để không xen vào.
+            "figure_text_min_tokens": 1,
         }
     )
     config = PdfReaderConfig.model_validate(config.model_dump())
@@ -382,8 +387,9 @@ def test_default_sparse_thresholds() -> None:
     assert (CONFIG.text_sparse_chars, CONFIG.text_sparse_image_min) == (32, 0.40)
     assert ocr_reason(_raw(["x" * 29], image=0.9), CONFIG) == "sparse_text_on_image"
     assert ocr_reason(_raw(["x" * 31], image=0.40), CONFIG) == "sparse_text_on_image"
-    assert ocr_reason(_raw(["x" * 32], image=0.74), CONFIG) is None
-    assert ocr_reason(_raw(["Chương 1"], image=0.39), CONFIG) is None
+    # Luật (c) không áp; ít token trên ảnh ≥ 0.30 ⇒ luật (e) của GĐ0 (§5.7 0C).
+    assert ocr_reason(_raw(["x" * 32], image=0.74), CONFIG) == "image_needs_reading"
+    assert ocr_reason(_raw(["Chương 1"], image=0.39), CONFIG) == "image_needs_reading"
 
 
 # --------------------------------------------------------------------------- #
@@ -466,15 +472,16 @@ def test_image_covers_page_char_cap_boundaries() -> None:
     below, at = "x" * (cap - 1), "x" * cap
     assert ocr_reason(_raw([below], image=CONFIG.text_full_image_min), CONFIG) == "image_covers_page"
     assert ocr_reason(_raw([below], image=1.0), CONFIG) == "image_covers_page"
-    assert ocr_reason(_raw([at], image=1.0), CONFIG) is None  # đủ `text_full_image_max_chars` ký tự: giữ lớp chữ
+    # Đủ `text_full_image_max_chars` ký tự: luật (d) không áp; một token trên ảnh phủ kín ⇒ luật (e) (§5.7 0C).
+    assert ocr_reason(_raw([at], image=1.0), CONFIG) == "image_needs_reading"
     # Khoảng trắng không tính; đếm sau NFC.
     assert ocr_reason(_raw([" ".join(below)], image=1.0), CONFIG) == "image_covers_page"
     assert ocr_reason(_raw(["é" * (cap - 1)], image=1.0), CONFIG) == "image_covers_page"
-    # Lớp chữ đầy đủ trên ảnh phủ kín (PDF scan đã có lớp chữ): giữ lớp chữ, cờ hình ⇒ TIER3_UNAVAILABLE.
+    # Lớp chữ đầy đủ trên ảnh phủ kín (PDF scan đã có lớp chữ): giữ lớp chữ, cờ hình chỉ ghi vùng (GĐ0 0C).
     page = assemble_text_layer_page(_raw([TITLE_64] * 4, image=1.0), DOC_ID, CONFIG)
     assert non_whitespace_count(page_text(_raw([TITLE_64] * 4).lines)) >= cap
-    assert (page.tier_used, page.status, page.has_figure) == ("text_layer", "needs_review", True)
-    assert page.review_reasons == ["TIER3_UNAVAILABLE"]
+    assert (page.tier_used, page.status, page.has_figure) == ("text_layer", "ok", True)
+    assert page.review_reasons == []
 
 
 def test_image_covers_page_char_cap_is_configurable_and_validated() -> None:
@@ -518,8 +525,9 @@ def test_short_title_with_large_image_keeps_text_layer_with_figure_flag(tmp_path
     assert non_whitespace_count(page_text(measured.lines)) == 35
     assert CONFIG.figure_image_area_min <= measured.image_area_ratio < CONFIG.text_full_image_min
     [page] = list(WorkerPdfReader(CONFIG).read_pages(path, DOC_ID))
-    assert (page.status, page.tier_used, page.has_figure) == ("needs_review", "text_layer", True)
-    assert "TIER3_UNAVAILABLE" in page.review_reasons
+    # GĐ0 0C (§5.7): tiêu đề đủ token ⇒ hình chỉ ghi vùng, không lý do xem lại vì hình.
+    assert (page.status, page.tier_used, page.has_figure) == ("ok", "text_layer", True)
+    assert "TIER3_UNAVAILABLE" not in page.review_reasons
     assert [line.text for line in page.lines] == [TITLE_35]
 
 
@@ -548,7 +556,7 @@ def test_worker_and_parent_agree_at_full_image_boundary(tmp_path: Path, image_de
     if expect_ocr:
         assert [line.text for line in page.lines] == ["Bảng 1"]  # văn bản lượt OCR, không phải lớp chữ
     else:
-        assert page.review_reasons == ["TIER3_UNAVAILABLE"]  # ảnh lớn ⇒ cờ hình
+        assert page.has_figure and page.review_reasons == []  # ảnh lớn ⇒ cờ hình, chỉ ghi vùng (GĐ0 0C)
 
 
 def test_full_image_page_with_default_config(tmp_path: Path) -> None:
@@ -565,7 +573,7 @@ def test_full_image_page_with_default_config(tmp_path: Path) -> None:
     assert not worker_ocr
     assert ocr_reason(raw, config) is None
     page = assemble_text_layer_page(raw, DOC_ID, config)
-    assert (page.tier_used, page.status, page.review_reasons) == ("text_layer", "needs_review", ["TIER3_UNAVAILABLE"])
+    assert (page.tier_used, page.status, page.review_reasons) == ("text_layer", "ok", [])  # GĐ0 0C (§5.7)
 
 
 def test_full_text_layer_over_full_image_keeps_text_layer(tmp_path: Path) -> None:
@@ -576,8 +584,8 @@ def test_full_text_layer_over_full_image_keeps_text_layer(tmp_path: Path) -> Non
     assert non_whitespace_count(page_text(measured.lines)) >= CONFIG.text_full_image_max_chars
     assert measured.image_area_ratio >= CONFIG.text_full_image_min
     [page] = list(WorkerPdfReader(CONFIG).read_pages(path, DOC_ID))
-    assert (page.status, page.tier_used, page.has_figure) == ("needs_review", "text_layer", True)
-    assert page.review_reasons == ["TIER3_UNAVAILABLE"]
+    assert (page.status, page.tier_used, page.has_figure) == ("ok", "text_layer", True)  # GĐ0 0C (§5.7)
+    assert page.review_reasons == []
 
 
 def test_full_image_page_without_engine_is_ocr_engine_missing(tmp_path: Path) -> None:
@@ -598,11 +606,7 @@ def test_eval_tiers_reports_review_reasons_and_full_image_pages(tmp_path: Path) 
     rows = evaluate_file(PdfiumBackend.load(), path, CONFIG)
     assert not isinstance(rows, str)
     figure, covered, plain = rows
-    assert (figure.new_tier, figure.status, figure.review_reasons) == (
-        "text_layer",
-        "needs_review",
-        ["TIER3_UNAVAILABLE"],
-    )
+    assert (figure.new_tier, figure.status, figure.review_reasons) == ("text_layer", "ok", [])  # GĐ0 0C (§5.7)
     assert (figure.has_figure, figure.has_table, figure.has_formula) == (True, False, False)
     assert (covered.new_tier, covered.new_reason, covered.status, covered.review_reasons) == (
         "ocr",
@@ -615,10 +619,11 @@ def test_eval_tiers_reports_review_reasons_and_full_image_pages(tmp_path: Path) 
     report = eval_pdf_tiers.DirReport(pdf_dir=str(tmp_path), files=[path.name], pages=rows)
     stats = eval_pdf_tiers.summary(report)
     assert stats["new_ocr_reasons"] == {"image_covers_page": 1}
-    assert stats["unflagged_figure_pages"] == 0
+    # GĐ0 0C (§5.7): trang giữ lớp chữ có hình không còn lý do xem lại vì hình (thống kê cũ của script đếm nó).
+    assert stats["unflagged_figure_pages"] == 1
     text = eval_pdf_tiers.markdown([report], CONFIG, 120, 0.30, 0.30)
     assert "trang giữ lớp chữ có ảnh ≥ 0.3 (1)" in text
-    assert f"| slides.pdf | 1 | 35 | {figure.image_area_ratio * 100:.1f} | text_layer | TIER3_UNAVAILABLE |" in text
+    assert f"| slides.pdf | 1 | 35 | {figure.image_area_ratio * 100:.1f} | text_layer | (rỗng) |" in text  # GĐ0 0C
 
 
 @pytest.mark.parametrize("scan_templates", [True, False])

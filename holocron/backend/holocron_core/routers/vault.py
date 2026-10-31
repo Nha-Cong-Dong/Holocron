@@ -391,6 +391,7 @@ def create_proposal_job(
         client_factory=client_factory,
         limits=config.llm.task_limits,
         now=clock(),
+        settings=config.llm.proposal,
     )
     response.headers["Location"] = f"/v1/vault/concept-pairs/jobs/{job.job_id}"
     return job

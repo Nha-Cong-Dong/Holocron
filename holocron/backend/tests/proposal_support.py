@@ -95,6 +95,17 @@ def as_json(*items: object) -> str:
     return json.dumps(list(items), ensure_ascii=False)
 
 
+EMPTY_REPLY = '{"chunks": [], "pairs": []}'
+
+
+def reply(*items: dict[str, object], **extra: object) -> str:
+    """Phản hồi con trỏ `{"chunks": [...], "pairs": [...]}`: phần tử có `term_span_id` vào `pairs`, còn lại vào
+    `chunks`."""
+    pairs = [item for item in items if "term_span_id" in item]
+    chunks = [item for item in items if "term_span_id" not in item]
+    return json.dumps({"chunks": chunks, "pairs": pairs, **extra}, ensure_ascii=False)
+
+
 Response = str | LlmUpstreamError | Callable[[Sequence[ChatMessage]], str]
 
 

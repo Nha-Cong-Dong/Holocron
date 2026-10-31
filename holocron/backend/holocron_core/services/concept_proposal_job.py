@@ -9,8 +9,16 @@
   lưu; job thành `cancelled` khi không còn lô nào chạy. Huỷ job đã kết thúc không đổi gì.
 - **Trạng thái:** `succeeded` = mọi lô xong không lỗi; `partial` = có lô lỗi và có lô xong; `failed` = mọi lô lỗi;
   `cancelled` = người dùng huỷ trước khi hết lô.
-- **Lưu:** chỉ trong bộ nhớ của runtime (cấp qua `Depends`, không phải biến cấp module); tắt app thì mất job, cặp đã
-  lưu vẫn còn. Giữ tối đa `job_keep_finished` job đã kết thúc (cũ nhất bị bỏ trước).
+- **Lưu:** chỉ trong bộ nhớ của runtime, do `lifespan` của app tạo và đóng (như `ImportRuntime`) rồi cấp cho router
+  qua `Depends`; tắt app thì mất job, cặp đã lưu vẫn còn. Giữ tối đa `job_keep_finished` job đã kết thúc (cũ nhất bị
+  bỏ trước). Hàng đợi không có trần số job (spec §5.8).
+- **Cấu hình:** một nguồn duy nhất là `ConceptProposalSettings` (`config.llm.proposal`): runtime nhận nó lúc tạo
+  (song song, số job giữ lại), mỗi job nhận bản của request (cỡ lô, tích sẵn, số lần ghi lại nhãn).
+- **Lỗi khi cộng kết quả một lô:** chỉ lô đó tính là lô lỗi; job chạy tiếp các lô còn lại; luồng chạy không chết.
+  Job kết thúc mà không bị huỷ thì `batches_done + batches_failed = batches_total`.
+- **Tắt app:** `close` ngừng nhận job, bỏ lô chưa chạy (tính là lô lỗi, nên job không bao giờ `succeeded` khi
+  chưa chạy hết lô) và chờ các luồng trong MỘT hạn chung; lô còn chạy sau khi kho
+  đóng gặp lỗi kho và được tính là lô lỗi (không ghi được gì vào kho đã đóng).
 
 Job không gọi mạng khi tạo; LLM KHÔNG BAO GIỜ xác nhận cặp.
 """
@@ -22,7 +30,7 @@ import math
 import threading
 import time
 import uuid
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -119,13 +127,16 @@ class ProposalJobRuntime:
         client_factory: ClientFactory,
         limits: LlmTaskLimits,
         now: datetime,
+        settings: ConceptProposalSettings | None = None,
         trigger: Literal["document_confirmed", "manual"] = "manual",
     ) -> ProposalJob:
-        """Xếp job vào hàng đợi (không gọi mạng); `chunk_ids` đã được kiểm, lặp chỉ tính một lần."""
+        """Xếp job vào hàng đợi (không gọi mạng); `chunk_ids` đã được kiểm, lặp chỉ tính một lần. `settings` là
+        `config.llm.proposal` của request (mặc định: cấu hình của runtime)."""
         unique = list(dict.fromkeys(chunk_ids))
         if not unique:
             raise ValueError("job cần ít nhất một chunk")
-        size = self._settings.job_batch_chunks
+        job_settings = settings or self._settings
+        size = job_settings.job_batch_chunks
         job = ProposalJob(
             job_id=f"pjob_{uuid.uuid4().hex[:16]}",
             subject_code=subject_code,
@@ -148,8 +159,8 @@ class ProposalJobRuntime:
             store=store,
             client_factory=client_factory,
             limits=limits,
-            preselect_enabled=self._settings.pair_preselect_enabled,
-            label_retries=self._settings.label_write_retries,
+            preselect_enabled=job_settings.pair_preselect_enabled,
+            label_retries=job_settings.label_write_retries,
         )
         with self._condition:
             if self._shared.closed:
@@ -200,14 +211,22 @@ class ProposalJobRuntime:
         return True
 
     def close(self, timeout: float = 5.0) -> None:
-        """Ngừng nhận job, bỏ lô chưa chạy, chờ luồng chạy xong lô đang dở trong `timeout` giây."""
+        """Ngừng nhận job, bỏ lô chưa chạy, chờ mọi luồng chạy xong lô đang dở trong TỔNG `timeout` giây."""
         with self._condition:
             self._shared.closed = True
+            dropped = Counter(batch.job_id for batch in self._shared.queue)
             self._shared.queue.clear()
+            for job_id, count in dropped.items():
+                state = self._shared.jobs[job_id]
+                # Lô bị bỏ lúc tắt app tính là lô lỗi, để job không thành `succeeded` khi chưa chạy hết lô.
+                state.job = state.job.model_copy(update={"batches_failed": state.job.batches_failed + count})
+                if state.running == 0:
+                    self._finish(state)
             workers = list(self._shared.workers)
             self._condition.notify_all()
+        deadline = time.monotonic() + timeout
         for worker in workers:
-            worker.join(timeout)
+            worker.join(max(0.0, deadline - time.monotonic()))
 
     # ------------------------------------------------------------------ #
     # Luồng chạy
@@ -244,7 +263,11 @@ class ProposalJobRuntime:
             outcome = self._run_batch(batch, state)
             with self._condition:
                 state.running -= 1
-                self._record(state, outcome)
+                try:
+                    self._record(state, outcome)
+                except Exception:  # chỉ lô này tính là lỗi; job chạy tiếp, luồng chạy không được chết
+                    logger.exception("không cộng được kết quả lô vào job %s", state.job.job_id)
+                    state.job = state.job.model_copy(update={"batches_failed": state.job.batches_failed + 1})
                 remaining = any(queued.job_id == batch.job_id for queued in self._shared.queue)
                 if not remaining and state.running == 0:
                     self._finish(state)

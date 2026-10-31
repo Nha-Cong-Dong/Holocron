@@ -242,8 +242,9 @@ ProposalRejectReason = Literal[
     "anchor_not_found",
     "anchor_ambiguous",
 ]
-"""Lý do loại một đề xuất. `term_span_cross_chunk`: span của term khác chunk với span định nghĩa (thêm theo điều
-phối 2026-10-31, chờ spec cập nhật)."""
+"""Lý do loại một đề xuất. `term_span_cross_chunk`: span của term khác chunk với span định nghĩa (mã con trỏ thứ sáu, do
+`services/concept_proposal_pointer.py` đặt khi `term_span_id` không cùng chunk với `def_span_ids`; có trong
+`src/types/holocron.ts`, spec §6.6 mới liệt kê năm mã con trỏ)."""
 BatchErrorKind = Literal["llm_upstream", "deadline", "format"]
 PROPOSAL_JOB_ID_PATTERN = r"^pjob_[0-9a-f]{16}$"
 MAX_PROPOSAL_JOB_BATCH_CHUNKS = 20

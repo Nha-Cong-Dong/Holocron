@@ -423,7 +423,23 @@ export type LineEngine = "text_layer" | "tesseract" | "vlm" | "human";
 
 export type TierUsed = "text_layer" | "ocr" | "layout" | "vlm";
 
-export type LineFlag = "LOW_LINE_CONF" | "TOKEN_MISMATCH" | "HIGH_LINE_CER";
+/** Cờ dòng; ba cờ GĐ0 (thêm 2026-10-31) chỉ có ở dòng `engine = "text_layer"`. */
+export type LineFlag =
+  | "LOW_LINE_CONF"
+  | "TOKEN_MISMATCH"
+  | "HIGH_LINE_CER"
+  | "LOW_TEXT_CONTRAST"
+  | "TEXT_OCCLUDED"
+  | "FONT_ENCODING_SUSPECT";
+
+/** Vai trò trang (GĐ0 0D, §5.7); `exercise` chỉ do LLM gắn (GĐ1). */
+export type PageRole =
+  | "content"
+  | "cover_or_course_nav"
+  | "chapter_nav"
+  | "build_step"
+  | "parallel_visual_series"
+  | "exercise";
 
 /** Lý do trang cần xem kỹ (§5.7), sắp theo thứ tự khai báo, không trùng. */
 export type ReviewReason =
@@ -437,7 +453,13 @@ export type ReviewReason =
   | "TOKEN_MISMATCH"
   | "CROSS_CHECK_UNAVAILABLE"
   | "HIGH_PAGE_CER"
-  | "OCR_ENGINE_MISSING";
+  | "OCR_ENGINE_MISSING"
+  | "LOW_TEXT_CONTRAST"
+  | "TEXT_OCCLUDED"
+  | "FONT_ENCODING_SUSPECT"
+  | "IMAGE_NEEDS_READING"
+  | "PAGE_ROLE_UNCERTAIN"
+  | "DENOISE_UNAVAILABLE";
 
 export type FailureReason = "PAGE_TIMEOUT" | "PAGE_ERROR" | "OCR_ENGINE_MISSING" | "TOO_MANY_LINES";
 
@@ -454,6 +476,28 @@ export interface ExtractedLine {
   engine: LineEngine;
   flags: LineFlag[];
   edited_by_human: boolean;
+  /** GĐ0 0B(5): dòng header/footer lặp; không vào văn bản xác nhận, không phải dòng có chữ. */
+  is_header_footer: boolean;
+}
+
+/** Một ảnh nội dung (không-template) của trang (GĐ0 0A); `bbox` chuẩn hoá [0, 1], gốc trên-trái. */
+export interface PageImage {
+  bbox: [number, number, number, number];
+  sha256: string | null;
+  dhash: string | null;
+}
+
+export interface PageRef {
+  document_id: string;
+  page_number: number;
+}
+
+/** Lý do của `page_role`, bỏ mềm hay cờ `PAGE_ROLE_UNCERTAIN` (GĐ0 0D); frontend chỉ hiển thị, không suy luật. */
+export interface PageRoleEvidence {
+  rule: "cover_or_course_nav" | "chapter_nav" | "build_step" | "parallel_visual_series" | "build_step_uncertain";
+  related_pages: PageRef[];
+  jaccard: number | null;
+  dhash_distance: number | null;
 }
 
 export interface TokenMismatch {
@@ -489,6 +533,15 @@ export interface PageExtraction {
   failure_reason: FailureReason | null;
   confirmed: boolean;
   confirmed_at: string | null;
+  own_images: PageImage[];
+  hidden_chars_dropped: number;
+  scan_text_layer: boolean;
+  content_token_count: number | null;
+  page_role: PageRole;
+  role_evidence: PageRoleEvidence | null;
+  /** GĐ0 0D: trang bỏ mềm (không vào chunk, không tính "cần xem"); hoàn tác qua `POST …/restore`. */
+  dropped: boolean;
+  restored: boolean;
 }
 
 export type DocumentStatus = "processing" | "review" | "confirmed" | "failed";
@@ -501,11 +554,14 @@ export interface PageSummary {
   tier_used: TierUsed | null;
   review_reasons: ReviewReason[];
   confirmed: boolean;
+  page_role: PageRole;
+  dropped: boolean;
 }
 
 /**
  * `POST /v1/documents` (202 hoặc 200), `GET /v1/documents/{document_id}` và `POST /v1/documents/{document_id}/confirm`;
- * `pages` đủ `page_count` phần tử. `chapter_code` là field form bắt buộc khi nhập (một file = một chương).
+ * `pages` đủ `page_count` phần tử. `chapter_code` luôn có giá trị (một file = một chương): field form tuỳ chọn khi
+ * nhập; không gửi thì backend chọn theo tên file hoặc chương trống nhỏ nhất (§5.7 "Chương tự động").
  */
 export interface DocumentImport {
   meta: DocumentMeta;
@@ -515,6 +571,17 @@ export interface DocumentImport {
   chapter_code: string;
   status: DocumentStatus;
   pages: PageSummary[];
+  /** Số đếm tóm tắt GĐ0 do backend đếm (lấy, bỏ, cần xem); frontend chỉ hiển thị. */
+  pages_kept: number;
+  pages_dropped: number;
+  pages_needs_review: number;
+  /** Tên chương (1–300 ký tự); null chỉ với tài liệu nhập trước khi có tên chương. */
+  chapter_title: string | null;
+  chapter_source: ChapterSource;
+  /** Cờ chương do code đặt (thứ tự khai báo, không trùng); chỉ để hiển thị. */
+  chapter_flags: ChapterFlag[];
+  /** Cài đặt "Tự xác nhận" gửi khi nhập (field form `auto_confirm`, mặc định bật). */
+  auto_confirm: boolean;
 }
 
 /** Một phần tử của `GET /v1/documents`, mới nhất trước. */
@@ -525,6 +592,7 @@ export interface DocumentSummary {
   pages_needs_review: number;
   pages_failed: number;
   pages_confirmed: number;
+  pages_dropped: number;
 }
 
 /** Một dòng sửa; `text` rỗng nghĩa là dòng không vào văn bản xác nhận. */
@@ -547,9 +615,38 @@ export interface PageConfirmRequest {
   expected_version: number;
 }
 
+/** Body của `POST /v1/documents/{document_id}/pages/{page_number}/restore` (GĐ0 0D); trả `PageExtraction`. */
+export interface PageRestoreRequest {
+  editor_id: string;
+  expected_version: number;
+}
+
 /** Body của `POST /v1/documents/{document_id}/confirm`; trả `DocumentImport`. */
 export interface DocumentConfirmRequest {
   editor_id: string;
+}
+
+// Chương tự động (SPECIFICATION §5.7 "Chương tự động", §6.5; GĐ1 1A)
+
+/** Cờ chương: chỉ để hiển thị, không chặn xác nhận. */
+export type ChapterFlag = "CHAPTER_NUMBER_NOT_IN_FILENAME" | "CHAPTER_NUMBER_TAKEN";
+export type ChapterCodeSource = "user" | "file_name" | "next_free";
+export type ChapterTitleSource = "user" | "repeated_header" | "file_name" | "llm";
+
+/** Nguồn của `chapter_code` và `chapter_title`; `title` null khi và chỉ khi `chapter_title` null. */
+export interface ChapterSource {
+  code: ChapterCodeSource;
+  title: ChapterTitleSource | null;
+}
+
+/**
+ * Body của `PATCH /v1/documents/{document_id}/chapter`; trả `DocumentImport`. `chapter_code` và `chapter_title`
+ * không cùng null; backend chuẩn hoá `chapter_title` (NFC, gộp khoảng trắng).
+ */
+export interface DocumentChapterPatch {
+  editor_id: string;
+  chapter_code?: string | null;
+  chapter_title?: string | null;
 }
 
 // ------------------------------------------------------------------ domain/vault.py

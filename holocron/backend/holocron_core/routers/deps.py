@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from functools import cache
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException, Request
 
 from ..domain.repositories import AppStore, VaultRepository
 from ..infrastructure.llm_config import RuntimeConfig, load_runtime_config_lenient
@@ -39,15 +39,22 @@ def get_store() -> AppStore:
     return _default_store()
 
 
-@cache
-def _default_proposal_jobs() -> ProposalJobRuntime:
-    """Runtime job đề xuất cặp, một cho cả tiến trình (như kho mặc định): hàng đợi FIFO và giới hạn song song toàn app
-    (§5.8). Job chỉ sống trong bộ nhớ; luồng chạy là daemon, tắt app thì job mất, cặp đã lưu vẫn còn."""
-    return ProposalJobRuntime()
+PROPOSAL_JOBS_STATE_ATTR = "proposal_jobs"
+PROPOSAL_JOBS_UNAVAILABLE_DETAIL = "Job đề xuất cặp chưa sẵn sàng: ứng dụng đang khởi động hoặc đang tắt."
 
 
-def get_proposal_jobs() -> ProposalJobRuntime:
-    return _default_proposal_jobs()
+def create_proposal_job_runtime(config: RuntimeConfig) -> ProposalJobRuntime:
+    """Runtime job đề xuất cặp của một app (§5.8): `lifespan` tạo khi khởi động, gắn vào `app.state`, đóng khi tắt
+    (trước khi đóng kho). Cấu hình lấy từ `config.llm.proposal`, cùng nguồn với từng request."""
+    return ProposalJobRuntime(config.llm.proposal)
+
+
+def get_proposal_jobs(request: Request) -> ProposalJobRuntime:
+    """Runtime job của app. Không có (`lifespan` chưa chạy hoặc đã gỡ khi tắt app) ⇒ 500 kèm `detail`, như bộ nhập."""
+    jobs = getattr(request.app.state, PROPOSAL_JOBS_STATE_ATTR, None)
+    if isinstance(jobs, ProposalJobRuntime):
+        return jobs
+    raise HTTPException(status_code=500, detail=PROPOSAL_JOBS_UNAVAILABLE_DETAIL)
 
 
 def get_extractor() -> DocumentExtractor:

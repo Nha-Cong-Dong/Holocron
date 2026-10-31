@@ -20,7 +20,9 @@ from holocron_core.infrastructure.document_readers.template_images import (
 )
 from holocron_core.infrastructure.document_readers.tiers import scan_flags
 
-CONFIG = PdfReaderConfig()
+# Các test biên ở đây viết cho tỉ lệ trang 0.60; mặc định `template_min_page_ratio` đổi sang 0.40 theo phép đo
+# GĐ0 (2026-10-31), nên ghi tường minh tỉ lệ cũ để giữ đúng các biên đã kiểm.
+CONFIG = PdfReaderConfig(template_min_page_ratio=0.60)
 DIGEST = "a" * 64
 OTHER_DIGEST = "b" * 64
 

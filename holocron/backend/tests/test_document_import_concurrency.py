@@ -71,7 +71,14 @@ def env(
     request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lifespan_client: None
 ) -> Iterator[ImportEnv]:
     for store in open_store(str(request.param), tmp_path, monkeypatch):
-        yield install(store, tmp_path / "files", SynchronousImportQueue(), BlockingProbeReader(), locks=ObservedLocks())
+        yield install(
+            store,
+            tmp_path / "files",
+            SynchronousImportQueue(),
+            BlockingProbeReader(),
+            locks=ObservedLocks(),
+            subject_locks=ObservedLocks(),
+        )
         app.dependency_overrides.clear()
 
 
@@ -125,6 +132,7 @@ def test_two_concurrent_posts_of_one_file_create_one_document(
     if second[0].status_code == 200:
         assert DocumentImport.model_validate(second[0].json()).meta.doc_id == document_id
     assert len(locks) == 0, "khoá được bỏ khi không còn ai giữ"
+    assert len(env.runtime.subject_locks) == 0, "khoá môn được bỏ khi không còn ai giữ"
 
 
 def test_other_requests_are_served_while_a_probe_is_slow(env: ImportEnv) -> None:

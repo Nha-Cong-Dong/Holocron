@@ -10,7 +10,7 @@ import json
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from holocron_core.domain.vault import ConceptPair, ConceptPairStatus
 from holocron_core.infrastructure.llm_config import (
@@ -33,9 +33,9 @@ from tests.proposal_support import (
     GatePage,
     LegacyPage,
     StubClient,
-    as_json,
     label,
     pointer,
+    reply,
     seed,
     span_of,
 )
@@ -49,9 +49,7 @@ CONFIGURED_ENV = {
 }
 
 
-def _gates_for(
-    page: GatePage | LegacyPage | None, quote: str = DEF_PROCESS, exercise: bool | None = False
-) -> list[str]:
+def _gates_for(page: BaseModel | None, quote: str = DEF_PROCESS, exercise: bool | None = False) -> list[str]:
     store = IngestionStore()
     chunk = seed(store, [page or GatePage(), GatePage()])[0]
     if page is None:
@@ -161,7 +159,7 @@ def test_pointer_batch_preselects_only_when_enabled(enabled: bool) -> None:
     store = IngestionStore()
     chunks = seed(store)
     s = span_of(chunks, DEF_PROCESS)
-    response = as_json(
+    response = reply(
         pointer(s, "Tiến trình", [s], "Tiến trình là", "bộ nhớ."), *(label(chunk, False) for chunk in chunks)
     )
     outcome = run_pointer_batch(
@@ -242,3 +240,16 @@ def test_sync_endpoint_returns_gates_and_honours_the_preselect_setting(enabled: 
     assert pair["failed_gates"] == [] and pair["pre_selected"] is enabled and pair["status"] == "proposed"
     listed = TestClient(app).get("/v1/vault/concept-pairs", params={"subject_code": SUBJECT}).json()
     assert [(item["pre_selected"], item["failed_gates"]) for item in listed] == [(enabled, [])]
+
+
+class BarePage(BaseModel):
+    """JSON trang chỉ có lớp chữ và field GĐ0, thiếu `has_table` và `cross_check`."""
+
+    tier_used: str = "text_layer"
+    scan_text_layer: bool = False
+    page_role: str = "content"
+
+
+def test_missing_table_or_cross_check_fields_fail_g4_and_g5() -> None:
+    """Thiếu dữ liệu ⇒ trượt: trang không có `has_table` thì G4 trượt, không có `cross_check` thì G5 trượt."""
+    assert _gates_for(BarePage()) == ["G4_COLUMN_MIX", "G5_NUMBERS"]

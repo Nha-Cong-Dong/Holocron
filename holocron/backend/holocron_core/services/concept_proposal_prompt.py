@@ -63,7 +63,7 @@ def build_retry_messages(first: Sequence[ChatMessage], previous_response: str) -
 # Giao thức con trỏ của job nền (spec §5.8 "Giao thức con trỏ", ADR-007 mục 3)
 # --------------------------------------------------------------------------- #
 
-POINTER_PROMPT_VERSION = "concept_pairs_pointer_v1"
+POINTER_PROMPT_VERSION = "concept_pairs_pointer_v2"
 
 POINTER_SYSTEM_PROMPT = f"""Bạn hỗ trợ một hệ thống ôn tập tìm các cặp "khái niệm – định nghĩa" trong tài liệu học tập.
 
@@ -76,23 +76,22 @@ Bạn KHÔNG chép định nghĩa. Bạn chỉ TRỎ vào các dòng chứa đ�
    hiện MỘT lần trong các dòng đã chọn.
 3. "def_end_words": vài từ cuối cùng của định nghĩa (kể cả dấu câu cuối), chép đúng từng chữ; chọn đủ dài để chỉ
    xuất hiện MỘT lần sau chỗ bắt đầu.
-4. "term_span_id": id của dòng chứa tên khái niệm, cùng đoạn với các dòng định nghĩa; "term_exact": tên khái niệm chép
-   đúng như trong dòng đó, tối đa 120 ký tự.
-5. "is_exercise" (tuỳ chọn): true nếu đoạn chứa dòng định nghĩa là bài tập, câu hỏi hay đề bài; false nếu không.
-6. Chỉ chọn những câu thực sự định nghĩa hoặc giải thích một khái niệm. Tối đa {MAX_PAIRS_PER_CHUNK} cặp cho mỗi đoạn.
+4. "term_span_id": id của dòng chứa tên khái niệm, CÙNG đoạn với các dòng định nghĩa; "term_exact": tên khái niệm
+   chép đúng như trong dòng đó, tối đa 120 ký tự.
+5. Chỉ chọn những câu thực sự định nghĩa hoặc giải thích một khái niệm. Tối đa {MAX_PAIRS_PER_CHUNK} cặp cho mỗi đoạn.
 
-Ngoài các cặp, với MỌI đoạn trong đầu vào (kể cả đoạn không có cặp nào) thêm đúng một phần tử
-{{"chunk_id": "...", "is_exercise": true hoặc false}}: true khi đoạn là bài tập, câu hỏi hay đề bài.
+Với MỌI đoạn trong đầu vào (kể cả đoạn không có cặp nào), ghi đúng một nhãn {{"chunk_id": "...", "is_exercise": true
+hoặc false}} vào "chunks": true khi đoạn là bài tập, câu hỏi hay đề bài.
 
-Chỉ trả về MỘT mảng JSON thuần, không kèm giải thích, không dùng khối mã, gồm hai loại phần tử:
-[{{"term_span_id": "S1", "term_exact": "...", "def_span_ids": ["S1", "S2"], "def_start_words": "...",
-"def_end_words": "...", "is_exercise": false}}, {{"chunk_id": "...", "is_exercise": false}}]
+Chỉ trả về MỘT object JSON thuần, không kèm giải thích, không dùng khối mã, theo đúng dạng:
+{{"chunks": [{{"chunk_id": "...", "is_exercise": false}}], "pairs": [{{"term_span_id": "S1", "term_exact": "...",
+"def_span_ids": ["S1", "S2"], "def_start_words": "...", "def_end_words": "..."}}]}}
 """
 
 POINTER_RETRY_NOTE = (
-    "Phản hồi trước không phải một mảng JSON hợp lệ theo dạng đã yêu cầu. Hãy trả lời lại, CHỈ gồm một mảng JSON "
-    "thuần gồm các phần tử cặp {term_span_id, term_exact, def_span_ids, def_start_words, def_end_words, is_exercise} "
-    "và các phần tử nhãn {chunk_id, is_exercise}, không thêm chữ nào khác."
+    "Phản hồi trước không phải một object JSON hợp lệ theo dạng đã yêu cầu. Hãy trả lời lại, CHỈ gồm một object JSON "
+    'thuần dạng {"chunks": [{chunk_id, is_exercise}], "pairs": [{term_span_id, term_exact, def_span_ids, '
+    "def_start_words, def_end_words}]}, không thêm chữ nào khác."
 )
 
 ANCHOR_RETRY_NOTE = (

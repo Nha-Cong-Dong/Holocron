@@ -12,9 +12,18 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .documents import CHAPTER_CODE_PATTERN, PageEditAudit, PageSummary
+from .documents import (
+    CHAPTER_CODE_PATTERN,
+    CHAPTER_FLAG_ORDER,
+    MAX_CHAPTER_TITLE_CHARS,
+    ChapterCodeSource,
+    ChapterFlag,
+    ChapterTitleSource,
+    PageEditAudit,
+    PageSummary,
+)
 from .ingestion import IngestionItem, UploadedDocument
 from .schemas import BlueprintSummary, DocumentMeta, ExamBlueprint, ExamFormat, KnowledgeChunk, Subject
 from .twins import IdempotencyRecord, TwinBatch
@@ -99,8 +108,12 @@ class VaultSearchUnavailableError(StorageError):
 class ImportedDocument(BaseModel):
     """Một dòng `documents` của tài liệu nhập qua bộ nhập PDF (§6.5); upload đề (§6.1) chỉ có `UploadedDocument`.
 
-    `chapter_code` là field form bắt buộc của `POST /v1/documents` (§6.5, duyệt 2026-10-26); bộ nhập luôn đặt nó.
-    `None` chỉ gặp ở bản ghi tạo trước khi có cột `documents.chapter_code` (migration 0002).
+    Bộ nhập luôn đặt `chapter_code`: người dùng nhập ở form (tuỳ chọn từ 2026-10-31), hoặc code chọn theo §5.7
+    "Chương tự động". `None` chỉ gặp ở bản ghi tạo trước khi có cột `documents.chapter_code` (migration 0002).
+
+    Cột của migration 0004 (§5.13): `chapter_code_source` (`None` ở bản ghi không có `chapter_code`; tầng gọi coi
+    bản ghi cũ có `chapter_code` mà thiếu nguồn là `"user"`, §5.7), `chapter_title` cùng `chapter_title_source`
+    (cùng `None` với bản ghi cũ), `chapter_flags` (sắp theo thứ tự khai báo, không trùng) và `auto_confirm`.
     """
 
     meta: DocumentMeta
@@ -110,6 +123,23 @@ class ImportedDocument(BaseModel):
     chapter_code: str | None = Field(default=None, pattern=CHAPTER_CODE_PATTERN)
     status: DocumentStatus
     version: int = Field(default=1, ge=1)
+    chapter_code_source: ChapterCodeSource | None = None
+    chapter_title: str | None = Field(default=None, min_length=1, max_length=MAX_CHAPTER_TITLE_CHARS)
+    chapter_title_source: ChapterTitleSource | None = None
+    chapter_flags: list[ChapterFlag] = Field(default_factory=list)
+    auto_confirm: bool = True
+
+    @field_validator("chapter_flags")
+    @classmethod
+    def _ordered_flags(cls, value: list[ChapterFlag]) -> list[ChapterFlag]:
+        present = set(value)
+        return [flag for flag in CHAPTER_FLAG_ORDER if flag in present]
+
+    @model_validator(mode="after")
+    def _title_has_a_source(self) -> ImportedDocument:
+        if (self.chapter_title is None) != (self.chapter_title_source is None):
+            raise ValueError("chapter_title và chapter_title_source cùng null hoặc cùng có giá trị")
+        return self
 
 
 class IngestionRepository(Protocol):
@@ -402,9 +432,9 @@ class VaultRepository(Protocol):
         """
         ...
 
-    def set_chunk_exercise(self, chunk_id: str, is_exercise: bool, expected_version: int) -> KnowledgeChunk:
-        """So-và-ghi nguyên tử nhãn `is_exercise` của chunk (LLM gắn trong job đề xuất cặp, §5.8); trả chunk đã lưu
-        với `version = expected_version + 1`.
+    def set_chunk_exercise(self, chunk_id: str, is_exercise: bool | None, expected_version: int) -> KnowledgeChunk:
+        """So-và-ghi nguyên tử nhãn `is_exercise` của chunk (LLM gắn trong job đề xuất cặp, §5.8; `None` khi LLM thiếu
+        nhãn, trả null hay nhãn xung đột); trả chunk đã lưu với `version = expected_version + 1`.
 
         Chỉ ghi `is_exercise`; nhãn khác, `label_status` và văn bản giữ nguyên. Lệch version ⇒
         `VersionConflictError`; không có chunk ⇒ `RecordNotFoundError`.

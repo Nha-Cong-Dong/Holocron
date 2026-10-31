@@ -2,7 +2,8 @@
 
 - Trạng thái: Chấp nhận (2026-10-23), gồm câu chữ I2 và I4 ở mục 4. Sửa ngày 2026-10-25 theo quyết định của người dùng: tiêu đề, nhà cung cấp LLM ở mục 1 và 3, khoá sắp xếp `pool_sha256` ở mục 2, mục 5 tách thành 5a (chấm offline) và 5b (`AnswerJudge` sau MVP), phần Hệ quả. Sửa ngày 2026-10-26 theo quyết định của người dùng: mục 2 thêm cách chọn dạng câu; phần Hệ quả cập nhật trạng thái field nullable của `BlueprintSlot`. Sửa chiều 2026-10-26 theo quyết định của người dùng: mục 1 thêm hướng luật "đúng một đáp án" (so trên dãy token chữ/số, theo khái niệm ở cả ba dạng; chi tiết chờ duyệt), mục 2 ghi luật mới dùng `generator_version = "theory_mcq4_v3"`. Sửa tiếp 2026-10-26 theo quyết định của người dùng (câu 19 và lịch MVP-1): mục 5a ghi tham số bộ chấm là giá trị ban đầu đã duyệt, bỏ n-gram thuộc `term`, thêm `term` vào điều kiện tái lập, lịch tự luận 30/10–2/11. Trạng thái không đổi.
 - Sửa đổi 2026-10-27: bỏ nhà cung cấp mặc định DeepSeek, xem PR #61.
-- Ngày: 2026-10-23; cập nhật 2026-10-25, 2026-10-26, 2026-10-27
+- Sửa đổi 2026-10-31 (người dùng duyệt; GĐ1 1C): mục 3 thêm tích sẵn (`pre_selected`) qua cổng G1–G5 kèm điều kiện precision ≥ 90%, `failed_gates`, luật tạm theo cờ cấp trang, job nền đề xuất cặp, giao thức con trỏ và nhãn `is_exercise` của chunk. Thứ tự "đề xuất, code kiểm nguyên văn, người dùng xác nhận" ở mục 1 không đổi. Trạng thái không đổi.
+- Ngày: 2026-10-23; cập nhật 2026-10-25, 2026-10-26, 2026-10-27, 2026-10-31
 
 ## Bối cảnh
 
@@ -55,6 +56,17 @@ Ba dạng câu MCQ4, đều do code sinh; LLM không soạn thân câu, phương
 ### 3. LLM chỉ đề xuất cặp khái niệm
 
 LLM (tuỳ chọn; nhà cung cấp do cấu hình quyết định, hiện qua gateway của ban tổ chức; duyệt 2026-10-25) chỉ đề xuất cặp `(term, definition_quote)` theo đúng thứ tự ở mục 1: đề xuất, code kiểm nguyên văn, người dùng xác nhận. LLM không soạn thân câu, không soạn phương án, không viết giải thích.
+
+**Tích sẵn và job nền (sửa đổi 2026-10-31, người dùng duyệt; GĐ1 1C).** Thứ tự ở mục 1 giữ nguyên; phần này chỉ thêm cách máy trình bày đề xuất. Contract ở spec §5.8 ("Cặp khái niệm", "Job nền đề xuất cặp") và §6.6.
+- **Tích sẵn (`pre_selected`):** máy được tích sẵn ô Chấp nhận cho cặp qua đủ năm cổng: G1 nguồn đáng tin, G2 glyph, G3 không bị che, G4 không trộn cột, G5 số khớp; và không thuộc trang/chunk `exercise`. Trạng thái vẫn `proposed` tới khi người bấm Chấp nhận; tích sẵn không phải xác nhận. LLM KHÔNG BAO GIỜ xác nhận.
+- **Điều kiện bật:** chỉ tích sẵn khi luật tích sẵn đạt precision ≥ 90% trên mẫu chấm, và số đo được ghi ở đây; không đạt thì thu hẹp luật (ví dụ chỉ tích cặp mà cả LLM lẫn mẫu cấu trúc cùng tìm ra) rồi đo lại. Chưa có số đo nên cấu hình `PAIR_PRESELECT_ENABLED` mặc định tắt (đề xuất suy ra, spec §5.8). **Số đo: chưa đo.**
+- **Cặp trượt cổng:** không tích, vào nhóm "Cần kiểm tra", ghi danh sách cổng trượt `failed_gates`.
+- **Luật TẠM:** trước khi có G1–G5 đầy đủ (sau GĐ0, cần cấp khối), các cổng dùng cờ cấp trang hiện có của trang nguồn (`preselect_page_flags_v1`, spec §5.8). Đây là luật tạm.
+- **G1 dùng chung luật độ tin cậy nguồn `source_trust_v1`** với luật tự xác nhận trang (ADR-008 mục 7; spec §5.7): một hàm duy nhất, hai nơi gọi (đề xuất suy ra).
+- **Job nền đề xuất cặp:** chạy ngay sau khi tài liệu được xác nhận (và gọi tay được), chia lô ≤ 20 chunk, song song ≤ 2 lô (cấu hình), có tiến độ, huỷ được, lỗi một lô không làm hỏng lô khác. Không có LLM thì không chạy (409 `CapabilityError` khi gọi tay); trích cặp bằng luật offline thuộc GĐ2. Endpoint đồng bộ `propose` giữ nguyên.
+- **Giao thức con trỏ (I3):** LLM không chép trích dẫn mà trỏ vào dòng có id `[S1..Sn]` và trả `{term_span_id, term_exact, def_span_ids, def_start_words, def_end_words}`; Python cắt trích dẫn từ `raw_text`. Mốc phải DUY NHẤT trong span đã chọn, không thì xin mốc dài hơn MỘT lần, vẫn không được thì loại (đếm `rejected_count` theo lý do); `term_exact` phải là chuỗi con của span của nó, và span đó phải cùng chunk với các span định nghĩa (khác chunk ⇒ loại, `term_span_cross_chunk`); kết quả cắt vẫn qua bước 2 của mục 1 (kiểm nguyên văn).
+- **Nhãn bài tập:** LLM PHẢI trả `is_exercise` cho MỌI chunk của lô, trong cùng lần đề xuất. Thiếu nhãn, nhãn null hay xung đột ⇒ nhãn lưu là null và cổng `EXERCISE` trượt (an toàn mặc định). Nhãn chỉ làm cặp của chunk đó không được tích sẵn, không bỏ chunk hay trang.
+- **Test đề xuất cho bảng CLAUDE.md §9 (đề xuất, chờ người dùng duyệt bảng §9):** dòng I3: `test_pointer_cut_is_verbatim_substring`, `test_pointer_ambiguous_anchor_rejected_after_one_retry`, `test_term_exact_must_be_in_span`, `test_term_span_cross_chunk_rejected`. Test I5 của tự xác nhận trang ghi ở ADR-008 mục 7 và spec §5.7.
 
 ### 4. Câu chữ bất biến I2 và I4 (đã duyệt 2026-10-23)
 

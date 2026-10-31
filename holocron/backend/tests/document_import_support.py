@@ -153,16 +153,16 @@ class ImportEnv:
         *,
         subject_code: str = "ET4010",
         source_kind: str = "lecture_slides",
-        chapter_code: str = "ch3",
+        chapter_code: str | None = "ch3",
         filename: str = "vi_xu_ly.pdf",
         content_type: str = "application/pdf",
         **form: str,
     ) -> Response:
-        return self.client.post(
-            "/v1/documents",
-            data={"subject_code": subject_code, "source_kind": source_kind, "chapter_code": chapter_code, **form},
-            files={"file": (filename, content, content_type)},
-        )
+        """`chapter_code = None` ⇒ không gửi field (chương tự động, §5.7)."""
+        data = {"subject_code": subject_code, "source_kind": source_kind, **form}
+        if chapter_code is not None:
+            data["chapter_code"] = chapter_code
+        return self.client.post("/v1/documents", data=data, files={"file": (filename, content, content_type)})
 
 
 def install(
@@ -173,6 +173,7 @@ def install(
     *,
     locks: KeyedLocks | None = None,
     runtime_queue: ImportQueue | None = None,
+    subject_locks: KeyedLocks | None = None,
 ) -> ImportEnv:
     """Thay kho, bộ nhập và đồng hồ của `app`; người gọi PHẢI `app.dependency_overrides.clear()` sau test.
 
@@ -183,6 +184,7 @@ def install(
         files=files,
         queue=queue if runtime_queue is None else runtime_queue,
         locks=KeyedLocks() if locks is None else locks,
+        subject_locks=KeyedLocks() if subject_locks is None else subject_locks,
     )
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_import_runtime] = lambda: runtime

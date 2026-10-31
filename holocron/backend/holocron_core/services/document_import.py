@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 from ..domain.documents import (
+    ChapterSource,
     CrossCheck,
     DocumentConfirmRequest,
     DocumentImport,
@@ -79,12 +80,13 @@ from ..infrastructure.document_readers.config import PdfReaderConfig
 from ..infrastructure.document_readers.pdf_reader import PDF_MAGIC, PdfInputError, PdfReader, PdfWorkerError
 from ..infrastructure.document_readers.tiers import failed_page
 from ..infrastructure.storage.original_files import StagedFile
+from .chapter_naming import DEFAULT_TITLE, InitialChapter
+from .chapter_reservation import ChapterReservations, ChapterTurn, reserve_chapter
 from .page_roles import RoleDecision, apply_decision, assign_roles, changeable, reassess_cover
 from .vault import ingest_confirmed_text
 
 MAX_FILENAME_LENGTH = 255
 DEFAULT_FILENAME = "upload.pdf"
-DEFAULT_TITLE = "Tài liệu"
 MAX_TITLE_LENGTH = 300
 PDF_MEDIA_TYPE = "application/pdf"
 # `Content-Type` khai báo được chấp nhận (§6.5 bước 2): rỗng, `application/octet-stream` hoặc đúng PDF.
@@ -355,6 +357,10 @@ class ImportRuntime:
     locks: KeyedLocks = field(default_factory=KeyedLocks)
     gate: AdmissionGate = field(default_factory=AdmissionGate)
     retry: RetryPolicy = field(default_factory=RetryPolicy)
+    # Khoá theo `subject_code` và chỗ giữ chương (§6.5 bước 5, GĐ1 1A; `chapter_reservation`): chọn chương dưới khoá
+    # môn rồi nhả khoá TRƯỚC khi lấy khoá tài liệu (`locks`); không lấy khoá môn khi đang giữ khoá tài liệu.
+    subject_locks: KeyedLocks = field(default_factory=KeyedLocks)
+    chapter_reservations: ChapterReservations = field(default_factory=ChapterReservations)
 
     def close(self, timeout_s: float | None = None) -> bool:
         """Ngừng nhận tài liệu, dừng hàng đợi rồi dọn kho file gốc; `True` khi mọi luồng đã dừng hẳn.
@@ -383,9 +389,10 @@ class ImportRequest:
     declared_type: str | None
     subject_code: str
     source_kind: SourceKind
-    chapter_code: str
+    chapter_code: str | None = None  # tuỳ chọn từ 2026-10-31: `None` ⇒ chương tự động (§5.7)
     output_language: OutputLanguage = "vi"
     title: str | None = None
+    auto_confirm: bool = True  # field form (§6.5, GĐ1 1B): chỉ lưu; hành vi tự xác nhận chưa có ở nhánh này
 
 
 @dataclass(frozen=True)
@@ -434,6 +441,11 @@ def _view(document: ImportedDocument, pages: list[PageSummary]) -> DocumentImpor
         pages_kept=count_kept(pages),
         pages_dropped=count_dropped(pages),
         pages_needs_review=count_needs_review(pages),
+        chapter_title=document.chapter_title,
+        # Bản ghi có `chapter_code` mà thiếu nguồn là bản ghi nhập trước 2026-10-31 (field form bắt buộc) ⇒ "user"
+        chapter_source=ChapterSource(code=document.chapter_code_source or "user", title=document.chapter_title_source),
+        chapter_flags=list(document.chapter_flags),
+        auto_confirm=document.auto_confirm,
     )
 
 
@@ -520,7 +532,9 @@ def _existing_outcome(store: DocumentRepository, existing: ImportedDocument, req
     tài liệu hiện có. Không ghi gì xuống kho."""
     if existing.meta.subject_code != request.subject_code:
         raise DocumentImportError("SUBJECT_CONFLICT")
-    if _chapter_code(existing) != request.chapter_code:
+    existing_chapter = _chapter_code(existing)
+    # Form không có `chapter_code` ⇒ trả bản ghi cũ, không tính lại chương (§5.7, GĐ1 1A)
+    if request.chapter_code and existing_chapter != request.chapter_code:
         raise DocumentImportError("CHAPTER_CONFLICT")
     return ImportOutcome(created=False, document=document_view(store, existing))
 
@@ -556,7 +570,14 @@ def _undo_create(
 
 
 def _new_document(
-    request: ImportRequest, *, filename: str, document_id: str, sha256: str, page_count: int, now: datetime
+    request: ImportRequest,
+    *,
+    filename: str,
+    document_id: str,
+    sha256: str,
+    page_count: int,
+    now: datetime,
+    chapter: InitialChapter,
 ) -> ImportedDocument:
     """Bản ghi tài liệu mới (`processing`); dựng và validate TRƯỚC khi lưu file gốc, để dữ liệu sai không để lại file."""
     return ImportedDocument(
@@ -573,8 +594,13 @@ def _new_document(
         filename=filename,
         size_bytes=len(request.content),
         output_language=request.output_language,
-        chapter_code=request.chapter_code,
+        chapter_code=chapter.chapter_code,
         status="processing",
+        chapter_code_source=chapter.code_source,
+        chapter_title=chapter.title,
+        chapter_title_source=chapter.title_source,
+        chapter_flags=list(chapter.flags),
+        auto_confirm=request.auto_confirm,
     )
 
 
@@ -593,11 +619,14 @@ def accept_document(
     Vault ngay (xem `read_document`).
 
     Sau bước kiểm byte (§6.5 bước 1–2), lần nhận đi qua cổng `runtime.gate` cho tới khi xong, nên `runtime.close`
-    chờ cả lượt đang ghi file tạm hay mở thử. Phần còn lại chạy dưới khoá của `document_id` (`runtime.locks`):
-    request thứ hai cùng nội dung chờ request đầu xong rồi thấy tài liệu đã có (200, hoặc 409 theo
-    `_existing_outcome`). Tài liệu
-    cùng mọi trang `pending` được tạo trong MỘT giao dịch (`create_imported_document`); nếu một tiến trình khác vẫn
-    kịp tạo trước (`DocumentExistsError`) thì trả tài liệu đó như bước 3.
+    chờ cả lượt đang ghi file tạm hay mở thử. Lần nhận được ghi nhận dưới khoá của môn (`reserve_chapter`, khoá môn nhả
+    ngay sau đó, không bọc bước mở thử). Chương KHÔNG được giữ chỗ từ đầu: chọn chương và tạo bản ghi nằm trong cùng
+    đoạn găng của môn, sau khi mở thử xong (`ChapterTurn.settled`), nên kết quả nhập đồng thời tương đương một thứ tự
+    tuần tự (§5.7): file lỗi không chiếm chương, nhập lại cùng nội dung trả bản cũ mà không chọn chương.
+    Phần còn lại chạy dưới khoá của `document_id` (`runtime.locks`): request thứ hai cùng nội dung chờ request đầu
+    xong rồi thấy tài liệu đã có (200, hoặc 409 theo `_existing_outcome`). Tài liệu cùng mọi trang `pending` được tạo
+    trong MỘT giao dịch (`create_imported_document`); nếu một tiến trình khác vẫn kịp tạo trước
+    (`DocumentExistsError`) thì trả tài liệu đó như bước 3.
 
     Lỗi:
     - `DocumentImportError` (bước 1–4): không để lại file hay bản ghi nào.
@@ -615,7 +644,18 @@ def accept_document(
     document_id = f"doc_{sha256[:16]}"
     runtime.gate.enter()
     try:
-        with runtime.locks.hold(document_id):
+        with (
+            reserve_chapter(
+                reservations=runtime.chapter_reservations,
+                subject_locks=runtime.subject_locks,
+                store=store,
+                subject_code=request.subject_code,
+                filename=filename,
+                chapter_code=request.chapter_code,
+                document_id=document_id,
+            ) as turn,
+            runtime.locks.hold(document_id),
+        ):
             existing = store.get_imported_document(document_id)
             if existing is not None:
                 return _existing_outcome(store, existing, request)
@@ -623,20 +663,21 @@ def accept_document(
             staged = runtime.files.stage(request.content)
             try:
                 page_count = _probe(reader, staged)
-                document = _new_document(
+            except BaseException:
+                runtime.files.discard(staged)
+                raise
+            return _store_and_queue(
+                request,
+                build=lambda chapter: _new_document(
                     request,
                     filename=filename,
                     document_id=document_id,
                     sha256=staged.sha256,
                     page_count=page_count,
                     now=now,
-                )
-            except BaseException:
-                runtime.files.discard(staged)
-                raise
-            return _store_and_queue(
-                request,
-                document=document,
+                    chapter=chapter,
+                ),
+                turn=turn,
                 upload=upload,
                 staged=staged,
                 store=store,
@@ -651,7 +692,8 @@ def accept_document(
 def _store_and_queue(
     request: ImportRequest,
     *,
-    document: ImportedDocument,
+    build: Callable[[InitialChapter], ImportedDocument],
+    turn: ChapterTurn,
     upload: UploadedDocument | None,
     staged: StagedFile,
     store: DocumentRepository,
@@ -659,25 +701,35 @@ def _store_and_queue(
     reader: PdfReader,
     vault: VaultRepository | None,
 ) -> ImportOutcome:
-    """§6.5 bước 5: lưu file gốc, tạo tài liệu và trang `pending` (một giao dịch), xếp hàng đợi."""
-    document_id = document.meta.doc_id
-    try:
-        path = runtime.files.commit(staged)
-    except BaseException:
-        runtime.files.discard(staged)
-        raise
-    pages = [pending_page(document_id, number) for number in range(1, document.meta.page_count + 1)]
-    try:
-        stored = store.create_imported_document(document, pages)
-    except DocumentExistsError:
-        existing = store.get_imported_document(document_id)
-        if existing is None:
+    """§6.5 bước 5: lưu file gốc, tạo tài liệu và trang `pending` (một giao dịch), xếp hàng đợi.
+
+    Chọn chương (`turn.settled`) và tạo bản ghi nằm trong cùng đoạn găng của môn; xếp hàng đợi nằm NGOÀI đoạn găng.
+    Bản ghi được dựng và validate TRƯỚC khi lưu file gốc, để dữ liệu sai không để lại file.
+    """
+    document_id = turn.document_id
+    with turn.settled() as chapter:
+        try:
+            document = build(chapter)
+        except BaseException:
+            runtime.files.discard(staged)
+            raise
+        try:
+            path = runtime.files.commit(staged)
+        except BaseException:
+            runtime.files.discard(staged)
+            raise
+        pages = [pending_page(document_id, number) for number in range(1, document.meta.page_count + 1)]
+        try:
+            stored = store.create_imported_document(document, pages)
+        except DocumentExistsError:
+            existing = store.get_imported_document(document_id)
+            if existing is None:
+                _discard_unused_file(store, runtime.files, document_id, staged.sha256)
+                raise
+            return _existing_outcome(store, existing, request)
+        except BaseException:
             _discard_unused_file(store, runtime.files, document_id, staged.sha256)
             raise
-        return _existing_outcome(store, existing, request)
-    except BaseException:
-        _discard_unused_file(store, runtime.files, document_id, staged.sha256)
-        raise
     # Dựng response từ dữ liệu vừa ghi, không đọc lại kho: tài liệu đã tạo thì luôn được xếp hàng đợi ngay sau đây.
     view = _view(stored, [PageSummary.from_page(page) for page in pages])
     try:

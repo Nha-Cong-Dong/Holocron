@@ -950,7 +950,7 @@ def _write_role(
                 current.page_number,
                 updated,
                 status=updated.status,
-                confirmed=False,
+                confirmed=updated.confirmed,
                 expected_version=current.version,
             )
             return

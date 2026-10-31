@@ -69,6 +69,8 @@ export interface KnowledgeChunk {
   label_status: LabelStatus;
   mapping_confidence: number | null;
   version: number;
+  /** Nhãn "chunk là bài tập" do LLM gắn trong job đề xuất cặp (§5.8); `null` khi chưa có LLM gắn. */
+  is_exercise: boolean | null;
 }
 
 /** `SolverInputs` (extra="allow"): response luôn có `quantum`, có thể kèm khoá phụ theo topic. */
@@ -651,6 +653,9 @@ export interface DocumentChapterPatch {
 
 export type ConceptPairStatus = "proposed" | "confirmed" | "rejected";
 
+/** Cổng tích sẵn của cặp (§5.8, ADR-007 mục 3); `failed_gates` sắp theo đúng thứ tự này. */
+export type PairGate = "G1_SOURCE" | "G2_GLYPH" | "G3_OCCLUDED" | "G4_COLUMN_MIX" | "G5_NUMBERS" | "EXERCISE";
+
 /** Cặp khái niệm – trích dẫn định nghĩa (§5.8, ADR-007). `term_spans` là vị trí `[start, end)` của `term` trong `definition_quote`. */
 export interface ConceptPair {
   pair_id: string;
@@ -666,6 +671,53 @@ export interface ConceptPair {
   version: number;
   created_at: string;
   confirmed_at: string | null;
+  /** Máy tích sẵn ô Chấp nhận; KHÔNG phải xác nhận (`status` vẫn `proposed`). `true` chỉ khi `failed_gates` rỗng. */
+  pre_selected: boolean;
+  /** Cổng trượt; không rỗng ⇒ cặp thuộc nhóm "Cần kiểm tra". Frontend lọc theo field này, không tự tính cổng. */
+  failed_gates: PairGate[];
+}
+
+export type ProposalJobStatus = "queued" | "running" | "succeeded" | "partial" | "failed" | "cancelled";
+
+export type ProposalRejectReason =
+  | "quote_not_verbatim"
+  | "unknown_chunk"
+  | "invalid_term"
+  | "invalid_quote"
+  | "duplicate"
+  | "chunk_limit"
+  | "proposal_limit"
+  | "unknown_span"
+  | "span_cross_chunk"
+  | "term_span_cross_chunk"
+  | "term_not_in_span"
+  | "anchor_not_found"
+  | "anchor_ambiguous";
+
+export type BatchErrorKind = "llm_upstream" | "deadline" | "format";
+
+/** Job nền đề xuất cặp (§5.8, §6.6); mọi số đếm do backend tính, frontend chỉ hiển thị. */
+export interface ProposalJob {
+  job_id: string;
+  subject_code: string;
+  trigger: "document_confirmed" | "manual";
+  document_id: string | null;
+  status: ProposalJobStatus;
+  chunk_count: number;
+  batch_size: number;
+  batches_total: number;
+  batches_done: number;
+  batches_failed: number;
+  batch_errors: Partial<Record<BatchErrorKind, number>>;
+  proposed_count: number;
+  pre_selected_count: number;
+  rejected_count: number;
+  rejected_by_reason: Partial<Record<ProposalRejectReason, number>>;
+  exercise_chunks: number;
+  cancel_requested: boolean;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
 }
 
 export type SearchIndex = "primary" | "no_diacritics";
@@ -730,6 +782,17 @@ export interface ConceptPairProposeRequest {
 export interface ConceptPairProposeResponse {
   pairs: ConceptPair[];
   rejected_count: number;
+}
+
+/**
+ * Body của `POST /v1/vault/concept-pairs/jobs` (202 `ProposalJob`, header `Location`): đúng một trong `document_id`
+ * (mọi chunk của tài liệu) và `chunk_ids` (1–2000 chunk, cùng môn). Lỗi: 404, 409 (`CapabilityError` hoặc tài liệu
+ * chưa có chunk), 422.
+ */
+export interface ProposalJobCreate {
+  subject_code: string;
+  document_id?: string | null;
+  chunk_ids?: string[] | null;
 }
 
 // ----------------------------------------------------------- domain/capabilities.py

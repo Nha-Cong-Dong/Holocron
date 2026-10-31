@@ -55,6 +55,8 @@ function pair(id: string, status: ConceptPairStatus, chapter = "ch1"): ConceptPa
     version: 1,
     created_at: "",
     confirmed_at: null,
+    pre_selected: false,
+    failed_gates: [],
   };
 }
 

@@ -591,6 +591,18 @@ class IngestionStore:
                 self._edits[("chunk", stored.chunk_id)] = edit
             return self._chunks[stored.chunk_id].model_copy(deep=True)
 
+    def set_chunk_exercise(self, chunk_id: str, is_exercise: bool | None, expected_version: int) -> KnowledgeChunk:
+        """Như bản SQLite: chỉ đổi `is_exercise` và `version`, dưới khoá."""
+        with self._lock:
+            current = self._chunks.get(chunk_id)
+            if current is None:
+                raise RecordNotFoundError("chunk", chunk_id)
+            if current.version != expected_version:
+                raise VersionConflictError("chunk", chunk_id, expected_version, current.version)
+            stored = current.model_copy(update={"is_exercise": is_exercise, "version": expected_version + 1})
+            self._chunks[chunk_id] = stored
+            return stored.model_copy(deep=True)
+
     def add_concept_pair(self, pair: ConceptPair, edit: VaultEdit | None = None) -> ConceptPair:
         """Kiểm I3 dưới khoá, trên văn bản chunk đang lưu, trước khi ghi."""
         with self._lock:

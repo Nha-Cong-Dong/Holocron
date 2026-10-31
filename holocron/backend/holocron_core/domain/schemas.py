@@ -202,6 +202,9 @@ class KnowledgeChunk(StrictModel):
     label_status: Literal["proposed", "confirmed"] = "proposed"
     mapping_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     version: int = Field(default=1, ge=1)
+    # §5.8 (GĐ1 1C): nhãn "chunk là bài tập" do LLM gắn trong job đề xuất cặp; `None` khi chưa có LLM gắn. Chỉ làm
+    # cặp của chunk này không được tích sẵn (ADR-007 mục 3); ghi nhãn tăng `version`.
+    is_exercise: bool | None = None
 
     @field_validator("tags")
     @classmethod

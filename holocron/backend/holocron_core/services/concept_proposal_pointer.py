@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, field_validator
 
 from ..domain.llm import ChatCompletionClient, ChatMessage, LlmUpstreamError
 from ..domain.repositories import (
@@ -117,10 +117,16 @@ class PointerProposal(BaseModel):
 
 
 class ChunkExerciseLabel(BaseModel):
-    """Một phần tử nhãn `{chunk_id, is_exercise}`; `is_exercise` null ⇒ nhãn chưa xác định."""
+    """Một phần tử nhãn `{chunk_id, is_exercise}`. Chỉ giá trị boolean thật được nhận; null, thiếu hay giá trị khác
+    (chuỗi, số…) ⇒ `None`, tức nhãn chưa xác định."""
 
     chunk_id: str
-    is_exercise: bool | None
+    is_exercise: bool | None = None
+
+    @field_validator("is_exercise", mode="before")
+    @classmethod
+    def _strict_bool(cls, value: object) -> bool | None:
+        return value if isinstance(value, bool) else None
 
 
 class AnchorFix(BaseModel):
@@ -130,9 +136,10 @@ class AnchorFix(BaseModel):
 
 
 class PointerResponse(BaseModel):
-    """Object LLM trả: `chunks` (nhãn bài tập) và `pairs` (con trỏ); thiếu một trong hai khoá ⇒ sai dạng."""
+    """Object LLM trả: `chunks` (nhãn bài tập) và `pairs` (con trỏ). Thiếu `pairs` ⇒ sai dạng; thiếu `chunks` ⇒ mọi
+    nhãn chưa xác định (null), cặp hợp lệ vẫn được xét (UNCONFIRMED)."""
 
-    chunks: list[ChunkExerciseLabel]
+    chunks: list[ChunkExerciseLabel] = Field(default_factory=list)
     pairs: list[PointerProposal]
 
 

@@ -7,6 +7,7 @@ loại được đếm (tổng = `rejected_count`), nhãn bài tập thiếu/nul
 xác nhận cặp.
 """
 
+import json
 import unicodedata
 from collections.abc import Iterator, Sequence
 from pathlib import Path
@@ -506,8 +507,8 @@ def test_response_must_be_an_object_with_chunks_and_pairs(store: AppStore, chunk
     mixed_array = as_json(_process(chunks), *_labels(chunks))  # dạng mảng trộn cũ: không còn hợp lệ
     outcome = _run(store, StubClient(mixed_array, mixed_array), chunks, limits=LlmTaskLimits(json_retry_max=1))
     assert outcome.error == "format" and outcome.stats.json_errors == 2
-    wrong_label = reply(_process(chunks), {"chunk_id": chunks[0].chunk_id, "is_exercise": "có"})
-    assert _run(store, StubClient(wrong_label), chunks, limits=LlmTaskLimits(json_retry_max=0)).error == "format"
+    no_pairs = json.dumps({"chunks": []})
+    assert _run(store, StubClient(no_pairs), chunks, limits=LlmTaskLimits(json_retry_max=0)).error == "format"
     assert _run(store, StubClient('```json\n{"chunks": [], "pairs": []}\n```'), chunks).error is None
 
 
@@ -608,3 +609,42 @@ def test_upstream_failure_on_the_first_call_counts_the_call(store: AppStore, chu
     outcome = _run(store, StubClient(LlmUpstreamError("lỗi", attempts=3)), chunks)
     assert outcome.error == "llm_upstream"
     assert (outcome.stats.llm_calls, outcome.stats.http_attempts) == (1, 3)
+
+
+@pytest.mark.parametrize("value", ["có", "true", 1, 0, [], {}])
+def test_non_boolean_exercise_label_counts_as_null(
+    store: AppStore, chunks: list[KnowledgeChunk], value: object
+) -> None:
+    theory, exercise = chunks
+    response = reply(_process(chunks), {"chunk_id": theory.chunk_id, "is_exercise": value}, label(exercise, False))
+    outcome = _run(store, StubClient(response), chunks)
+    assert outcome.error is None
+    [pair] = outcome.pairs
+    assert "EXERCISE" in pair.failed_gates
+    current = store.get_chunk(theory.chunk_id)
+    assert current is not None and current.is_exercise is None
+
+
+def test_object_without_chunks_keeps_valid_pairs_with_null_labels(
+    store: AppStore, chunks: list[KnowledgeChunk]
+) -> None:
+    """UNCONFIRMED: thiếu khoá `chunks` ⇒ mọi nhãn null, cặp hợp lệ vẫn lưu (EXERCISE trượt)."""
+    response = json.dumps({"pairs": [_process(chunks)]}, ensure_ascii=False)
+    outcome = _run(store, StubClient(response), chunks)
+    assert outcome.error is None and outcome.exercise_chunks == 0
+    [pair] = outcome.pairs
+    assert "EXERCISE" in pair.failed_gates
+    assert all((current := store.get_chunk(c.chunk_id)) is not None and current.is_exercise is None for c in chunks)
+
+
+def test_def_span_list_limit_is_64_ids(store: AppStore, chunks: list[KnowledgeChunk]) -> None:
+    """Số cứng (không suy từ hằng của code): 64 id vẫn đúng dạng, 65 id ⇒ phản hồi sai dạng.
+
+    UNCONFIRMED: giới hạn 64 `def_span_ids` chưa có trong spec.
+    """
+    s = span_of(chunks, DEF_THREAD)
+    limits = LlmTaskLimits(json_retry_max=0)
+    at_limit = pointer(s, "Luồng", [s] * 64, "Luồng là", "tiến trình.")
+    assert _run(store, StubClient(reply(at_limit, *_labels(chunks))), chunks, limits=limits).error is None
+    over = pointer(s, "Luồng", [s] * 65, "Luồng là", "tiến trình.")
+    assert _run(store, StubClient(reply(over, *_labels(chunks))), chunks, limits=limits).error == "format"

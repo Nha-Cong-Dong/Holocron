@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from holocron_core.infrastructure.llm_config import load_runtime_config
-from scripts.eval_concept_proposal import _parser, load_fixture, run, transcript_pages
+from scripts.eval_concept_proposal import EXIT_BAD_FIXTURE, _parser, load_fixture, run, transcript_pages
 from tests.proposal_support import StubClient
 
 CONFIGURED_ENV = {
@@ -135,3 +135,15 @@ def test_transcript_without_subject_or_chapter_is_a_usage_error(
     assert "--chapter-code" in capsys.readouterr().err
     with pytest.raises(ValueError):
         load_fixture(fixture)
+
+
+@pytest.mark.parametrize("content", ["{không phải json", '{"subject_code": "IT3070"}'])
+def test_broken_fixture_is_a_data_error_not_a_usage_error(
+    tmp_path: Path, content: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fixture = tmp_path / "hong.json"
+    fixture.write_text(content, encoding="utf-8")
+    for mode in ("single", "pointer"):
+        args = _parser().parse_args(_args(fixture, tmp_path / "o", mode, "--dry-run"))
+        assert run(args, load_runtime_config({})) == EXIT_BAD_FIXTURE
+    assert "File chunk không hợp lệ" in capsys.readouterr().err

@@ -49,6 +49,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from holocron_core.domain.ingestion import UploadedDocument
 from holocron_core.domain.llm import ChatCompletionClient, ChatCompletionResult, ChatMessage, LlmUpstreamError
 from holocron_core.domain.schemas import KnowledgeChunk
@@ -147,6 +149,11 @@ class CachingClient:
 
 
 TRANSCRIPT_SKIPPED_BLOCKS = frozenset({"page_number", "header"})
+EXIT_BAD_FIXTURE = 3
+
+
+class FixtureUsageError(ValueError):
+    """Thiếu tham số dòng lệnh mà file chunk cần (lỗi cách dùng, mã thoát `EXIT_USAGE`)."""
 
 
 def transcript_pages(data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -175,7 +182,7 @@ def load_fixture(
     data: dict[str, Any] = {key: value for key, value in json.loads(raw).items() if not key.startswith("_")}
     if "document" in data and "pages" in data:
         if subject_code is None or chapter_code is None:
-            raise ValueError("file bản chép tay cần --subject-code và --chapter-code")
+            raise FixtureUsageError("file bản chép tay cần --subject-code và --chapter-code")
         data = {"subject_code": subject_code, "chapter_code": chapter_code, "pages": transcript_pages(data)}
     document = UploadedDocument.from_content(raw, path.name, "application/pdf")
     store = IngestionStore()
@@ -273,9 +280,12 @@ def run(
     limits = config.llm.task_limits
     try:
         store, subject_code, chunks = load_fixture(args.chunks_json, args.subject_code, args.chapter_code)
-    except ValueError as exc:
+    except FixtureUsageError as exc:
         print(f"{exc}.", file=sys.stderr)
         return EXIT_USAGE
+    except (json.JSONDecodeError, ValidationError, KeyError, TypeError) as exc:
+        print(f"File chunk không hợp lệ ({type(exc).__name__}).", file=sys.stderr)
+        return EXIT_BAD_FIXTURE
     messages = build_messages(chunks)
     input_sha256 = request_key(model, messages, args.max_tokens)
     client = CachingClient(
@@ -391,9 +401,12 @@ def run_batched(
     limits = config.llm.task_limits.model_copy(update={"max_tokens": args.max_tokens})
     try:
         store, subject_code, chunks = load_fixture(args.chunks_json, args.subject_code, args.chapter_code)
-    except ValueError as exc:
+    except FixtureUsageError as exc:
         print(f"{exc}.", file=sys.stderr)
         return EXIT_USAGE
+    except (json.JSONDecodeError, ValidationError, KeyError, TypeError) as exc:
+        print(f"File chunk không hợp lệ ({type(exc).__name__}).", file=sys.stderr)
+        return EXIT_BAD_FIXTURE
     batches = [chunks[start : start + args.batch_chunks] for start in range(0, len(chunks), args.batch_chunks)]
     calls_per_batch = 1 + limits.json_retry_max + (1 if args.mode == "pointer" else 0)
     client = CachingClient(

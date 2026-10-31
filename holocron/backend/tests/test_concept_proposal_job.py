@@ -8,7 +8,9 @@ kết thúc, và mã lỗi của endpoint.
 
 import http.client
 import socket
+import sqlite3
 import threading
+import time
 from collections.abc import Callable, Iterator, Sequence
 
 import pytest
@@ -28,7 +30,8 @@ from holocron_core.infrastructure.llm_config import (
     load_runtime_config,
 )
 from holocron_core.infrastructure.memory_store import IngestionStore
-from holocron_core.routers import vault
+from holocron_core.infrastructure.storage import DATA_DIR_ENV
+from holocron_core.routers import deps, vault
 from holocron_core.routers.api import app as api_app
 from holocron_core.routers.deps import (
     PROPOSAL_JOBS_STATE_ATTR,
@@ -39,7 +42,6 @@ from holocron_core.routers.deps import (
     get_store,
 )
 from holocron_core.services.concept_proposal_job import (
-    ProposalJobQueueFullError,
     ProposalJobRuntime,
     _JobState,
     derive_status,
@@ -541,20 +543,29 @@ def test_factory_dependency_builds_a_fresh_real_client_per_call_without_calling_
     assert isinstance(first, OpenAiChatClient) and isinstance(second, OpenAiChatClient) and first is not second
 
 
-def test_jobs_live_with_the_app_lifespan_and_are_lost_on_restart() -> None:
-    """Runtime do `lifespan` tạo (với `config.llm.proposal`) và đóng khi tắt app; khởi động lại ⇒ job cũ 404."""
-    store = get_store()
-    chunks = _many_chunks(store, 1)
+@pytest.fixture
+def startup_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """`lifespan` thật trên kho in-memory: bỏ `HOLOCRON_DATA_DIR`, bỏ kho mặc định đã cache trước và sau test."""
+    monkeypatch.delenv(DATA_DIR_ENV, raising=False)
+    deps._default_store.cache_clear()
+    yield
+    deps._default_store.cache_clear()
+
+
+@pytest.mark.usefixtures("startup_env")
+def test_jobs_live_with_the_app_lifespan_and_are_lost_on_restart(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Runtime do `lifespan` tạo (với `config.llm.proposal` đọc từ môi trường) và đóng khi tắt app; khởi động lại ⇒
+    job cũ 404."""
     settings = ConceptProposalSettings(job_max_parallel=3, job_keep_finished=7)
     base = load_runtime_config(CONFIGURED_ENV)
     config = base.model_copy(update={"llm": base.llm.model_copy(update={"proposal": settings})})
-    overrides: dict[Callable[..., object], Callable[..., object]] = {
-        get_runtime_config: lambda: config,
-        vault.get_chat_client_factory: lambda: lambda: StubClient(EMPTY_REPLY),
-    }
-    api_app.dependency_overrides.update(overrides)
+    monkeypatch.setattr(deps, "load_runtime_config_lenient", lambda: config)
+    factory_key = vault.get_chat_client_factory
+    api_app.dependency_overrides[factory_key] = lambda: lambda: StubClient(EMPTY_REPLY)
     try:
         with TestClient(api_app) as client:
+            store = get_store()
+            chunks = _many_chunks(store, 1)
             jobs = getattr(api_app.state, PROPOSAL_JOBS_STATE_ATTR)
             assert isinstance(jobs, ProposalJobRuntime) and jobs.settings == settings
             created = client.post(JOBS_URL, json={"subject_code": SUBJECT, "chunk_ids": [chunks[0].chunk_id]})
@@ -564,15 +575,78 @@ def test_jobs_live_with_the_app_lifespan_and_are_lost_on_restart() -> None:
             assert client.get(f"{JOBS_URL}/{job_id}").json()["status"] == "succeeded"
         assert not hasattr(api_app.state, PROPOSAL_JOBS_STATE_ATTR)
         with pytest.raises(RuntimeError):  # đã đóng khi tắt app
-            _submit(jobs, store, chunks, lambda: StubClient(EMPTY_REPLY))
+            _submit(jobs, IngestionStore(), chunks, lambda: StubClient(EMPTY_REPLY))
         unavailable = TestClient(api_app).get(f"{JOBS_URL}/{job_id}")  # không qua lifespan
         assert unavailable.status_code == 500
         assert unavailable.json()["detail"] == PROPOSAL_JOBS_UNAVAILABLE_DETAIL
         with TestClient(api_app) as client:
             assert client.get(f"{JOBS_URL}/{job_id}").status_code == 404
     finally:
-        for key in overrides:
-            api_app.dependency_overrides.pop(key, None)
+        api_app.dependency_overrides.pop(factory_key, None)
+
+
+class ClosingStore:
+    """Kho bọc: sau `close()` mọi thao tác ném lỗi, như kết nối SQLite đã đóng; đếm lần ghi sau khi đóng."""
+
+    def __init__(self, inner: AppStore) -> None:
+        self.inner = inner
+        self.closed = False
+        self.writes_after_close = 0
+
+    def close(self) -> None:
+        self.closed = True
+
+    def __getattr__(self, name: str) -> object:
+        attribute = getattr(self.inner, name)
+        if not callable(attribute):
+            return attribute
+
+        def guarded(*args: object, **kwargs: object) -> object:
+            if self.closed:
+                if name.startswith(("add_", "set_", "update_")):
+                    self.writes_after_close += 1
+                raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+            return attribute(*args, **kwargs)
+
+        return guarded
+
+
+def test_shutdown_while_a_batch_runs_does_not_hang_or_write_to_the_closed_store() -> None:
+    inner = IngestionStore()
+    chunks = seed(inner)
+    store = ClosingStore(inner)
+    runtime = _runtime()
+    release = threading.Event()
+    started = threading.Event()
+    s = span_of(chunks, DEF_PROCESS)
+    good = reply(pointer(s, "Tiến trình", [s], "Tiến trình là", "bộ nhớ."))
+
+    def slow(messages: Sequence[ChatMessage]) -> str:
+        started.set()
+        release.wait(WAIT_S)
+        return good
+
+    job = runtime.submit(
+        subject_code=SUBJECT,
+        chunk_ids=[chunk.chunk_id for chunk in chunks],
+        document_id=None,
+        store=store,  # bọc kho thật, đủ method cho job
+        client_factory=lambda: StubClient(slow),
+        limits=LlmTaskLimits(),
+        now=NOW,
+    )
+    assert started.wait(WAIT_S)
+    began = time.monotonic()
+    runtime.close(timeout=0.2)  # như lifespan: đóng runtime trước kho, chờ có hạn
+    assert time.monotonic() - began < 2.0, "close không được treo"
+    store.close()
+    release.set()
+    deadline = time.monotonic() + WAIT_S
+    while (current := runtime.get(job.job_id)) is not None and current.batches_failed == 0:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert current is not None and current.batches_failed == 1 and current.batches_done == 0
+    assert store.writes_after_close == 0 and inner.list_concept_pairs(SUBJECT) == []
 
 
 def test_each_job_uses_the_request_configuration(runtimes: list[ProposalJobRuntime]) -> None:
@@ -594,30 +668,11 @@ def test_each_job_uses_the_request_configuration(runtimes: list[ProposalJobRunti
     assert (done["proposed_count"], done["pre_selected_count"]) == (1, 1)
 
 
-def test_too_many_active_jobs_are_refused(runtimes: list[ProposalJobRuntime]) -> None:
-    store = IngestionStore()
-    chunks = _many_chunks(store, 2)
-    runtime = _runtime(job_max_active=1)
-    runtimes.append(runtime)
-    gate = Gate()
-    first = _submit(runtime, store, chunks[:1], gate.client)
-    with pytest.raises(ProposalJobQueueFullError):
-        _submit(runtime, store, chunks[1:], gate.client)
-    refused = _app(store, runtime, StubClient()).post(
-        JOBS_URL, json={"subject_code": SUBJECT, "chunk_ids": [chunks[1].chunk_id]}
-    )
-    assert refused.status_code == 409 and "job" in refused.json()["detail"]
-    gate.release_event.set()
-    assert _finished(runtime, first).status == "succeeded"
-    again = _submit(runtime, store, chunks[1:], lambda: StubClient(EMPTY_REPLY))
-    assert _finished(runtime, again).status == "succeeded"
-
-
-def test_failure_while_recording_a_batch_fails_the_job_and_keeps_the_worker(
+def test_failure_while_recording_a_batch_fails_only_that_batch(
     runtimes: list[ProposalJobRuntime], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = IngestionStore()
-    chunks = _many_chunks(store, 3)
+    chunks = _many_chunks(store, 4)
     runtime = _runtime()
     runtimes.append(runtime)
     real = runtime._record
@@ -630,11 +685,40 @@ def test_failure_while_recording_a_batch_fails_the_job_and_keeps_the_worker(
         real(state, outcome)
 
     monkeypatch.setattr(runtime, "_record", flaky)
-    broken = _finished(runtime, _submit(runtime, store, chunks[:2], lambda: StubClient(EMPTY_REPLY)))
-    assert broken.status == "failed" and broken.finished_at == NOW
-    healthy = _finished(runtime, _submit(runtime, store, chunks[2:], lambda: StubClient(EMPTY_REPLY)))
-    assert healthy.status == "succeeded"
-    assert len(calls) == 2  # lô thứ hai của job hỏng không chạy
+    done = _finished(runtime, _submit(runtime, store, chunks[:3], lambda: StubClient(EMPTY_REPLY)))
+    assert (done.status, done.batches_done, done.batches_failed) == ("partial", 2, 1)
+    assert done.batches_done + done.batches_failed == done.batches_total and done.finished_at == NOW
+    assert len(calls) == 3  # job chạy tiếp các lô còn lại
+    healthy = _finished(runtime, _submit(runtime, store, chunks[3:], lambda: StubClient(EMPTY_REPLY)))
+    assert healthy.status == "succeeded"  # luồng chạy vẫn sống
+
+
+def test_every_batch_failing_to_record_makes_the_job_failed(
+    runtimes: list[ProposalJobRuntime], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = IngestionStore()
+    chunks = _many_chunks(store, 2)
+    runtime = _runtime()
+    runtimes.append(runtime)
+
+    def always(state: _JobState, outcome: BatchOutcome | None) -> None:
+        raise RuntimeError("hỏng khi cộng")
+
+    monkeypatch.setattr(runtime, "_record", always)
+    done = _finished(runtime, _submit(runtime, store, chunks, lambda: StubClient(EMPTY_REPLY)))
+    assert (done.status, done.batches_done, done.batches_failed, done.batches_total) == ("failed", 0, 2, 2)
+
+
+def test_queue_has_no_job_cap(runtimes: list[ProposalJobRuntime]) -> None:
+    """Spec §5.8 không đặt trần số job chờ: nhiều job hơn số luồng vẫn được nhận và chạy hết."""
+    store = IngestionStore()
+    chunks = _many_chunks(store, 1)
+    runtime = _runtime()
+    runtimes.append(runtime)
+    gate = Gate()
+    jobs = [_submit(runtime, store, chunks, gate.client) for _ in range(25)]
+    gate.release_event.set()
+    assert all(_finished(runtime, job).status == "succeeded" for job in jobs)
 
 
 def _job(**changes: object) -> dict[str, object]:

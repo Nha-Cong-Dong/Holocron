@@ -16,7 +16,6 @@ from fastapi.responses import JSONResponse
 from ..domain.ingestion import IngestionItem, IngestionItemCreate
 from ..domain.repositories import StorageBusyError
 from ..domain.twins import IdempotencyRecord
-from ..infrastructure.llm_config import RuntimeConfig
 from ..infrastructure.memory_store import IDEMPOTENCY_TTL, IngestionStore
 from ..infrastructure.storage import SQLiteStore, data_dir_from_env
 from ..services.concept_proposal_job import ProposalJobRuntime
@@ -140,11 +139,8 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         setattr(application.state, documents.RUNTIME_STATE_ATTR, import_runtime)
         runtime.start_local_capability_check(application, import_runtime.reader_config)
         documents.requeue_on_startup(store, import_runtime)
-        config_provider = application.dependency_overrides.get(get_runtime_config, get_runtime_config)
-        config = config_provider()
-        proposal_jobs = create_proposal_job_runtime(
-            config if isinstance(config, RuntimeConfig) else get_runtime_config()
-        )
+        # Cấu hình đọc thẳng từ môi trường (cùng hàm của `Depends`), không gọi override của request.
+        proposal_jobs = create_proposal_job_runtime(get_runtime_config())
         setattr(application.state, PROPOSAL_JOBS_STATE_ATTR, proposal_jobs)
         yield
     finally:

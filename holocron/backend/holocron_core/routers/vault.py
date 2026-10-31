@@ -47,7 +47,7 @@ from ..infrastructure.llm_config import ConfigError
 from ..services import vault as vault_service
 from ..services.capabilities import compute_capabilities, unavailable_error
 from ..services.concept_proposal import MAX_PROPOSAL_CHUNKS, ChunkSubjectMismatchError, propose_concept_pairs
-from ..services.concept_proposal_job import ClientFactory, ProposalJobQueueFullError
+from ..services.concept_proposal_job import ClientFactory
 from .deps import ClockDep, ProposalJobsDep, RuntimeConfigDep, StoreDep, VaultDep
 from .runtime import NO_LOCAL_FAILURES, LocalFailuresDep
 
@@ -383,19 +383,16 @@ def create_proposal_job(
     response: Response,
 ) -> ProposalJob:
     chunk_ids = _job_chunk_ids(store, body)
-    try:
-        job = jobs.submit(
-            subject_code=body.subject_code,
-            chunk_ids=chunk_ids,
-            document_id=body.document_id,
-            store=store,
-            client_factory=client_factory,
-            limits=config.llm.task_limits,
-            now=clock(),
-            settings=config.llm.proposal,
-        )
-    except ProposalJobQueueFullError as exc:
-        raise HTTPException(status_code=409, detail=f"{exc}; đợi job đang chạy xong rồi thử lại") from exc
+    job = jobs.submit(
+        subject_code=body.subject_code,
+        chunk_ids=chunk_ids,
+        document_id=body.document_id,
+        store=store,
+        client_factory=client_factory,
+        limits=config.llm.task_limits,
+        now=clock(),
+        settings=config.llm.proposal,
+    )
     response.headers["Location"] = f"/v1/vault/concept-pairs/jobs/{job.job_id}"
     return job
 

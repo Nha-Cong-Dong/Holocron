@@ -44,7 +44,9 @@ from holocron_core.infrastructure.document_readers.template_images import (
 from holocron_core.infrastructure.document_readers.tiers import assemble_text_layer_page
 from tests.pdf_samples import Box, Page, gray_raster, text_lines, write_pdf
 
-CONFIG = PdfReaderConfig()
+# Các test biên ở đây viết cho tỉ lệ trang 0.60; mặc định `template_min_page_ratio` đổi sang 0.40 theo phép đo
+# GĐ0 (2026-10-31), nên ghi tường minh tỉ lệ cũ để giữ đúng các biên đã kiểm.
+CONFIG = PdfReaderConfig(template_min_page_ratio=0.60)
 DOC_ID = "doc_00000000000000cd"
 SETTINGS = OcrSettings(tesseract_cmd="tesseract-test", tessdata_dir=None, secondary=None)
 FULL = Box(0.0, 0.0, 612.0, 792.0)
@@ -147,11 +149,14 @@ def test_keys_never_call_image_metadata_or_decoding(tmp_path: Path, monkeypatch:
 
 
 def _patch_call(monkeypatch: pytest.MonkeyPatch, method: str, value: object, *, scan_only: bool = False) -> None:
-    """`PdfiumBackend.call(…, method, …)` trả `value`; `scan_only` ⇒ chỉ lời gọi `get_objects` của lượt quét."""
+    """`PdfiumBackend.call(…, method, …)` trả `value`; `scan_only` ⇒ chỉ lời gọi `get_objects` của lượt quét.
+
+    GĐ0 (§5.7 0A): lượt quét duyệt ảnh, đường vẽ và form (`template_scan_kinds`), không còn chỉ ảnh.
+    """
     original = PdfiumBackend.call
 
     def call(self: PdfiumBackend, target: object, name: str, *args: object, **kwargs: object) -> object:
-        if name == method and (not scan_only or args == ([self.image_object_type],)):
+        if name == method and (not scan_only or args == (self.template_scan_kinds,)):
             return value
         return original(self, target, name, *args, **kwargs)
 
@@ -191,8 +196,17 @@ def test_broken_key_reads_leave_the_document_without_templates(
     assert _scans(emitted) == [TemplateScan(status="error")]
     assert not [m for m in emitted if isinstance(m, PageErrorMessage)]
     pages = _pages(emitted)
-    # Hành vi cũ: đúng các trang như khi không quét, không loại ảnh nào, không trang nào `failed`.
-    assert pages == baseline and all(p.content_image_area_ratio is None for p in pages)
+    # Hành vi cũ: đúng các trang như khi không quét, không loại ảnh nào, không trang nào `failed`. GĐ0 (§5.7 0C):
+    # trang ghi thêm lượt quét không `ok` (`template_scan_ok = False` ⇒ `DENOISE_UNAVAILABLE` khi có hình).
+    assert all(not p.template_scan_ok for p in pages)
+
+    def comparable(page: RawPdfPage) -> RawPdfPage:
+        # GĐ0 0A: ảnh nội dung mang SHA-256 dữ liệu thô; lần đọc lỗi (bản vá ở trên) cho `sha256 = None`.
+        images = [image.model_copy(update={"sha256": None}) for image in page.own_images]
+        return page.model_copy(update={"template_scan_ok": True, "own_images": images})
+
+    assert [comparable(p) for p in pages] == [comparable(p) for p in baseline]
+    assert all(p.content_image_area_ratio is None for p in pages)
     assert [assemble_text_layer_page(p, DOC_ID, CONFIG).status for p in pages] == ["needs_review"] * 6
 
 

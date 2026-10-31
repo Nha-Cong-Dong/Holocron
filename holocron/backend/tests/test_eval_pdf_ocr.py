@@ -101,9 +101,10 @@ def test_tier_eval_rows_carry_app_review_reasons_and_flags() -> None:
     lines = [RawTextLine(text="Chương 1", bbox=None, words=[])]
     framed = RawPdfPage(page_index=0, width_pt=720, height_pt=540, lines=lines, image_area_ratio=0.1, path_area_ratio=0)
     row = page_row("a.pdf", framed, config)
+    # GĐ0 0C (§5.7, 2026-10-31): hình trên PDF số không còn TIER3_UNAVAILABLE.
     assert (row.status, row.review_reasons, row.has_figure, row.has_table, row.has_formula) == (
-        "needs_review",
-        ["TIER3_UNAVAILABLE"],
+        "ok",
+        [],
         True,
         False,
         False,

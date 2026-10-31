@@ -52,7 +52,9 @@ from holocron_core.infrastructure.document_readers.text_layer import content_ima
 from holocron_core.infrastructure.document_readers.tiers import assemble_text_layer_page, page_flags
 from tests.pdf_samples import Box, Page, Text, gray_raster, slow_page, text_lines, write_pdf
 
-CONFIG = PdfReaderConfig()
+# Các test biên ở đây viết cho tỉ lệ trang 0.60; mặc định `template_min_page_ratio` đổi sang 0.40 theo phép đo
+# GĐ0 (2026-10-31), nên ghi tường minh tỉ lệ cũ để giữ đúng các biên đã kiểm.
+CONFIG = PdfReaderConfig(template_min_page_ratio=0.60)
 DOC_ID = "doc_00000000000000ab"
 SETTINGS = OcrSettings(tesseract_cmd="tesseract-test", tessdata_dir=None, secondary=None)
 FULL = Box(0.0, 0.0, 612.0, 792.0)
@@ -204,8 +206,8 @@ def test_template_thresholds_are_configurable() -> None:
     pages = [[key], [key], [key], [], []]
     assert find_template_images(pages, 5, CONFIG) == {key}
     assert find_template_images(pages, 5, _config(template_image_min_pages=4)) == frozenset()
-    assert find_template_images(pages, 5, _config(template_image_min_page_ratio=0.61)) == frozenset()
-    assert find_template_images(pages, 5, _config(template_image_min_page_ratio=0.4)) == {key}
+    assert find_template_images(pages, 5, _config(template_min_page_ratio=0.61)) == frozenset()
+    assert find_template_images(pages, 5, _config(template_min_page_ratio=0.4)) == {key}
 
 
 def test_only_identical_keys_are_counted_together() -> None:
@@ -218,8 +220,8 @@ def test_only_identical_keys_are_counted_together() -> None:
 @pytest.mark.parametrize(
     "bad",
     [
-        {"template_image_min_page_ratio": 0.0},
-        {"template_image_min_page_ratio": 1.01},
+        {"template_min_page_ratio": 0.0},
+        {"template_min_page_ratio": 1.01},
         {"template_image_min_pages": 2},
         {"template_image_bbox_step": 0.0},
         {"template_image_bbox_step": 0.2},
@@ -238,7 +240,8 @@ def test_template_config_is_validated(bad: dict[str, object]) -> None:
 
 
 def test_default_template_config() -> None:
-    assert (CONFIG.template_image_min_page_ratio, CONFIG.template_image_min_pages) == (0.60, 3)
+    # Mặc định chọn bằng phép đo GĐ0 (2026-10-31): 0.40.
+    assert (PdfReaderConfig().template_min_page_ratio, CONFIG.template_image_min_pages) == (0.40, 3)
     assert CONFIG.template_image_bbox_step == 0.01
     assert CONFIG.template_scan_timeout_s == 20.0
     assert (CONFIG.template_scan_max_images_per_page, CONFIG.template_scan_max_images) == (256, 20_000)
@@ -445,7 +448,8 @@ def test_shared_image_object_at_same_place_is_a_template(tmp_path: Path) -> None
 
 def test_same_place_different_pixels_is_not_a_template(tmp_path: Path) -> None:
     pages = [Page(texts=[_title()], rasters=[gray_raster(FULL, 10 * i)]) for i in range(6)]
-    assert _scan_file(write_pdf(tmp_path / "scan.pdf", pages)) == TemplateScan(status="ok")
+    scan = _scan_file(write_pdf(tmp_path / "scan.pdf", pages))
+    assert (scan.status, scan.keys) == ("ok", [])  # GĐ0: lượt quét có thêm khoá dòng chữ lặp (tiêu đề)
 
 
 def test_position_tolerance(tmp_path: Path) -> None:
@@ -484,7 +488,8 @@ def test_template_boundary_on_generated_pdf(tmp_path: Path) -> None:
 
 def test_image_byte_cap_makes_images_keyless(tmp_path: Path) -> None:
     path = write_pdf(tmp_path / "slides.pdf", [_slide() for _ in range(3)])
-    assert _scan_file(path, _config(template_scan_max_image_bytes=1)) == TemplateScan(status="ok")
+    capped = _scan_file(path, _config(template_scan_max_image_bytes=1))
+    assert (capped.status, capped.keys) == ("ok", [])  # GĐ0: lượt quét có thêm khoá dòng chữ lặp (tiêu đề)
     assert _scan_file(path, _config(template_scan_max_bytes=20, template_scan_max_image_bytes=20)).status == "over_cap"
 
 
@@ -622,7 +627,10 @@ def test_slides_with_template_background_keep_text_layer(tmp_path: Path, title: 
     assert all(p.lines[0].text == title for p in pages)
 
 
-@pytest.mark.parametrize(("title", "reason"), [(TITLE_40, "image_covers_page"), (TITLE_SHORT, "sparse_text_on_image")])
+# GĐ0 0B(5) (§5.7): tiêu đề lặp là header/footer, không tính vào `non_ws` của luật (c) (trả BE-009).
+@pytest.mark.parametrize(
+    ("title", "reason"), [(TITLE_40, "sparse_text_on_image"), (TITLE_SHORT, "sparse_text_on_image")]
+)
 def test_content_image_on_one_slide_sends_only_that_slide_to_ocr(tmp_path: Path, title: str, reason: str) -> None:
     # (2) cùng bộ, một trang thêm ảnh nội dung phủ ≥ 90% ⇒ riêng trang đó OCR.
     pages = [_slide(title) for _ in range(6)]
@@ -645,7 +653,7 @@ def test_content_image_above_figure_threshold_flags_only_that_slide(tmp_path: Pa
     pages = [_slide() for _ in range(6)]
     pages[3].rasters.append(gray_raster(Box(100.0, 100.0, 306.0, 400.0), 60))  # ≈ 0,25 trang
     summary = _summary(write_pdf(tmp_path / "slides.pdf", pages))
-    assert summary[3] == ("needs_review", "text_layer", None, True)
+    assert summary[3] == ("ok", "text_layer", None, True)  # GĐ0 0C: hình chỉ ghi vùng
     assert summary[:3] + summary[4:] == [("ok", "text_layer", None, False)] * 5
 
 
@@ -660,12 +668,12 @@ def test_vector_figure_keeps_its_flag(tmp_path: Path) -> None:
     pages[4].rects.append(diagram)
     path = write_pdf(tmp_path / "vector.pdf", pages)
     pages_read = list(WorkerPdfReader(CONFIG).read_pages(path, DOC_ID))
-    flagged = ("needs_review", True, ["TIER3_UNAVAILABLE"])
-    assert (pages_read[1].status, pages_read[1].has_figure, pages_read[1].review_reasons) == flagged
-    assert (pages_read[4].status, pages_read[4].has_figure, pages_read[4].review_reasons) == flagged
+    # GĐ0 (§5.7, 2026-10-31): hình chỉ ghi vùng (không lý do xem lại); nhánh đường vẽ cần ảnh NỘI DUNG (BE-007).
+    assert (pages_read[1].status, pages_read[1].has_figure, pages_read[1].review_reasons) == ("ok", True, [])
+    assert (pages_read[4].status, pages_read[4].has_figure, pages_read[4].review_reasons) == ("ok", False, [])
     # Cùng trang vector trong tài liệu không có ảnh template: cờ như cũ.
     alone = write_pdf(tmp_path / "alone.pdf", [Page(texts=[_title()], rects=[diagram], rasters=[small])])
-    assert _summary(alone) == [("needs_review", "text_layer", None, True)]
+    assert _summary(alone) == [("ok", "text_layer", None, True)]
 
 
 def test_shape_diagram_on_template_background_is_flagged(tmp_path: Path) -> None:
@@ -682,7 +690,7 @@ def test_shape_diagram_on_template_background_is_flagged(tmp_path: Path) -> None
     pages_read = list(WorkerPdfReader(CONFIG).read_pages(path, DOC_ID))
     assert [(p.status, p.tier_used, p.has_figure, p.review_reasons) for p in pages_read] == [
         ("ok", "text_layer", False, [])
-    ] * 2 + [("needs_review", "text_layer", True, ["TIER3_UNAVAILABLE"])] + [("ok", "text_layer", False, [])] * 3
+    ] * 6  # GĐ0 0A (§5.7, 2026-10-31; BE-007): ảnh template không bật nhánh đường vẽ của cờ hình
 
 
 def test_template_frame_drawn_as_paths_is_flagged_for_now(tmp_path: Path) -> None:
@@ -697,13 +705,14 @@ def test_template_frame_drawn_as_paths_is_flagged_for_now(tmp_path: Path) -> Non
     raws = _pages(_run_worker(path, 6, _config()))
     assert [r.content_image_area_ratio for r in raws] == [0.0] * 6
     assert all(r.path_area_ratio >= CONFIG.figure_path_area_min for r in raws)
-    assert _summary(path) == [("needs_review", "text_layer", None, True)] * 6
+    # GĐ0 0A (§5.7, 2026-10-31): khung lặp là đường vẽ template, ảnh nền là template ⇒ không cờ hình.
+    assert _summary(path) == [("ok", "text_layer", None, False)] * 6
 
 
 @pytest.mark.parametrize(
     ("image", "content", "path", "expected"),
     [
-        (1.0, 0.0, 0.25, True),  # chỉ ảnh template + đường vẽ đúng ngưỡng: nhánh đường vẽ tính mọi ảnh
+        (1.0, 0.0, 0.25, False),  # GĐ0 (§5.7; BE-007): chỉ ảnh template ⇒ nhánh đường vẽ cần ảnh nội dung
         (1.0, 0.0, 0.24, False),
         (1.0, None, 0.25, True),
         (0.05, None, 0.25, True),  # không có thông tin template: dùng toàn bộ độ phủ ảnh
@@ -734,8 +743,10 @@ def test_scanned_pages_with_different_images_have_no_template(tmp_path: Path) ->
     path = write_pdf(tmp_path / "scan.pdf", pages)
     assert _summary(path) == [("failed", None, "OCR_ENGINE_MISSING", True)] * 6
     emitted = _run_worker(path, 6, _config())
-    assert _scan(emitted) == TemplateScan(status="ok")
-    assert [p.content_image_area_ratio for p in _pages(emitted)] == [None] * 6
+    scan = _scan(emitted)
+    assert scan.status == "ok" and scan.keys == [] and scan.path_keys == []  # GĐ0: tiêu đề lặp là khoá TEXT
+    # GĐ0: có khoá TEXT ⇒ có bộ lọc template; không ảnh nào là template nên độ phủ ảnh nội dung = độ phủ ảnh.
+    assert [p.content_image_area_ratio for p in _pages(emitted)] == [pytest.approx(1.0)] * 6
     assert _ocr_pages(emitted) == list(range(6))
 
 

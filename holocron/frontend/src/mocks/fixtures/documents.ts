@@ -54,6 +54,7 @@ function line(
     engine,
     flags,
     edited_by_human: editedByHuman,
+    is_header_footer: false,
   };
 }
 
@@ -81,6 +82,15 @@ const PAGE_1: PageExtractionPending = {
   failure_reason: null,
   confirmed: false,
   confirmed_at: null,
+
+  own_images: [],
+  hidden_chars_dropped: 0,
+  scan_text_layer: false,
+  content_token_count: 24,
+  page_role: "content",
+  role_evidence: null,
+  dropped: false,
+  restored: false,
 };
 
 const PAGE_2: PageExtractionPending = {
@@ -111,6 +121,15 @@ const PAGE_2: PageExtractionPending = {
   failure_reason: null,
   confirmed: false,
   confirmed_at: null,
+
+  own_images: [],
+  hidden_chars_dropped: 0,
+  scan_text_layer: false,
+  content_token_count: 18,
+  page_role: "content",
+  role_evidence: null,
+  dropped: false,
+  restored: false,
 };
 
 /**
@@ -155,6 +174,15 @@ const PAGE_3: PageExtractionPending = {
   failure_reason: null,
   confirmed: true,
   confirmed_at: MOCK_CONFIRMED_AT,
+
+  own_images: [],
+  hidden_chars_dropped: 0,
+  scan_text_layer: false,
+  content_token_count: 15,
+  page_role: "content",
+  role_evidence: null,
+  dropped: false,
+  restored: false,
 };
 
 const PAGE_4: PageExtractionPending = {
@@ -177,6 +205,15 @@ const PAGE_4: PageExtractionPending = {
   failure_reason: "OCR_ENGINE_MISSING",
   confirmed: false,
   confirmed_at: null,
+
+  own_images: [],
+  hidden_chars_dropped: 0,
+  scan_text_layer: false,
+  content_token_count: null,
+  page_role: "content",
+  role_evidence: null,
+  dropped: false,
+  restored: false,
 };
 
 export const INITIAL_PAGES: readonly PageExtractionPending[] = [PAGE_1, PAGE_2, PAGE_3, PAGE_4];
@@ -199,13 +236,21 @@ export function pageSummaryOf(page: PageExtractionPending): PageSummaryPending {
     tier_used: page.tier_used,
     review_reasons: [...page.review_reasons],
     confirmed: page.confirmed,
+    page_role: page.page_role,
+    dropped: page.dropped,
   };
 }
 
 /** `DocumentImport` của tài liệu mẫu dựng từ các trang và `status` dựng sẵn của một bước kịch bản. */
+type ImportCounts = Pick<DocumentImport, "pages_kept" | "pages_dropped" | "pages_needs_review">;
+
+/** Số đếm tóm tắt GĐ0 dựng sẵn của bước đầu (backend đếm; mock chỉ giữ giá trị cố định, không tính). */
+const INITIAL_IMPORT_COUNTS: ImportCounts = { pages_kept: 3, pages_dropped: 0, pages_needs_review: 1 };
+
 export function mockDocumentImport(
   pages: readonly PageExtractionPending[],
   status: MockDocumentImport["status"],
+  counts: ImportCounts = INITIAL_IMPORT_COUNTS,
 ): MockDocumentImport {
   return {
     meta: structuredClone(MOCK_DOCUMENT_META),
@@ -215,6 +260,7 @@ export function mockDocumentImport(
     chapter_code: "ch1",
     status,
     pages: pages.map(pageSummaryOf),
+    ...counts,
     chapter_title: "tai lieu mau lich on tap",
     chapter_source: { code: "user", title: "file_name" },
     chapter_flags: [],
@@ -235,11 +281,12 @@ function snapshot(
   pages: readonly PageExtractionPending[],
   status: MockDocumentImport["status"],
   counts: Pick<DocumentSummary, "pages_pending" | "pages_needs_review" | "pages_failed" | "pages_confirmed">,
+  importCounts: ImportCounts,
 ): MockDocumentSnapshot {
   return {
     pages,
-    document: mockDocumentImport(pages, status),
-    summary: { meta: MOCK_DOCUMENT_META, status, ...counts },
+    document: mockDocumentImport(pages, status, importCounts),
+    summary: { meta: MOCK_DOCUMENT_META, status, ...counts, pages_dropped: 0 },
   };
 }
 
@@ -248,24 +295,39 @@ function snapshot(
  * mọi trang có văn bản (1, 2, 3) đã xác nhận nên tài liệu `confirmed` (§6.5); trang 4 đọc lỗi không tính.
  */
 export const MOCK_DOCUMENT_SCENARIO: Readonly<Record<MockDocumentStep, MockDocumentSnapshot>> = {
-  initial: snapshot(INITIAL_PAGES, "review", {
-    pages_pending: 0,
-    pages_needs_review: 2,
-    pages_failed: 1,
-    pages_confirmed: 1,
-  }),
-  page2_edited: snapshot([PAGE_1, PAGE_2_EDITED, PAGE_3, PAGE_4], "review", {
-    pages_pending: 0,
-    pages_needs_review: 1,
-    pages_failed: 1,
-    pages_confirmed: 1,
-  }),
-  confirmed: snapshot([confirmedPage(PAGE_1), confirmedPage(PAGE_2_EDITED), PAGE_3, PAGE_4], "confirmed", {
-    pages_pending: 0,
-    pages_needs_review: 1,
-    pages_failed: 1,
-    pages_confirmed: 3,
-  }),
+  initial: snapshot(
+    INITIAL_PAGES,
+    "review",
+    {
+      pages_pending: 0,
+      pages_needs_review: 2,
+      pages_failed: 1,
+      pages_confirmed: 1,
+    },
+    INITIAL_IMPORT_COUNTS,
+  ),
+  page2_edited: snapshot(
+    [PAGE_1, PAGE_2_EDITED, PAGE_3, PAGE_4],
+    "review",
+    {
+      pages_pending: 0,
+      pages_needs_review: 1,
+      pages_failed: 1,
+      pages_confirmed: 1,
+    },
+    { pages_kept: 3, pages_dropped: 0, pages_needs_review: 0 },
+  ),
+  confirmed: snapshot(
+    [confirmedPage(PAGE_1), confirmedPage(PAGE_2_EDITED), PAGE_3, PAGE_4],
+    "confirmed",
+    {
+      pages_pending: 0,
+      pages_needs_review: 1,
+      pages_failed: 1,
+      pages_confirmed: 3,
+    },
+    { pages_kept: 3, pages_dropped: 0, pages_needs_review: 0 },
+  ),
 };
 
 /** `DocumentSummary` của bước đầu (có test đối chiếu với `INITIAL_PAGES`). */

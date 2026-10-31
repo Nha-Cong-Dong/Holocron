@@ -19,7 +19,24 @@ from .schemas import DocumentMeta, StrictModel
 
 LineEngine = Literal["text_layer", "tesseract", "vlm", "human"]
 TierUsed = Literal["text_layer", "ocr", "layout", "vlm"]
-LineFlag = Literal["LOW_LINE_CONF", "TOKEN_MISMATCH", "HIGH_LINE_CER"]
+LineFlag = Literal[
+    "LOW_LINE_CONF",
+    "TOKEN_MISMATCH",
+    "HIGH_LINE_CER",
+    # GĐ0 (thêm 2026-10-31, §5.7 "Khử nhiễu trang"): chỉ gắn cho dòng engine "text_layer".
+    "LOW_TEXT_CONTRAST",
+    "TEXT_OCCLUDED",
+    "FONT_ENCODING_SUSPECT",
+]
+# Cờ dòng của GĐ0: chỉ dòng lớp chữ mang được (validator của `ExtractedLine`).
+TEXT_LAYER_LINE_FLAGS: frozenset[LineFlag] = frozenset({"LOW_TEXT_CONTRAST", "TEXT_OCCLUDED", "FONT_ENCODING_SUSPECT"})
+PageRole = Literal["content", "cover_or_course_nav", "chapter_nav", "build_step", "parallel_visual_series", "exercise"]
+# Vai trò cho phép bỏ mềm (0D); `parallel_visual_series` có bằng chứng nhưng luôn giữ.
+DROPPABLE_ROLES: frozenset[PageRole] = frozenset({"cover_or_course_nav", "chapter_nav", "build_step"})
+EVIDENCE_ROLES: frozenset[PageRole] = DROPPABLE_ROLES | {"parallel_visual_series"}
+RoleRule = Literal["cover_or_course_nav", "chapter_nav", "build_step", "parallel_visual_series", "build_step_uncertain"]
+MAX_PAGE_IMAGES = 256
+MAX_RELATED_PAGES = 300
 ReviewReason = Literal[
     "LOW_OCR_SCORE",
     "LOW_LINE_COVERAGE",
@@ -32,6 +49,13 @@ ReviewReason = Literal[
     "CROSS_CHECK_UNAVAILABLE",
     "HIGH_PAGE_CER",
     "OCR_ENGINE_MISSING",
+    # GĐ0 (thêm 2026-10-31): khai báo SAU các lý do cũ để thứ tự sắp của trang cũ không đổi.
+    "LOW_TEXT_CONTRAST",
+    "TEXT_OCCLUDED",
+    "FONT_ENCODING_SUSPECT",
+    "IMAGE_NEEDS_READING",
+    "PAGE_ROLE_UNCERTAIN",
+    "DENOISE_UNAVAILABLE",
 ]
 FailureReason = Literal["PAGE_TIMEOUT", "PAGE_ERROR", "OCR_ENGINE_MISSING", "TOO_MANY_LINES"]
 PageStatus = Literal["pending", "ok", "needs_review", "failed"]
@@ -52,6 +76,18 @@ class ExtractedLine(StrictModel):
     engine: LineEngine
     flags: list[LineFlag] = Field(default_factory=list)
     edited_by_human: bool = False
+    # GĐ0 0B(5): dòng lớp chữ khớp một dòng lặp (header/footer) của tài liệu; vẫn nằm trong `lines` nhưng không vào
+    # văn bản xác nhận, chunk hay token của 0C/0D, và không tính là dòng có chữ.
+    is_header_footer: bool = False
+
+    @model_validator(mode="after")
+    def _denoise_marks_only_on_text_layer(self) -> ExtractedLine:
+        if self.engine != "text_layer":
+            if self.is_header_footer:
+                raise ValueError("is_header_footer chỉ có ở dòng engine = 'text_layer'")
+            if TEXT_LAYER_LINE_FLAGS.intersection(self.flags):
+                raise ValueError("cờ LOW_TEXT_CONTRAST, TEXT_OCCLUDED, FONT_ENCODING_SUSPECT chỉ có ở dòng lớp chữ")
+        return self
 
     @field_validator("text")
     @classmethod
@@ -72,6 +108,36 @@ class ExtractedLine(StrictModel):
         if x0 > x1 or y0 > y1:
             raise ValueError("bbox phải có x0 ≤ x1 và y0 ≤ y1")
         return value
+
+
+class PageImage(StrictModel):
+    """Một ảnh nội dung (không-template) của trang (GĐ0 0A, 0D): hộp thật qua form XObject, chuẩn hoá [0, 1]."""
+
+    bbox: BBox
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    dhash: str | None = Field(default=None, pattern=r"^[0-9a-f]{16}$")
+
+    @field_validator("bbox")
+    @classmethod
+    def _bbox_in_unit_square(cls, value: BBox) -> BBox:
+        x0, y0, x1, y1 = value
+        if not all(0.0 <= v <= 1.0 for v in value) or x0 > x1 or y0 > y1:
+            raise ValueError("bbox phải nằm trong [0, 1] với x0 ≤ x1 và y0 ≤ y1")
+        return value
+
+
+class PageRef(StrictModel):
+    document_id: str = Field(pattern=r"^doc_[0-9a-f]{16}$")
+    page_number: int = Field(ge=1)
+
+
+class PageRoleEvidence(StrictModel):
+    """Lý do của `page_role`, của bỏ mềm hay của cờ vùng giữa `PAGE_ROLE_UNCERTAIN` (GĐ0 0D)."""
+
+    rule: RoleRule
+    related_pages: list[PageRef] = Field(min_length=1, max_length=MAX_RELATED_PAGES)
+    jaccard: float | None = Field(default=None, ge=0.0, le=1.0)
+    dhash_distance: int | None = Field(default=None, ge=0, le=64)
 
 
 class TokenMismatch(StrictModel):
@@ -114,6 +180,15 @@ class PageExtraction(StrictModel):
     failure_reason: FailureReason | None = None
     confirmed: bool = False
     confirmed_at: datetime | None = None
+    # GĐ0 (thêm 2026-10-31): mọi field có mặc định, nên JSON trang lưu trước GĐ0 vẫn đọc được (`content`, không bỏ).
+    own_images: list[PageImage] = Field(default_factory=list, max_length=MAX_PAGE_IMAGES)
+    hidden_chars_dropped: int = Field(default=0, ge=0)
+    scan_text_layer: bool = False
+    content_token_count: int | None = Field(default=None, ge=0)
+    page_role: PageRole = "content"
+    role_evidence: PageRoleEvidence | None = None
+    dropped: bool = False
+    restored: bool = False
 
     @field_validator("review_reasons")
     @classmethod
@@ -138,6 +213,26 @@ class PageExtraction(StrictModel):
         flagged = {line.line_index for line in self.lines if "TOKEN_MISMATCH" in line.flags}
         if any(m.line_index not in flagged for m in self.cross_check.mismatches):
             raise ValueError("mỗi TokenMismatch phải trỏ tới một dòng có cờ TOKEN_MISMATCH")
+        return self
+
+    @model_validator(mode="after")
+    def _consistent_role(self) -> PageExtraction:
+        """Ràng buộc GĐ0 0D giữa vai trò trang, bằng chứng, bỏ mềm và hoàn tác (§5.7)."""
+        evidence = self.role_evidence
+        if self.dropped:
+            if self.page_role not in DROPPABLE_ROLES:
+                raise ValueError("dropped = true chỉ khi page_role là cover_or_course_nav, chapter_nav hoặc build_step")
+            if self.confirmed or self.restored or self.status not in ("ok", "needs_review"):
+                raise ValueError("trang bỏ mềm phải chưa xác nhận, chưa hoàn tác và có status ok hoặc needs_review")
+        if self.page_role in EVIDENCE_ROLES and (evidence is None or evidence.rule != self.page_role):
+            raise ValueError("page_role có bằng chứng (khác content, exercise) phải có role_evidence cùng luật")
+        uncertain = "PAGE_ROLE_UNCERTAIN" in self.review_reasons
+        if uncertain != (evidence is not None and evidence.rule == "build_step_uncertain"):
+            raise ValueError("PAGE_ROLE_UNCERTAIN khi và chỉ khi role_evidence.rule = 'build_step_uncertain'")
+        if uncertain and self.page_role != "content":
+            raise ValueError("PAGE_ROLE_UNCERTAIN chỉ ở trang page_role = 'content'")
+        if evidence is not None and self.page_role not in EVIDENCE_ROLES and not uncertain:
+            raise ValueError("role_evidence chỉ có khi page_role có bằng chứng hoặc có PAGE_ROLE_UNCERTAIN")
         return self
 
 
@@ -187,6 +282,8 @@ class PageSummary(StrictModel):
     tier_used: TierUsed | None
     review_reasons: list[ReviewReason]
     confirmed: bool
+    page_role: PageRole = "content"
+    dropped: bool = False
 
     @classmethod
     def from_page(cls, page: PageExtraction) -> PageSummary:
@@ -196,7 +293,24 @@ class PageSummary(StrictModel):
             tier_used=page.tier_used,
             review_reasons=list(page.review_reasons),
             confirmed=page.confirmed,
+            page_role=page.page_role,
+            dropped=page.dropped,
         )
+
+
+def count_kept(pages: list[PageSummary]) -> int:
+    """Số trang "lấy" (GĐ0): không pending, không failed, không bỏ mềm."""
+    return sum(page.status not in ("pending", "failed") and not page.dropped for page in pages)
+
+
+def count_dropped(pages: list[PageSummary]) -> int:
+    """Số trang "bỏ" (GĐ0): trang bỏ mềm."""
+    return sum(page.dropped for page in pages)
+
+
+def count_needs_review(pages: list[PageSummary]) -> int:
+    """Số trang "cần xem" (GĐ0, sửa đổi 2026-10-31): `needs_review`, không bỏ mềm, chưa xác nhận."""
+    return sum(page.status == "needs_review" and not page.dropped and not page.confirmed for page in pages)
 
 
 class DocumentImport(StrictModel):
@@ -209,6 +323,10 @@ class DocumentImport(StrictModel):
     chapter_code: str = Field(pattern=CHAPTER_CODE_PATTERN)
     status: DocumentStatus
     pages: list[PageSummary]
+    # GĐ0: số đếm tóm tắt do backend đếm từ `pages` (`count_*`); frontend chỉ hiển thị (I1).
+    pages_kept: int = Field(ge=0)
+    pages_dropped: int = Field(ge=0)
+    pages_needs_review: int = Field(ge=0)
     # thêm 2026-10-31 (GĐ1 1A, 1B; §5.7 "Chương tự động", §6.5)
     chapter_title: str | None = Field(default=None, min_length=1, max_length=MAX_CHAPTER_TITLE_CHARS)
     chapter_source: ChapterSource
@@ -238,6 +356,7 @@ class DocumentSummary(StrictModel):
     pages_needs_review: int = Field(ge=0)
     pages_failed: int = Field(ge=0)
     pages_confirmed: int = Field(ge=0)
+    pages_dropped: int = Field(ge=0)
 
 
 class PageLineChange(StrictModel):
@@ -319,6 +438,13 @@ class PageLinesPatch(StrictModel):
 
 class PageConfirmRequest(StrictModel):
     """Body của `POST /v1/documents/{document_id}/pages/{page_number}/confirm` (§6.5)."""
+
+    editor_id: str = Field(min_length=1, max_length=MAX_EDITOR_ID_CHARS)
+    expected_version: int = Field(ge=1)
+
+
+class PageRestoreRequest(StrictModel):
+    """Body của `POST /v1/documents/{document_id}/pages/{page_number}/restore` (§6.5, GĐ0 0D)."""
 
     editor_id: str = Field(min_length=1, max_length=MAX_EDITOR_ID_CHARS)
     expected_version: int = Field(ge=1)

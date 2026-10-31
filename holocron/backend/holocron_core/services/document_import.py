@@ -17,6 +17,12 @@ chúng ngoài event loop (handler `def`, FastAPI chạy trong threadpool).
 
 Trước khi người dùng xác nhận, không văn bản nào đi vào Vault hay Gate: trang chỉ được lưu để xem lại (ADR-008 mục
 7). File PDF là đầu vào không tin cậy, chỉ được mở trong worker có giới hạn của `PdfReader` (CLAUDE.md §2.2).
+
+GĐ0 0D (sửa đổi 2026-10-31, spec §5.7 "Khử nhiễu trang và vai trò trang"): ở bước kết thúc lần đọc (`_finish`), dưới
+khoá của tài liệu và trước khi ghi trạng thái cuối, service gán vai trò trang và bỏ mềm (`page_roles.assign_roles`);
+sau khi nhả khoá, đánh giá lại trang bìa của các tài liệu nhập trước cùng môn (`_reassess_previous_covers`, lấy khoá
+từng tài liệu một). Trang bỏ mềm không vào văn bản xác nhận hay chunk, không chặn bước chốt, không sửa hay xác nhận
+được cho tới khi hoàn tác (`restore_page`). Dòng header/footer không phải dòng có chữ và không vào văn bản xác nhận.
 """
 
 from __future__ import annotations
@@ -49,8 +55,12 @@ from ..domain.documents import (
     PageExtraction,
     PageLineChange,
     PageLinesPatch,
+    PageRestoreRequest,
     PageSummary,
     ReviewReason,
+    count_dropped,
+    count_kept,
+    count_needs_review,
 )
 from ..domain.ingestion import UploadedDocument
 from ..domain.limits import MAX_LINE_CHARS
@@ -72,6 +82,7 @@ from ..infrastructure.document_readers.tiers import failed_page
 from ..infrastructure.storage.original_files import StagedFile
 from .chapter_naming import DEFAULT_TITLE, InitialChapter
 from .chapter_reservation import ChapterReservations, ChapterTurn, reserve_chapter
+from .page_roles import RoleDecision, apply_decision, assign_roles, changeable, reassess_cover
 from .vault import ingest_confirmed_text
 
 MAX_FILENAME_LENGTH = 255
@@ -95,6 +106,9 @@ SETTLE_PENDING_DETAIL = (
     "liệu, không sửa thêm được"
 )
 # Giới hạn trang của Knowledge Vault lấy từ `domain.vault` (`ConfirmedPage`), không ghi lại con số ở đây.
+# 409 khi thao tác trên trang đang bị bỏ mềm (GĐ0 0D; `detail` đề xuất của §6.5).
+DROPPED_EDIT_DETAIL = "Trang đang bị bỏ qua; hãy hoàn tác trước khi sửa"
+DROPPED_CONFIRM_DETAIL = "Trang đang bị bỏ qua; hãy hoàn tác trước khi xác nhận"
 PAGE_TOO_LARGE_DETAIL = (
     f"Trang vượt giới hạn của Knowledge Vault (tối đa {MAX_PAGE_LINES} dòng có văn bản, mỗi dòng tối đa "
     f"{MAX_LINE_CHARS} ký tự) nên không xác nhận được"
@@ -242,6 +256,8 @@ class ReadJob:
     retry: RetryPolicy = field(default_factory=RetryPolicy)
     vault: VaultRepository | None = None
     locks: KeyedLocks | None = None
+    # Ngưỡng của 0D (vai trò trang) ở bước kết thúc lần đọc; app truyền `ImportRuntime.reader_config`.
+    config: PdfReaderConfig = field(default_factory=PdfReaderConfig)
 
 
 class ImportQueue(Protocol):
@@ -413,6 +429,7 @@ def _chapter_code(document: ImportedDocument) -> str:
 
 
 def _view(document: ImportedDocument, pages: list[PageSummary]) -> DocumentImport:
+    """`DocumentImport` kèm số đếm tóm tắt GĐ0 (lấy, bỏ, cần xem) do backend đếm từ `pages`."""
     return DocumentImport(
         meta=document.meta,
         filename=document.filename,
@@ -421,6 +438,9 @@ def _view(document: ImportedDocument, pages: list[PageSummary]) -> DocumentImpor
         chapter_code=_chapter_code(document),
         status=document.status,
         pages=pages,
+        pages_kept=count_kept(pages),
+        pages_dropped=count_dropped(pages),
+        pages_needs_review=count_needs_review(pages),
         chapter_title=document.chapter_title,
         # Bản ghi có `chapter_code` mà thiếu nguồn là bản ghi nhập trước 2026-10-31 (field form bắt buộc) ⇒ "user"
         chapter_source=ChapterSource(code=document.chapter_code_source or "user", title=document.chapter_title_source),
@@ -440,9 +460,10 @@ def document_summary(store: DocumentRepository, document: ImportedDocument) -> D
         meta=document.meta,
         status=document.status,
         pages_pending=sum(page.status == "pending" for page in pages),
-        pages_needs_review=sum(page.status == "needs_review" for page in pages),
+        pages_needs_review=count_needs_review(pages),
         pages_failed=sum(page.status == "failed" for page in pages),
         pages_confirmed=sum(page.confirmed for page in pages),
+        pages_dropped=count_dropped(pages),
     )
 
 
@@ -721,6 +742,7 @@ def _store_and_queue(
                 retry=runtime.retry,
                 vault=vault,
                 locks=runtime.locks,
+                config=runtime.reader_config,
             )
         )
     except Exception as exc:
@@ -886,16 +908,132 @@ def _settle_after_read(
         )
 
 
+def _write_role(store: DocumentRepository, page: PageExtraction, decision: RoleDecision) -> None:
+    """Ghi vai trò của một trang qua `update_page` có so version; lệch version ⇒ đọc lại trang và thử lại tối đa
+    `SETTLE_ATTEMPTS` lần (trang đã đổi thành không đổi được thì thôi); hết lượt ⇒ cảnh báo, trang giữ như cũ (không
+    bỏ mềm là phía an toàn)."""
+    current: PageExtraction | None = page
+    for attempt in range(1, SETTLE_ATTEMPTS + 1):
+        if current is None or not changeable(current):
+            return
+        updated = apply_decision(current, decision)
+        if updated is None:
+            return
+        try:
+            store.update_page(
+                current.document_id,
+                current.page_number,
+                updated,
+                status=updated.status,
+                confirmed=False,
+                expected_version=current.version,
+            )
+            return
+        except VersionConflictError:
+            if attempt == SETTLE_ATTEMPTS:
+                break
+            current = store.get_page(current.document_id, current.page_number, PageExtraction)
+    _LOGGER.warning(
+        "chưa ghi được vai trò trang %d của tài liệu %s sau %d lần (version lệch); trang giữ như cũ",
+        page.page_number,
+        page.document_id,
+        SETTLE_ATTEMPTS,
+    )
+
+
+def _roles_allowed(store: DocumentRepository, vault: VaultRepository | None, document_id: str) -> bool:
+    """0D chỉ chạy khi tài liệu còn trong kho, chưa `confirmed` và Vault chưa có chunk của nó (`vault = None`: test,
+    script ⇒ chỉ kiểm trạng thái tài liệu)."""
+    document = store.get_imported_document(document_id)
+    if document is None or document.status == "confirmed":
+        return False
+    return vault is None or not vault.has_document_chunks(document_id)
+
+
+def assign_page_roles(
+    store: DocumentRepository, document_id: str, config: PdfReaderConfig, vault: VaultRepository | None = None
+) -> None:
+    """GĐ0 0D cho cả tài liệu (người gọi giữ khoá của tài liệu): vai trò trang và bỏ mềm theo `assign_roles`, so với
+    trang của các tài liệu khác cùng môn còn trong kho. Trang `pending`, `failed`, đã xác nhận, đã hoàn tác không đổi."""
+    if not _roles_allowed(store, vault, document_id):
+        return
+    document = store.get_imported_document(document_id)
+    if document is None:
+        return
+    pages = store.list_pages(document_id, PageExtraction)
+    others: list[PageExtraction] = []
+    for other in store.list_imported_documents(document.meta.subject_code):
+        if other.meta.doc_id != document_id:
+            others.extend(store.list_pages(other.meta.doc_id, PageExtraction))
+    decisions = assign_roles(pages, document.meta.page_count, others, config)
+    for page in pages:
+        decision = decisions.get(page.page_number)
+        if decision is not None:
+            _write_role(store, page, decision)
+
+
+def _reassess_previous_covers(
+    store: DocumentRepository,
+    document_id: str,
+    config: PdfReaderConfig,
+    locks: KeyedLocks | None,
+    vault: VaultRepository | None,
+) -> None:
+    """Sau khi nhả khoá của tài liệu vừa đọc: đánh giá lại trang bìa của các tài liệu khác cùng môn (`reassess_cover`),
+    lấy khoá từng tài liệu một (không giữ hai khoá cùng lúc). Tài liệu đã `confirmed` hoặc đã có chunk không đổi gì."""
+    document = store.get_imported_document(document_id)
+    if document is None:
+        return
+    later = store.list_pages(document_id, PageExtraction)
+    for other in store.list_imported_documents(document.meta.subject_code):
+        other_id = other.meta.doc_id
+        if other_id == document_id:
+            continue
+        with locks.hold(other_id) if locks is not None else contextlib.nullcontext():
+            if not _roles_allowed(store, vault, other_id):
+                continue
+            earlier = store.list_pages(other_id, PageExtraction)
+            decisions = reassess_cover(earlier, later, config)
+            for page in earlier:
+                decision = decisions.get(page.page_number)
+                if decision is not None:
+                    _write_role(store, page, decision)
+
+
+def _after_finish(
+    store: DocumentRepository,
+    document_id: str,
+    config: PdfReaderConfig,
+    locks: KeyedLocks | None,
+    vault: VaultRepository | None,
+) -> None:
+    """Bước sau khi nhả khoá của lần đọc: đánh giá lại trang bìa của tài liệu trước; lỗi kho chỉ ghi cảnh báo (mọi
+    trang của lần đọc đã được ghi xong)."""
+    try:
+        _reassess_previous_covers(store, document_id, config, locks, vault)
+    except StorageError as exc:
+        _LOGGER.warning(
+            "chưa đánh giá lại được trang bìa của tài liệu nhập trước (sau tài liệu %s): %s",
+            document_id,
+            type(exc).__name__,
+        )
+
+
 def _finish(
     store: DocumentRepository,
     document_id: str,
     status: Literal["review", "failed"],
     vault: VaultRepository | None = None,
+    config: PdfReaderConfig | None = None,
 ) -> None:
-    """Đặt trạng thái cuối của lần đọc (`_write_final_status`); có `vault` thì settle luôn tài liệu nếu đủ điều kiện
-    (`_settle_after_read`), ở cả đường đọc xong (`review`) lẫn đường `failed` (§5.7 "Chốt trạng thái tài liệu"),
-    để tài liệu không kẹt `review` hay `failed` khi người dùng đã xác nhận mọi trang có văn bản trong lúc các trang
-    còn lại đang đọc (rồi thành `failed` hoặc trắng)."""
+    """Gán vai trò trang (GĐ0 0D, `assign_page_roles`) rồi đặt trạng thái cuối của lần đọc (`_write_final_status`);
+    có `vault` thì settle luôn tài liệu nếu đủ điều kiện (`_settle_after_read`), ở cả đường đọc xong (`review`) lẫn
+    đường `failed` (§5.7 "Chốt trạng thái tài liệu"), để tài liệu không kẹt `review` hay `failed` khi người dùng đã
+    xác nhận mọi trang có văn bản trong lúc các trang còn lại đang đọc (rồi thành `failed` hoặc trắng)."""
+    try:
+        assign_page_roles(store, document_id, PdfReaderConfig() if config is None else config, vault)
+    except StorageError as exc:
+        _LOGGER.warning("chưa gán được vai trò trang của tài liệu %s: %s", document_id, type(exc).__name__)
     if _write_final_status(store, document_id, status) and vault is not None:
         _settle_after_read(store, vault, document_id, status)
 
@@ -905,6 +1043,7 @@ def mark_document_failed(
     document_id: str,
     locks: KeyedLocks | None = None,
     vault: VaultRepository | None = None,
+    config: PdfReaderConfig | None = None,
 ) -> None:
     """Tài liệu không đọc tiếp được: trang còn `pending` thành `failed` (`PAGE_ERROR`), tài liệu thành `failed`;
     có `vault` (thường là `ReadJob.vault`) thì sau đó settle như bước kết thúc lần đọc (`_finish`): mọi trang có văn
@@ -914,9 +1053,11 @@ def mark_document_failed(
     xác nhận: lần ghi trạng thái `failed` và bước settle sau nó không chen vào giữa một lần xác nhận đang settle tài
     liệu. `locks = None` (test, script) ⇒ không lấy khoá (chỉ còn so version); `vault = None` ⇒ không settle.
     """
+    settings = PdfReaderConfig() if config is None else config
     with locks.hold(document_id) if locks is not None else contextlib.nullcontext():
         _fail_pending(store, document_id, "PAGE_ERROR")
-        _finish(store, document_id, "failed", vault)
+        _finish(store, document_id, "failed", vault, settings)
+    _after_finish(store, document_id, settings, locks, vault)
 
 
 def _close_pages(pages: Iterator[PageExtraction]) -> None:
@@ -943,7 +1084,7 @@ def _open_pages(
         except (PdfInputError, ValueError, FileNotFoundError):
             _close_pages(pages)
             _LOGGER.warning("không mở lại được tài liệu %s để đọc", job.document_id)
-            mark_document_failed(job.store, job.document_id, job.locks, job.vault)
+            mark_document_failed(job.store, job.document_id, job.locks, job.vault, job.config)
             return None
         except (PdfWorkerError, OSError) as exc:
             _close_pages(pages)
@@ -1020,7 +1161,8 @@ def read_document(
     if should_stop():
         return
     with job.locks.hold(document_id) if job.locks is not None else contextlib.nullcontext():
-        _finish(store, document_id, "review", job.vault)
+        _finish(store, document_id, "review", job.vault, job.config)
+    _after_finish(store, document_id, job.config, job.locks, job.vault)
 
 
 def run_job(run: Callable[[], None], job: ReadJob, should_stop: Callable[[], bool]) -> None:
@@ -1045,7 +1187,7 @@ def run_job(run: Callable[[], None], job: ReadJob, should_stop: Callable[[], boo
             return
         _LOGGER.exception("lỗi khi đọc tài liệu %s", job.document_id)
         try:
-            mark_document_failed(job.store, job.document_id, job.locks, job.vault)
+            mark_document_failed(job.store, job.document_id, job.locks, job.vault, job.config)
         except Exception:
             _LOGGER.exception("không đánh dấu được tài liệu %s là failed", job.document_id)
 
@@ -1136,13 +1278,15 @@ def requeue_pending(
     *,
     vault: VaultRepository | None = None,
     locks: KeyedLocks | None = None,
+    config: PdfReaderConfig | None = None,
 ) -> list[str]:
     """Khi khởi động: xếp lại tài liệu còn `processing` theo thứ tự nhận (cũ trước), từ file gốc đã lưu (§6.5).
 
-    File gốc không còn ⇒ tài liệu `failed`. Trả id các tài liệu đã xếp lại. `vault` và `locks` đi cùng việc đọc
-    (`ReadJob`).
+    File gốc không còn ⇒ tài liệu `failed`. Trả id các tài liệu đã xếp lại. `vault`, `locks` và `config` (ngưỡng 0D)
+    đi cùng việc đọc (`ReadJob`).
     """
     policy = RetryPolicy() if retry is None else retry
+    settings = PdfReaderConfig() if config is None else config
     queued: list[str] = []
     for document in reversed(store.list_imported_documents()):
         if document.status != "processing":
@@ -1150,7 +1294,7 @@ def requeue_pending(
         document_id = document.meta.doc_id
         if not files.exists(document.meta.sha256):
             _LOGGER.warning("mất file gốc của tài liệu %s; đánh dấu failed", document_id)
-            mark_document_failed(store, document_id, locks, vault)
+            mark_document_failed(store, document_id, locks, vault, settings)
             continue
         path = files.path_for(document.meta.sha256)
         jobs.submit(
@@ -1162,6 +1306,7 @@ def requeue_pending(
                 retry=policy,
                 vault=vault,
                 locks=locks,
+                config=settings,
             )
         )
         queued.append(document_id)
@@ -1180,8 +1325,9 @@ def remove_orphan_files(store: DocumentRepository, files: OriginalFiles) -> list
 
 
 def _has_text(page: PageExtraction) -> bool:
-    """Trang có ít nhất một dòng có chữ (không tính dòng rỗng hay chỉ có khoảng trắng)."""
-    return any(line.text.strip() for line in page.lines)
+    """Trang có ít nhất một dòng có chữ (không tính dòng rỗng hay chỉ có khoảng trắng, và từ GĐ0 không tính dòng
+    header/footer)."""
+    return any(line.text.strip() and not line.is_header_footer for line in page.lines)
 
 
 def _page_key(document_id: str, page_number: int) -> str:
@@ -1210,6 +1356,8 @@ def _check_editable(document: ImportedDocument, page: PageExtraction, vault: Vau
         raise PageStateError("trang đọc lỗi không sửa được; hãy xoá tài liệu rồi nhập lại file")
     if page.confirmed:
         raise PageStateError("trang đã xác nhận, không sửa được")
+    if page.dropped:
+        raise PageStateError(DROPPED_EDIT_DETAIL)
     _check_text_open(document, vault)
 
 
@@ -1262,6 +1410,10 @@ def apply_line_edits(
         line.conf < line_conf_min and not line.edited_by_human for line in lines
     ):
         reasons.remove("LOW_CONF_LINES")
+    # GĐ0: lý do cùng tên với cờ dòng của 0B được bỏ khi không còn dòng nào mang cờ đó (dòng sửa đã bị xoá `flags`).
+    for flag in ("LOW_TEXT_CONTRAST", "TEXT_OCCLUDED", "FONT_ENCODING_SUSPECT"):
+        if flag in reasons and not any(flag in line.flags for line in lines):
+            reasons.remove(flag)
     edited = PageExtraction.model_validate(
         {
             **page.model_dump(),
@@ -1346,17 +1498,17 @@ def _store_confirmed(store: DocumentRepository, page: PageExtraction, now: datet
 
 def _ready_to_confirm(pages: list[PageExtraction]) -> bool:
     """§5.7: hết trang `pending`, có ít nhất một trang đã xác nhận, và mọi trang có văn bản (không `failed`) đã xác
-    nhận. Trang `failed` và trang không có chữ không xác nhận được nên không chặn."""
+    nhận. Trang `failed`, trang không có chữ và (GĐ0) trang bỏ mềm không xác nhận được nên không chặn."""
     if any(page.status == "pending" for page in pages):
         return False
-    text_pages = [page for page in pages if page.status != "failed" and _has_text(page)]
+    text_pages = [page for page in pages if page.status != "failed" and not page.dropped and _has_text(page)]
     return any(page.confirmed for page in pages) and all(page.confirmed for page in text_pages)
 
 
 def _confirmed_lines(page: PageExtraction) -> list[str]:
-    """Các dòng của trang đi vào văn bản xác nhận: bỏ dòng không có văn bản (rỗng hoặc chỉ có khoảng trắng, §6.5),
-    cùng định nghĩa "có văn bản" với `_has_text`."""
-    return [line.text for line in page.lines if line.text.strip()]
+    """Các dòng của trang đi vào văn bản xác nhận: bỏ dòng không có văn bản (rỗng hoặc chỉ có khoảng trắng, §6.5) và
+    (GĐ0) dòng header/footer, cùng định nghĩa "có văn bản" với `_has_text`."""
+    return [line.text for line in page.lines if line.text.strip() and not line.is_header_footer]
 
 
 def _fits_vault(page: PageExtraction) -> bool:
@@ -1374,7 +1526,9 @@ def confirmed_text(document: ImportedDocument, pages: list[PageExtraction]) -> C
     `chapter_code` của tài liệu, `category = THEORY`, `topic_keys = []` (mặc định của `ConfirmedDocumentText`).
     """
     confirmed_pages = [
-        ConfirmedPage(page_number=page.page_number, lines=_confirmed_lines(page)) for page in pages if page.confirmed
+        ConfirmedPage(page_number=page.page_number, lines=_confirmed_lines(page))
+        for page in pages
+        if page.confirmed and not page.dropped
     ]
     if not confirmed_pages:
         return None
@@ -1486,6 +1640,8 @@ def confirm_page(
                 raise PageStateError("trang đang được đọc, chưa xác nhận được")
             if page.status == "failed":
                 raise PageStateError("trang đọc lỗi không xác nhận được; hãy xoá tài liệu rồi nhập lại file")
+            if page.dropped:
+                raise PageStateError(DROPPED_CONFIRM_DETAIL)
             _check_version(page, request.expected_version)
             if not _has_text(page):
                 raise PageStateError("trang không có dòng nào có văn bản để xác nhận")
@@ -1522,7 +1678,7 @@ def confirm_document(
             raise PageStateError("tài liệu còn trang đang được đọc, chưa xác nhận được")
         to_confirm: list[PageExtraction] = []
         for page in pages:
-            if page.status != "ok" or page.confirmed or not _has_text(page):
+            if page.status != "ok" or page.confirmed or page.dropped or not _has_text(page):
                 continue
             if _fits_vault(page):
                 to_confirm.append(page)
@@ -1538,6 +1694,38 @@ def confirm_document(
             _store_confirmed(store, page, now)
         _settle_confirmed(store, vault, document_id)
         return get_document_view(store, document_id)
+
+
+def restore_page(
+    store: DocumentRepository,
+    vault: VaultRepository,
+    runtime: ImportRuntime,
+    document_id: str,
+    page_number: int,
+    request: PageRestoreRequest,
+) -> PageExtraction:
+    """`POST …/pages/{n}/restore` (§6.5, GĐ0 0D): hoàn tác bỏ mềm một trang bằng một lời gọi.
+
+    Trang bỏ mềm ⇒ `dropped = false`, `restored = true`, `version + 1`; `page_role`, `role_evidence`,
+    `review_reasons`, `status` giữ nguyên; không ghi `PageEditAudit`. Trang không bỏ mềm (kể cả đã hoàn tác) ⇒ trả
+    nguyên trang, không kiểm `expected_version`. Lỗi: `DocumentNotFoundError` (tài liệu hay trang);
+    `DocumentChapterMissingError`; `VersionConflictError` khi version lệch; `PageStateError` khi văn bản tài liệu đã
+    đóng (`confirmed`, hoặc Vault đã có chunk: `_check_text_open`).
+    """
+    with runtime.locks.hold(document_id):
+        page = get_page_extraction(store, document_id, page_number)
+        document = _confirmable_document(store, document_id)
+        if not page.dropped:
+            return page
+        _check_version(page, request.expected_version)
+        _check_text_open(document, vault)
+        restored = PageExtraction.model_validate(
+            {**page.model_dump(), "dropped": False, "restored": True, "version": page.version + 1}
+        )
+        store.update_page(
+            document_id, page_number, restored, status=restored.status, confirmed=False, expected_version=page.version
+        )
+        return restored
 
 
 # --------------------------------------------------------------------------- #

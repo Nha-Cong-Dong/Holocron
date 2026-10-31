@@ -61,6 +61,12 @@ export const REVIEW_REASONS: readonly ReviewReasonPending[] = [
   "CROSS_CHECK_UNAVAILABLE",
   "HIGH_PAGE_CER",
   "OCR_ENGINE_MISSING",
+  "LOW_TEXT_CONTRAST",
+  "TEXT_OCCLUDED",
+  "FONT_ENCODING_SUSPECT",
+  "IMAGE_NEEDS_READING",
+  "PAGE_ROLE_UNCERTAIN",
+  "DENOISE_UNAVAILABLE",
 ];
 
 /** `PageSummary` với `ReviewReason` của §5.7 v0.7 (có `LOW_TEXT_SCORE`). */

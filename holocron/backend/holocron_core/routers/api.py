@@ -16,13 +16,16 @@ from fastapi.responses import JSONResponse
 from ..domain.ingestion import IngestionItem, IngestionItemCreate
 from ..domain.repositories import StorageBusyError
 from ..domain.twins import IdempotencyRecord
+from ..infrastructure.llm_config import RuntimeConfig
 from ..infrastructure.memory_store import IDEMPOTENCY_TTL, IngestionStore
 from ..infrastructure.storage import SQLiteStore, data_dir_from_env
+from ..services.concept_proposal_job import ProposalJobRuntime
 from ..services.document_import import ImportRuntime
 from . import blueprints, documents, ingestion, runtime, static_site, subjects, vault
 from .access import LocalAccessMiddleware, check_token_config, get_allowed_hosts, get_required_token
 from .blueprints import create_twins
 from .deps import (
+    PROPOSAL_JOBS_STATE_ATTR,
     REGISTRY,
     AuthorDep,
     CitationDep,
@@ -31,6 +34,7 @@ from .deps import (
     RuntimeConfigDep,
     StoreDep,
     _default_store,
+    create_proposal_job_runtime,
     get_citation_provider,
     get_clock,
     get_extractor,
@@ -122,17 +126,31 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     kiểm xong mà xếp lại tài liệu đọc dở và mở cổng ngay (duyệt 2026-10-30). Trong lúc kiểm, `ocr`/`ocr_cross_check`
     báo `local_check_pending`; kết quả gắn vào `app.state` cho `GET /v1/runtime` và các route cần khả năng; bỏ khi tắt
     app để lần khởi động sau kiểm lại.
+
+    Runtime job đề xuất cặp (§5.8) cũng được tạo ở đây với `config.llm.proposal` và gắn vào `app.state`. Khi tắt app nó
+    được đóng TRƯỚC bộ nhập và kho: không nhận job mới, bỏ lô chưa chạy, chờ có hạn lô đang chạy; job mất theo app
+    (khởi động lại ⇒ job cũ 404).
     """
     check_token_config(application.dependency_overrides)
     store = get_store()
     import_runtime: ImportRuntime | None = None
+    proposal_jobs: ProposalJobRuntime | None = None
     try:
         import_runtime = documents.create_import_runtime(data_dir_from_env())
         setattr(application.state, documents.RUNTIME_STATE_ATTR, import_runtime)
         runtime.start_local_capability_check(application, import_runtime.reader_config)
         documents.requeue_on_startup(store, import_runtime)
+        config_provider = application.dependency_overrides.get(get_runtime_config, get_runtime_config)
+        config = config_provider()
+        proposal_jobs = create_proposal_job_runtime(
+            config if isinstance(config, RuntimeConfig) else get_runtime_config()
+        )
+        setattr(application.state, PROPOSAL_JOBS_STATE_ATTR, proposal_jobs)
         yield
     finally:
+        if proposal_jobs is not None:
+            proposal_jobs.close()
+            delattr(application.state, PROPOSAL_JOBS_STATE_ATTR)
         runtime.clear_local_capability_check(application)
         if import_runtime is not None:
             import_runtime.close()

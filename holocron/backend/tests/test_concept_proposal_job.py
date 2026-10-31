@@ -14,19 +14,39 @@ from collections.abc import Callable, Iterator, Sequence
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from holocron_core.domain.llm import ChatCompletionClient, ChatMessage, LlmUpstreamError
 from holocron_core.domain.repositories import AppStore, ImportedDocument
 from holocron_core.domain.schemas import DocumentMeta, KnowledgeChunk, SourceKind
 from holocron_core.domain.vault import ProposalJob
 from holocron_core.infrastructure.llm_client import OpenAiChatClient
-from holocron_core.infrastructure.llm_config import ConceptProposalSettings, LlmTaskLimits, load_runtime_config
+from holocron_core.infrastructure.llm_config import (
+    ConceptProposalSettings,
+    LlmTaskLimits,
+    RuntimeConfig,
+    load_runtime_config,
+)
 from holocron_core.infrastructure.memory_store import IngestionStore
 from holocron_core.routers import vault
-from holocron_core.routers.deps import get_clock, get_proposal_jobs, get_runtime_config, get_store
-from holocron_core.services.concept_proposal_job import ProposalJobRuntime, derive_status
+from holocron_core.routers.api import app as api_app
+from holocron_core.routers.deps import (
+    PROPOSAL_JOBS_STATE_ATTR,
+    PROPOSAL_JOBS_UNAVAILABLE_DETAIL,
+    get_clock,
+    get_proposal_jobs,
+    get_runtime_config,
+    get_store,
+)
+from holocron_core.services.concept_proposal_job import (
+    ProposalJobQueueFullError,
+    ProposalJobRuntime,
+    _JobState,
+    derive_status,
+)
+from holocron_core.services.concept_proposal_pointer import BatchOutcome
 from holocron_core.services.vault import ingest_confirmed_text
-from tests.proposal_support import DEF_PROCESS, SUBJECT, StubClient, as_json, pointer, seed, span_of
+from tests.proposal_support import DEF_PROCESS, EMPTY_REPLY, SUBJECT, StubClient, pointer, reply, seed, span_of
 from tests.vault_support import NOW, add_document, confirmed, document_id
 
 CONFIGURED_ENV = {
@@ -116,7 +136,7 @@ class Gate:
         self.release_event.wait(WAIT_S)
         with self.lock:
             self.active -= 1
-        return "[]"
+        return EMPTY_REPLY
 
     def client(self) -> StubClient:
         return StubClient(self.respond)
@@ -157,7 +177,7 @@ def test_batch_size_follows_the_configuration(runtimes: list[ProposalJobRuntime]
 
     def respond(messages: Sequence[ChatMessage]) -> str:
         sent.append(sum(chunk.chunk_id in messages[1].content for chunk in chunks))
-        return "[]"
+        return EMPTY_REPLY
 
     job = _submit(runtime, store, [*chunks, chunks[0]], lambda: StubClient(respond))
     assert (job.chunk_count, job.batch_size, job.batches_total, job.status) == (5, 2, 3, "queued")
@@ -194,7 +214,7 @@ def test_cancel_skips_queued_batches_and_keeps_pairs_of_the_running_one(runtimes
         started.set()
         release.wait(WAIT_S)
         s = span_of(chunks[:1], DEF_PROCESS)
-        return as_json(pointer(s, "Tiến trình", [s], "Tiến trình là", "bộ nhớ."))
+        return reply(pointer(s, "Tiến trình", [s], "Tiến trình là", "bộ nhớ."))
 
     job = _submit(runtime, store, chunks, lambda: StubClient(respond))
     assert started.wait(WAIT_S)
@@ -230,7 +250,9 @@ def test_a_failing_batch_does_not_break_the_others(runtimes: list[ProposalJobRun
     chunks = _many_chunks(store, 3)
     runtime = _runtime()
     runtimes.append(runtime)
-    clients = iter([StubClient(LlmUpstreamError("lỗi", attempts=1)), StubClient("hỏng", "vẫn hỏng"), StubClient("[]")])
+    clients = iter(
+        [StubClient(LlmUpstreamError("lỗi", attempts=1)), StubClient("hỏng", "vẫn hỏng"), StubClient(EMPTY_REPLY)]
+    )
     done = _finished(runtime, _submit(runtime, store, chunks, lambda: next(clients), LlmTaskLimits(json_retry_max=1)))
     assert (done.batches_done, done.batches_failed, done.status) == (1, 2, "partial")
     assert done.batch_errors == {"llm_upstream": 1, "format": 1}
@@ -251,7 +273,7 @@ def test_status_is_partial_when_some_batches_fail(runtimes: list[ProposalJobRunt
     runtime = _runtime()
     runtimes.append(runtime)
     s = span_of(chunks[:1], DEF_PROCESS)
-    good = as_json(
+    good = reply(
         pointer(s, "Tiến trình", [s], "Tiến trình là", "bộ nhớ."),
         {"chunk_id": chunks[0].chunk_id, "is_exercise": False},
     )
@@ -274,7 +296,7 @@ def test_unexpected_error_in_a_batch_only_fails_that_batch(runtimes: list[Propos
         calls.append(1)
         if len(calls) == 1:
             raise RuntimeError("không dựng được client")
-        return StubClient("[]")
+        return StubClient(EMPTY_REPLY)
 
     done = _finished(runtime, _submit(runtime, store, chunks, factory))
     assert (done.status, done.batches_done, done.batches_failed, done.batch_errors) == ("partial", 1, 1, {})
@@ -288,7 +310,7 @@ def test_progress_counts_pairs_rejections_exercise_chunks_and_pre_selection(
     runtime = _runtime(job_batch_chunks=2, pair_preselect_enabled=True)
     runtimes.append(runtime)
     s = span_of(chunks, DEF_PROCESS)
-    response = as_json(
+    response = reply(
         pointer(s, "Tiến trình", [s], "Tiến trình là", "bộ nhớ."),
         pointer(s, "Không có", [s], "Tiến trình là", "bộ nhớ."),
         pointer("S99", "x", ["S99"], "a", "b"),
@@ -345,7 +367,7 @@ def test_only_the_most_recent_finished_jobs_are_kept(runtimes: list[ProposalJobR
     chunks = _many_chunks(store, 1)
     runtime = _runtime(job_keep_finished=3)
     runtimes.append(runtime)
-    jobs = [_finished(runtime, _submit(runtime, store, chunks, lambda: StubClient("[]"))) for _ in range(5)]
+    jobs = [_finished(runtime, _submit(runtime, store, chunks, lambda: StubClient(EMPTY_REPLY))) for _ in range(5)]
     assert [runtime.get(job.job_id) is not None for job in jobs] == [False, False, True, True, True]
     assert [job.job_id for job in runtime.list_jobs(SUBJECT)] == [job.job_id for job in reversed(jobs[2:])]
     assert runtime.list_jobs("ZZ1000") == []
@@ -364,9 +386,9 @@ def test_closed_runtime_refuses_new_jobs() -> None:
     runtime = _runtime()
     runtime.close()
     with pytest.raises(RuntimeError):
-        _submit(runtime, store, chunks, lambda: StubClient("[]"))
+        _submit(runtime, store, chunks, lambda: StubClient(EMPTY_REPLY))
     with pytest.raises(ValueError):
-        _submit(_runtime(), store, [], lambda: StubClient("[]"))
+        _submit(_runtime(), store, [], lambda: StubClient(EMPTY_REPLY))
 
 
 # --------------------------------------------------------------------------- #
@@ -375,13 +397,18 @@ def test_closed_runtime_refuses_new_jobs() -> None:
 
 
 def _app(
-    store: AppStore, runtime: ProposalJobRuntime, client: StubClient | None, configured: bool = True
+    store: AppStore,
+    runtime: ProposalJobRuntime,
+    client: StubClient | None,
+    configured: bool = True,
+    config: RuntimeConfig | None = None,
 ) -> TestClient:
     app = FastAPI()
     app.include_router(vault.router)
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_clock] = lambda: lambda: NOW
-    app.dependency_overrides[get_runtime_config] = lambda: load_runtime_config(CONFIGURED_ENV if configured else {})
+    chosen = config or load_runtime_config(CONFIGURED_ENV if configured else {})
+    app.dependency_overrides[get_runtime_config] = lambda: chosen
     app.dependency_overrides[get_proposal_jobs] = lambda: runtime
     if client is not None:
         app.dependency_overrides[vault.get_chat_client_factory] = lambda: lambda: client
@@ -413,7 +440,7 @@ def test_create_job_returns_202_with_location_then_runs(runtimes: list[ProposalJ
     chunks = seed(store)
     runtime = _runtime()
     runtimes.append(runtime)
-    client = _app(store, runtime, StubClient("[]", "[]"))
+    client = _app(store, runtime, StubClient(EMPTY_REPLY, EMPTY_REPLY))
     response = client.post(JOBS_URL, json={"subject_code": SUBJECT, "chunk_ids": [c.chunk_id for c in chunks]})
     assert response.status_code == 202
     body = response.json()
@@ -434,7 +461,7 @@ def test_create_job_for_a_document_uses_every_chunk_of_it(runtimes: list[Proposa
     _import(store, chunks[0].doc_id)
     runtime = _runtime()
     runtimes.append(runtime)
-    response = _app(store, runtime, StubClient("[]")).post(
+    response = _app(store, runtime, StubClient(EMPTY_REPLY)).post(
         JOBS_URL, json={"subject_code": SUBJECT, "document_id": chunks[0].doc_id}
     )
     assert response.status_code == 202
@@ -494,7 +521,7 @@ def test_unknown_or_lost_jobs_are_404(runtimes: list[ProposalJobRuntime]) -> Non
     chunks = seed(store)
     before_restart = _runtime()
     runtimes.append(before_restart)
-    created = _app(store, before_restart, StubClient("[]", "[]")).post(
+    created = _app(store, before_restart, StubClient(EMPTY_REPLY, EMPTY_REPLY)).post(
         JOBS_URL, json={"subject_code": SUBJECT, "chunk_ids": [chunks[0].chunk_id]}
     )
     job_id = created.json()["job_id"]
@@ -514,5 +541,144 @@ def test_factory_dependency_builds_a_fresh_real_client_per_call_without_calling_
     assert isinstance(first, OpenAiChatClient) and isinstance(second, OpenAiChatClient) and first is not second
 
 
-def test_default_runtime_dependency_is_shared() -> None:
-    assert get_proposal_jobs() is get_proposal_jobs()
+def test_jobs_live_with_the_app_lifespan_and_are_lost_on_restart() -> None:
+    """Runtime do `lifespan` tạo (với `config.llm.proposal`) và đóng khi tắt app; khởi động lại ⇒ job cũ 404."""
+    store = get_store()
+    chunks = _many_chunks(store, 1)
+    settings = ConceptProposalSettings(job_max_parallel=3, job_keep_finished=7)
+    base = load_runtime_config(CONFIGURED_ENV)
+    config = base.model_copy(update={"llm": base.llm.model_copy(update={"proposal": settings})})
+    overrides: dict[Callable[..., object], Callable[..., object]] = {
+        get_runtime_config: lambda: config,
+        vault.get_chat_client_factory: lambda: lambda: StubClient(EMPTY_REPLY),
+    }
+    api_app.dependency_overrides.update(overrides)
+    try:
+        with TestClient(api_app) as client:
+            jobs = getattr(api_app.state, PROPOSAL_JOBS_STATE_ATTR)
+            assert isinstance(jobs, ProposalJobRuntime) and jobs.settings == settings
+            created = client.post(JOBS_URL, json={"subject_code": SUBJECT, "chunk_ids": [chunks[0].chunk_id]})
+            assert created.status_code == 202
+            job_id = created.json()["job_id"]
+            assert jobs.wait_idle(WAIT_S)
+            assert client.get(f"{JOBS_URL}/{job_id}").json()["status"] == "succeeded"
+        assert not hasattr(api_app.state, PROPOSAL_JOBS_STATE_ATTR)
+        with pytest.raises(RuntimeError):  # đã đóng khi tắt app
+            _submit(jobs, store, chunks, lambda: StubClient(EMPTY_REPLY))
+        unavailable = TestClient(api_app).get(f"{JOBS_URL}/{job_id}")  # không qua lifespan
+        assert unavailable.status_code == 500
+        assert unavailable.json()["detail"] == PROPOSAL_JOBS_UNAVAILABLE_DETAIL
+        with TestClient(api_app) as client:
+            assert client.get(f"{JOBS_URL}/{job_id}").status_code == 404
+    finally:
+        for key in overrides:
+            api_app.dependency_overrides.pop(key, None)
+
+
+def test_each_job_uses_the_request_configuration(runtimes: list[ProposalJobRuntime]) -> None:
+    store = IngestionStore()
+    chunks = seed(store)
+    runtime = _runtime(job_batch_chunks=20)
+    runtimes.append(runtime)
+    s = span_of(chunks, DEF_PROCESS)
+    labels = [{"chunk_id": chunk.chunk_id, "is_exercise": False} for chunk in chunks]
+    good = reply(pointer(s, "Tiến trình", [s], "Tiến trình là", "bộ nhớ."), *labels)
+    base = load_runtime_config(CONFIGURED_ENV)
+    settings = ConceptProposalSettings(job_batch_chunks=1, pair_preselect_enabled=True)
+    config = base.model_copy(update={"llm": base.llm.model_copy(update={"proposal": settings})})
+    client = _app(store, runtime, StubClient(good, EMPTY_REPLY), config=config)
+    response = client.post(JOBS_URL, json={"subject_code": SUBJECT, "chunk_ids": [c.chunk_id for c in chunks]})
+    assert (response.json()["batch_size"], response.json()["batches_total"]) == (1, 2)
+    assert runtime.wait_idle(WAIT_S)
+    done = client.get(f"{JOBS_URL}/{response.json()['job_id']}").json()
+    assert (done["proposed_count"], done["pre_selected_count"]) == (1, 1)
+
+
+def test_too_many_active_jobs_are_refused(runtimes: list[ProposalJobRuntime]) -> None:
+    store = IngestionStore()
+    chunks = _many_chunks(store, 2)
+    runtime = _runtime(job_max_active=1)
+    runtimes.append(runtime)
+    gate = Gate()
+    first = _submit(runtime, store, chunks[:1], gate.client)
+    with pytest.raises(ProposalJobQueueFullError):
+        _submit(runtime, store, chunks[1:], gate.client)
+    refused = _app(store, runtime, StubClient()).post(
+        JOBS_URL, json={"subject_code": SUBJECT, "chunk_ids": [chunks[1].chunk_id]}
+    )
+    assert refused.status_code == 409 and "job" in refused.json()["detail"]
+    gate.release_event.set()
+    assert _finished(runtime, first).status == "succeeded"
+    again = _submit(runtime, store, chunks[1:], lambda: StubClient(EMPTY_REPLY))
+    assert _finished(runtime, again).status == "succeeded"
+
+
+def test_failure_while_recording_a_batch_fails_the_job_and_keeps_the_worker(
+    runtimes: list[ProposalJobRuntime], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = IngestionStore()
+    chunks = _many_chunks(store, 3)
+    runtime = _runtime()
+    runtimes.append(runtime)
+    real = runtime._record
+    calls: list[int] = []
+
+    def flaky(state: _JobState, outcome: BatchOutcome | None) -> None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("hỏng khi cộng")
+        real(state, outcome)
+
+    monkeypatch.setattr(runtime, "_record", flaky)
+    broken = _finished(runtime, _submit(runtime, store, chunks[:2], lambda: StubClient(EMPTY_REPLY)))
+    assert broken.status == "failed" and broken.finished_at == NOW
+    healthy = _finished(runtime, _submit(runtime, store, chunks[2:], lambda: StubClient(EMPTY_REPLY)))
+    assert healthy.status == "succeeded"
+    assert len(calls) == 2  # lô thứ hai của job hỏng không chạy
+
+
+def _job(**changes: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "job_id": "pjob_0123456789abcdef",
+        "subject_code": SUBJECT,
+        "trigger": "manual",
+        "document_id": None,
+        "status": "running",
+        "chunk_count": 3,
+        "batch_size": 20,
+        "batches_total": 3,
+        "batches_done": 1,
+        "batches_failed": 1,
+        "proposed_count": 2,
+        "pre_selected_count": 2,
+        "rejected_count": 1,
+        "rejected_by_reason": {"duplicate": 1},
+        "exercise_chunks": 0,
+        "created_at": NOW,
+    }
+    return {**base, **changes}
+
+
+def test_proposal_job_model_accepts_boundaries() -> None:
+    ProposalJob.model_validate(_job())
+    ProposalJob.model_validate(_job(batch_size=1, chunk_count=1, batches_done=2, batches_failed=1))
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"rejected_count": 2},
+        {"rejected_by_reason": {}},
+        {"batches_done": 2, "batches_failed": 2},
+        {"pre_selected_count": 3},
+        {"batch_size": 21},
+        {"batch_size": 0},
+        {"chunk_count": 0},
+        {"job_id": "pjob_0123456789abcdefx"},
+        {"job_id": "xpjob_0123456789abcdef"},
+        {"job_id": "pjob_0123456789ABCDEF"},
+    ],
+)
+def test_proposal_job_model_rejects_inconsistent_counts_and_ids(changes: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        ProposalJob.model_validate(_job(**changes))

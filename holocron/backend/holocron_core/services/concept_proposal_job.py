@@ -9,8 +9,12 @@
   lưu; job thành `cancelled` khi không còn lô nào chạy. Huỷ job đã kết thúc không đổi gì.
 - **Trạng thái:** `succeeded` = mọi lô xong không lỗi; `partial` = có lô lỗi và có lô xong; `failed` = mọi lô lỗi;
   `cancelled` = người dùng huỷ trước khi hết lô.
-- **Lưu:** chỉ trong bộ nhớ của runtime (cấp qua `Depends`, không phải biến cấp module); tắt app thì mất job, cặp đã
-  lưu vẫn còn. Giữ tối đa `job_keep_finished` job đã kết thúc (cũ nhất bị bỏ trước).
+- **Lưu:** chỉ trong bộ nhớ của runtime, do `lifespan` của app tạo và đóng (như `ImportRuntime`) rồi cấp cho router
+  qua `Depends`; tắt app thì mất job, cặp đã lưu vẫn còn. Giữ tối đa `job_keep_finished` job đã kết thúc (cũ nhất bị
+  bỏ trước). Số job chưa kết thúc (queued + running) tối đa `job_max_active`; vượt ⇒ `ProposalJobQueueFullError`.
+- **Cấu hình:** một nguồn duy nhất là `ConceptProposalSettings` (`config.llm.proposal`): runtime nhận nó lúc tạo
+  (song song, số job giữ lại, trần job), mỗi job nhận bản của request (cỡ lô, tích sẵn, số lần ghi lại nhãn).
+- **Lỗi khi cộng kết quả một lô:** job thành `failed`, lô còn chờ của job bị bỏ; luồng chạy không chết.
 
 Job không gọi mạng khi tạo; LLM KHÔNG BAO GIỜ xác nhận cặp.
 """
@@ -42,6 +46,10 @@ ClientFactory = Callable[[], ChatCompletionClient]
 TERMINAL_STATUSES: frozenset[ProposalJobStatus] = frozenset({"succeeded", "partial", "failed", "cancelled"})
 
 
+class ProposalJobQueueFullError(RuntimeError):
+    """Đã có `job_max_active` job chưa kết thúc (409 ở router)."""
+
+
 class ProposalStore(VaultRepository, PageSource, Protocol):
     """Kho mà job dùng: Vault (chunk, cặp) và trang nguồn cho cổng tích sẵn."""
 
@@ -66,6 +74,7 @@ class _JobState:
     preselect_enabled: bool
     label_retries: int
     running: int = 0
+    broken: bool = False
 
 
 @dataclass
@@ -119,13 +128,16 @@ class ProposalJobRuntime:
         client_factory: ClientFactory,
         limits: LlmTaskLimits,
         now: datetime,
+        settings: ConceptProposalSettings | None = None,
         trigger: Literal["document_confirmed", "manual"] = "manual",
     ) -> ProposalJob:
-        """Xếp job vào hàng đợi (không gọi mạng); `chunk_ids` đã được kiểm, lặp chỉ tính một lần."""
+        """Xếp job vào hàng đợi (không gọi mạng); `chunk_ids` đã được kiểm, lặp chỉ tính một lần. `settings` là
+        `config.llm.proposal` của request (mặc định: cấu hình của runtime)."""
         unique = list(dict.fromkeys(chunk_ids))
         if not unique:
             raise ValueError("job cần ít nhất một chunk")
-        size = self._settings.job_batch_chunks
+        job_settings = settings or self._settings
+        size = job_settings.job_batch_chunks
         job = ProposalJob(
             job_id=f"pjob_{uuid.uuid4().hex[:16]}",
             subject_code=subject_code,
@@ -148,12 +160,15 @@ class ProposalJobRuntime:
             store=store,
             client_factory=client_factory,
             limits=limits,
-            preselect_enabled=self._settings.pair_preselect_enabled,
-            label_retries=self._settings.label_write_retries,
+            preselect_enabled=job_settings.pair_preselect_enabled,
+            label_retries=job_settings.label_write_retries,
         )
         with self._condition:
             if self._shared.closed:
                 raise RuntimeError("runtime job đề xuất cặp đã đóng")
+            active = sum(1 for other in self._shared.jobs.values() if other.job.status not in TERMINAL_STATUSES)
+            if active >= self._settings.job_max_active:
+                raise ProposalJobQueueFullError(f"đã có {active} job đề xuất cặp chưa kết thúc")
             self._shared.jobs[job.job_id] = state
             for start in range(0, len(unique), size):
                 self._shared.queue.append(_Batch(job.job_id, unique[start : start + size]))
@@ -244,7 +259,12 @@ class ProposalJobRuntime:
             outcome = self._run_batch(batch, state)
             with self._condition:
                 state.running -= 1
-                self._record(state, outcome)
+                try:
+                    self._record(state, outcome)
+                except Exception:  # job hỏng thì thành failed; luồng chạy không được chết
+                    logger.exception("không cộng được kết quả lô vào job %s", state.job.job_id)
+                    state.broken = True
+                    self._shared.queue = deque(queued for queued in self._shared.queue if queued.job_id != batch.job_id)
                 remaining = any(queued.job_id == batch.job_id for queued in self._shared.queue)
                 if not remaining and state.running == 0:
                     self._finish(state)
@@ -302,7 +322,8 @@ class ProposalJobRuntime:
         """Gọi khi giữ khoá: chốt trạng thái, rồi giữ tối đa `job_keep_finished` job đã kết thúc."""
         if state.job.status in TERMINAL_STATUSES:
             return
-        state.job = state.job.model_copy(update={"status": derive_status(state.job), "finished_at": self._clock()})
+        status: ProposalJobStatus = "failed" if state.broken else derive_status(state.job)
+        state.job = state.job.model_copy(update={"status": status, "finished_at": self._clock()})
         self._shared.finished.append(state.job.job_id)
         while len(self._shared.finished) > self._settings.job_keep_finished:
             self._shared.jobs.pop(self._shared.finished.popleft(), None)

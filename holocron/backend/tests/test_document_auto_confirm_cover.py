@@ -161,3 +161,15 @@ def test_reassessment_only_touches_pages_that_match(env: ImportEnv) -> None:
     before = {number: _page(env, first, number) for number in (2, 3, 4)}
     _import(env, "b", chapter_code="ch3")
     assert {number: _page(env, first, number) for number in (2, 3, 4)} == before
+
+
+def test_soft_dropped_auto_cover_keeps_the_confirmed_column_in_step_with_the_json(env: ImportEnv) -> None:
+    """`_write_role` ghi cột `confirmed` theo trang đã áp quyết định, không theo hằng: sau khi bìa tự xác nhận bị bỏ
+    mềm, bản tóm tắt (đọc cột) và JSON trang (đọc `confirmed`) phải khớp, trên cả ba loại kho."""
+    first = _import(env, "a")
+    assert [s.confirmed for s in env.store.list_page_summaries(first)] == [True, True, True, True]
+    _import(env, "b", chapter_code="ch3")
+    pages = env.store.list_pages(first, PageExtraction)
+    summaries = env.store.list_page_summaries(first)
+    assert pages[0].dropped and not pages[0].confirmed
+    assert [s.confirmed for s in summaries] == [page.confirmed for page in pages] == [False, True, True, True]

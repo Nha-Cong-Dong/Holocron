@@ -5,6 +5,7 @@ tự xác nhận, bất kể thứ tự hoàn thành. Dựa `tests/test_document
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import threading
 from collections.abc import Iterator
@@ -18,9 +19,9 @@ from holocron_core.domain.documents import PageExtraction
 from holocron_core.infrastructure.storage import DATA_DIR_ENV
 from holocron_core.routers import deps
 from holocron_core.routers.api import app
-from holocron_core.services.document_import import BackgroundImportQueue, SynchronousImportQueue
-from tests.document_import_support import ImportEnv, install, pdf_bytes
-from tests.test_document_auto_confirm import _text_page, clean_page
+from holocron_core.services.document_import import BackgroundImportQueue, KeyedLocks, SynchronousImportQueue
+from tests.document_import_support import FakePdfReader, ImportEnv, install, pdf_bytes
+from tests.test_document_auto_confirm import EDITOR, _text_page, clean_page
 from tests.test_document_import_concurrency import WAIT_S, BlockingProbeReader, ObservedLocks
 from tests.vault_support import STORE_KINDS, open_store
 
@@ -172,3 +173,67 @@ def test_concurrent_documents_with_the_same_cover_end_with_no_auto_confirmed_cov
         others = env.store.list_pages(document_id, PageExtraction)[1:]
         assert [p.confirmed_by for p in others] == ["auto", "auto"], "trang nội dung vẫn tự xác nhận"
         assert not env.store.has_document_chunks(document_id)
+
+
+class WatchedLocks(KeyedLocks):
+    """`KeyedLocks` báo (`contended`) khi một lời xin khoá của `armed` tới, ngay trước khi nó phải chờ."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.armed: str | None = None
+        self.contended = threading.Event()
+
+    @contextlib.contextmanager
+    def hold(self, key: str) -> Iterator[None]:
+        if key == self.armed:
+            self.contended.set()
+        with super().hold(key):
+            yield
+
+
+@pytest.fixture(params=STORE_KINDS)
+def watched_env(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ImportEnv]:
+    for store in open_store(str(request.param), tmp_path, monkeypatch):
+        reader = FakePdfReader(page_count=1, custom_pages={1: clean_page(1)})
+        yield install(store, tmp_path / "files", SynchronousImportQueue(), reader, locks=WatchedLocks())
+        app.dependency_overrides.clear()
+
+
+def test_unconfirm_takes_the_lock_of_its_own_document(watched_env: ImportEnv) -> None:
+    """Đột biến U13: bỏ `locks.hold(document_id)` của `unconfirm_page`. Giữ khoá tài liệu ở luồng này; request
+    hoàn tác phải xin đúng khoá đó và chờ (không ghi gì) tới khi nhả, rồi mới ghi."""
+    env = watched_env
+    locks = env.runtime.locks
+    assert isinstance(locks, WatchedLocks)
+    content = pdf_bytes("unconfirm-khoa")
+    assert env.post(content, auto_confirm="true").status_code == 202
+    document_id = _doc_id(content)
+    before = env.store.get_page(document_id, 1, PageExtraction)
+    assert before is not None and before.confirmed_by == "auto"
+    results: list[Response] = []
+
+    def _request() -> None:
+        results.append(
+            env.client.post(
+                f"/v1/documents/{document_id}/pages/1/unconfirm",
+                json={"editor_id": EDITOR, "expected_version": before.version},
+            )
+        )
+
+    thread = threading.Thread(target=_request)
+    with locks.hold(document_id):
+        locks.armed = document_id
+        thread.start()
+        try:
+            assert locks.contended.wait(WAIT_S), "request hoàn tác không xin khoá của tài liệu"
+            waiting = env.store.get_page(document_id, 1, PageExtraction)
+            assert waiting == before, "request hoàn tác đã ghi khi khoá tài liệu còn bị giữ"
+            assert results == []
+        finally:
+            locks.armed = None
+    thread.join(WAIT_S)
+    assert not thread.is_alive()
+    assert [r.status_code for r in results] == [200], [r.text for r in results]
+    after = env.store.get_page(document_id, 1, PageExtraction)
+    assert after is not None and (after.confirmed, after.auto_confirm_undone) == (False, True)
+    assert after.version == before.version + 1

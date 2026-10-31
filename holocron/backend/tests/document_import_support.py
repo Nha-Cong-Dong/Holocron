@@ -158,8 +158,13 @@ class ImportEnv:
         content_type: str = "application/pdf",
         **form: str,
     ) -> Response:
-        """`chapter_code = None` ⇒ không gửi field (chương tự động, §5.7)."""
-        data = {"subject_code": subject_code, "source_kind": source_kind, **form}
+        """`chapter_code = None` ⇒ không gửi field (chương tự động, §5.7).
+
+        Từ GĐ1 1B field form `auto_confirm` mặc định bật và tự xác nhận trang sạch; các test của luồng xác nhận thủ
+        công (trước GĐ1) cần trang `ok` chưa xác nhận sau khi đọc, nên helper mặc định gửi `auto_confirm=false`. Test
+        của tính năng tự xác nhận truyền `auto_confirm="true"` (hoặc bỏ field) tường minh.
+        """
+        data = {"subject_code": subject_code, "source_kind": source_kind, "auto_confirm": "false", **form}
         if chapter_code is not None:
             data["chapter_code"] = chapter_code
         return self.client.post("/v1/documents", data=data, files={"file": (filename, content, content_type)})

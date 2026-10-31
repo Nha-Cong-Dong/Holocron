@@ -16,7 +16,8 @@
   (song song, số job giữ lại), mỗi job nhận bản của request (cỡ lô, tích sẵn, số lần ghi lại nhãn).
 - **Lỗi khi cộng kết quả một lô:** chỉ lô đó tính là lô lỗi; job chạy tiếp các lô còn lại; luồng chạy không chết.
   Job kết thúc mà không bị huỷ thì `batches_done + batches_failed = batches_total`.
-- **Tắt app:** `close` ngừng nhận job, bỏ lô chưa chạy và chờ các luồng trong MỘT hạn chung; lô còn chạy sau khi kho
+- **Tắt app:** `close` ngừng nhận job, bỏ lô chưa chạy (tính là lô lỗi, nên job không bao giờ `succeeded` khi
+  chưa chạy hết lô) và chờ các luồng trong MỘT hạn chung; lô còn chạy sau khi kho
   đóng gặp lỗi kho và được tính là lô lỗi (không ghi được gì vào kho đã đóng).
 
 Job không gọi mạng khi tạo; LLM KHÔNG BAO GIỜ xác nhận cặp.
@@ -29,7 +30,7 @@ import math
 import threading
 import time
 import uuid
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -213,7 +214,14 @@ class ProposalJobRuntime:
         """Ngừng nhận job, bỏ lô chưa chạy, chờ mọi luồng chạy xong lô đang dở trong TỔNG `timeout` giây."""
         with self._condition:
             self._shared.closed = True
+            dropped = Counter(batch.job_id for batch in self._shared.queue)
             self._shared.queue.clear()
+            for job_id, count in dropped.items():
+                state = self._shared.jobs[job_id]
+                # Lô bị bỏ lúc tắt app tính là lô lỗi, để job không thành `succeeded` khi chưa chạy hết lô.
+                state.job = state.job.model_copy(update={"batches_failed": state.job.batches_failed + count})
+                if state.running == 0:
+                    self._finish(state)
             workers = list(self._shared.workers)
             self._condition.notify_all()
         deadline = time.monotonic() + timeout

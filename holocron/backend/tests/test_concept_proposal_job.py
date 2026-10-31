@@ -649,6 +649,45 @@ def test_shutdown_while_a_batch_runs_does_not_hang_or_write_to_the_closed_store(
     assert store.writes_after_close == 0 and inner.list_concept_pairs(SUBJECT) == []
 
 
+def test_close_waits_for_all_hung_workers_within_one_shared_deadline() -> None:
+    store = IngestionStore()
+    chunks = _many_chunks(store, 2)
+    runtime = _runtime(job_max_parallel=2)
+    gate = Gate()  # không release: cả hai luồng cùng treo trong lô
+    _submit(runtime, store, chunks, gate.client)
+    gate.wait_started(2)
+    timeout = 0.6
+    began = time.monotonic()
+    runtime.close(timeout=timeout)
+    elapsed = time.monotonic() - began
+    gate.release_event.set()
+    assert elapsed >= timeout * 0.8, "close phải chờ hạn"
+    assert elapsed < timeout * 1.6, "hai luồng treo không được làm hạn chờ nhân đôi (2 × timeout)"
+
+
+def test_close_counts_dropped_batches_as_failed_so_the_job_is_never_succeeded() -> None:
+    store = IngestionStore()
+    chunks = _many_chunks(store, 4)
+    runtime = _runtime()
+    gate = Gate()
+    running = _submit(runtime, store, chunks[:3], gate.client)  # 3 lô, 1 luồng: 1 chạy, 2 chờ
+    waiting = _submit(runtime, store, chunks[3:], gate.client)  # chưa lô nào chạy
+    gate.wait_started(1)
+    runtime.close(timeout=0.2)
+    queued_only = runtime.get(waiting.job_id)
+    assert queued_only is not None and queued_only.status == "failed"  # kết thúc ngay, không treo ở `queued`
+    assert queued_only.batches_failed == 1 and queued_only.batches_done == 0 and queued_only.finished_at is not None
+    gate.release_event.set()
+    deadline = time.monotonic() + WAIT_S
+    while (current := runtime.get(running.job_id)) is not None and current.status in ("queued", "running"):
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert current is not None
+    assert current.status == "partial", "lô đang chạy xong, hai lô bị bỏ tính lỗi"
+    assert (current.batches_done, current.batches_failed) == (1, 2)
+    assert current.batches_done + current.batches_failed == current.batches_total
+
+
 def test_each_job_uses_the_request_configuration(runtimes: list[ProposalJobRuntime]) -> None:
     store = IngestionStore()
     chunks = seed(store)

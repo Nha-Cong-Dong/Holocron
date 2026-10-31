@@ -41,6 +41,7 @@ import hashlib
 import io
 import json
 import math
+import re
 import sys
 import time
 from collections.abc import Callable, Sequence
@@ -49,11 +50,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import ValidationError
-
 from holocron_core.domain.ingestion import UploadedDocument
 from holocron_core.domain.llm import ChatCompletionClient, ChatCompletionResult, ChatMessage, LlmUpstreamError
-from holocron_core.domain.schemas import KnowledgeChunk
+from holocron_core.domain.schemas import CHAPTER_CODE_PATTERN, SUBJECT_CODE_PATTERN, KnowledgeChunk
 from holocron_core.domain.vault import BatchErrorKind, ConfirmedDocumentText
 from holocron_core.infrastructure.llm_client import HTTP_RETRY_MAX, OpenAiChatClient
 from holocron_core.infrastructure.llm_config import LlmTaskLimits, RuntimeConfig, load_runtime_config
@@ -177,7 +176,12 @@ def load_fixture(
     path: Path, subject_code: str | None = None, chapter_code: str | None = None
 ) -> tuple[IngestionStore, str, list[KnowledgeChunk]]:
     """Kho in-memory chứa tài liệu mẫu đã cắt chunk bằng đúng bộ cắt của Vault. File bản chép tay bắt buộc có
-    `subject_code` và `chapter_code` (thiếu ⇒ `ValueError`)."""
+    `subject_code` và `chapter_code` (thiếu hoặc sai mẫu ⇒ `FixtureUsageError`); giá trị sai kiểu hay byte không phải
+    UTF-8 trong file ⇒ `ValueError`/`KeyError`/`TypeError`/`AttributeError` (bên gọi báo mã `EXIT_BAD_FIXTURE`)."""
+    if subject_code is not None and re.fullmatch(SUBJECT_CODE_PATTERN, subject_code) is None:
+        raise FixtureUsageError("--subject-code sai mẫu mã môn")
+    if chapter_code is not None and re.fullmatch(CHAPTER_CODE_PATTERN, chapter_code) is None:
+        raise FixtureUsageError("--chapter-code sai mẫu mã chương")
     raw = path.read_bytes()
     data: dict[str, Any] = {key: value for key, value in json.loads(raw).items() if not key.startswith("_")}
     if "document" in data and "pages" in data:
@@ -283,7 +287,7 @@ def run(
     except FixtureUsageError as exc:
         print(f"{exc}.", file=sys.stderr)
         return EXIT_USAGE
-    except (json.JSONDecodeError, ValidationError, KeyError, TypeError) as exc:
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:  # gồm ValidationError, UnicodeDecodeError
         print(f"File chunk không hợp lệ ({type(exc).__name__}).", file=sys.stderr)
         return EXIT_BAD_FIXTURE
     messages = build_messages(chunks)
@@ -404,7 +408,7 @@ def run_batched(
     except FixtureUsageError as exc:
         print(f"{exc}.", file=sys.stderr)
         return EXIT_USAGE
-    except (json.JSONDecodeError, ValidationError, KeyError, TypeError) as exc:
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:  # gồm ValidationError, UnicodeDecodeError
         print(f"File chunk không hợp lệ ({type(exc).__name__}).", file=sys.stderr)
         return EXIT_BAD_FIXTURE
     batches = [chunks[start : start + args.batch_chunks] for start in range(0, len(chunks), args.batch_chunks)]

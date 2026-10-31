@@ -147,3 +147,53 @@ def test_broken_fixture_is_a_data_error_not_a_usage_error(
         args = _parser().parse_args(_args(fixture, tmp_path / "o", mode, "--dry-run"))
         assert run(args, load_runtime_config({})) == EXIT_BAD_FIXTURE
     assert "File chunk không hợp lệ" in capsys.readouterr().err
+
+
+SECRET = "NOI-DUNG-BI-MAT-KHONG-DUOC-IN"
+
+
+def _transcript_with(tmp_path: Path, page: object) -> Path:
+    data = {
+        "document": "mau.pdf",
+        "pages": [{"page": page, "blocks": [{"order": 0, "type": "paragraph", "text": SECRET}]}],
+    }
+    path = tmp_path / "sai-kieu.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("mode", ["single", "pointer"])
+def test_wrong_typed_fixture_value_is_a_data_error_without_echoing_content(
+    tmp_path: Path, mode: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fixture = _transcript_with(tmp_path, f"p-{SECRET}")
+    args = _parser().parse_args(_args(fixture, tmp_path / "o", mode, "--dry-run"))
+    assert run(args, load_runtime_config({})) == EXIT_BAD_FIXTURE
+    err = capsys.readouterr().err
+    assert "File chunk không hợp lệ" in err and "ValueError" in err
+    assert SECRET not in err and "p-" not in err
+
+
+@pytest.mark.parametrize("mode", ["single", "pointer"])
+def test_non_utf8_fixture_is_a_data_error_without_echoing_content(
+    tmp_path: Path, mode: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fixture = tmp_path / "latin1.json"
+    fixture.write_bytes(f'{{"subject_code": "{SECRET}", "chunks": "'.encode() + b"\xff\xfe\x80" + b'"}')
+    args = _parser().parse_args(_args(fixture, tmp_path / "o", mode, "--dry-run"))
+    assert run(args, load_runtime_config({})) == EXIT_BAD_FIXTURE
+    err = capsys.readouterr().err
+    assert "File chunk không hợp lệ" in err and "UnicodeDecodeError" in err
+    assert SECRET not in err
+
+
+@pytest.mark.parametrize("mode", ["single", "pointer"])
+@pytest.mark.parametrize("bad", ["it3070", "IT", "IT3070x", "I3070", ""])
+def test_malformed_subject_code_is_a_usage_error(
+    tmp_path: Path, mode: str, bad: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fixture = _transcript(tmp_path / "t.json")
+    args = _parser().parse_args(_args(fixture, tmp_path / "o", mode, "--dry-run"))
+    args.subject_code = bad
+    assert run(args, load_runtime_config({})) == 2
+    assert "--subject-code" in capsys.readouterr().err

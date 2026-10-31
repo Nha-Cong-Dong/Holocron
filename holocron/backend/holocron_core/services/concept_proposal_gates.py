@@ -8,7 +8,15 @@ nên đọc được cả JSON trang trước và sau GĐ0. Quy tắc an toàn: 
 - field của bộ khử nhiễu GĐ0 (`scan_text_layer`, `page_role`) vắng trong JSON trang ⇒ nửa cổng cần field đó trượt.
   `scan_text_layer` có mặt là dấu hiệu trang đã qua GĐ0, nên cũng là điều kiện để tin việc vắng các lý do
   `FONT_ENCODING_SUSPECT`, `TEXT_OCCLUDED`, `LOW_TEXT_CONTRAST`.
-- nhãn `is_exercise` của chunk chưa xác định (LLM không trả, trả null, hoặc trả xung đột) ⇒ `EXERCISE` trượt.
+- nhãn `is_exercise` của chunk khác `false` (true, hoặc null vì LLM chưa gắn, thiếu nhãn, trả null hay xung đột) ⇒
+  `EXERCISE` trượt;
+- field cấp trang khác vắng (`has_table`, `cross_check`) ⇒ G4, G5 trượt.
+
+UNCONFIRMED (Pha 3): G1 ở đây chỉ nhận nhánh (a) `tier_used = "text_layer"` và `scan_text_layer = false` của luật
+`source_trust_v1` (spec §5.7), chặt hơn luật đó (trang OCR có `cross_check.status = "ok"` vẫn trượt); chờ hàm chung
+`source_trust_v1` dùng cho cả `page_clean_v1` rồi gọi lại hàm đó, không viết lại điều kiện.
+UNCONFIRMED (Pha 3): trang lưu trước GĐ0 (thiếu `scan_text_layer`, `page_role`) ở nhánh này vẫn TRƯỢT G1, G2, G3,
+EXERCISE; theo spec §5.7 (I4) trang cũ đọc ra `page_role = "content"`, `scan_text_layer = false`, nên đổi khi nối GĐ0.
 
 Code thuần, không gọi LLM; không rẽ nhánh theo môn hay chương.
 """

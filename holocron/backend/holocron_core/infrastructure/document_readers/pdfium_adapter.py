@@ -10,6 +10,12 @@ trang ra ảnh xám cho OCR (tầng 2, không vẽ form và annotation; không g
 Khoá ảnh template (`page_image_keys`, sửa đổi 2026-10-30) không giải mã ảnh: băm dữ liệu THÔ của luồng ảnh (chưa
 giải mã bộ lọc nào, có trần byte kiểm TRƯỚC khi cấp bộ nhớ đệm), cùng kích thước điểm ảnh và tên bộ lọc đọc từ từ điển
 của luồng ảnh. Không gọi metadata ảnh của PDFium (`FPDFImageObj_GetImageMetadata` có thể giải mã JPX, JBIG2).
+
+GĐ0 (sửa đổi 2026-10-31, spec §5.7 "Khử nhiễu trang"): đối tượng trang được duyệt đệ quy qua form XObject
+(`_walk`, tới độ sâu `pdf_form_max_depth`, tối đa `page_objects_max` đối tượng), hộp của ảnh và đường vẽ là hộp sau
+mọi ma trận form, thứ tự vẽ là thứ tự duyệt sâu. Trang được render màu ở `hidden_text_render_dpi` sau khi tắt mọi đối
+tượng chữ TRONG BỘ NHỚ (`FPDFPageObj_SetIsActive`, không ghi file, không sinh lại nội dung) để đo nền thật của chữ và
+dHash của ảnh nội dung. Quyết định (nền, chữ ẩn, chữ bị che, lớp OCR của scan) là hàm thuần ở `page_objects`.
 """
 
 from __future__ import annotations
@@ -19,14 +25,36 @@ import hashlib
 import importlib
 import itertools
 from collections.abc import Iterable
+from dataclasses import dataclass, field
 from types import ModuleType
 from typing import Literal, Self
 
 from .config import DEFAULT_RENDER_SHRINK_FACTOR, PdfReaderConfig
-from .protocol import ImageKey, RawPdfPage
+from .page_objects import (
+    IDENTITY,
+    INVISIBLE_RENDER_MODES,
+    MAX_RENDER_MODE,
+    STROKE_ONLY_RENDER_MODES,
+    Matrix,
+    ObjectKind,
+    OcclusionIndex,
+    PageObject,
+    RgbImage,
+    background_paths,
+    compose,
+    contrast_ratio,
+    contrast_verdict,
+    dhash,
+    is_scan_text_layer,
+    median_color,
+    pixel_box,
+    transform_box,
+    union_box,
+)
+from .protocol import MAX_OWN_IMAGES, ImageKey, PathKey, RawLineFlag, RawPageImage, RawPdfPage, Rgba
 from .raster import POINTS_PER_INCH, GrayImage, pack_rows, render_scale
-from .template_images import READ_ERRORS, PageImageKeys, TemplateFilter, image_key
-from .text_layer import PdfBox, PdfChar, group_lines, normalize_box
+from .template_images import READ_ERRORS, PageImageKeys, TemplateFilter, image_key, path_key, text_key
+from .text_layer import PdfBox, PdfChar, group_lines, mark_header_footer, merge_spaced_chars, normalize_box
 
 OpenFailure = Literal["PASSWORD_REQUIRED", "OPEN_FAILED"]
 
@@ -155,12 +183,19 @@ class PdfiumDocument:
     def page_count(self) -> int:
         return _as_int(self._backend.call(self._handle, "__len__"))
 
-    def read_page(self, index: int, templates: TemplateFilter | None = None) -> RawPdfPage:
-        """Dữ liệu thô của trang; có `templates` thì thêm độ phủ của các ảnh không phải template.
+    @property
+    def backend(self) -> PdfiumBackend:
+        return self._backend
 
-        `templates` là tập ảnh template của lượt quét (`template_images.TemplateFilter.from_scan`); None ⇒
-        `content_image_area_ratio` là None (không có ảnh template, độ phủ như cũ).
+    def read_page(
+        self, index: int, templates: TemplateFilter | None = None, config: PdfReaderConfig | None = None
+    ) -> RawPdfPage:
+        """Dữ liệu thô của trang kèm dữ liệu khử nhiễu GĐ0 (spec §5.7); `config` mặc định `PdfReaderConfig()`.
+
+        `templates` là template của lượt quét (`TemplateFilter.from_scan`); None ⇒ `content_image_area_ratio` là
+        None (không có ảnh template, độ phủ như cũ), không đường vẽ template, không header/footer.
         """
+        settings = PdfReaderConfig() if config is None else config
         backend = self._backend
         page = backend.call(self._handle, "get_page", index)
         try:
@@ -170,51 +205,71 @@ class PdfiumDocument:
             if not isinstance(size, tuple | list) or len(size) != 2:
                 raise PdfiumDataError("get_size phải trả (width, height)")
             width_pt, height_pt = _as_float(size[0]), _as_float(size[1])
+            walked = self._walk(page, settings)
             chars = self._read_chars(page)
-            images, path_boxes = self._object_boxes(page)
-            content_ratio = None
-            if templates is not None:
-                content_boxes = self._content_image_boxes(images, page_box, rotation, templates)
-                content_ratio = union_area_ratio(content_boxes, page_box)
+            analysis = _PageAnalysis(walked, chars, page_box, rotation, settings, templates)
+            analysis.classify(self)
+            image = analysis.render_if_needed(self, page)
+            analysis.judge_text(image)
+            own_images = analysis.own_images(self, image)
         finally:
             backend.call(page, "close")
+        lines = group_lines(merge_spaced_chars(analysis.kept_chars(), settings), page_box, rotation)
+        if templates is not None:
+            lines = mark_header_footer(lines, templates.text_keys, templates.bbox_step)
+        all_images = [obj.box for obj in walked.images]
+        content_ratio = None
+        if templates is not None:
+            content_ratio = union_area_ratio([obj.box for obj in analysis.content_images], page_box)
         return RawPdfPage(
             page_index=index,
             width_pt=width_pt,
             height_pt=height_pt,
-            lines=group_lines(chars, page_box, rotation),
-            image_area_ratio=union_area_ratio([box for _, box in images], page_box),
-            path_area_ratio=_area_ratio(path_boxes, page_box),
+            lines=lines,
+            image_area_ratio=union_area_ratio(all_images, page_box),
+            path_area_ratio=_area_ratio([obj.box for obj in walked.paths], page_box),
             content_image_area_ratio=content_ratio,
+            content_path_area_ratio=_area_ratio([obj.box for obj in analysis.content_paths], page_box),
+            own_images=own_images,
+            hidden_chars_dropped=analysis.hidden_chars_dropped,
+            scan_text_layer=analysis.scan_text_layer,
+            objects_over_cap=walked.over_cap,
         )
 
     def page_image_keys(self, index: int, config: PdfReaderConfig) -> PageImageKeys | None:
-        """Khoá các ảnh nhúng của trang `index` cho lượt quét ảnh template; không render, không đọc lớp chữ.
+        """Khoá template của trang `index` cho lượt quét: ảnh, đường vẽ (GĐ0) và dòng chữ (GĐ0); không render.
 
         Trang có quá `template_scan_max_images_per_page` ảnh ⇒ None (vượt trần). Ảnh có dữ liệu thô rỗng hoặc lớn hơn
-        `template_scan_max_image_bytes` không có khoá. Lỗi đọc trang hay ảnh được ném ra (lượt quét thành `error`).
+        `template_scan_max_image_bytes` không có khoá. Trang có quá `template_scan_max_paths_per_page` đường vẽ: đường
+        vẽ của trang không có khoá. Trang vượt trần đối tượng (`page_objects_max`, `pdf_form_max_depth`): ảnh và đường
+        vẽ đã duyệt vẫn có khoá. Dòng chữ dựng bằng đúng hàm dựng dòng lúc đọc trang (kể cả ghép ký tự rời) nhưng
+        không lọc chữ ẩn. Lỗi đọc trang hay ảnh được ném ra (lượt quét thành `error`).
         """
         backend = self._backend
         page = backend.call(self._handle, "get_page", index)
         try:
             page_box = _as_box(backend.call(page, "get_bbox"))
             rotation = _as_int(backend.call(page, "get_rotation"))
-            objects = backend.call(page, "get_objects", [backend.image_object_type])
-            if not isinstance(objects, Iterable):
-                raise PdfiumDataError("get_objects phải trả iterable")
+            # Lượt quét không cần đối tượng chữ (dòng chữ lấy từ lớp chữ): chỉ ảnh, đường vẽ và form.
+            walked = self._walk(page, config, backend.template_scan_kinds)
+            if len(walked.images) > config.template_scan_max_images_per_page:
+                return None
+            step, max_bytes = config.template_image_bbox_step, config.template_scan_max_image_bytes
             keys: list[ImageKey | None] = []
             hashed_bytes = 0
-            for obj in objects:
-                if len(keys) >= config.template_scan_max_images_per_page:
-                    return None
-                box = _as_box(backend.call(obj, "get_bounds"))
-                step, max_bytes = config.template_image_bbox_step, config.template_scan_max_image_bytes
-                key, hashed = self._image_key(obj, box, page_box, rotation, step, max_bytes)
+            for obj in walked.images:
+                key, hashed = self.image_key_of(walked.handles[obj.z], obj.box, page_box, rotation, step, max_bytes)
                 keys.append(key)
                 hashed_bytes += hashed
-            return PageImageKeys(keys=keys, hashed_bytes=hashed_bytes)
+            paths: tuple[PathKey, ...] = ()
+            if len(walked.paths) <= config.template_scan_max_paths_per_page:
+                paths = tuple(_path_key(obj, page_box, rotation, step) for obj in walked.paths)
+            chars = self._read_chars(page)
         finally:
             backend.call(page, "close")
+        lines = group_lines(merge_spaced_chars([char for char, _ in chars], config), page_box, rotation)
+        texts = tuple(key for key in (text_key(line.text, line.bbox, step) for line in lines) if key is not None)
+        return PageImageKeys(keys=keys, hashed_bytes=hashed_bytes, paths=paths, texts=texts)
 
     def render_gray(
         self, index: int, dpi: int, max_pixels: int, *, shrink_factor: float = DEFAULT_RENDER_SHRINK_FACTOR
@@ -235,7 +290,28 @@ class PdfiumDocument:
         finally:
             backend.call(page, "close")
 
-    def _read_chars(self, page: object) -> list[PdfChar]:
+    def render_rgb_without_text(self, page: object, text_handles: Iterable[object], dpi: int) -> RgbImage:
+        """Render màu trang ĐANG MỞ ở `dpi` sau khi tắt mọi đối tượng chữ trong bộ nhớ; bật lại sau khi render."""
+        backend = self._backend
+        handles = list(text_handles)
+        size = backend.call(page, "get_size")
+        if not isinstance(size, tuple | list) or len(size) != 2:
+            raise PdfiumDataError("get_size phải trả (width, height)")
+        scale = dpi / POINTS_PER_INCH
+        for handle in handles:
+            backend.set_active(handle, active=False)
+        try:
+            bitmap = backend.call(page, "render", scale=scale, grayscale=False, may_draw_forms=False, draw_annots=False)
+            try:
+                return backend.rgb_image(bitmap)
+            finally:
+                backend.call(bitmap, "close")
+        finally:
+            for handle in handles:
+                backend.set_active(handle, active=True)
+
+    def _read_chars(self, page: object) -> list[tuple[PdfChar, int | None]]:
+        """Ký tự của lớp chữ kèm địa chỉ đối tượng chữ chứa nó (None: ký tự tự sinh hoặc không xác định)."""
         backend = self._backend
         textpage = backend.call(page, "get_textpage")
         try:
@@ -243,48 +319,61 @@ class PdfiumDocument:
             count = _as_int(backend.call(textpage, "count_chars"))
             codes = [backend.unicode_at(raw_textpage, i) for i in range(count)]
             boxes = [backend.charbox(raw_textpage, i) for i in range(count)]
-            return [PdfChar(text=text, box=boxes[first]) for text, first in decode_code_units(codes)]
+            generated = [backend.is_generated(raw_textpage, i) for i in range(count)]
+            owners = [backend.text_object_at(raw_textpage, i) for i in range(count)]
+            return [
+                (PdfChar(text=text, box=boxes[first], generated=generated[first]), owners[first])
+                for text, first in decode_code_units(codes)
+            ]
         finally:
             backend.call(textpage, "close")
 
-    def _object_boxes(self, page: object) -> tuple[list[tuple[object, PdfBox]], list[PdfBox]]:
-        """(đối tượng ảnh kèm hộp, hộp đường vẽ); đối tượng ảnh chỉ dùng được khi trang còn mở."""
+    def _walk(self, page: object, config: PdfReaderConfig, kinds: list[int] | None = None) -> _Walk:
+        """Duyệt mọi đối tượng của trang theo thứ tự vẽ, đệ quy qua form XObject, nhân ma trận form (0A).
+
+        `kinds` (lượt quét template) giới hạn loại đối tượng được trả (phải gồm form để nhân ma trận); None ⇒ mọi
+        loại. Quá `page_objects_max` đối tượng, hoặc có đối tượng sâu hơn `pdf_form_max_depth` cấp form ⇒ dừng
+        duyệt, `over_cap = True` (các đối tượng đã duyệt vẫn được giữ).
+        """
         backend = self._backend
-        image_type, path_type = backend.image_object_type, backend.path_object_type
-        images: list[tuple[object, PdfBox]] = []
-        paths: list[PdfBox] = []
-        objects = backend.call(page, "get_objects", [image_type, path_type])
+        objects = backend.call(page, "get_objects", kinds, max_depth=config.pdf_form_max_depth + 2)
         if not isinstance(objects, Iterable):
             raise PdfiumDataError("get_objects phải trả iterable")
+        walk = _Walk()
+        stack: list[Matrix] = [IDENTITY]
         for obj in objects:
-            kind = _as_int(getattr(obj, "type", None))
-            box = _as_box(backend.call(obj, "get_bounds"))
-            if kind == image_type:
-                images.append((obj, box))
-            else:
-                paths.append(box)
-        return images, paths
+            level = _as_int(getattr(obj, "level", None))
+            if len(walk.objects) >= config.page_objects_max or level > config.pdf_form_max_depth or level < 0:
+                walk.over_cap = True
+                break
+            if level >= len(stack):
+                raise PdfiumDataError("đối tượng nằm sâu hơn form chứa nó")
+            matrix = stack[level]
+            z = len(walk.objects)
+            box = transform_box(_as_box(backend.call(obj, "get_bounds")), matrix)
+            kind = backend.object_kind(_as_int(getattr(obj, "type", None)))
+            raw_obj: object = getattr(obj, "raw", None)
+            record = PageObject(kind=kind, z=z, box=box)
+            if kind == "form":
+                del stack[level + 1 :]
+                stack.append(compose(matrix, backend.object_matrix(raw_obj)))
+            elif kind == "path":
+                fill, stroke = backend.path_colors(raw_obj)
+                record = PageObject(
+                    kind=kind, z=z, box=box, fill=fill, stroke=stroke, segments=backend.path_segments(raw_obj)
+                )
+            elif kind == "text":
+                mode = backend.text_render_mode(raw_obj)
+                color = (
+                    backend.stroke_color(raw_obj) if mode in STROKE_ONLY_RENDER_MODES else backend.fill_color(raw_obj)
+                )
+                record = PageObject(kind=kind, z=z, box=box, render_mode=mode, color=color)
+                walk.text_z[backend.address(raw_obj)] = z
+            walk.objects.append(record)
+            walk.handles[z] = obj
+        return walk
 
-    def _content_image_boxes(
-        self, images: list[tuple[object, PdfBox]], page_box: PdfBox, rotation: int, templates: TemplateFilter
-    ) -> list[PdfBox]:
-        """Hộp các ảnh không phải template; trang có quá `max_images_per_page` ảnh giữ mọi ảnh (không loại ảnh nào).
-
-        Khoá được tính đúng như lượt quét; ảnh không có khoá (quá trần byte, dữ liệu rỗng, đọc lỗi) là ảnh nội dung.
-        """
-        if len(images) > templates.max_images_per_page:
-            return [box for _, box in images]
-        content: list[PdfBox] = []
-        for obj, box in images:
-            try:
-                key, _ = self._image_key(obj, box, page_box, rotation, templates.bbox_step, templates.max_image_bytes)
-            except READ_ERRORS:
-                key = None
-            if key is None or key not in templates.keys:
-                content.append(box)
-        return content
-
-    def _image_key(
+    def image_key_of(
         self, obj: object, box: PdfBox, page_box: PdfBox, rotation: int, step: float, max_bytes: int
     ) -> tuple[ImageKey | None, int]:
         """(khoá của ảnh, số byte đã băm); dữ liệu thô rỗng hoặc lớn hơn `max_bytes` ⇒ (None, 0), không băm.
@@ -312,6 +401,197 @@ class PdfiumDocument:
         return key, digest[1]
 
 
+def _path_key(obj: PageObject, page_box: PdfBox, rotation: int, step: float) -> PathKey:
+    return path_key(normalize_box(obj.box, page_box, rotation), obj.fill, obj.stroke, obj.segments, step)
+
+
+@dataclass
+class _Walk:
+    """Kết quả duyệt đối tượng của một trang (`PdfiumDocument._walk`)."""
+
+    objects: list[PageObject] = field(default_factory=list)
+    handles: dict[int, object] = field(default_factory=dict)  # z ⇒ đối tượng pypdfium2 (chỉ dùng khi trang còn mở)
+    text_z: dict[int, int] = field(default_factory=dict)  # địa chỉ đối tượng chữ ⇒ z
+    over_cap: bool = False
+
+    @property
+    def images(self) -> list[PageObject]:
+        return [obj for obj in self.objects if obj.kind == "image"]
+
+    @property
+    def paths(self) -> list[PageObject]:
+        return [obj for obj in self.objects if obj.kind == "path"]
+
+
+class _PageAnalysis:
+    """Các bước GĐ0 0A, 0B trên một trang đang mở; quyết định là hàm thuần của `page_objects`."""
+
+    def __init__(
+        self,
+        walked: _Walk,
+        chars: list[tuple[PdfChar, int | None]],
+        page_box: PdfBox,
+        rotation: int,
+        config: PdfReaderConfig,
+        templates: TemplateFilter | None,
+    ) -> None:
+        self.walked = walked
+        self.chars = chars
+        self.page_box = page_box
+        self.rotation = rotation
+        self.config = config
+        self.templates = templates
+        self.content_images: list[PageObject] = list(walked.images)
+        self.content_paths: list[PageObject] = list(walked.paths)
+        self.template_image_z: set[int] = set()
+        self.scan_text_layer = False
+        self.hidden_chars_dropped = 0
+        self.dropped_z: set[int] = set()
+        self.flags_by_z: dict[int, set[RawLineFlag]] = {}
+        # Hộp của từng đối tượng chữ: hợp hộp các ký tự của nó (toạ độ trang), hoặc hộp của đối tượng khi không có.
+        char_boxes: dict[int, list[PdfBox]] = {}
+        for char, owner in chars:
+            z = None if owner is None else walked.text_z.get(owner)
+            if z is not None and char.box is not None and not char.generated:
+                char_boxes.setdefault(z, []).append(char.box)
+        self.text_boxes: dict[int, PdfBox] = {}
+        for obj in walked.objects:
+            if obj.kind == "text":
+                self.text_boxes[obj.z] = union_box(char_boxes.get(obj.z, [])) or obj.box
+
+    def _char_z(self, owner: int | None) -> int | None:
+        return None if owner is None else self.walked.text_z.get(owner)
+
+    def classify(self, document: PdfiumDocument) -> None:
+        """Ảnh và đường vẽ template, nền, lớp OCR của PDF scan (0A, 0B(1)). Trang vượt trần: mọi ảnh và đường vẽ là
+        nội dung, không có nền."""
+        walked, templates = self.walked, self.templates
+        if walked.over_cap:
+            return
+        if templates is not None and len(walked.images) <= templates.max_images_per_page:
+            for obj in walked.images:
+                try:
+                    key, _ = document.image_key_of(
+                        walked.handles[obj.z],
+                        obj.box,
+                        self.page_box,
+                        self.rotation,
+                        templates.bbox_step,
+                        templates.max_image_bytes,
+                    )
+                except READ_ERRORS:
+                    key = None
+                if key is not None and key in templates.keys:
+                    self.template_image_z.add(obj.z)
+        template_paths: set[int] = set()
+        if templates is not None and len(walked.paths) <= templates.max_paths_per_page:
+            template_paths = {
+                obj.z
+                for obj in walked.paths
+                if _path_key(obj, self.page_box, self.rotation, templates.bbox_step) in templates.path_keys
+            }
+        backgrounds = background_paths(walked.paths, list(self.text_boxes.items()), self.page_box, self.config)
+        self.content_images = [obj for obj in walked.images if obj.z not in self.template_image_z]
+        self.content_paths = [obj for obj in walked.paths if obj.z not in template_paths | backgrounds]
+        visible = [char for char, _ in self.chars if not char.generated and not char.text.isspace()]
+        invisible = [
+            char
+            for char, owner in self.chars
+            if not char.generated and not char.text.isspace() and self._render_mode(owner) in INVISIBLE_RENDER_MODES
+        ]
+        image_ratio = union_area_ratio([obj.box for obj in walked.images], self.page_box)
+        self.scan_text_layer = is_scan_text_layer(len(invisible), len(visible), image_ratio, self.config)
+
+    def _render_mode(self, owner: int | None) -> int | None:
+        z = self._char_z(owner)
+        return None if z is None else self.walked.objects[z].render_mode
+
+    def _drawn_texts(self) -> list[PageObject]:
+        """Đối tượng chữ được vẽ (chế độ 0–7 khác 3, 7; chế độ không đọc được thì không xét) có ký tự trong lớp chữ."""
+        owners = {self._char_z(owner) for char, owner in self.chars if not char.generated}
+        return [
+            obj
+            for obj in self.walked.objects
+            if obj.kind == "text"
+            and obj.z in owners
+            and 0 <= obj.render_mode <= MAX_RENDER_MODE
+            and obj.render_mode not in INVISIBLE_RENDER_MODES
+        ]
+
+    def _denoise_text(self) -> bool:
+        return not self.walked.over_cap and not self.scan_text_layer
+
+    def render_if_needed(self, document: PdfiumDocument, page: object) -> RgbImage | None:
+        """Ảnh render không có chữ khi cần đo nền chữ hoặc dHash ảnh nội dung; trang vượt trần không render."""
+        if self.walked.over_cap:
+            return None
+        if not self.content_images and not (self._denoise_text() and self._drawn_texts()):
+            return None
+        texts = [self.walked.handles[obj.z] for obj in self.walked.objects if obj.kind == "text"]
+        return document.render_rgb_without_text(page, texts, self.config.hidden_text_render_dpi)
+
+    def _unit(self, box: PdfBox) -> tuple[float, float, float, float]:
+        return normalize_box(box, self.page_box, self.rotation)
+
+    def judge_text(self, image: RgbImage | None) -> None:
+        """Chữ ẩn (0B(1)) và chữ bị che (0B(2)) cho từng đối tượng chữ được vẽ; trang scan hay vượt trần: không xét.
+
+        Chữ bị che xét TRƯỚC: ảnh render không có chữ vẫn có đối tượng vẽ sau chữ, nên nền đo được của chữ bị che là
+        chính vật che. Chữ bị che được GIỮ kèm `TEXT_OCCLUDED` (0B(2)) và không bị loại vì tương phản.
+        """
+        if not self._denoise_text():
+            return
+        drawn = self._drawn_texts()
+        occluders = [obj for obj in self.walked.objects if obj.kind == "image" or obj.solid_fill]
+        index = OcclusionIndex(occluders, self.page_box)
+        for obj in drawn:
+            box = self.text_boxes[obj.z]
+            if index.covered(box, obj.z) >= self.config.occlusion_min_cover:
+                self.flags_by_z[obj.z] = {"TEXT_OCCLUDED"}
+                continue
+            if image is None or obj.color is None:
+                continue
+            area = pixel_box(self._unit(box), image.width, image.height)
+            if area is None:
+                continue
+            background = median_color(image, area)
+            color = (obj.color[0], obj.color[1], obj.color[2])
+            verdict = contrast_verdict(contrast_ratio(color, background), self.config)
+            if verdict == "drop":
+                self.dropped_z.add(obj.z)
+            elif verdict == "flag":
+                self.flags_by_z[obj.z] = {"LOW_TEXT_CONTRAST"}
+
+    def kept_chars(self) -> list[PdfChar]:
+        """Ký tự còn lại sau khi bỏ TRỌN ký tự của đối tượng chữ ẩn (trước khi dựng dòng), kèm cờ của đối tượng."""
+        kept: list[PdfChar] = []
+        for char, owner in self.chars:
+            z = self._char_z(owner)
+            if z is not None and z in self.dropped_z:
+                if not char.generated:
+                    self.hidden_chars_dropped += 1
+                continue
+            flags = self.flags_by_z.get(z) if z is not None else None
+            kept.append(char if not flags else PdfChar(char.text, char.box, char.generated, frozenset(flags)))
+        return kept
+
+    def own_images(self, document: PdfiumDocument, image: RgbImage | None) -> list[RawPageImage]:
+        """Ảnh nội dung theo thứ tự vẽ (tối đa `MAX_OWN_IMAGES`, trần của trang), kèm SHA-256 dữ liệu thô và dHash."""
+        limit = min(MAX_OWN_IMAGES, self.config.template_scan_max_images_per_page)
+        result: list[RawPageImage] = []
+        backend = document.backend
+        for obj in self.content_images[:limit]:
+            unit = self._unit(obj.box)
+            try:
+                digest = backend.image_digest(self.walked.handles[obj.z], self.config.template_scan_max_image_bytes)
+            except READ_ERRORS:
+                digest = None
+            area = None if image is None else pixel_box(unit, image.width, image.height)
+            fingerprint = None if image is None or area is None else dhash(image, area)
+            result.append(RawPageImage(bbox=unit, sha256=None if digest is None else digest[0], dhash=fingerprint))
+        return result
+
+
 class PdfiumBackend:
     """Bọc module `pypdfium2` và `pypdfium2.raw` đã nạp."""
 
@@ -325,7 +605,11 @@ class PdfiumBackend:
         self.password_error_code = _as_int(getattr(raw, "FPDF_ERR_PASSWORD", None))
         self.image_object_type = _as_int(getattr(raw, "FPDF_PAGEOBJ_IMAGE", None))
         self.path_object_type = _as_int(getattr(raw, "FPDF_PAGEOBJ_PATH", None))
+        self.text_object_type = _as_int(getattr(raw, "FPDF_PAGEOBJ_TEXT", None))
+        self.form_object_type = _as_int(getattr(raw, "FPDF_PAGEOBJ_FORM", None))
         self.gray_bitmap_format = _as_int(getattr(raw, "FPDFBitmap_Gray", None))
+        self.bgr_bitmap_format = _as_int(getattr(raw, "FPDFBitmap_BGR", None))
+        self.template_scan_kinds = [self.image_object_type, self.path_object_type, self.form_object_type]
 
     @classmethod
     def load(cls) -> PdfiumBackend:
@@ -380,6 +664,97 @@ class PdfiumBackend:
 
     def unicode_at(self, raw_textpage: object, index: int) -> int:
         return _as_int(self._raw.FPDFText_GetUnicode(raw_textpage, index))
+
+    def is_generated(self, raw_textpage: object, index: int) -> bool:
+        """Ký tự do PDFium tự sinh (khoảng trắng, ngắt dòng); lỗi (-1) coi như không tự sinh."""
+        return _as_int(self._raw.FPDFText_IsGenerated(raw_textpage, index)) == 1
+
+    def text_object_at(self, raw_textpage: object, index: int) -> int | None:
+        """Địa chỉ đối tượng chữ chứa ký tự `index`; ký tự tự sinh hay không xác định ⇒ None."""
+        handle: object = self._raw.FPDFText_GetTextObject(raw_textpage, index)
+        return self.address(handle) if handle else None
+
+    @staticmethod
+    def address(handle: object) -> int:
+        """Địa chỉ của một con trỏ ctypes (để so khớp đối tượng giữa lớp chữ và cây đối tượng)."""
+        if not isinstance(handle, ctypes._Pointer):
+            raise PdfiumDataError("cần con trỏ ctypes của đối tượng trang")
+        value = ctypes.cast(handle, ctypes.c_void_p).value
+        return 0 if value is None else int(value)
+
+    def object_kind(self, kind: int) -> ObjectKind:
+        if kind == self.text_object_type:
+            return "text"
+        if kind == self.image_object_type:
+            return "image"
+        if kind == self.path_object_type:
+            return "path"
+        if kind == self.form_object_type:
+            return "form"
+        return "other"
+
+    def object_matrix(self, raw_obj: object) -> Matrix:
+        matrix = self._raw.FS_MATRIX()
+        if not self._raw.FPDFPageObj_GetMatrix(raw_obj, ctypes.byref(matrix)):
+            raise PdfiumDataError("không đọc được ma trận của form")
+        values = (matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f)
+        a, b, c, d, e, f = (_as_float(value) for value in values)
+        return (a, b, c, d, e, f)
+
+    def _color(self, getter: str, raw_obj: object) -> Rgba | None:
+        red, green, blue, alpha = ctypes.c_uint(), ctypes.c_uint(), ctypes.c_uint(), ctypes.c_uint()
+        ok = getattr(self._raw, getter)(raw_obj, red, green, blue, alpha)
+        if not ok:
+            return None
+        values = tuple(min(255, max(0, int(channel.value))) for channel in (red, green, blue, alpha))
+        return (values[0], values[1], values[2], values[3])
+
+    def fill_color(self, raw_obj: object) -> Rgba | None:
+        return self._color("FPDFPageObj_GetFillColor", raw_obj)
+
+    def stroke_color(self, raw_obj: object) -> Rgba | None:
+        return self._color("FPDFPageObj_GetStrokeColor", raw_obj)
+
+    def path_colors(self, raw_obj: object) -> tuple[Rgba | None, Rgba | None]:
+        """(màu tô khi path có tô, màu viền khi path có viền); không đọc được chế độ vẽ ⇒ (None, None)."""
+        fill_mode, stroke = ctypes.c_int(), ctypes.c_int()
+        if not self._raw.FPDFPath_GetDrawMode(raw_obj, ctypes.byref(fill_mode), ctypes.byref(stroke)):
+            return None, None
+        fill = self.fill_color(raw_obj) if fill_mode.value != 0 else None
+        line = self.stroke_color(raw_obj) if stroke.value else None
+        return fill, line
+
+    def path_segments(self, raw_obj: object) -> int:
+        return max(0, _as_int(self._raw.FPDFPath_CountSegments(raw_obj)))
+
+    def text_render_mode(self, raw_obj: object) -> int:
+        return _as_int(self._raw.FPDFTextObj_GetTextRenderMode(raw_obj))
+
+    def set_active(self, handle: object, *, active: bool) -> None:
+        raw_obj: object = getattr(handle, "raw", None)
+        self._raw.FPDFPageObj_SetIsActive(raw_obj, active)
+
+    def rgb_image(self, bitmap: object) -> RgbImage:
+        """Chép điểm ảnh của `PdfBitmap` BGR (3 byte mỗi điểm ảnh) ra RGB, bỏ phần đệm cuối dòng."""
+        width = _as_int(getattr(bitmap, "width", None))
+        height = _as_int(getattr(bitmap, "height", None))
+        stride = _as_int(getattr(bitmap, "stride", None))
+        if _as_int(getattr(bitmap, "format", None)) != self.bgr_bitmap_format:
+            raise PdfiumDataError("bitmap không phải ảnh BGR")
+        if width < 1 or height < 1 or stride < 3 * width:
+            raise PdfiumDataError("kích thước bitmap ngoài giới hạn")
+        buffer = getattr(bitmap, "buffer", None)
+        if not isinstance(buffer, ctypes.Array):
+            raise PdfiumDataError("bitmap không có vùng nhớ điểm ảnh")
+        data = ctypes.string_at(ctypes.addressof(buffer), min(ctypes.sizeof(buffer), stride * height))
+        rows = bytearray()
+        for row in range(height):
+            line = bytearray(data[row * stride : row * stride + 3 * width])
+            line[0::3], line[2::3] = line[2::3], line[0::3]
+            rows += line
+        if len(rows) != 3 * width * height:
+            raise PdfiumDataError("bitmap thiếu điểm ảnh")
+        return RgbImage(pixels=bytes(rows), width=width, height=height)
 
     def charbox(self, raw_textpage: object, index: int) -> PdfBox | None:
         """Hộp chặt của ký tự; PDFium không cho hộp (ký tự tự chèn, lỗi) ⇒ None."""

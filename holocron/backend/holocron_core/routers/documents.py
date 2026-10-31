@@ -1,4 +1,5 @@
-"""Bộ nhập tài liệu PDF (SPECIFICATION §6.5): nhận file, hỏi trạng thái, xem trang, sửa dòng, xác nhận, xoá.
+"""Bộ nhập tài liệu PDF (SPECIFICATION §6.5): nhận file, hỏi trạng thái, xem trang, sửa dòng, xác nhận, hoàn tác bỏ
+mềm (GĐ0 0D), xoá.
 
 Chưa có ở đây: tạo item từ trang (`POST …/pages/{n}/items`, cần đổi `IngestionItem`).
 
@@ -31,6 +32,7 @@ from ..domain.documents import (
     PageConfirmRequest,
     PageExtraction,
     PageLinesPatch,
+    PageRestoreRequest,
 )
 from ..domain.repositories import AppStore, DocumentExistsError, VersionConflictError
 from ..domain.schemas import SourceKind
@@ -63,6 +65,7 @@ from ..services.document_import import (
     list_document_summaries,
     remove_orphan_files,
     requeue_pending,
+    restore_page,
 )
 from .deps import ClockDep, StoreDep, VaultDep
 
@@ -125,7 +128,16 @@ def requeue_on_startup(store: AppStore, runtime: ImportRuntime) -> list[str]:
     except ConfigError as exc:
         _LOGGER.warning("không xếp lại tài liệu đang đọc dở: %s", exc)
         return []
-    return requeue_pending(store, runtime.files, reader, runtime.queue, runtime.retry, vault=store, locks=runtime.locks)
+    return requeue_pending(
+        store,
+        runtime.files,
+        reader,
+        runtime.queue,
+        runtime.retry,
+        vault=store,
+        locks=runtime.locks,
+        config=runtime.reader_config,
+    )
 
 
 def get_import_runtime(request: Request) -> ImportRuntime:
@@ -278,6 +290,22 @@ def confirm_document_page(
 ) -> PageExtraction:
     try:
         return confirm_page(store, vault, runtime, document_id, page_number, body, now=clock())
+    except _REVIEW_ERRORS as exc:
+        raise _review_error(exc) from exc
+
+
+@router.post("/v1/documents/{document_id}/pages/{page_number}/restore", response_model=PageExtraction)
+def restore_document_page(
+    store: StoreDep,
+    vault: VaultDep,
+    runtime: RuntimeDep,
+    document_id: str,
+    page_number: int,
+    body: PageRestoreRequest,
+) -> PageExtraction:
+    """Hoàn tác bỏ mềm một trang (§6.5, GĐ0 0D; tên và đường dẫn là đề xuất suy ra, chờ duyệt)."""
+    try:
+        return restore_page(store, vault, runtime, document_id, page_number, body)
     except _REVIEW_ERRORS as exc:
         raise _review_error(exc) from exc
 

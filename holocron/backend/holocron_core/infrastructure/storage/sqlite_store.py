@@ -873,11 +873,14 @@ class SQLiteStore:
         return None if row is None else model.model_validate_json(str(row["extraction_json"]))
 
     def list_page_summaries(self, document_id: str) -> list[PageSummary]:
-        """Đọc cột `status`, `confirmed` và hai field tóm tắt của JSON trang bằng `json_extract` của SQLite."""
+        """Đọc cột `status`, `confirmed` và các field tóm tắt của JSON trang bằng `json_extract` của SQLite (GĐ0 thêm
+        `page_role`, `dropped`; JSON trang lưu trước GĐ0 không có hai field này ⇒ `content`, không bỏ mềm)."""
         with self._read() as conn:
             rows = conn.execute(
                 "SELECT page_number, status, confirmed, json_extract(extraction_json, '$.tier_used') AS tier_used, "
-                "json_extract(extraction_json, '$.review_reasons') AS review_reasons "
+                "json_extract(extraction_json, '$.review_reasons') AS review_reasons, "
+                "json_extract(extraction_json, '$.page_role') AS page_role, "
+                "json_extract(extraction_json, '$.dropped') AS dropped "
                 "FROM pages WHERE document_id = ? ORDER BY page_number",
                 (document_id,),
             ).fetchall()
@@ -889,6 +892,8 @@ class SQLiteStore:
                     "tier_used": row["tier_used"],
                     "review_reasons": json.loads(str(row["review_reasons"] or "[]")),
                     "confirmed": bool(row["confirmed"]),
+                    "page_role": row["page_role"] or "content",
+                    "dropped": bool(row["dropped"]),
                 }
             )
             for row in rows

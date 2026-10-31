@@ -160,12 +160,16 @@ def _read_one(
     ocr: OcrRunner | None,
     emit: Emit,
     templates: TemplateFilter | None = None,
+    scan_ok: bool = True,
 ) -> PageMessage | PageErrorMessage:
+    """Đọc một trang; `scan_ok` là False khi lượt quét cấp tài liệu không `ok` (GĐ0: trang ghi `template_scan_ok`)."""
     if index >= page_count:
         return PageErrorMessage(page_index=index, message="trang ngoài phạm vi tài liệu")
     try:
-        # Không có ảnh template thì đọc trang đúng như trước (`content_image_area_ratio` là None).
-        raw = document.read_page(index) if templates is None else document.read_page(index, templates)
+        # Không có template thì `content_image_area_ratio` là None (độ phủ như cũ), không có header/footer.
+        raw = document.read_page(index, templates, config)
+        if not scan_ok:
+            raw = raw.model_copy(update={"template_scan_ok": False})
         if ocr is not None and needs_ocr_page(raw, config):
             emit(OcrStartedMessage(page_index=index))
             image = document.render_gray(
@@ -234,11 +238,15 @@ def run(
         emit(OpenedMessage(page_count=page_count))
         if page_count > request.config.max_pages:
             return
-        templates = TemplateFilter.from_scan(template_scan_for(request, opened, page_count, emit), request.config)
+        scan = template_scan_for(request, opened, page_count, emit)
+        templates = TemplateFilter.from_scan(scan, request.config)
+        # Lượt quét không xong (`over_cap`, `timeout`, `error`) ⇒ khử nhiễu không đầy đủ (GĐ0 0C, `DENOISE_UNAVAILABLE`);
+        # `skipped` là worker không được yêu cầu quét (cùng cách phân loại với cảnh báo của `pdf_reader`).
+        scan_ok = scan.status in ("ok", "skipped")
         for served, page_request in enumerate(requests):
             if served >= request.page_budget:
                 return
-            page = _read_one(opened, page_request.page_index, page_count, request.config, ocr, emit, templates)
+            page = _read_one(opened, page_request.page_index, page_count, request.config, ocr, emit, templates, scan_ok)
             emit(_fit_message(page, request.config.max_message_bytes))
 
 

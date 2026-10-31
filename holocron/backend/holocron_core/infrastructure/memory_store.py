@@ -47,7 +47,8 @@ IMPORTED_MEDIA_TYPE: MediaType = "application/pdf"  # bộ nhập §6.5 chỉ nh
 @dataclass(frozen=True)
 class _StoredPage:
     """Một dòng `pages`: JSON của model trang (validate lại khi đọc, như bản SQLite), các cột lọc và tóm tắt trang
-    (`tier_used`, `review_reasons` đọc từ JSON lúc ghi, để `list_page_summaries` không phải dựng lại các dòng)."""
+    (`tier_used`, `review_reasons` và từ GĐ0 `page_role`, `dropped` đọc từ JSON lúc ghi, để `list_page_summaries` không
+    phải dựng lại các dòng; JSON thiếu hai field GĐ0 ⇒ `content`, không bỏ mềm, như bản SQLite)."""
 
     extraction_json: str
     status: PageStatus
@@ -55,12 +56,15 @@ class _StoredPage:
     version: int
     tier_used: str | None = None
     review_reasons: tuple[str, ...] = ()
+    page_role: str = "content"
+    dropped: bool = False
 
     @classmethod
     def of(cls, page: BaseModel, status: PageStatus, confirmed: bool, version: int) -> _StoredPage:
         extraction_json = _dump(page)
         data = json.loads(extraction_json)
         tier_used = data.get("tier_used")
+        page_role = data.get("page_role")
         return cls(
             extraction_json,
             status,
@@ -68,6 +72,8 @@ class _StoredPage:
             version,
             tier_used if isinstance(tier_used, str) else None,
             tuple(str(reason) for reason in data.get("review_reasons", ())),
+            page_role if isinstance(page_role, str) else "content",
+            bool(data.get("dropped", False)),
         )
 
     def summary(self, page_number: int) -> PageSummary:
@@ -78,6 +84,8 @@ class _StoredPage:
                 "tier_used": self.tier_used,
                 "review_reasons": list(self.review_reasons),
                 "confirmed": self.confirmed,
+                "page_role": self.page_role,
+                "dropped": self.dropped,
             }
         )
 

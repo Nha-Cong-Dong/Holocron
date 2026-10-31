@@ -163,13 +163,17 @@ class PdfReaderConfig(BaseModel):
     formula_density_min: float = Field(default=0.03, gt=0.0, le=1.0)
     formula_min_symbols: int = Field(default=3, ge=1)
 
-    # Ảnh template (sửa đổi 2026-10-30): ảnh nhúng cùng nội dung (SHA-256 dữ liệu thô của luồng ảnh + kích thước
-    # điểm ảnh, số bit mỗi điểm ảnh, bộ lọc) và cùng vị trí, kích thước trên trang (hộp chuẩn hoá theo khổ trang đã
-    # xoay, làm tròn theo bước `template_image_bbox_step`) xuất hiện trên ít nhất `template_image_min_pages` trang VÀ
-    # ít nhất `template_image_min_page_ratio` tổng số trang của tài liệu (so sánh `≥`). Ảnh template không được tính
-    # vào độ phủ ảnh của mọi luật dựa trên độ phủ (trang ảnh ít chữ, ảnh phủ gần kín, phần ảnh của cờ hình). Tài liệu
-    # dưới `template_image_min_pages` trang không có ảnh template; trần dưới là 3 để tài liệu 1–2 trang luôn như vậy.
-    template_image_min_page_ratio: float = Field(default=0.60, gt=0.0, le=1.0)
+    # Template (sửa đổi 2026-10-30; mở rộng GĐ0 2026-10-31 sang đường vẽ và dòng chữ): ảnh nhúng cùng nội dung
+    # (SHA-256 dữ liệu thô của luồng ảnh + kích thước điểm ảnh, bộ lọc), đường vẽ cùng màu và số đoạn, cùng vị trí trên
+    # trang (hộp chuẩn hoá theo khổ trang đã xoay, làm tròn theo bước `template_image_bbox_step`) xuất hiện trên ít nhất
+    # `template_image_min_pages` trang VÀ ít nhất `template_min_page_ratio` tổng số trang của tài liệu (so sánh `≥`;
+    # `TEMPLATE_MIN_PAGE_RATIO`, đổi tên 2026-10-31 từ `template_image_min_page_ratio`). Ảnh template không được tính
+    # vào độ phủ ảnh của mọi luật dựa trên độ phủ (trang ảnh ít chữ, ảnh phủ gần kín, cờ hình). Tài liệu dưới
+    # `template_image_min_pages` trang không có template; trần dưới là 3 để tài liệu 1–2 trang luôn như vậy. Dòng chữ
+    # lặp (header/footer) dùng ngưỡng riêng `header_footer_min_page_ratio`, `header_footer_min_spread` (dưới).
+    # Mặc định 0.40 chọn bằng phép đo GĐ0 trên tập dev (ch2, 2026-10-31): ở 0.40 không ảnh NỘI DUNG nào bị nhận nhầm là
+    # template (hai ảnh thêm vào là dải trang trí của tiêu đề) và recall trang điều hướng tốt hơn 0.60; tập mù chỉ báo số.
+    template_min_page_ratio: float = Field(default=0.40, gt=0.0, le=1.0)
     template_image_min_pages: int = Field(default=3, ge=3)
     template_image_bbox_step: float = Field(default=0.01, ge=1e-4, le=0.1)
     # Lượt quét ảnh cấp tài liệu trong worker, trước trang đầu, không render: hạn riêng `template_scan_timeout_s`,
@@ -183,11 +187,60 @@ class PdfReaderConfig(BaseModel):
     template_scan_max_images: int = Field(default=20_000, ge=1)
     template_scan_max_image_bytes: int = Field(default=16 * MIB, ge=1)
     template_scan_max_bytes: int = Field(default=512 * MIB, ge=1)
+    # Trang có nhiều đường vẽ hơn mức này: đường vẽ của trang không có khoá (không bao giờ là template).
+    template_scan_max_paths_per_page: int = Field(default=4096, ge=1)
 
-    # `has_figure` trên PDF số (mục 9): nhánh ảnh dùng diện tích ảnh nhúng KHÔNG phải template; nhánh đường vẽ tính
-    # mọi ảnh, kể cả template, như develop (sửa đổi 2026-10-30).
+    # GĐ0 0A (sửa đổi 2026-10-31): duyệt đệ quy form XObject tới độ sâu `pdf_form_max_depth`; trang có quá
+    # `page_objects_max` đối tượng sau khi duyệt (`>`), hoặc form sâu hơn, là trang vượt trần: không lọc chữ ẩn, không
+    # xét chữ bị che, không nhận nền, mọi ảnh và đường vẽ là nội dung. Nền là đường vẽ tô đặc phủ `≥
+    # background_path_min_area` diện tích trang và vẽ trước mọi chữ giao với nó, hoặc ảnh template.
+    pdf_form_max_depth: int = Field(default=16, ge=1)
+    page_objects_max: int = Field(default=20_000, ge=1)
+    background_path_min_area: float = Field(default=0.50, gt=0.0, le=1.0)
+
+    # `has_figure` trên PDF số (mục 9; sửa đổi 2026-10-31, GĐ0): chỉ tính đối tượng không-template, không-nền: độ phủ
+    # ảnh nội dung `≥ figure_image_area_min`, hoặc có ảnh nội dung VÀ diện tích đường vẽ nội dung
+    # `≥ figure_path_area_min`.
     figure_image_area_min: float = Field(default=0.10, gt=0.0, le=1.0)
     figure_path_area_min: float = Field(default=0.25, gt=0.0, le=1.0)
+
+    # GĐ0 0B (chất lượng chữ, chỉ dòng lớp chữ). Chữ ẩn: tương phản WCAG giữa màu chữ và nền thật (trung vị điểm ảnh
+    # trong hộp chữ trên ảnh render `hidden_text_render_dpi` khi không vẽ chữ): `≤ hidden_text_drop_max` ⇒ loại,
+    # `≥ hidden_text_keep_min` ⇒ giữ, ở giữa ⇒ giữ + cờ. Lớp OCR của PDF scan: tỉ lệ ký tự render mode 3
+    # `> scan_text_layer_mode3_min` VÀ ảnh (mọi ảnh) phủ `≥ scan_text_layer_image_min` ⇒ giữ nguyên. Chữ bị che: ảnh
+    # hoặc đường vẽ tô đặc vẽ sau che `≥ occlusion_min_cover` hộp chữ. Ghép ký tự rời: chuỗi `≥ char_merge_min_chars`
+    # ký tự đứng riêng, lệch baseline `≤ char_merge_baseline_tol` và lệch khoảng cách so với trung vị
+    # `≤ char_merge_gap_tol` (× chiều cao ký tự). Header/footer: dòng lặp cùng chỗ trên `≥ header_footer_min_page_ratio`
+    # số trang VÀ `(p_max − p_min) / N ≥ header_footer_min_spread`.
+    hidden_text_render_dpi: int = Field(default=72, ge=18, le=300)
+    hidden_text_drop_max: float = Field(default=1.25, ge=1.0, le=21.0)
+    hidden_text_keep_min: float = Field(default=2.0, ge=1.0, le=21.0)
+    scan_text_layer_mode3_min: float = Field(default=0.50, ge=0.0, lt=1.0)
+    scan_text_layer_image_min: float = Field(default=0.90, gt=0.0, le=1.0)
+    occlusion_min_cover: float = Field(default=0.50, gt=0.0, le=1.0)
+    char_merge_min_chars: int = Field(default=3, ge=2)
+    char_merge_baseline_tol: float = Field(default=0.20, ge=0.0, le=2.0)
+    char_merge_gap_tol: float = Field(default=0.25, ge=0.0, le=2.0)
+    header_footer_min_page_ratio: float = Field(default=0.60, gt=0.0, le=1.0)
+    header_footer_min_spread: float = Field(default=0.60, ge=0.0, le=1.0)
+
+    # GĐ0 0C: lớp chữ (đã trừ header/footer) có `≥ figure_text_min_tokens` token ⇒ hình chỉ ghi vùng; `<` VÀ ảnh nội
+    # dung phủ `≥ image_read_area_min` ⇒ OCR cả trang kèm `IMAGE_NEEDS_READING`.
+    figure_text_min_tokens: int = Field(default=8, ge=1)
+    image_read_area_min: float = Field(default=0.30, gt=0.0, le=1.0)
+
+    # GĐ0 0D (vai trò trang, chạy ở service): xem `services/page_roles.py`.
+    page_role_min_tokens: int = Field(default=8, ge=1)
+    page_role_common_token_ratio: float = Field(default=0.60, gt=0.0, le=1.0)
+    cover_jaccard_min: float = Field(default=0.80, gt=0.0, le=1.0)
+    chapter_nav_jaccard_min: float = Field(default=0.85, gt=0.0, le=1.0)
+    chapter_nav_min_median_gap: float = Field(default=3.0, ge=1.0)
+    chapter_nav_max_line_chars: int = Field(default=90, ge=1)
+    chapter_nav_min_pages: int = Field(default=2, ge=2)
+    build_step_subset_min: float = Field(default=0.90, gt=0.0, le=1.0)
+    build_step_position_tol: float = Field(default=0.02, ge=0.0, le=1.0)
+    build_step_dhash_same_max: int = Field(default=4, ge=0, le=64)
+    parallel_series_dhash_min: int = Field(default=9, ge=0, le=64)
 
     # `has_table` theo lưới toạ độ chữ (mục 6): khoảng trống giữa hai ô tính theo chiều cao dòng; các dòng liền
     # nhau có cùng số ô và mép trái các ô thẳng hàng trong `table_col_tolerance` (tỉ lệ bề ngang trang).
@@ -216,6 +269,15 @@ class PdfReaderConfig(BaseModel):
         """Ngưỡng trang ảnh phủ gần kín không được thấp hơn ngưỡng ảnh của luật trang ảnh ít chữ."""
         if self.text_full_image_min < self.text_sparse_image_min:
             raise ValueError("text_full_image_min phải lớn hơn hoặc bằng text_sparse_image_min")
+        return self
+
+    @model_validator(mode="after")
+    def _denoise_bands_are_ordered(self) -> PdfReaderConfig:
+        """Vùng giữa của chữ ẩn và của dHash phải không rỗng (§5.7, bảng ngưỡng GĐ0)."""
+        if self.hidden_text_drop_max >= self.hidden_text_keep_min:
+            raise ValueError("hidden_text_drop_max phải nhỏ hơn hidden_text_keep_min")
+        if self.build_step_dhash_same_max >= self.parallel_series_dhash_min:
+            raise ValueError("build_step_dhash_same_max phải nhỏ hơn parallel_series_dhash_min")
         return self
 
     @model_validator(mode="after")

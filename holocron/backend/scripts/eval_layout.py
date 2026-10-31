@@ -128,14 +128,38 @@ def gt_spans(blocks: Sequence[Block]) -> tuple[str, list[tuple[int, int]]]:
     return " ".join(parts), spans
 
 
-def locate(page_text: str, text: str) -> tuple[int, int]:
-    """Khoảng ký tự ước lượng của `text` trong `page_text` theo khớp chuỗi con chung dài nhất; không khớp ⇒ rỗng."""
+def _occurrences(page_text: str, block: str) -> list[int]:
+    found: list[int] = []
+    start = page_text.find(block)
+    while start >= 0:
+        found.append(start)
+        start = page_text.find(block, start + 1)
+    return found
+
+
+def locate(
+    page_text: str,
+    text: str,
+    taken: Sequence[tuple[int, int]] = (),
+    expected: int = 0,
+) -> tuple[int, int]:
+    """Khoảng ký tự của `text` trong `page_text`; không khớp ⇒ `(0, 0)`.
+
+    Khớp đúng chuỗi con: nhiều lần xuất hiện thì ưu tiên lần CHƯA chồng lên khoảng trong `taken` (khối đã định vị
+    trước đó), rồi lần có vị trí đầu gần `expected` nhất (hoà: lần sớm hơn); mọi lần đều đã bị chiếm thì chọn gần
+    `expected` nhất. Không khớp đúng: khớp chuỗi con chung dài nhất (`difflib`) rồi suy khoảng từ đó.
+    Giới hạn còn lại: khối trùng nội dung mà dự đoán đảo thứ tự hoặc bỏ sót một khối vẫn có thể bị gán nhầm lần xuất
+    hiện (số đo ranh giới của các khối ngắn lặp lại chỉ là xấp xỉ); khối lệch văn bản chỉ được định vị gần đúng.
+    """
     block = normalize(text)
     if not block or not page_text:
         return (0, 0)
-    found = page_text.find(block)
-    if found >= 0:
-        return (found, found + len(block))
+    options = _occurrences(page_text, block)
+    if options:
+        free = [o for o in options if all(o + len(block) <= t[0] or o >= t[1] for t in taken)]
+        pool = free or options
+        start = min(pool, key=lambda o: (abs(o - expected), o))
+        return (start, start + len(block))
     match = difflib.SequenceMatcher(None, page_text, block, autojunk=False).find_longest_match(
         0, len(page_text), 0, len(block)
     )
@@ -143,6 +167,20 @@ def locate(page_text: str, text: str) -> tuple[int, int]:
         return (0, 0)
     start = match.a - match.b
     return (start, start + len(block))
+
+
+def locate_all(page_text: str, blocks: Sequence[Block]) -> list[tuple[int, int]]:
+    """Định vị mọi khối dự đoán theo `order`, mỗi khối tránh chỗ khối trước đã chiếm; trả theo thứ tự đưa vào."""
+    intervals: list[tuple[int, int]] = [(0, 0)] * len(blocks)
+    taken: list[tuple[int, int]] = []
+    expected = 0
+    for index in sorted(range(len(blocks)), key=lambda i: blocks[i].order):
+        found = locate(page_text, blocks[index].text, taken, expected)
+        intervals[index] = found
+        if found[1] > found[0]:
+            taken.append(found)
+            expected = found[1] + 1
+    return intervals
 
 
 def greedy_match(
@@ -238,7 +276,7 @@ def parse_pages(raw: object, where: str, *, ground_truth: bool) -> dict[int, Pag
         raise EvalLayoutError(f"{where}: `pages` phải là danh sách")
     pages: dict[int, Page] = {}
     for item in raw:
-        if not isinstance(item, dict) or not isinstance(item.get("page"), int):
+        if not isinstance(item, dict) or not isinstance(item.get("page"), int) or isinstance(item.get("page"), bool):
             raise EvalLayoutError(f"{where}: trang thiếu `page` số nguyên")
         number = item["page"]
         topic = item.get("topic")
@@ -343,7 +381,7 @@ def evaluate_chapter(chapter: str, truth: dict[int, Page], pred: dict[int, Page]
         pred_blocks = _keep(pred_page.blocks, mode)
         tally.pred_groups.append(f"{chapter}:{_pred_group(pred_blocks)}")
         page_text, gt_intervals = gt_spans(gt_blocks)
-        pred_intervals = [locate(page_text, b.text) for b in pred_blocks]
+        pred_intervals = locate_all(page_text, pred_blocks)
         pairs = greedy_match(gt_intervals, pred_intervals, iou)
         tally.true_positive += len(pairs)
         tally.gt_blocks += len(gt_blocks)
@@ -398,6 +436,9 @@ def evaluate(
     dev: Sequence[str] = ("ch2",),
 ) -> dict[str, dict[str, dict[str, float | int | None]]]:
     """Kết quả `{mode: {"ch2": {...}, "dev": {...}, "blind": {...}}}`; chương thiếu trong dự đoán tính như thiếu trang."""
+    unknown = sorted(set(pred) - set(truth))
+    if unknown:
+        raise EvalLayoutError(f"dự đoán có chương không có trong ground truth: {', '.join(unknown)}")
     report: dict[str, dict[str, dict[str, float | int | None]]] = {}
     for mode in MODES:
         per: dict[str, dict[str, float | int | None]] = {}

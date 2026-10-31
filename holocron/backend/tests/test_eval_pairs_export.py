@@ -233,3 +233,11 @@ def test_main_end_to_end_and_errors(tmp_path: Path, capsys: pytest.CaptureFixtur
     repo_inside = ep.repo_root() / "holocron" / "backend" / "scripts" / "khong_duoc_ghi"
     assert ep.main(["--data-dir", str(data_dir), "--subject-code", "IT3070", "--output", str(repo_inside)]) == 2
     assert not repo_inside.with_name(repo_inside.name + ".csv").exists()
+
+
+def test_score_csv_pre_selected_accepts_case_and_rejects_other_values() -> None:
+    report = ep.score_csv("pre_selected,đúng?\nTRUE,1\nFalse,1\n")
+    assert (report.selected_n, report.graded) == (1, 2)
+    for bad in ("yes", "1", ""):
+        with pytest.raises(ep.EvalPairsError, match="pre_selected"):
+            ep.score_csv(f"pre_selected,đúng?\n{bad},1\n")

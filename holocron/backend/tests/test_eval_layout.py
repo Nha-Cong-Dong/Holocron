@@ -228,3 +228,29 @@ def test_main_rejects_output_inside_repo_and_writes_oracle(tmp_path: Path, capsy
     assert json.loads(result.read_text(encoding="utf-8"))["all"]["blind"]["boundary_f1"] == 1.0
     assert el.main(["--gt-root", str(gt_root)]) == 2
     assert el.main(["--gt-root", str(gt_root), "--pred", str(oracle), "--iou", "0"]) == 2
+
+
+def test_prediction_chapter_unknown_to_ground_truth_is_an_error(tmp_path: Path) -> None:
+    gt_root = tmp_path / "gt"
+    _write_gt(gt_root)
+    truth = el.load_ground_truth(gt_root)
+    with pytest.raises(el.EvalLayoutError, match="ch9"):
+        el.evaluate(truth, {"ch9": {}})
+
+
+def test_duplicate_blocks_on_one_page_take_distinct_occurrences() -> None:
+    blocks = [("paragraph", "Có"), ("paragraph", "Không"), ("paragraph", "Có")]
+    gt = {1: _page(1, "t", blocks)}
+    pred = {1: _page(1, None, blocks)}
+    summary = el.summarize(el.evaluate_chapter("ch2", gt, pred, "all", 0.5))
+    assert summary["matched"] == 3 and summary["boundary_f1"] == 1.0
+    assert summary["kendall_tau_mean"] == 1.0
+    page_text, _ = el.gt_spans(el.Page(1, tuple(el.Block(k, t, i) for i, (k, t) in enumerate(blocks))).blocks)
+    first = el.locate(page_text, "Có")
+    second = el.locate(page_text, "Có", taken=[first], expected=first[1] + 1)
+    assert first != second
+
+
+def test_page_must_be_integer_not_bool() -> None:
+    with pytest.raises(el.EvalLayoutError, match="page"):
+        el.parse_pages([{"page": True, "blocks": []}], "dự đoán", ground_truth=False)

@@ -246,7 +246,10 @@ def score_csv(text: str) -> ScoreReport:
             continue
         graded += 1
         all_correct += int(verdict)
-        if (record.get("pre_selected") or "").strip().lower() == "true":
+        flag = (record.get("pre_selected") or "").strip().lower()
+        if flag not in ("true", "false"):
+            raise EvalPairsError("cột pre_selected chỉ nhận true hoặc false (không phân biệt hoa thường)")
+        if flag == "true":
             selected_n += 1
             selected_correct += int(verdict)
     return ScoreReport(graded, ungraded, selected_n, selected_correct, all_correct)

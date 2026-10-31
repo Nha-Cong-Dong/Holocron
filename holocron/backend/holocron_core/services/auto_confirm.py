@@ -45,7 +45,8 @@ def passes_page_clean(
     - tài liệu bật `auto_confirm` và không phải `past_exam` (trang đề đi tiếp vào Gate, giữ người xác nhận);
     - trang qua `is_trusted_source`;
     - `status = "ok"` (tức `review_reasons` rỗng), `page_role = "content"`, không bỏ mềm, chưa xác nhận, chưa từng bị
-      người dùng hoàn tác tự xác nhận;
+      người dùng hoàn tác tự xác nhận, chưa được người dùng hoàn tác bỏ mềm (`restored`: người dùng đã chủ động giữ
+      trang, để họ tự xác nhận; spec chưa liệt kê điều kiện này, chọn phía an toàn);
     - `has_text` (có ít nhất một dòng có chữ) và `fits_vault` (vừa giới hạn trang của Vault) do người gọi tính bằng
       đúng định nghĩa dùng cho xác nhận thường.
     """
@@ -57,6 +58,7 @@ def passes_page_clean(
         and not page.review_reasons
         and page.page_role == "content"
         and not page.dropped
+        and not page.restored
         and not page.confirmed
         and not page.auto_confirm_undone
         and has_text

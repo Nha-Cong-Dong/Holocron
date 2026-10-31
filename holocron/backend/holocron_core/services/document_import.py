@@ -93,7 +93,7 @@ from ..infrastructure.storage.original_files import StagedFile
 from .auto_confirm import AUTO_CONFIRM_RULE, passes_page_clean
 from .chapter_naming import DEFAULT_TITLE, InitialChapter
 from .chapter_reservation import ChapterReservations, ChapterTurn, reserve_chapter
-from .page_roles import RoleDecision, apply_decision, assign_roles, changeable, reassess_cover
+from .page_roles import RoleDecision, apply_decision, assign_roles, changeable, reassess_cover, reassessable
 from .vault import ingest_confirmed_text
 
 MAX_FILENAME_LENGTH = 255
@@ -251,6 +251,11 @@ class RetryPolicy:
             raise ValueError("RetryPolicy cần attempts ≥ 1 và delay_s ≥ 0")
 
 
+def _utc_now() -> datetime:
+    """Đồng hồ mặc định (một nguồn) cho `confirmed_at` của trang tự xác nhận."""
+    return datetime.now(UTC)
+
+
 @dataclass(frozen=True)
 class ReadJob:
     """Một tài liệu chờ đọc: kho, bộ đọc và chính sách thử lại đi cùng việc, nên hàng đợi không giữ phụ thuộc nào.
@@ -271,7 +276,7 @@ class ReadJob:
     # Ngưỡng của 0D (vai trò trang) ở bước kết thúc lần đọc; app truyền `ImportRuntime.reader_config`.
     config: PdfReaderConfig = field(default_factory=PdfReaderConfig)
     # Đồng hồ cho `confirmed_at` của trang tự xác nhận (GĐ1 1B); test truyền đồng hồ cố định.
-    clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
+    clock: Callable[[], datetime] = field(default=_utc_now)
 
 
 class ImportQueue(Protocol):
@@ -924,13 +929,17 @@ def _settle_after_read(
         )
 
 
-def _write_role(store: DocumentRepository, page: PageExtraction, decision: RoleDecision) -> None:
+def _write_role(
+    store: DocumentRepository, page: PageExtraction, decision: RoleDecision, *, allow_auto_confirmed: bool = False
+) -> None:
     """Ghi vai trò của một trang qua `update_page` có so version; lệch version ⇒ đọc lại trang và thử lại tối đa
     `SETTLE_ATTEMPTS` lần (trang đã đổi thành không đổi được thì thôi); hết lượt ⇒ cảnh báo, trang giữ như cũ (không
-    bỏ mềm là phía an toàn)."""
+    bỏ mềm là phía an toàn). `allow_auto_confirmed` (chỉ đường đánh giá lại bìa của tài liệu trước) cho ghi cả trang
+    do máy tự xác nhận (tự xác nhận bị bỏ theo, `apply_decision`); mặc định trang đã xác nhận không đổi."""
+    editable = reassessable if allow_auto_confirmed else changeable
     current: PageExtraction | None = page
     for attempt in range(1, SETTLE_ATTEMPTS + 1):
-        if current is None or not changeable(current):
+        if current is None or not editable(current):
             return
         updated = apply_decision(current, decision)
         if updated is None:
@@ -1013,7 +1022,7 @@ def _reassess_previous_covers(
             for page in earlier:
                 decision = decisions.get(page.page_number)
                 if decision is not None:
-                    _write_role(store, page, decision)
+                    _write_role(store, page, decision, allow_auto_confirmed=True)
 
 
 def _after_finish(
@@ -1033,10 +1042,6 @@ def _after_finish(
             document_id,
             type(exc).__name__,
         )
-
-
-def _utc_now() -> datetime:
-    return datetime.now(UTC)
 
 
 def _is_page_clean(document: ImportedDocument, page: PageExtraction) -> bool:

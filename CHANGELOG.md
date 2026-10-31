@@ -5,6 +5,43 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 
 ## [Unreleased]
 
+### 🚀 Tính năng mới
+- Giao diện mới "Chòm sao" (PR #89, #91, #93, #95, #100, #101, #102): nền thiết kế (token màu sáng/tối, 16 animation CSS, font Lexend/Newsreader đóng gói sẵn, logo khối Holocron, đổi theme Theo Windows/Sáng/Tối); thanh trên và breadcrumb thay thanh bên; bộ thành phần dùng chung đủ chế độ giảm chuyển động; trang chủ "Bầu trời của bạn" với màn chào, thẻ môn và hộp thoại Thêm môn chỉ cần tên (mã môn tự sinh).
+- Trang môn ba phần Tài liệu · Khái niệm · Ôn tập (PR #91, #100, #101, #102): tab Tài liệu nhập nhiều file (hàng đợi gửi lần lượt) và màn xem lại theo trang; tab Khái niệm có thẻ đề xuất kèm trích dẫn nguyên văn (Nhận, Sửa tên, Bỏ, Nhận tất cả, Nhận lại, tự tạo khái niệm bằng bôi đoạn hoặc chip câu); tab Ôn tập có phần thiết lập đề, màn Làm bài một câu một màn (khung Nguồn có trích dẫn và số trang, không có điểm tổng, tự luận hiện "Khớp x/y ý") và màn Kết quả; trang Cài đặt đầy đủ. `/pairs`, `/practice`, `/vault` chỉ còn chuyển hướng phía client.
+- Job nền đề xuất cặp khái niệm `/v1/vault/concept-pairs/jobs` (lô ≤ 20, song song ≤ 2, FIFO, huỷ, lỗi cô lập theo lô) theo giao thức con trỏ: code cắt trích dẫn nguyên văn theo con trỏ của LLM; `ConceptPair.pre_selected`/`failed_gates`, `KnowledgeChunk.is_exercise` (PR #106).
+- Chương tự động khi nhập PDF; `PATCH /v1/documents/{id}/chapter` sửa mã và tên chương (PR #108).
+- Bộ nhập PDF khử nhiễu trang (template, header/footer, chữ ẩn hoặc bị che, ký tự rời) và gán vai trò trang, có bỏ mềm và khôi phục trang (PR #109).
+- `GET /v1/runtime` trả 12 khả năng (3 tên mới đề xuất, chờ duyệt, luôn `not_implemented`); `ocr` và `ocr_cross_check` báo đúng trạng thái máy (Tesseract, ngôn ngữ `vie`, bộ chữ tiếng Việt, RapidOCR), kiểm chạy nền sau khi mở cổng, trong lúc kiểm báo `local_check_pending` (PR #103).
+
+### 🛠️ Cải tiến & Tối ưu
+- Spec: contract nhập một chạm cho khử nhiễu trang PDF, vai trò trang, chương tự động, tự xác nhận cấp trang và job đề xuất cặp kiểu con trỏ (ADR-006/007/008; PR #105).
+- Màn Xem lại: xác nhận xong không tự chuyển trang, có nút "Sang trang cần xem kế tiếp" và focus vào tiêu đề khi đổi trang (PR #100). Bỏ chữ kỹ thuật khỏi thông điệp lỗi và gợi ý; trích dẫn không còn hiện mã tài liệu (PR #101, #102).
+- Bộ nhập PDF: worker quét ảnh template của cả tài liệu một lần trước trang đầu; script opt-in `eval_pdf_tiers.py` so luật chọn tầng cũ và mới, `eval_pdf_ocr.py` kẹp lỗi chữ số theo trang (PR #104); script opt-in `eval_pages` và test biên cho các ngưỡng GĐ0 (PR #109).
+- OCR: chỉ kiểm `vie.traineddata` ở đúng thư mục lần gọi OCR sẽ dùng; app không đọc `TESSDATA_PREFIX` (PR #103).
+- Migration `0004_document_chapter_title.sql` (PR #108) và `0005_concept_pair_preselect.sql`; `eval_concept_proposal --mode legacy|pointer` (PR #106).
+- Gom giới hạn độ dài dòng (2000 ký tự) về hằng `MAX_LINE_CHARS` ở `domain/limits.py`, có test khoá (PR #99).
+- Test đối chiếu chéo trên trang đối kháng so tỉ lệ thời gian giữa 500 và 5000 dòng (ngưỡng ×5) thay vì ngưỡng 1 s tuyệt đối (PR #94).
+- Thêm script merge PR vào `develop` có kiểm điều kiện (`.claude/scripts/merge-to-develop.sh`; PR #92).
+
+### 🐛 Sửa lỗi
+- Màn Xem lại: bỏ phím Enter xác nhận trang, nút bỏ qua kích hoạt trong 0,6 s đầu và khoá khi đang gửi; nháp không mất khi lưu dòng khác hay đổi trang; xung đột 409 báo tại dòng kèm "Sửa lại từ bản mới" và "Bỏ chữ đã gõ" (PR #100). Sửa focus và câu báo ở tab Khái niệm (PR #102).
+- Màn chào: khối Holocron không còn lệch vị trí; trang môn với mã chưa có không còn kẹt "Đang tải", hết giờ 15 s thì báo lỗi (PR #95).
+- Bộ nhập PDF: slide ít chữ mà lớp chữ sạch giữ tầng lớp chữ; ảnh template không còn tính vào độ phủ ảnh; độ phủ ảnh tính bằng diện tích hợp cắt theo khung trang; heuristic TCVN3/VNI không bắt nhầm `®`/`©` (PR #104).
+- Trang OCR thoả luật (e) mang `IMAGE_NEEDS_READING` bất kể luật đưa đi OCR (PR #109).
+- Nhập đồng thời cùng môn cho kết quả như tuần tự; file hỏng không chiếm số chương (PR #108).
+- OCR: `vie.traineddata` thiếu chữ tiếng Việt thì trang scan thành `failed` với `OCR_ENGINE_MISSING`; lần kiểm nền gặp lỗi không treo ở pending; `HOLOCRON_TESSDATA_DIR`/`HOLOCRON_TESSERACT_CMD` tương đối đổi sang tuyệt đối; thăm dò RapidOCR chạy trong thư mục tạm riêng; lỗi kiểm ở request đầu báo `ocr_engine_missing` thay vì 500; đường dẫn Tesseract bắt đầu bằng `\` trên Linux/macOS hiểu là tương đối; một lần hỏi lại runtime lỗi mạng không còn đẩy ô trạng thái sang lỗi (PR #103).
+- Bản zip ghi license OFL-1.1 của hai font Lexend, Newsreader (`THIRD_PARTY_NOTICES`, `licenses/`); bước kiểm license khi build chỉ cho phép OFL cho đúng hai gói font này (PR #96).
+
+### 🔒 Bảo mật Sandbox
+- `HOLOCRON_REQUIRE_TOKEN`: không đặt hoặc rỗng thì không yêu cầu token; có giá trị toàn khoảng trắng hoặc sai dạng là cấu hình hỏng, app từ chối khởi động (bản zip thoát 2 trước khi mở cổng; uvicorn thoát 3), thông điệp chỉ nêu tên biến; lúc chạy vẫn 403 fail-closed. Launcher thoát 2 (thay vì 0) khi server không khởi động xong (PR #97).
+- Màn Xem lại khoá nút xác nhận trang và "Xác nhận các trang đọc tốt" khi còn dòng chưa lưu, không tự lưu hộ (I5; PR #100).
+
+### ⚠️ Thay đổi không tương thích
+- `PdfReaderConfig` bỏ `text_full_chars` (truyền vào sẽ báo `ValidationError`), thêm `text_sparse_chars`, `text_sparse_image_min`, `text_full_image_min`, `text_full_image_max_chars` và các field `template_*`; `text_score` đã lưu của tài liệu nhập trước 2026-10-29 theo công thức cũ, không so trực tiếp được với điểm mới. Hệ quả tạm: slide có khung template vẽ bằng vector trên ảnh nền template vẫn bị gắn cờ hình cho tới khi xử lý nợ BE-007 (PR #104).
+- `CapabilityReason` thêm `secondary_ocr_unavailable` và `local_check_pending` ở cuối danh sách (PR #103).
+- `PAIR_PRESELECT_ENABLED` mặc định tắt vì chưa đo precision (PR #106).
+- Route cũ `/practice` dùng phần thiết lập mới cho tới khi chuyển hướng (PR #101).
+
 ## [0.2.0-alpha] - 2026-10-28
 
 ### 🚀 Tính năng mới

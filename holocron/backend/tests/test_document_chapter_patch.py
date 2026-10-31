@@ -17,10 +17,14 @@ from typing import Any
 
 import pytest
 from httpx import Response
+from pydantic import ValidationError
 
+from holocron_core.domain.documents import DocumentImport
+from holocron_core.domain.repositories import ImportedDocument, VersionConflictError
+from holocron_core.infrastructure.memory_store import IngestionStore
 from holocron_core.routers.api import app
 from holocron_core.services.document_chapter import CHAPTER_CODE_LOCKED_DETAIL
-from holocron_core.services.document_import import CHAPTER_MISSING_DETAIL, SynchronousImportQueue
+from holocron_core.services.document_import import CHAPTER_MISSING_DETAIL, SETTLE_ATTEMPTS, SynchronousImportQueue
 from holocron_core.services.vault import ingest_confirmed_text
 from tests.document_import_support import FakePdfReader, ImportEnv, install, pdf_bytes
 from tests.vault_support import ARM_PAGES, STORE_KINDS, confirmed, open_store
@@ -215,3 +219,105 @@ def test_invalid_body_is_422_and_changes_nothing(env: ImportEnv, body: dict[str,
     response = env.client.patch(f"/v1/documents/{doc_id}/chapter", json=body)
     assert response.status_code == 422
     assert _get(env, doc_id) == before
+
+
+# --------------------------------------------------------------------------- #
+# Nhánh còn thiếu (report mutation feat-chapter-auto 2026-10-31)
+# --------------------------------------------------------------------------- #
+
+
+class ConflictingStore(IngestionStore):
+    """Kho in-memory mà `update_imported_document` báo version lệch `conflicts` lần đầu (như một luồng ghi tài liệu
+    ngoài khoá); `conflicts < 0` ⇒ lệch mãi."""
+
+    def __init__(self, conflicts: int) -> None:
+        super().__init__()
+        self.conflicts = conflicts
+        self.updates = 0
+        self.armed = False
+
+    def update_imported_document(self, document: ImportedDocument, expected_version: int) -> ImportedDocument:
+        if self.armed:
+            self.updates += 1
+            if self.conflicts < 0 or self.updates <= self.conflicts:
+                raise VersionConflictError("tài liệu", document.meta.doc_id, expected_version, expected_version + 1)
+        return super().update_imported_document(document, expected_version)
+
+
+def _conflicting_env(tmp_path: Path, conflicts: int) -> tuple[ImportEnv, ConflictingStore, str]:
+    store = ConflictingStore(conflicts)
+    env = install(store, tmp_path / "files", SynchronousImportQueue(), FakePdfReader(page_count=2))
+    doc_id, _ = _import(env, "lech-version")
+    store.armed = True
+    return env, store, doc_id
+
+
+def test_patch_answers_409_not_500_when_the_version_always_conflicts(tmp_path: Path) -> None:
+    env, store, doc_id = _conflicting_env(tmp_path, conflicts=-1)
+    try:
+        response = _patch(env, doc_id, chapter_title="Tên mới")
+        assert response.status_code == 409, response.text
+        assert store.updates == SETTLE_ATTEMPTS, "thử đủ số lần rồi mới báo lệch"
+        assert _get(env, doc_id)["chapter_title"] == "Chuong 2 Vi xu ly ARM"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_patch_retries_after_one_conflict_and_writes_once(tmp_path: Path) -> None:
+    env, store, doc_id = _conflicting_env(tmp_path, conflicts=1)
+    try:
+        before = store.get_imported_document(doc_id)
+        assert before is not None
+        response = _patch(env, doc_id, chapter_title="Tên mới")
+        assert response.status_code == 200, response.text
+        assert store.updates == 2
+        after = store.get_imported_document(doc_id)
+        assert after is not None and after.chapter_title == "Tên mới" and after.version == before.version + 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_successful_patch_writes_exactly_once(env: ImportEnv) -> None:
+    doc_id, _ = _import(env, "mot-lan")
+    before = env.store.get_imported_document(doc_id)
+    assert before is not None
+    assert _patch(env, doc_id, chapter_code="ch8", chapter_title="Tám").status_code == 200
+    after = env.store.get_imported_document(doc_id)
+    assert after is not None and after.version == before.version + 1
+
+
+def test_confirmed_document_without_chunks_locks_the_code(env: ImportEnv) -> None:
+    doc_id, _ = _import(env, "confirmed-khong-chunk")
+    document = env.store.get_imported_document(doc_id)
+    assert document is not None
+    env.store.update_imported_document(document.model_copy(update={"status": "confirmed"}), document.version)
+    assert env.store.list_chunks("ET4010") == []
+    locked = _patch(env, doc_id, chapter_code="ch4")
+    assert locked.status_code == 409 and locked.json() == {"detail": CHAPTER_CODE_LOCKED_DETAIL}
+
+
+def test_old_record_without_a_code_source_reads_as_user(env: ImportEnv) -> None:
+    doc_id, _ = _import(env, "nguon-cu")
+    document = env.store.get_imported_document(doc_id)
+    assert document is not None
+    old = document.model_copy(update={"chapter_code_source": None, "chapter_title": None, "chapter_title_source": None})
+    env.store.update_imported_document(old, document.version)
+    body = _get(env, doc_id)
+    assert body["chapter_source"] == {"code": "user", "title": None} and body["chapter_title"] is None
+
+
+def test_document_import_title_and_title_source_go_together(env: ImportEnv) -> None:
+    doc_id, _ = _import(env, "mo-hinh")
+    body = _get(env, doc_id)
+    assert DocumentImport.model_validate(body).chapter_title == "Chuong 2 Vi xu ly ARM"
+    for title, source_title in (("Tên", None), (None, "file_name")):
+        bad = {**body, "chapter_title": title, "chapter_source": {"code": "user", "title": source_title}}
+        with pytest.raises(ValidationError, match="chapter_source.title"):
+            DocumentImport.model_validate(bad)
+    for length, ok in ((300, True), (301, False)):
+        sized = {**body, "chapter_title": "x" * length}
+        if ok:
+            assert DocumentImport.model_validate(sized).chapter_title == "x" * 300
+        else:
+            with pytest.raises(ValidationError):
+                DocumentImport.model_validate(sized)

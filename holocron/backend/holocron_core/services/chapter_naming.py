@@ -34,8 +34,6 @@ from ..domain.repositories import ImportedDocument
 # `chapter_code` giữ mẫu `^ch[0-9]{1,2}(\.[0-9]{1,2})?$` (§5.7): số chương tự động là 1..99.
 MIN_CHAPTER_NUMBER = 1
 MAX_CHAPTER_NUMBER = 99
-# Tên chương khi tên file sau khi làm sạch không còn ký tự nào (ví dụ "___.pdf"); như tiêu đề mặc định của §6.5.
-EMPTY_FILENAME_TITLE = "Tài liệu"
 
 _ASCII_DIGIT_RUN = re.compile(r"[0-9]+")  # `[0-9]` chỉ khớp chữ số ASCII
 _FILENAME_SEPARATORS = str.maketrans({"_": " ", "-": " "})
@@ -140,7 +138,13 @@ def clean_filename_title(filename: str) -> str:
     """Tên file đã làm sạch (§5.7): bỏ đuôi, `_` và `-` thành dấu cách, NFC, gộp khoảng trắng, cắt 300 ký tự."""
     cleaned = normalize_chapter_title(filename_stem(filename).translate(_FILENAME_SEPARATORS))
     cleaned = cleaned[:MAX_CHAPTER_TITLE_CHARS].rstrip()
-    return cleaned or EMPTY_FILENAME_TITLE
+    if cleaned:
+        return cleaned
+    # Không còn ký tự nào (ví dụ "___.pdf") ⇒ tiêu đề mặc định của §6.5. Import trong hàm: `document_import` nhập
+    # module này khi khởi tạo, nên import ở đầu file sẽ vòng.
+    from .document_import import DEFAULT_TITLE
+
+    return DEFAULT_TITLE
 
 
 def _only_marks(text: str) -> bool:
@@ -225,18 +229,22 @@ def select_title_with_llm(selector: ChapterTitleSelector, candidates: Sequence[s
     return checked_selection(sent, proposal)
 
 
-def auto_chapter(filename: str, subject_documents: Iterable[ImportedDocument], document_id: str) -> ChapterChoice:
+def auto_chapter(
+    filename: str,
+    subject_documents: Iterable[ImportedDocument],
+    document_id: str,
+    reserved: Collection[str] = (),
+) -> ChapterChoice:
     """`choose_chapter_code` với các chương đã có của môn: `subject_documents` là tài liệu nhập cùng `subject_code`;
-    chính tài liệu `document_id` và bản ghi chưa có `chapter_code` không tính là "chương đã có" (§5.7).
-
-    Tầng gọi PHẢI đọc `subject_documents` và tạo tài liệu dưới CÙNG khoá của môn (§6.5 bước 5).
+    chính tài liệu `document_id` và bản ghi chưa có `chapter_code` không tính là "chương đã có" (§5.7). `reserved`:
+    chương đã được giữ chỗ cho tài liệu cùng môn đang nhận mà chưa tạo bản ghi (`chapter_reservation`).
     """
     taken = {
         document.chapter_code
         for document in subject_documents
         if document.meta.doc_id != document_id and document.chapter_code is not None
     }
-    return choose_chapter_code(filename, taken)
+    return choose_chapter_code(filename, taken | set(reserved))
 
 
 @dataclass(frozen=True)
@@ -252,11 +260,15 @@ class InitialChapter:
 
 
 def initial_chapter(
-    filename: str, chapter_code: str | None, subject_documents: Iterable[ImportedDocument], document_id: str
+    filename: str,
+    chapter_code: str | None,
+    subject_documents: Iterable[ImportedDocument],
+    document_id: str,
+    reserved: Collection[str] = (),
 ) -> InitialChapter:
     """`chapter_code` của form (nguồn `user`, không cờ, được trùng chương khác) hoặc chương tự động (`auto_chapter`)."""
     title = clean_filename_title(filename)
     if chapter_code:  # chuỗi rỗng như không gửi (§6.5)
         return InitialChapter(chapter_code=chapter_code, code_source="user", flags=(), title=title)
-    choice = auto_chapter(filename, subject_documents, document_id)
+    choice = auto_chapter(filename, subject_documents, document_id, reserved)
     return InitialChapter(chapter_code=choice.chapter_code, code_source=choice.source, flags=choice.flags, title=title)

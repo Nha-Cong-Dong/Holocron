@@ -12,7 +12,6 @@ Chạy trên cả ba loại kho; nội dung PDF là byte tự tạo, chỉ `Fake
 import contextlib
 import hashlib
 import threading
-import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -29,6 +28,7 @@ from holocron_core.services.chapter_naming import ChapterChoice, auto_chapter
 from holocron_core.services.document_import import (
     CHAPTER_MISSING_DETAIL,
     IMPORT_ERROR_MESSAGES,
+    DocumentImportError,
     ImportOutcome,
     ImportRequest,
     ImportRuntime,
@@ -195,42 +195,36 @@ def test_the_document_itself_is_not_a_taken_chapter() -> None:
 
 
 @dataclass
-class SlowProbeReader(FakePdfReader):
-    """`probe` chậm: nếu không có khoá môn, cả hai luồng đều mở thử xong trước khi luồng nào tạo tài liệu."""
+class MeetingProbeReader(FakePdfReader):
+    """`probe` chờ ở `Barrier`: mọi lần nhận phải cùng ở bước mở thử một lúc thì mới đi tiếp. Nếu khoá môn bọc bước
+    mở thử, lần nhận thứ hai không vào được và `Barrier` hết giờ (`BrokenBarrierError`)."""
 
-    delay_s: float = 0.3
-    active: int = 0
-    max_active: int = 0
-    guard: threading.Lock = field(default_factory=threading.Lock)
+    meeting: threading.Barrier = field(default_factory=lambda: threading.Barrier(2, timeout=WAIT_S))
 
     def probe(self, path: Path) -> int:
-        with self.guard:
-            self.active += 1
-            self.max_active = max(self.max_active, self.active)
-        try:
-            time.sleep(self.delay_s)
-            return super().probe(path)
-        finally:
-            with self.guard:
-                self.active -= 1
+        self.meeting.wait()
+        return super().probe(path)
 
 
 @dataclass(frozen=True)
 class Importer:
     store: AppStore
     runtime: ImportRuntime
-    reader: SlowProbeReader
-    barrier: threading.Barrier
+    reader: FakePdfReader
+    start: threading.Barrier
 
-    def __call__(self, tag: str, subject_code: str = "ET4010", filename: str | None = None) -> ImportOutcome:
+    def __call__(
+        self, tag: str, subject_code: str = "ET4010", filename: str | None = None, chapter_code: str | None = None
+    ) -> ImportOutcome:
         request = ImportRequest(
             content=pdf_bytes(tag),
             filename=filename or f"{tag}.pdf",
             declared_type="application/pdf",
             subject_code=subject_code,
             source_kind=SourceKind.LECTURE_SLIDES,
+            chapter_code=chapter_code,
         )
-        self.barrier.wait(WAIT_S)
+        self.start.wait(WAIT_S)
         return accept_document(
             request, store=self.store, runtime=self.runtime, reader=self.reader, now=NOW + timedelta(seconds=1)
         )
@@ -241,38 +235,67 @@ def store(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.Mo
     yield from open_store(str(request.param), tmp_path, monkeypatch)
 
 
-def _importer(store: AppStore, files_dir: Path) -> Importer:
+def _importer(store: AppStore, files_dir: Path, reader: FakePdfReader, parties: int = 2) -> Importer:
     runtime = ImportRuntime(files=OriginalFileStore(files_dir), queue=HoldingQueue())
-    return Importer(store, runtime, SlowProbeReader(page_count=1), threading.Barrier(2))
+    return Importer(store, runtime, reader, threading.Barrier(parties))
+
+
+def _run_two(importer: Importer, *calls: tuple[str, str, str | None]) -> list[ImportOutcome]:
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(importer, tag, subject, filename) for tag, subject, filename in calls]
+        return [future.result(timeout=2 * WAIT_S) for future in futures]
 
 
 def test_two_files_imported_at_once_get_different_free_chapters(store: AppStore, tmp_path: Path) -> None:
-    importer = _importer(store, tmp_path / "files")
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(importer, tag) for tag in ("mot", "hai")]
-        outcomes = [future.result(timeout=WAIT_S) for future in futures]
+    importer = _importer(store, tmp_path / "files", MeetingProbeReader(page_count=1))
+    outcomes = _run_two(importer, ("mot", "ET4010", None), ("hai", "ET4010", None))
     assert all(outcome.created for outcome in outcomes)
     assert sorted(outcome.document.chapter_code for outcome in outcomes) == ["ch1", "ch2"]
     assert sorted(d.chapter_code or "" for d in store.list_imported_documents("ET4010")) == ["ch1", "ch2"]
-    assert importer.reader.max_active == 1, "cùng môn: mở thử và chọn chương chạy lần lượt dưới khoá môn"
-    assert len(importer.runtime.subject_locks) == 0 and len(importer.runtime.locks) == 0, "khoá được bỏ hết"
+    runtime = importer.runtime
+    assert len(runtime.subject_locks) == 0 and len(runtime.locks) == 0, "khoá được bỏ hết"
+    assert len(runtime.chapter_reservations) == 0, "chỗ giữ chương được trả khi lần nhận kết thúc"
+
+
+def test_two_files_with_the_same_number_at_once(store: AppStore, tmp_path: Path) -> None:
+    importer = _importer(store, tmp_path / "files", MeetingProbeReader(page_count=1))
+    outcomes = _run_two(importer, ("a", "ET4010", "Chuong-2.pdf"), ("b", "ET4010", "Chuong-2-ban-2.pdf"))
+    chapters = sorted((o.document.chapter_code, o.document.chapter_source.code) for o in outcomes)
+    assert chapters == [("ch1", "next_free"), ("ch2", "file_name")]
 
 
 def test_imports_of_different_subjects_do_not_wait_for_each_other(store: AppStore, tmp_path: Path) -> None:
-    importer = _importer(store, tmp_path / "files")
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [
-            pool.submit(importer, "x", "ET4010", "Chuong-2.pdf"),
-            pool.submit(importer, "y", "IT3070", "Chuong-2.pdf"),
-        ]
-        outcomes = [future.result(timeout=WAIT_S) for future in futures]
+    importer = _importer(store, tmp_path / "files", MeetingProbeReader(page_count=1))
+    outcomes = _run_two(importer, ("x", "ET4010", "Chuong-2.pdf"), ("y", "IT3070", "Chuong-2.pdf"))
     assert [outcome.document.chapter_code for outcome in outcomes] == ["ch2", "ch2"]
-    assert importer.reader.max_active == 2, "khoá môn chỉ chặn tài liệu cùng môn"
 
 
-def test_subject_lock_is_taken_before_the_document_lock(store: AppStore, tmp_path: Path) -> None:
-    """Thứ tự khoá cố định: khoá môn TRƯỚC, khoá tài liệu SAU (không bao giờ lấy khoá môn khi đang giữ khoá tài liệu)."""
-    order: list[str] = []
+def test_reservation_is_released_when_the_import_fails(store: AppStore, tmp_path: Path) -> None:
+    importer = _importer(store, tmp_path / "files", FakePdfReader(probe_error="OPEN_FAILED"), parties=1)
+    with pytest.raises(DocumentImportError):
+        importer("hong", filename="Chuong-2.pdf")
+    assert len(importer.runtime.chapter_reservations) == 0
+    ok = Importer(store, importer.runtime, FakePdfReader(page_count=1), importer.start)
+    assert ok("lanh", filename="Chuong-2.pdf").document.chapter_code == "ch2", "chỗ của lần lỗi đã được trả"
+
+
+def test_reimport_releases_its_reservation(store: AppStore, tmp_path: Path) -> None:
+    importer = _importer(store, tmp_path / "files", FakePdfReader(page_count=1), parties=1)
+    first = importer("lai", filename="Chuong-2.pdf")
+    again = importer("lai", filename="Chuong-2.pdf")
+    assert first.created and not again.created and again.document.chapter_code == "ch2"
+    assert len(importer.runtime.chapter_reservations) == 0
+
+
+def test_empty_chapter_code_at_the_service_means_automatic(store: AppStore, tmp_path: Path) -> None:
+    importer = _importer(store, tmp_path / "files", FakePdfReader(page_count=1), parties=1)
+    outcome = importer("rong", filename="Chuong-4.pdf", chapter_code="")
+    assert (outcome.document.chapter_code, outcome.document.chapter_source.code) == ("ch4", "file_name")
+
+
+def test_subject_lock_is_released_before_the_document_lock_is_taken(store: AppStore, tmp_path: Path) -> None:
+    """Thứ tự khoá cố định: khoá môn trước, nhả rồi mới lấy khoá tài liệu (không giữ khoá môn khi giữ khoá tài liệu)."""
+    events: list[str] = []
 
     class RecordingLocks(KeyedLocks):
         def __init__(self, name: str) -> None:
@@ -281,9 +304,10 @@ def test_subject_lock_is_taken_before_the_document_lock(store: AppStore, tmp_pat
 
         @contextlib.contextmanager
         def hold(self, key: str) -> Iterator[None]:
-            order.append(f"{self.name}:{key}")
+            events.append(f"+{self.name}")
             with super().hold(key):
                 yield
+            events.append(f"-{self.name}")
 
     runtime = ImportRuntime(
         files=OriginalFileStore(tmp_path / "files"),
@@ -291,6 +315,5 @@ def test_subject_lock_is_taken_before_the_document_lock(store: AppStore, tmp_pat
         locks=RecordingLocks("doc"),
         subject_locks=RecordingLocks("subject"),
     )
-    importer = Importer(store, runtime, SlowProbeReader(page_count=1, delay_s=0.0), threading.Barrier(1))
-    outcome = importer("thu-tu")
-    assert order == ["subject:ET4010", f"doc:{outcome.document.meta.doc_id}"]
+    Importer(store, runtime, FakePdfReader(page_count=1), threading.Barrier(1))("thu-tu")
+    assert events == ["+subject", "-subject", "+doc", "-doc"]

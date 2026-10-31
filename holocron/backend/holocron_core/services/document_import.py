@@ -70,7 +70,8 @@ from ..infrastructure.document_readers.config import PdfReaderConfig
 from ..infrastructure.document_readers.pdf_reader import PDF_MAGIC, PdfInputError, PdfReader, PdfWorkerError
 from ..infrastructure.document_readers.tiers import failed_page
 from ..infrastructure.storage.original_files import StagedFile
-from .chapter_naming import InitialChapter, initial_chapter
+from .chapter_naming import InitialChapter
+from .chapter_reservation import ChapterReservations, reserve_chapter
 from .vault import ingest_confirmed_text
 
 MAX_FILENAME_LENGTH = 255
@@ -341,9 +342,10 @@ class ImportRuntime:
     locks: KeyedLocks = field(default_factory=KeyedLocks)
     gate: AdmissionGate = field(default_factory=AdmissionGate)
     retry: RetryPolicy = field(default_factory=RetryPolicy)
-    # Khoá theo `subject_code` (§6.5 bước 5, GĐ1 1A): chọn chương tự động và tạo tài liệu dưới khoá của môn. Thứ tự
-    # cố định: khoá môn TRƯỚC, khoá tài liệu (`locks`) SAU; không lấy khoá môn khi đang giữ khoá tài liệu.
+    # Khoá theo `subject_code` và chỗ giữ chương (§6.5 bước 5, GĐ1 1A; `chapter_reservation`): chọn chương dưới khoá
+    # môn rồi nhả khoá TRƯỚC khi lấy khoá tài liệu (`locks`); không lấy khoá môn khi đang giữ khoá tài liệu.
     subject_locks: KeyedLocks = field(default_factory=KeyedLocks)
+    chapter_reservations: ChapterReservations = field(default_factory=ChapterReservations)
 
     def close(self, timeout_s: float | None = None) -> bool:
         """Ngừng nhận tài liệu, dừng hàng đợi rồi dọn kho file gốc; `True` khi mọi luồng đã dừng hẳn.
@@ -597,8 +599,9 @@ def accept_document(
     Vault ngay (xem `read_document`).
 
     Sau bước kiểm byte (§6.5 bước 1–2), lần nhận đi qua cổng `runtime.gate` cho tới khi xong, nên `runtime.close`
-    chờ cả lượt đang ghi file tạm hay mở thử. Phần còn lại chạy dưới khoá của môn (`runtime.subject_locks`, để hai
-    file nhập cùng lúc không nhận cùng chương trống, §5.7) rồi khoá của `document_id` (`runtime.locks`):
+    chờ cả lượt đang ghi file tạm hay mở thử. Chương được chọn và giữ chỗ dưới khoá của môn (`reserve_chapter`,
+    để hai file nhập cùng lúc không nhận cùng chương trống, §5.7; khoá môn nhả ngay sau đó, không bọc bước mở thử).
+    Phần còn lại chạy dưới khoá của `document_id` (`runtime.locks`):
     request thứ hai cùng nội dung chờ request đầu xong rồi thấy tài liệu đã có (200, hoặc 409 theo
     `_existing_outcome`). Tài liệu
     cùng mọi trang `pending` được tạo trong MỘT giao dịch (`create_imported_document`); nếu một tiến trình khác vẫn
@@ -620,7 +623,18 @@ def accept_document(
     document_id = f"doc_{sha256[:16]}"
     runtime.gate.enter()
     try:
-        with runtime.subject_locks.hold(request.subject_code), runtime.locks.hold(document_id):
+        with (
+            reserve_chapter(
+                reservations=runtime.chapter_reservations,
+                subject_locks=runtime.subject_locks,
+                store=store,
+                subject_code=request.subject_code,
+                filename=filename,
+                chapter_code=request.chapter_code,
+                document_id=document_id,
+            ) as chapter,
+            runtime.locks.hold(document_id),
+        ):
             existing = store.get_imported_document(document_id)
             if existing is not None:
                 return _existing_outcome(store, existing, request)
@@ -628,9 +642,6 @@ def accept_document(
             staged = runtime.files.stage(request.content)
             try:
                 page_count = _probe(reader, staged)
-                chapter = initial_chapter(
-                    filename, request.chapter_code, store.list_imported_documents(request.subject_code), document_id
-                )
                 document = _new_document(
                     request,
                     filename=filename,

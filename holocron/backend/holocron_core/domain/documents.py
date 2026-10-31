@@ -335,7 +335,8 @@ class DocumentChapterPatch(StrictModel):
 
     editor_id: str = Field(min_length=1, max_length=MAX_EDITOR_ID_CHARS)
     chapter_code: str | None = Field(default=None, pattern=CHAPTER_CODE_PATTERN)
-    chapter_title: str | None = Field(default=None, min_length=1, max_length=MAX_CHAPTER_TITLE_CHARS)
+    # Độ dài 1–300 kiểm SAU khi chuẩn hoá (NFC, gộp khoảng trắng) trong `_normalized_title`
+    chapter_title: str | None = None
 
     @field_validator("chapter_title")
     @classmethod

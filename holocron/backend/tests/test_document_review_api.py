@@ -127,11 +127,11 @@ def _confirm_document(env: ImportEnv, doc_id: str) -> Any:
 
 
 # --------------------------------------------------------------------------- #
-# chapter_code (form bắt buộc)
+# chapter_code (field form, tuỳ chọn từ 2026-10-31)
 # --------------------------------------------------------------------------- #
 
 
-def test_chapter_code_is_required_stored_and_returned(env: ImportEnv) -> None:
+def test_chapter_code_from_the_form_is_stored_and_returned(env: ImportEnv) -> None:
     content = pdf_bytes("chuong")
     accepted = env.post(content, chapter_code="ch3.2")
     assert accepted.status_code == 202 and accepted.json()["chapter_code"] == "ch3.2"
@@ -143,7 +143,7 @@ def test_chapter_code_is_required_stored_and_returned(env: ImportEnv) -> None:
 # Sửa đổi 2026-10-31 (§6.5, GĐ1 1A): `chapter_code` tuỳ chọn, không gửi hoặc chuỗi rỗng ⇒ chương tự động (202), nên
 # hai trường hợp `None` và `""` chuyển sang tests/test_document_import_chapter_auto.py; mã sai mẫu vẫn 422.
 @pytest.mark.parametrize("chapter_code", ["3", "chuong3", "ch100", "ch3.", "CH3"])
-def test_missing_or_invalid_chapter_code_is_422_and_stores_nothing(env: ImportEnv, chapter_code: str | None) -> None:
+def test_invalid_chapter_code_is_422_and_stores_nothing(env: ImportEnv, chapter_code: str | None) -> None:
     content = pdf_bytes(f"sai-{chapter_code}")
     data = {"subject_code": "ET4010", "source_kind": "textbook"}
     if chapter_code is not None:

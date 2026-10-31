@@ -12,19 +12,23 @@ from pydantic import ValidationError
 
 from holocron_core.domain.documents import ChapterSource, DocumentChapterPatch
 from holocron_core.services.chapter_naming import (
-    EMPTY_FILENAME_TITLE,
     ChapterChoice,
     TitleChoice,
+    auto_chapter,
     chapter_number_from_filename,
     checked_selection,
     choose_chapter_code,
     choose_chapter_title,
     clean_filename_title,
     comparison_key,
+    filename_stem,
+    initial_chapter,
     next_free_chapter,
     select_title_with_llm,
     usable_header_candidates,
 )
+from holocron_core.services.chapter_reservation import ChapterReservations
+from holocron_core.services.document_import import DEFAULT_TITLE
 
 # --------------------------------------------------------------------------- #
 # Số chương từ tên file
@@ -108,7 +112,7 @@ def test_every_chapter_taken_still_gives_a_valid_code() -> None:
 def test_clean_filename_title() -> None:
     assert clean_filename_title("Chuong-2_Vi-xu-ly-ARM.pdf") == "Chuong 2 Vi xu ly ARM"
     assert clean_filename_title("  a__b--c   d .pdf") == "a b c d"
-    assert clean_filename_title("___.pdf") == EMPTY_FILENAME_TITLE
+    assert clean_filename_title("___.pdf") == DEFAULT_TITLE
     nfd = unicodedata.normalize("NFD", "Chương_một.pdf")
     assert clean_filename_title(nfd) == unicodedata.normalize("NFC", "Chương một")
     long_title = clean_filename_title("a" * 299 + " b" * 10 + ".pdf")
@@ -221,3 +225,78 @@ def test_chapter_source_values() -> None:
     assert ChapterSource(code="next_free", title=None).title is None
     with pytest.raises(ValidationError):
         ChapterSource.model_validate({"code": "llm", "title": None})
+
+
+# --------------------------------------------------------------------------- #
+# Biên và nhánh còn thiếu (report mutation feat-chapter-auto 2026-10-31)
+# --------------------------------------------------------------------------- #
+
+
+def test_a_name_that_is_only_an_extension_keeps_the_whole_name() -> None:
+    assert filename_stem(".pdf") == ".pdf" and filename_stem("  .pdf") == "  .pdf"
+    assert clean_filename_title(".pdf") == ".pdf"
+    assert filename_stem("a.b.pdf") == "a.b"
+
+
+@pytest.mark.parametrize(("filename", "number"), [("ver123-ch5.pdf", 5), ("100 bai 4.pdf", 4), ("123.pdf", None)])
+def test_three_digit_runs_are_skipped_before_a_short_run(filename: str, number: int | None) -> None:
+    assert chapter_number_from_filename(filename) == number
+
+
+def test_the_last_free_chapter_is_ch99() -> None:
+    assert next_free_chapter([f"ch{n}" for n in range(1, 99)]) == "ch99"
+    taken = {f"ch{n}" for n in range(1, 99)}
+    assert choose_chapter_code("x.pdf", taken) == ChapterChoice(
+        "ch99", "next_free", ("CHAPTER_NUMBER_NOT_IN_FILENAME",)
+    )
+
+
+def test_auto_chapter_treats_reserved_codes_as_taken() -> None:
+    assert auto_chapter("Chuong-2.pdf", [], "doc_aaaaaaaaaaaaaaaa", {"ch2", "ch1"}) == ChapterChoice(
+        "ch3", "next_free", ("CHAPTER_NUMBER_TAKEN",)
+    )
+
+
+def test_initial_chapter_of_an_empty_form_code_is_automatic() -> None:
+    chapter = initial_chapter("Chuong-6.pdf", "", [], "doc_aaaaaaaaaaaaaaaa")
+    assert (chapter.chapter_code, chapter.code_source, chapter.title) == ("ch6", "file_name", "Chuong 6")
+    user = initial_chapter("Chuong-6.pdf", "ch2", [], "doc_aaaaaaaaaaaaaaaa", {"ch2"})
+    assert (user.chapter_code, user.code_source, user.flags) == ("ch2", "user", ())
+
+
+def test_title_lengths_at_the_300_boundary() -> None:
+    assert clean_filename_title("a" * 300 + ".pdf") == "a" * 300
+    assert clean_filename_title("a" * 301 + ".pdf") == "a" * 300
+    assert usable_header_candidates(["x" * 300]) == ["x" * 300]
+    assert usable_header_candidates(["x" * 301]) == []
+    assert checked_selection(["x" * 300], "x" * 300) == "x" * 300
+    assert checked_selection(["x" * 301], "x" * 301) is None
+
+
+def test_selection_is_checked_against_normalized_candidates() -> None:
+    nfd = unicodedata.normalize("NFD", "Bộ  nhớ\tvà   ngắt")
+    assert checked_selection([nfd], "Bộ nhớ và") == unicodedata.normalize("NFC", "Bộ nhớ và")
+
+
+def test_chapter_patch_title_length_is_checked_after_normalization() -> None:
+    assert DocumentChapterPatch(editor_id="u", chapter_title="x" * 300).chapter_title == "x" * 300
+    padded = DocumentChapterPatch(editor_id="u", chapter_title="  " + "x" * 300 + "  ")
+    assert padded.chapter_title == "x" * 300, "khoảng trắng đầu/cuối không tính vào 300 ký tự"
+    spaced = DocumentChapterPatch(editor_id="u", chapter_title="a  " * 150)
+    assert spaced.chapter_title == " ".join(["a"] * 150)
+    for bad in ("x" * 301, "   ", " \t "):
+        with pytest.raises(ValidationError):
+            DocumentChapterPatch(editor_id="u", chapter_title=bad)
+
+
+def test_reservations_count_each_hold() -> None:
+    reservations = ChapterReservations()
+    reservations.add("ET4010", "ch2")
+    reservations.add("ET4010", "ch2")
+    reservations.add("IT3070", "ch1")
+    assert reservations.codes("ET4010") == {"ch2"} and len(reservations) == 3
+    reservations.remove("ET4010", "ch2")
+    assert reservations.codes("ET4010") == {"ch2"}, "lần giữ thứ hai vẫn còn"
+    reservations.remove("ET4010", "ch2")
+    reservations.remove("IT3070", "ch1")
+    assert reservations.codes("ET4010") == frozenset() and len(reservations) == 0

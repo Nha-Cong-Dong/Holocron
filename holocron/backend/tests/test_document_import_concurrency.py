@@ -114,11 +114,7 @@ def test_two_concurrent_posts_of_one_file_create_one_document(
             first_thread.start()
             assert reader.entered.wait(WAIT_S), "request đầu chưa tới bước mở thử"
             second_thread.start()
-            # Sửa đổi 2026-10-31 (§6.5 bước 5, GĐ1 1A): khoá môn lấy TRƯỚC khoá tài liệu, nên cùng môn thì request thứ
-            # hai chờ ở khoá môn; khác môn thì chờ ở khoá tài liệu như trước.
-            waiting = env.runtime.subject_locks if second_subject == "ET4010" else locks
-            assert isinstance(waiting, ObservedLocks)
-            assert waiting.second_holder.wait(WAIT_S), "request thứ hai chưa xin khoá của môn hoặc của tài liệu"
+            assert locks.second_holder.wait(WAIT_S), "request thứ hai chưa xin khoá của tài liệu"
         finally:
             reader.release.set()
             first_thread.join(WAIT_S)

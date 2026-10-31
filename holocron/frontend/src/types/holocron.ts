@@ -558,7 +558,8 @@ export interface PageSummary {
 
 /**
  * `POST /v1/documents` (202 hoặc 200), `GET /v1/documents/{document_id}` và `POST /v1/documents/{document_id}/confirm`;
- * `pages` đủ `page_count` phần tử. `chapter_code` là field form bắt buộc khi nhập (một file = một chương).
+ * `pages` đủ `page_count` phần tử. `chapter_code` luôn có giá trị (một file = một chương): field form tuỳ chọn khi
+ * nhập; không gửi thì backend chọn theo tên file hoặc chương trống nhỏ nhất (§5.7 "Chương tự động").
  */
 export interface DocumentImport {
   meta: DocumentMeta;
@@ -572,6 +573,13 @@ export interface DocumentImport {
   pages_kept: number;
   pages_dropped: number;
   pages_needs_review: number;
+  /** Tên chương (1–300 ký tự); null chỉ với tài liệu nhập trước khi có tên chương. */
+  chapter_title: string | null;
+  chapter_source: ChapterSource;
+  /** Cờ chương do code đặt (thứ tự khai báo, không trùng); chỉ để hiển thị. */
+  chapter_flags: ChapterFlag[];
+  /** Cài đặt "Tự xác nhận" gửi khi nhập (field form `auto_confirm`, mặc định bật). */
+  auto_confirm: boolean;
 }
 
 /** Một phần tử của `GET /v1/documents`, mới nhất trước. */
@@ -614,6 +622,29 @@ export interface PageRestoreRequest {
 /** Body của `POST /v1/documents/{document_id}/confirm`; trả `DocumentImport`. */
 export interface DocumentConfirmRequest {
   editor_id: string;
+}
+
+// Chương tự động (SPECIFICATION §5.7 "Chương tự động", §6.5; GĐ1 1A)
+
+/** Cờ chương: chỉ để hiển thị, không chặn xác nhận. */
+export type ChapterFlag = "CHAPTER_NUMBER_NOT_IN_FILENAME" | "CHAPTER_NUMBER_TAKEN";
+export type ChapterCodeSource = "user" | "file_name" | "next_free";
+export type ChapterTitleSource = "user" | "repeated_header" | "file_name" | "llm";
+
+/** Nguồn của `chapter_code` và `chapter_title`; `title` null khi và chỉ khi `chapter_title` null. */
+export interface ChapterSource {
+  code: ChapterCodeSource;
+  title: ChapterTitleSource | null;
+}
+
+/**
+ * Body của `PATCH /v1/documents/{document_id}/chapter`; trả `DocumentImport`. `chapter_code` và `chapter_title`
+ * không cùng null; backend chuẩn hoá `chapter_title` (NFC, gộp khoảng trắng).
+ */
+export interface DocumentChapterPatch {
+  editor_id: string;
+  chapter_code?: string | null;
+  chapter_title?: string | null;
 }
 
 // ------------------------------------------------------------------ domain/vault.py

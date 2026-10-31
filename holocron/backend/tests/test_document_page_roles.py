@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from holocron_core.domain.documents import PageExtraction, PageSummary
 from holocron_core.domain.repositories import AppStore, VersionConflictError
@@ -161,10 +161,34 @@ def test_dropped_pages_not_counted_as_needs_review(sqlite_env: ImportEnv) -> Non
     assert (view["pages_dropped"], view["pages_kept"], view["pages_needs_review"]) == (2, 10, 1)
 
 
-def test_sqlite_summary_reads_old_page_json_without_new_fields(sqlite_env: ImportEnv) -> None:
-    doc = _import(sqlite_env)
-    summaries = sqlite_env.store.list_page_summaries(doc)
-    assert summaries == [PageSummary.from_page(page) for page in sqlite_env.store.list_pages(doc, PageExtraction)]
+def test_page_summaries_match_pages_on_every_store(env: ImportEnv) -> None:
+    """Kho in-memory và SQLite cho cùng tóm tắt trang (kể cả `page_role`, `dropped`) và cùng số đếm GĐ0."""
+    doc = _import(env)
+    summaries = env.store.list_page_summaries(doc)
+    assert summaries == [PageSummary.from_page(page) for page in env.store.list_pages(doc, PageExtraction)]
+    assert [s.page_number for s in summaries if s.dropped] == list(NAV_PAGES)
+    assert {s.page_role for s in summaries if s.dropped} == {"chapter_nav"}
+    view = env.client.get(f"/v1/documents/{doc}").json()
+    assert (view["pages_dropped"], view["pages_kept"], view["pages_needs_review"]) == (3, 9, 0)
+    assert env.client.get("/v1/documents").json()[0]["pages_dropped"] == 3
+
+
+def test_summary_reads_old_page_json_without_new_fields(env: ImportEnv) -> None:
+    doc = _import(env)
+    page = env.store.get_page(doc, 3, PageExtraction)
+    assert page is not None
+    old = page.model_dump(mode="json")
+    for name in ("page_role", "dropped", "restored", "role_evidence", "own_images"):
+        old.pop(name)
+
+    class OldPage(BaseModel):
+        model_config = ConfigDict(extra="allow")
+
+    env.store.update_page(
+        doc, 3, OldPage.model_validate(old), status=page.status, confirmed=False, expected_version=page.version
+    )
+    [summary] = [s for s in env.store.list_page_summaries(doc) if s.page_number == 3]
+    assert (summary.page_role, summary.dropped) == ("content", False)
 
 
 # --------------------------------------------------------------------------- #

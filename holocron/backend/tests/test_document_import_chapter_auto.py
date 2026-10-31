@@ -26,6 +26,7 @@ from holocron_core.infrastructure.document_readers.pdf_reader import PdfInputErr
 from holocron_core.infrastructure.storage.original_files import OriginalFileStore
 from holocron_core.routers.api import app
 from holocron_core.services.chapter_naming import ChapterChoice, auto_chapter
+from holocron_core.services.chapter_reservation import ChapterReservations
 from holocron_core.services.document_import import (
     CHAPTER_MISSING_DETAIL,
     IMPORT_ERROR_MESSAGES,
@@ -34,6 +35,7 @@ from holocron_core.services.document_import import (
     ImportRequest,
     ImportRuntime,
     KeyedLocks,
+    ReadJob,
     SynchronousImportQueue,
     accept_document,
 )
@@ -382,3 +384,27 @@ def test_user_chapter_does_not_wait_for_an_earlier_file(store: AppStore, tmp_pat
         futures = [pool.submit(importer, tag, "ET4010", f"{tag}.pdf", "ch3") for tag in ("u1", "u2")]
         outcomes = [future.result(timeout=2 * WAIT_S) for future in futures]
     assert [(o.document.chapter_code, o.document.chapter_source.code) for o in outcomes] == [("ch3", "user")] * 2
+
+
+def test_critical_section_is_released_before_the_read_job_is_queued(store: AppStore, tmp_path: Path) -> None:
+    """Đoạn găng của môn chỉ bọc chọn chương và tạo bản ghi: lúc xếp hàng đợi (với hàng đợi đồng bộ, việc đọc chạy
+    ngay và có thể lấy khoá của tài liệu khác) không còn đoạn găng nào mở."""
+    seen: list[int] = []
+
+    class WatchingQueue(HoldingQueue):
+        def __init__(self, reservations: ChapterReservations) -> None:
+            super().__init__()
+            self.reservations = reservations
+
+        def submit(self, job: ReadJob) -> None:
+            seen.append(self.reservations.critical_sections_open())
+            super().submit(job)
+
+    reservations = ChapterReservations()
+    runtime = ImportRuntime(
+        files=OriginalFileStore(tmp_path / "files"),
+        queue=WatchingQueue(reservations),
+        chapter_reservations=reservations,
+    )
+    Importer(store, runtime, FakePdfReader(page_count=1), threading.Barrier(1))("xep-hang")
+    assert seen == [0]

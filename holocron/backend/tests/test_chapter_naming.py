@@ -290,28 +290,33 @@ def test_chapter_patch_title_length_is_checked_raw_and_after_normalization() -> 
             DocumentChapterPatch(editor_id="u", chapter_title=bad)
 
 
-def test_ticket_opens_in_arrival_order_per_subject_and_closes() -> None:
+def test_reservations_count_arrivals_per_subject() -> None:
     reservations = ChapterReservations()
-    first, opened_first = reservations.open("ET4010", "doc_1")
-    second, opened_second = reservations.open("ET4010", "doc_2")
-    other, _ = reservations.open("IT3070", "doc_3")
-    assert opened_first and opened_second
-    assert (first.order, second.order, other.order) == (0, 1, 0)
-    assert reservations.earlier(second) == [first] and reservations.earlier(first) == [] == reservations.earlier(other)
+    reservations.arrive("ET4010")
+    reservations.arrive("ET4010")
+    reservations.arrive("IT3070")
     assert len(reservations) == 3
-    reservations.close(first)
-    assert first.done.is_set() and reservations.earlier(second) == [] and len(reservations) == 2
-    reservations.close(second)
-    reservations.close(other)
+    reservations.leave("ET4010")
+    reservations.leave("ET4010")
+    reservations.leave("IT3070")
     assert len(reservations) == 0
 
 
-def test_second_ticket_for_the_same_document_is_refused_across_subjects() -> None:
+def test_critical_section_is_exclusive_per_subject_and_released() -> None:
     reservations = ChapterReservations()
-    first, _ = reservations.open("ET4010", "doc_1")
-    again, opened = reservations.open("IT3070", "doc_1")
-    assert not opened and again is first and len(reservations) == 1
-    reservations.close(first)
-    reopened, opened = reservations.open("IT3070", "doc_1")
-    assert opened and reopened is not first and first.done.is_set()
-    reservations.close(reopened)
+    inside: list[str] = []
+    with reservations.critical_section("ET4010"):
+        inside.append("ET4010")
+        with reservations.critical_section("IT3070"):  # môn khác không chờ nhau
+            inside.append("IT3070")
+        assert reservations.critical_sections_open() == 1
+    assert inside == ["ET4010", "IT3070"] and reservations.critical_sections_open() == 0
+
+
+def test_critical_section_is_released_when_the_block_raises() -> None:
+    reservations = ChapterReservations()
+    with pytest.raises(RuntimeError), reservations.critical_section("ET4010"):
+        raise RuntimeError
+    assert reservations.critical_sections_open() == 0
+    with reservations.critical_section("ET4010"):  # lấy lại được ngay
+        pass

@@ -71,7 +71,7 @@ from ..infrastructure.document_readers.pdf_reader import PDF_MAGIC, PdfInputErro
 from ..infrastructure.document_readers.tiers import failed_page
 from ..infrastructure.storage.original_files import StagedFile
 from .chapter_naming import DEFAULT_TITLE, InitialChapter
-from .chapter_reservation import ChapterReservations, reserve_chapter
+from .chapter_reservation import ChapterReservations, ChapterTurn, reserve_chapter
 from .vault import ingest_confirmed_text
 
 MAX_FILENAME_LENGTH = 255
@@ -598,14 +598,14 @@ def accept_document(
     Vault ngay (xem `read_document`).
 
     Sau bước kiểm byte (§6.5 bước 1–2), lần nhận đi qua cổng `runtime.gate` cho tới khi xong, nên `runtime.close`
-    chờ cả lượt đang ghi file tạm hay mở thử. Lần nhận lấy một phiếu theo thứ tự đến của môn (`reserve_chapter`, khoá môn nhả
-    ngay sau đó, không bọc bước mở thử); chương chỉ được chọn sau khi mở thử xong và sau khi các phiếu đến trước kết
-    thúc, nên kết quả nhập đồng thời tương đương một thứ tự tuần tự (§5.7); cùng nội dung đang nhận ở lần khác thì
-    chờ lần đó kết thúc. Phần còn lại chạy dưới khoá của `document_id` (`runtime.locks`):
-    request thứ hai cùng nội dung chờ request đầu xong rồi thấy tài liệu đã có (200, hoặc 409 theo
-    `_existing_outcome`). Tài liệu
-    cùng mọi trang `pending` được tạo trong MỘT giao dịch (`create_imported_document`); nếu một tiến trình khác vẫn
-    kịp tạo trước (`DocumentExistsError`) thì trả tài liệu đó như bước 3.
+    chờ cả lượt đang ghi file tạm hay mở thử. Lần nhận được ghi nhận dưới khoá của môn (`reserve_chapter`, khoá môn nhả
+    ngay sau đó, không bọc bước mở thử). Chương KHÔNG được giữ chỗ từ đầu: chọn chương và tạo bản ghi nằm trong cùng
+    đoạn găng của môn, sau khi mở thử xong (`ChapterTurn.settled`), nên kết quả nhập đồng thời tương đương một thứ tự
+    tuần tự (§5.7): file lỗi không chiếm chương, nhập lại cùng nội dung trả bản cũ mà không chọn chương.
+    Phần còn lại chạy dưới khoá của `document_id` (`runtime.locks`): request thứ hai cùng nội dung chờ request đầu
+    xong rồi thấy tài liệu đã có (200, hoặc 409 theo `_existing_outcome`). Tài liệu cùng mọi trang `pending` được tạo
+    trong MỘT giao dịch (`create_imported_document`); nếu một tiến trình khác vẫn kịp tạo trước
+    (`DocumentExistsError`) thì trả tài liệu đó như bước 3.
 
     Lỗi:
     - `DocumentImportError` (bước 1–4): không để lại file hay bản ghi nào.
@@ -642,21 +642,21 @@ def accept_document(
             staged = runtime.files.stage(request.content)
             try:
                 page_count = _probe(reader, staged)
-                document = _new_document(
+            except BaseException:
+                runtime.files.discard(staged)
+                raise
+            return _store_and_queue(
+                request,
+                build=lambda chapter: _new_document(
                     request,
                     filename=filename,
                     document_id=document_id,
                     sha256=staged.sha256,
                     page_count=page_count,
                     now=now,
-                    chapter=turn.settle(),
-                )
-            except BaseException:
-                runtime.files.discard(staged)
-                raise
-            return _store_and_queue(
-                request,
-                document=document,
+                    chapter=chapter,
+                ),
+                turn=turn,
                 upload=upload,
                 staged=staged,
                 store=store,
@@ -671,7 +671,8 @@ def accept_document(
 def _store_and_queue(
     request: ImportRequest,
     *,
-    document: ImportedDocument,
+    build: Callable[[InitialChapter], ImportedDocument],
+    turn: ChapterTurn,
     upload: UploadedDocument | None,
     staged: StagedFile,
     store: DocumentRepository,
@@ -679,25 +680,35 @@ def _store_and_queue(
     reader: PdfReader,
     vault: VaultRepository | None,
 ) -> ImportOutcome:
-    """§6.5 bước 5: lưu file gốc, tạo tài liệu và trang `pending` (một giao dịch), xếp hàng đợi."""
-    document_id = document.meta.doc_id
-    try:
-        path = runtime.files.commit(staged)
-    except BaseException:
-        runtime.files.discard(staged)
-        raise
-    pages = [pending_page(document_id, number) for number in range(1, document.meta.page_count + 1)]
-    try:
-        stored = store.create_imported_document(document, pages)
-    except DocumentExistsError:
-        existing = store.get_imported_document(document_id)
-        if existing is None:
+    """§6.5 bước 5: lưu file gốc, tạo tài liệu và trang `pending` (một giao dịch), xếp hàng đợi.
+
+    Chọn chương (`turn.settled`) và tạo bản ghi nằm trong cùng đoạn găng của môn; xếp hàng đợi nằm NGOÀI đoạn găng.
+    Bản ghi được dựng và validate TRƯỚC khi lưu file gốc, để dữ liệu sai không để lại file.
+    """
+    document_id = turn.document_id
+    with turn.settled() as chapter:
+        try:
+            document = build(chapter)
+        except BaseException:
+            runtime.files.discard(staged)
+            raise
+        try:
+            path = runtime.files.commit(staged)
+        except BaseException:
+            runtime.files.discard(staged)
+            raise
+        pages = [pending_page(document_id, number) for number in range(1, document.meta.page_count + 1)]
+        try:
+            stored = store.create_imported_document(document, pages)
+        except DocumentExistsError:
+            existing = store.get_imported_document(document_id)
+            if existing is None:
+                _discard_unused_file(store, runtime.files, document_id, staged.sha256)
+                raise
+            return _existing_outcome(store, existing, request)
+        except BaseException:
             _discard_unused_file(store, runtime.files, document_id, staged.sha256)
             raise
-        return _existing_outcome(store, existing, request)
-    except BaseException:
-        _discard_unused_file(store, runtime.files, document_id, staged.sha256)
-        raise
     # Dựng response từ dữ liệu vừa ghi, không đọc lại kho: tài liệu đã tạo thì luôn được xếp hàng đợi ngay sau đây.
     view = _view(stored, [PageSummary.from_page(page) for page in pages])
     try:

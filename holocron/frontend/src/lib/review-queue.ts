@@ -10,13 +10,12 @@
  */
 
 import type { DocumentView, PageSummaryView } from "@/lib/documents-data";
+import { isDropped } from "@/lib/dropped-pages";
 
 type PagesInput = Pick<DocumentView, "pages">;
 
-/** Trang bỏ mềm (§5.7) không tính vào hàng đợi, tiến độ hay việc còn lại: không xác nhận được và không chặn việc chốt. */
-function isDropped(page: Pick<PageSummaryView, "dropped">): boolean {
-  return page.dropped === true;
-}
+// Trang bỏ mềm (§5.7, `isDropped` dùng chung với `lib/dropped-pages.ts`) không tính vào hàng đợi, tiến độ hay việc còn
+// lại: không xác nhận được và không chặn việc chốt.
 
 function needsReview(page: Pick<PageSummaryView, "status" | "confirmed" | "dropped">): boolean {
   return page.status === "needs_review" && !page.confirmed && !isDropped(page);

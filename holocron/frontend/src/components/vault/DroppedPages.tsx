@@ -55,6 +55,8 @@ interface DroppedPagePanelProps {
   hrefFor: VaultHrefFor;
   /** Đang có thao tác ghi: khoá nút (chống bấm đúp ở `PageReview`, nơi giữ cờ gửi một lần). */
   busy: boolean;
+  /** Đúng thao tác khôi phục đang chạy: chỉ khi đó nút hiện "Đang khôi phục…" (khoá vì thao tác khác thì giữ chữ cũ). */
+  restoring: boolean;
   /** Báo trang vừa hiện; trả trang hiện lần trước (để biết có phải đổi trang không). */
   onShown: (pageNumber: number) => number | null;
   onRestore: () => void;
@@ -71,6 +73,7 @@ export function DroppedPagePanel({
   subjectCode,
   hrefFor,
   busy,
+  restoring,
   onShown,
   onRestore,
 }: DroppedPagePanelProps) {
@@ -120,7 +123,7 @@ export function DroppedPagePanel({
       </p>
       <div className={vault.actions}>
         <button type="button" className={vault.primary} onClick={onRestore} disabled={busy}>
-          {busy ? "Đang khôi phục…" : "Khôi phục trang"}
+          {restoring ? "Đang khôi phục…" : "Khôi phục trang"}
         </button>
       </div>
       {page.lines.length > 0 && (

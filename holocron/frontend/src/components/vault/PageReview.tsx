@@ -36,7 +36,9 @@ import {
   explainRestoreFailure,
   isDropped,
   RESTORE_DONE_VI,
+  restoreStatusText,
   splitDroppedPages,
+  type WriteOutcome,
   withoutDropped,
 } from "@/lib/dropped-pages";
 import type { UiError } from "@/lib/errors";
@@ -150,6 +152,8 @@ export function PageReview({
   const [actionError, setActionError] = useState<UiError | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Đang chạy đúng thao tác "Khôi phục trang" (khác `busy`: có thể là thao tác ghi khác), để nút đổi chữ đúng lúc.
+  const [restoring, setRestoring] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [pollError, setPollError] = useState<UiError | null>(null);
   const pagePoller = useRef<Poller | null>(null);
@@ -284,15 +288,18 @@ export function PageReview({
    * Chạy một thao tác ghi; thành công thì áp trang trả về và đọc lại tài liệu để cập nhật danh sách trang.
    * `onDocumentReloaded` chạy khi bản đọc lại đó đã áp (không chạy nếu đọc lỗi hoặc có lần đọc mới hơn). `explain`
    * (nếu có) đổi lỗi bắt được thành lỗi hiển thị; mặc định là `toUiError`.
+   *
+   * Trả `"blocked"` khi lần bấm bị cờ gửi một lần chặn (đang có thao tác ghi khác): đó KHÔNG phải lỗi, nên không đặt
+   * thông báo lỗi hay trạng thái thất bại; thao tác đang chạy sẽ tự báo kết quả của nó.
    */
-  const runWrite = useCallback(
+  const runWriteOutcome = useCallback(
     async (
       write: () => Promise<PageView>,
       done: string,
       onDocumentReloaded?: () => void,
       explain?: (caught: unknown) => Promise<UiError>,
-    ): Promise<boolean> => {
-      if (!writes.current.tryEnter()) return false;
+    ): Promise<WriteOutcome> => {
+      if (!writes.current.tryEnter()) return "blocked";
       setBusy(true);
       setActionError(null);
       setNotice(null);
@@ -304,10 +311,10 @@ export function PageReview({
         void fetchDocument().then((fresh) => {
           if (fresh !== null) onDocumentReloaded?.();
         });
-        return true;
+        return "done";
       } catch (caught) {
         setActionError(explain === undefined ? toUiError(caught) : await explain(caught));
-        return false;
+        return "failed";
       } finally {
         writes.current.leave();
         setBusy(false);
@@ -316,15 +323,34 @@ export function PageReview({
     [fetchDocument],
   );
 
+  /** Như `runWriteOutcome` nhưng chỉ báo thành công hay không (lần bấm bị chặn tính là chưa thành công). */
+  const runWrite = useCallback(
+    async (
+      write: () => Promise<PageView>,
+      done: string,
+      onDocumentReloaded?: () => void,
+      explain?: (caught: unknown) => Promise<UiError>,
+    ): Promise<boolean> => (await runWriteOutcome(write, done, onDocumentReloaded, explain)) === "done",
+    [runWriteOutcome],
+  );
+
   /**
    * "Khôi phục trang" (§6.5 `POST …/restore`): gửi `expected_version` của bản đang hiển thị. Cờ gửi một lần của
-   * `runWrite` chặn bấm đúp. Thành công thì trang trả về thay vùng trang (đổi `key`) và tài liệu được đọc lại để cập nhật
-   * số đếm; lỗi 409 được phân loại bằng cách đọc lại trang (`classifyRestoreConflict`), không đọc chữ `detail`.
+   * `runWriteOutcome` chặn bấm đúp (lần bị chặn không đặt thông báo lỗi). Thành công thì trang trả về thay vùng trang
+   * (đổi `key`) và tài liệu được đọc lại để cập nhật số đếm; lỗi 409 được phân loại bằng cách đọc lại trang
+   * (`classifyRestoreConflict`), không đọc chữ `detail`. `restoring` chỉ bật khi chính thao tác khôi phục đang chạy.
    */
   const restorePage = useCallback(
     async (target: PageView): Promise<void> => {
-      const ok = await runWrite(
-        () => api.restorePage(documentId, target.pageNumber, target.version),
+      const outcome = await runWriteOutcome(
+        async () => {
+          setRestoring(true);
+          try {
+            return await api.restorePage(documentId, target.pageNumber, target.version);
+          } finally {
+            setRestoring(false);
+          }
+        },
         RESTORE_DONE_VI,
         undefined,
         (caught) =>
@@ -333,9 +359,10 @@ export function PageReview({
             expectedVersion: target.version,
           }),
       );
-      setRestoreStatus(ok ? RESTORE_DONE_VI : "Chưa khôi phục được trang.");
+      const text = restoreStatusText(outcome);
+      if (text !== null) setRestoreStatus(text);
     },
-    [documentId, runWrite],
+    [documentId, runWriteOutcome],
   );
 
   const confirmAll = useCallback(async () => {
@@ -547,6 +574,7 @@ export function PageReview({
               subjectCode={doc.subjectCode}
               hrefFor={hrefFor}
               busy={busy}
+              restoring={restoring}
               onShown={markShown}
               onRestore={() => void restorePage(page.value)}
             />

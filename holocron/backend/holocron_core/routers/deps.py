@@ -19,6 +19,7 @@ from ..infrastructure.llm_config import RuntimeConfig, load_runtime_config_lenie
 from ..infrastructure.storage import open_store_from_env
 from ..infrastructure.template_library import InMemoryTemplateRegistry
 from ..launcher_logging import LOG_DIR_ENV, BuildInfo, read_build_info
+from ..services.concept_proposal_job import ProposalJobRuntime
 from ..services.extraction import DocumentExtractor, MockDualPassExtractor
 from ..services.pipeline import TemplateAuthor
 from ..services.twin_batch import CitationProvider, NoCitationProvider, UnconfiguredTemplateAuthor
@@ -36,6 +37,17 @@ def _default_store() -> AppStore:
 
 def get_store() -> AppStore:
     return _default_store()
+
+
+@cache
+def _default_proposal_jobs() -> ProposalJobRuntime:
+    """Runtime job đề xuất cặp, một cho cả tiến trình (như kho mặc định): hàng đợi FIFO và giới hạn song song toàn app
+    (§5.8). Job chỉ sống trong bộ nhớ; luồng chạy là daemon, tắt app thì job mất, cặp đã lưu vẫn còn."""
+    return ProposalJobRuntime()
+
+
+def get_proposal_jobs() -> ProposalJobRuntime:
+    return _default_proposal_jobs()
 
 
 def get_extractor() -> DocumentExtractor:
@@ -102,3 +114,4 @@ LogDirDep = Annotated[str | None, Depends(get_log_dir)]
 AuthorDep = Annotated[TemplateAuthor, Depends(get_template_author)]
 CitationDep = Annotated[CitationProvider, Depends(get_citation_provider)]
 ClockDep = Annotated[Callable[[], datetime], Depends(get_clock)]
+ProposalJobsDep = Annotated[ProposalJobRuntime, Depends(get_proposal_jobs)]

@@ -28,6 +28,10 @@ hay bất kỳ field thừa nào LLM trả về đều bị bỏ qua.
   chunk lưu tối đa `MAX_PAIRS_PER_CHUNK` cặp trong một lần đề xuất (đúng giới hạn nêu trong prompt); đề xuất đạt
   nhưng vượt số đó bị loại (`chunk_limit`). Đề xuất không đạt, trùng hay vượt số chỉ được đếm vào `rejected_count`;
   không sửa hộ.
+- **Cổng tích sẵn (§5.8, ADR-007 mục 3; thêm 2026-10-31):** cặp lưu ở đây nhận `failed_gates` theo luật tạm
+  `preselect_page_flags_v1` (`concept_proposal_gates.py`) trên các trang nguồn đọc qua `pages`, và
+  `pre_selected = true` chỉ khi luật đang bật và không cổng nào trượt. Giao thức cũ không có nhãn bài tập nên cổng
+  `EXERCISE` dùng `is_exercise` đang lưu của chunk (`None` ⇒ trượt). Tính một lần lúc lưu.
 - **Quan sát (§11.5, §14):** đếm số lượt gọi LLM, số lần thử HTTP, số phản hồi JSON lỗi, việc hết hạn và token; ghi log
   một dòng chỉ gồm các số đếm, không ghi prompt, phản hồi, khoá hay địa chỉ endpoint.
 """
@@ -48,8 +52,9 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from ..domain.llm import ChatCompletionClient, ChatCompletionResult, LlmUpstreamError
 from ..domain.repositories import RecordNotFoundError, VaultRepository
 from ..domain.schemas import KnowledgeChunk, normalize_quote, quote_in_text
-from ..domain.vault import ConceptPair, ConceptPairStatus
+from ..domain.vault import ConceptPair, ConceptPairStatus, PairGate
 from ..infrastructure.llm_config import LlmTaskLimits
+from .concept_proposal_gates import PageLookup, PageSource, failed_gates, page_lookup, pre_selected
 from .concept_proposal_prompt import MAX_PAIRS_PER_CHUNK, build_messages, build_retry_messages
 
 
@@ -166,7 +171,7 @@ def json_depth_exceeds(text: str, max_depth: int) -> bool:
     return False
 
 
-def _json_arrays(text: str, limits: LlmTaskLimits) -> list[Any]:
+def json_array(text: str, limits: LlmTaskLimits) -> list[Any]:
     """Mảng JSON đầu tiên tìm được: trong các khối rào ``` trước, rồi trong toàn bộ văn bản."""
     if len(text) > limits.max_response_chars:
         raise ProposalFormatError("phản hồi dài quá giới hạn")
@@ -196,7 +201,7 @@ def _json_arrays(text: str, limits: LlmTaskLimits) -> list[Any]:
 
 def parse_proposals(text: str, limits: LlmTaskLimits = DEFAULT_LIMITS) -> list[RawProposal]:
     """Tách và validate mảng đề xuất; sai, quá dài hay quá sâu ⇒ `ProposalFormatError` (không kèm nội dung phản hồi)."""
-    array = _json_arrays(text, limits)
+    array = json_array(text, limits)
     try:
         return _PROPOSALS.validate_python(array)
     except ValidationError:
@@ -217,19 +222,36 @@ def _load_chunks(vault: VaultRepository, subject_code: str, chunk_ids: Sequence[
     return chunks
 
 
-def _pair_key(chunk_id: str, term: str, quote: str) -> tuple[str, str, str]:
+def pair_key(chunk_id: str, term: str, quote: str) -> tuple[str, str, str]:
     return chunk_id, normalize_quote(term), normalize_quote(quote)
 
 
-def _gate(
+GateAnnotator = Callable[[KnowledgeChunk, str], tuple[list[PairGate], bool]]
+"""`(chunk, definition_quote) -> (failed_gates, pre_selected)` cho một cặp sắp lưu."""
+
+
+def gate_annotator(lookup: PageLookup, exercise_labels: dict[str, bool | None], enabled: bool) -> GateAnnotator:
+    """Tính cổng tích sẵn theo `preselect_page_flags_v1`; `exercise_labels` là nhãn đã xác định của từng chunk
+    (thiếu khoá ⇒ chưa xác định ⇒ `EXERCISE` trượt)."""
+
+    def annotate(chunk: KnowledgeChunk, quote: str) -> tuple[list[PairGate], bool]:
+        gates = failed_gates(chunk, quote, exercise_labels.get(chunk.chunk_id), lookup)
+        return gates, pre_selected(gates, enabled)
+
+    return annotate
+
+
+def screen_proposal(
     proposal: RawProposal,
     chunks: dict[str, KnowledgeChunk],
     seen: set[tuple[str, str, str]],
     saved_per_chunk: Counter[str],
     now: datetime,
+    annotate: GateAnnotator,
 ) -> ConceptPair | RejectReason:
     """Cặp `proposed` khi đề xuất qua cổng kiểm, chưa trùng và chunk chưa đủ `MAX_PAIRS_PER_CHUNK` cặp; ngược lại lý
-    do bị loại. Cặp trả về được tính ngay vào `seen` và `saved_per_chunk`."""
+    do bị loại. Cặp trả về được tính ngay vào `seen` và `saved_per_chunk`, và mang `failed_gates`/`pre_selected` do
+    `annotate` tính."""
     term = normalize_quote(proposal.term)
     chunk = chunks.get(proposal.chunk_id)
     if chunk is None:
@@ -238,9 +260,10 @@ def _gate(
         return "invalid_term"
     if not quote_in_text(proposal.definition_quote, chunk.raw_text):  # I3
         return "quote_not_verbatim"
-    key = _pair_key(chunk.chunk_id, term, proposal.definition_quote)
+    key = pair_key(chunk.chunk_id, term, proposal.definition_quote)
     if key in seen:
         return "duplicate"
+    gates, selected = annotate(chunk, proposal.definition_quote)
     try:
         pair = ConceptPair(
             chunk_id=chunk.chunk_id,
@@ -251,6 +274,8 @@ def _gate(
             status=ConceptPairStatus.PROPOSED,
             proposed_by="llm",
             created_at=now,
+            failed_gates=gates,
+            pre_selected=selected,
         )
     except ValidationError:
         return "invalid_quote"
@@ -328,11 +353,14 @@ def propose_concept_pairs(
     max_tokens: int | None = None,
     limits: LlmTaskLimits = DEFAULT_LIMITS,
     monotonic: Callable[[], float] = time.monotonic,
+    pages: PageSource | None = None,
+    preselect_enabled: bool = False,
 ) -> ConceptProposalResult:
     """Gọi LLM một lần (cộng tối đa `limits.json_retry_max` lần gọi lại khi JSON lỗi, trong hạn `limits.deadline_s`),
     kiểm từng đề xuất, lưu cặp đạt ở trạng thái `proposed`. Trả cặp đã lưu theo thứ tự LLM đề xuất, số đề xuất bị loại
     và số đếm. `max_tokens` mặc định là `limits.max_tokens`. `monotonic` là đồng hồ đơn điệu (giây) dùng để đo hạn;
-    test truyền đồng hồ giả."""
+    test truyền đồng hồ giả. `pages` đọc trang nguồn cho cổng tích sẵn (`None` ⇒ mọi cổng xét theo trang trượt);
+    `preselect_enabled` là `PAIR_PRESELECT_ENABLED`."""
     chunks = _load_chunks(vault, subject_code, chunk_ids)
     stats = ProposalStats()
     try:
@@ -346,7 +374,7 @@ def propose_concept_pairs(
     proposals = answered[: limits.max_proposals_per_chunk * len(chunks)]
     by_id = {chunk.chunk_id: chunk for chunk in chunks}
     seen = {
-        _pair_key(pair.chunk_id, pair.term, pair.definition_quote)
+        pair_key(pair.chunk_id, pair.term, pair.definition_quote)
         for pair in vault.list_concept_pairs(subject_code)
         if pair.chunk_id in by_id
     }
@@ -355,8 +383,11 @@ def propose_concept_pairs(
     reasons: dict[RejectReason, int] = {}
     if len(answered) > len(proposals):
         reasons["proposal_limit"] = len(answered) - len(proposals)
+    annotate = gate_annotator(
+        page_lookup(pages), {chunk.chunk_id: chunk.is_exercise for chunk in chunks}, preselect_enabled
+    )
     for proposal in proposals:
-        outcome = _gate(proposal, by_id, seen, saved_per_chunk, now)
+        outcome = screen_proposal(proposal, by_id, seen, saved_per_chunk, now, annotate)
         if isinstance(outcome, ConceptPair):
             saved.append(vault.add_concept_pair(outcome))  # repository kiểm lại I3 trong giao dịch ghi
         else:

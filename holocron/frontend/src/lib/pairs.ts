@@ -22,7 +22,7 @@ import {
 } from "@/lib/limits";
 import { splitsSurrogate } from "@/lib/text";
 import { type ChunkListView, type ChunkView, hasNextPage, nextPageOffset } from "@/lib/vault";
-import type { Citation, ConceptPair, ConceptPairStatus } from "@/types/holocron";
+import type { Citation, ConceptPair, ConceptPairStatus, PairGate } from "@/types/holocron";
 
 // ----------------------------------------------------------------------------- khoảng trắng như Python
 
@@ -186,6 +186,14 @@ export function termSegments(quote: string, termSpans: readonly unknown[]): [num
 // ------------------------------------------------------------------------------------ kiểm dạng
 
 const PAIR_STATUSES: readonly ConceptPairStatus[] = ["proposed", "confirmed", "rejected"];
+const PAIR_GATES: readonly PairGate[] = [
+  "G1_SOURCE",
+  "G2_GLYPH",
+  "G3_OCCLUDED",
+  "G4_COLUMN_MIX",
+  "G5_NUMBERS",
+  "EXERCISE",
+];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -199,10 +207,15 @@ function isPairStatus(value: unknown): value is ConceptPairStatus {
   return PAIR_STATUSES.some((status) => status === value);
 }
 
+function isPairGate(value: unknown): value is PairGate {
+  return PAIR_GATES.some((gate) => gate === value);
+}
+
 /**
  * Một `ConceptPair` (§5.8); `null` khi thiếu định danh, `term`, `definition_quote`, `status` lạ, `proposed_by` lạ hoặc
  * thiếu `version` (không gửi được `expected_version`). `term_spans` không phải mảng ⇒ coi như không có vị trí tô;
- * phần tử span sai dạng bị bỏ.
+ * phần tử span sai dạng bị bỏ. `pre_selected` không phải boolean ⇒ `false`; `failed_gates` không phải mảng ⇒ `[]`,
+ * phần tử không phải mã `PairGate` bị bỏ. Không tự tính cổng nào: chỉ hiển thị giá trị backend trả.
  */
 export function parseConceptPair(value: unknown): ConceptPair | null {
   if (!isRecord(value)) return null;
@@ -228,6 +241,8 @@ export function parseConceptPair(value: unknown): ConceptPair | null {
     version,
     created_at: typeof created_at === "string" ? created_at : "",
     confirmed_at: typeof confirmed_at === "string" ? confirmed_at : null,
+    pre_selected: value.pre_selected === true,
+    failed_gates: Array.isArray(value.failed_gates) ? value.failed_gates.filter(isPairGate) : [],
   };
 }
 

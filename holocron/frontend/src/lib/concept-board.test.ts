@@ -65,6 +65,8 @@ function pair(id: string, status: ConceptPairStatus, overrides: Partial<ConceptP
     version: 3,
     created_at: "",
     confirmed_at: null,
+    pre_selected: false,
+    failed_gates: [],
     ...overrides,
   };
 }

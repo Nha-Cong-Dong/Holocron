@@ -1,4 +1,5 @@
-"""Bộ nhập tài liệu PDF (SPECIFICATION §6.5): nhận file, hỏi trạng thái, xem trang, sửa dòng, xác nhận, xoá.
+"""Bộ nhập tài liệu PDF (SPECIFICATION §6.5): nhận file, hỏi trạng thái, xem trang, sửa dòng, xác nhận, hoàn tác bỏ
+mềm (GĐ0 0D), đổi chương, xoá.
 
 Chưa có ở đây: tạo item từ trang (`POST …/pages/{n}/items`, cần đổi `IngestionItem`).
 
@@ -24,6 +25,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 
 from ..domain.documents import (
     CHAPTER_CODE_PATTERN,
+    DocumentChapterPatch,
     DocumentConfirmRequest,
     DocumentImport,
     DocumentSummary,
@@ -31,6 +33,7 @@ from ..domain.documents import (
     PageConfirmRequest,
     PageExtraction,
     PageLinesPatch,
+    PageRestoreRequest,
 )
 from ..domain.repositories import AppStore, DocumentExistsError, VersionConflictError
 from ..domain.schemas import SourceKind
@@ -38,6 +41,7 @@ from ..infrastructure.document_readers.config import MIB, PdfReaderConfig, load_
 from ..infrastructure.document_readers.pdf_reader import PdfReader, PdfWorkerError, WorkerPdfReader
 from ..infrastructure.llm_config import ConfigError
 from ..infrastructure.storage.original_files import OriginalFileStore
+from ..services.document_chapter import ChapterCodeLockedError, update_document_chapter
 from ..services.document_import import (
     IMPORT_UNAVAILABLE_DETAIL,
     MAX_TITLE_LENGTH,
@@ -63,6 +67,7 @@ from ..services.document_import import (
     list_document_summaries,
     remove_orphan_files,
     requeue_pending,
+    restore_page,
 )
 from .deps import ClockDep, StoreDep, VaultDep
 
@@ -125,7 +130,16 @@ def requeue_on_startup(store: AppStore, runtime: ImportRuntime) -> list[str]:
     except ConfigError as exc:
         _LOGGER.warning("không xếp lại tài liệu đang đọc dở: %s", exc)
         return []
-    return requeue_pending(store, runtime.files, reader, runtime.queue, runtime.retry, vault=store, locks=runtime.locks)
+    return requeue_pending(
+        store,
+        runtime.files,
+        reader,
+        runtime.queue,
+        runtime.retry,
+        vault=store,
+        locks=runtime.locks,
+        config=runtime.reader_config,
+    )
 
 
 def get_import_runtime(request: Request) -> ImportRuntime:
@@ -169,9 +183,12 @@ def import_document(
     file: Annotated[UploadFile, File(description=FILE_FIELD_DESCRIPTION)],
     subject_code: Annotated[str, Form(pattern=SUBJECT_CODE_PATTERN)],
     source_kind: Annotated[SourceKind, Form()],
-    chapter_code: Annotated[str, Form(pattern=CHAPTER_CODE_PATTERN)],
+    # Tuỳ chọn từ 2026-10-31 (§6.5, GĐ1 1A): không gửi hoặc chuỗi rỗng ⇒ chương tự động (§5.7)
+    chapter_code: Annotated[str | None, Form(pattern=CHAPTER_CODE_PATTERN)] = None,
     output_language: Annotated[OutputLanguage, Form()] = "vi",
     title: Annotated[str | None, Form(min_length=1, max_length=MAX_TITLE_LENGTH)] = None,
+    # §6.5 (GĐ1 1B): chỉ lưu vào `DocumentImport.auto_confirm`; hành vi tự xác nhận chưa có ở nhánh này
+    auto_confirm: Annotated[bool, Form()] = True,
 ) -> DocumentImport:
     if title is not None and not title.strip():
         raise HTTPException(status_code=422, detail="title không được chỉ gồm khoảng trắng")
@@ -185,6 +202,7 @@ def import_document(
         chapter_code=chapter_code,
         output_language=output_language,
         title=title,
+        auto_confirm=auto_confirm,
     )
     try:
         outcome = accept_document(request, store=store, runtime=runtime, reader=reader, now=clock(), vault=vault)
@@ -282,6 +300,22 @@ def confirm_document_page(
         raise _review_error(exc) from exc
 
 
+@router.post("/v1/documents/{document_id}/pages/{page_number}/restore", response_model=PageExtraction)
+def restore_document_page(
+    store: StoreDep,
+    vault: VaultDep,
+    runtime: RuntimeDep,
+    document_id: str,
+    page_number: int,
+    body: PageRestoreRequest,
+) -> PageExtraction:
+    """Hoàn tác bỏ mềm một trang (§6.5, GĐ0 0D; tên và đường dẫn là đề xuất suy ra, chờ duyệt)."""
+    try:
+        return restore_page(store, vault, runtime, document_id, page_number, body)
+    except _REVIEW_ERRORS as exc:
+        raise _review_error(exc) from exc
+
+
 @router.post("/v1/documents/{document_id}/confirm", response_model=DocumentImport)
 def confirm_whole_document(
     store: StoreDep,
@@ -297,6 +331,19 @@ def confirm_whole_document(
         raise HTTPException(status_code=404, detail=NOT_FOUND_DETAIL) from exc
     except _REVIEW_ERRORS as exc:
         raise _review_error(exc) from exc
+
+
+@router.patch("/v1/documents/{document_id}/chapter", response_model=DocumentImport)
+def patch_document_chapter(
+    store: StoreDep, vault: VaultDep, runtime: RuntimeDep, document_id: str, body: DocumentChapterPatch
+) -> DocumentImport:
+    """Đổi mã hoặc tên chương (§6.5, §5.7 "Chương tự động")."""
+    try:
+        return update_document_chapter(store, vault, runtime, document_id, body)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=NOT_FOUND_DETAIL) from exc
+    except (DocumentChapterMissingError, ChapterCodeLockedError, VersionConflictError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.delete("/v1/documents/{document_id}", status_code=204, response_class=Response)

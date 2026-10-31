@@ -2,18 +2,26 @@
 
 Hàm thuần, không gọi PDFium: worker dùng `group_lines` để chuyển ký tự thô sang dòng; tiến trình cha tính điểm và
 cờ trang từ dữ liệu worker trả về. Không rẽ nhánh theo môn hay topic (CLAUDE.md §1).
+
+GĐ0 (sửa đổi 2026-10-31, spec §5.7 "Khử nhiễu trang"): ghép ký tự rời (`merge_spaced_chars`) trước khi dựng dòng,
+đánh dấu header/footer (`mark_header_footer`), token (`tokens`, dùng chung 0C và 0D), cổng glyph
+(`font_encoding_suspect`), luật (e) `image_needs_reading` của `ocr_reason`. Không hàm nào thêm, đổi hay sắp lại ký tự
+của lớp chữ (I3): ghép ký tự rời chỉ bỏ ký tự trắng/ngắt dòng do PDFium tự sinh.
 """
 
 from __future__ import annotations
 
 import itertools
+import re
+import statistics
 import unicodedata
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field
 from typing import Literal
 
 from .config import PdfReaderConfig
-from .protocol import MAX_RAW_LINE_CHARS, RawPdfPage, RawTextLine, RawWord, UnitBBox
+from .protocol import MAX_RAW_LINE_CHARS, RawLineFlag, RawPdfPage, RawTextLine, RawWord, TextKey, UnitBBox
+from .template_images import matches_text_key, text_key
 
 PdfBox = tuple[float, float, float, float]  # (left, bottom, right, top), toạ độ PDF gốc dưới-trái
 
@@ -59,10 +67,21 @@ _MATH_SINGLES: frozenset[str] = frozenset("±×÷ϑϕϖϵ")
 
 @dataclass(frozen=True)
 class PdfChar:
-    """Một ký tự PDFium trả về; `box` là None khi PDFium không cho hộp toạ độ."""
+    """Một ký tự PDFium trả về; `box` là None khi PDFium không cho hộp toạ độ.
+
+    `generated`: PDFium tự sinh ký tự này (khoảng trắng, ngắt dòng; `FPDFText_IsGenerated`). `flags`: cờ dòng của
+    đối tượng chữ chứa ký tự (GĐ0 0B), dòng nhận hợp các cờ của ký tự của nó.
+    """
 
     text: str
     box: PdfBox | None
+    generated: bool = False
+    flags: frozenset[RawLineFlag] = field(default_factory=frozenset)
+
+
+# Token (GĐ0 0C, 0D): chuỗi con tối đa khớp `\w+` (Unicode) của văn bản đã NFC và casefold.
+_TOKEN = re.compile(r"\w+")
+_LINE_BREAKS = ("\r", "\n")
 
 
 # --------------------------------------------------------------------------- #
@@ -106,41 +125,204 @@ def _union(boxes: Sequence[UnitBBox]) -> UnitBBox | None:
     )
 
 
-def _build_line(chars: Sequence[tuple[str, UnitBBox | None]]) -> RawTextLine | None:
-    text = "".join(c for c, _ in chars)
+_LineChar = tuple[str, UnitBBox | None, frozenset[RawLineFlag]]
+
+
+def _build_line(chars: Sequence[_LineChar]) -> RawTextLine | None:
+    text = "".join(c for c, _, _ in chars)
     if not text.strip():
         return None
     words: list[RawWord] = []
-    current: list[tuple[str, UnitBBox | None]] = []
-    for item in [*chars, (" ", None)]:
+    current: list[_LineChar] = []
+    for item in [*chars, (" ", None, frozenset())]:
         if item[0].isspace():
-            word_box = _union([b for _, b in current if b is not None])
+            word_box = _union([b for _, b, _ in current if b is not None])
             if current and word_box is not None:
-                words.append(RawWord(text="".join(c for c, _ in current), bbox=word_box))
+                words.append(RawWord(text="".join(c for c, _, _ in current), bbox=word_box))
             current = []
         else:
             current.append(item)
-    return RawTextLine(text=text, bbox=_union([w.bbox for w in words]), words=words)
+    flags: set[RawLineFlag] = set()
+    for _, _, char_flags in chars:
+        flags |= char_flags
+    return RawTextLine(text=text, bbox=_union([w.bbox for w in words]), words=words, flags=sorted(flags))
 
 
 def group_lines(chars: Sequence[PdfChar], page_box: PdfBox, rotation: int) -> list[RawTextLine]:
     """Gom ký tự theo thứ tự đọc của PDFium thành dòng; ngắt dòng tại `\\r`/`\\n` (PDFium tự chèn giữa các dòng).
 
-    Dòng dài hơn `MAX_RAW_LINE_CHARS` ký tự được ngắt thành nhiều dòng, để khớp giới hạn của `RawTextLine`.
+    Dòng dài hơn `MAX_RAW_LINE_CHARS` ký tự được ngắt thành nhiều dòng, để khớp giới hạn của `RawTextLine`. Cờ của
+    dòng là hợp cờ của các ký tự trong dòng (GĐ0 0B).
     """
     lines: list[RawTextLine] = []
-    current: list[tuple[str, UnitBBox | None]] = []
+    current: list[_LineChar] = []
     for char in [*chars, PdfChar(text="\n", box=None)]:
-        if char.text in ("\r", "\n") or len(current) >= MAX_RAW_LINE_CHARS:
+        if char.text in _LINE_BREAKS or len(current) >= MAX_RAW_LINE_CHARS:
             line = _build_line(current)
             if line is not None:
                 lines.append(line)
             current = []
-            if char.text in ("\r", "\n"):
+            if char.text in _LINE_BREAKS:
                 continue
         box = None if char.box is None else normalize_box(char.box, page_box, rotation)
-        current.append((char.text, box))
+        current.append((char.text, box, char.flags))
     return lines
+
+
+# --------------------------------------------------------------------------- #
+# Ghép ký tự rời (GĐ0 0B(4))
+# --------------------------------------------------------------------------- #
+
+
+def _is_separator(char: PdfChar) -> bool:
+    """Ký tự trắng hay ngắt dòng do PDFium tự sinh."""
+    return char.generated and (char.text.isspace() or char.text in _LINE_BREAKS)
+
+
+def _standalone_positions(chars: Sequence[PdfChar]) -> list[int]:
+    """Vị trí ký tự không trắng, có hộp, mà hai bên (nếu có) là ký tự tự sinh hoặc biên của dãy: "đứng riêng"."""
+    positions: list[int] = []
+    for index, char in enumerate(chars):
+        if char.generated or char.box is None or char.text.isspace() or not char.text:
+            continue
+        before_ok = index == 0 or _is_separator(chars[index - 1])
+        after_ok = index == len(chars) - 1 or _is_separator(chars[index + 1])
+        if before_ok and after_ok:
+            positions.append(index)
+    return positions
+
+
+def _char_height(char: PdfChar) -> float:
+    box = char.box
+    return 0.0 if box is None else max(box[3] - box[1], 0.0)
+
+
+def _separators_between(chars: Sequence[PdfChar], left: int, right: int) -> list[int] | None:
+    """Vị trí các ký tự giữa `left` và `right` nếu tất cả là ký tự tự sinh (ít nhất một), ngược lại None."""
+    between = list(range(left + 1, right))
+    if not between or not all(_is_separator(chars[index]) for index in between):
+        return None
+    return between
+
+
+def _merge_run(chars: Sequence[PdfChar], run: list[int], config: PdfReaderConfig) -> dict[int, bool] | None:
+    """Quyết định cho một chuỗi ký tự đứng riêng liền nhau: {vị trí ký tự tự sinh: giữ hay bỏ}; None ⇒ không ghép.
+
+    Cùng baseline (mép dưới lệch ≤ `char_merge_baseline_tol` × chiều cao) và khoảng cách lệch khỏi trung vị
+    ≤ `char_merge_gap_tol` × chiều cao ⇒ bỏ ký tự tự sinh giữa hai ký tự (cùng từ). Khoảng cách lớn hơn trung vị cộng
+    dung sai là ranh giới từ: giữ đúng một ký tự trắng tự sinh (không phải ngắt dòng); không có ký tự trắng nào thì
+    chuỗi dừng ở đó (không viết thêm ký tự nào, I3).
+    """
+    boxes = [chars[index].box for index in run]
+    if any(box is None for box in boxes):
+        return None
+    height = statistics.median(_char_height(chars[index]) for index in run)
+    if height <= 0.0:
+        return None
+    bottoms = [box[1] for box in boxes if box is not None]
+    if max(bottoms) - min(bottoms) > config.char_merge_baseline_tol * height:
+        return None
+    gaps = [right[0] - left[2] for left, right in itertools.pairwise(box for box in boxes if box is not None)]
+    median_gap = statistics.median(gaps)
+    tolerance = config.char_merge_gap_tol * height
+    decisions: dict[int, bool] = {}
+    for (left, right), gap in zip(itertools.pairwise(run), gaps, strict=True):
+        between = _separators_between(chars, left, right)
+        if between is None:
+            return None
+        if abs(gap - median_gap) <= tolerance:
+            decisions.update(dict.fromkeys(between, False))
+        elif gap > median_gap + tolerance:
+            spaces = [index for index in between if chars[index].text not in _LINE_BREAKS]
+            if not spaces:
+                return None
+            decisions.update({index: index == spaces[0] for index in between})
+        else:
+            return None
+    return decisions
+
+
+def _runs(chars: Sequence[PdfChar], positions: list[int]) -> list[list[int]]:
+    """Các chuỗi vị trí đứng riêng liền nhau (giữa hai vị trí kề nhau chỉ có ký tự tự sinh)."""
+    runs: list[list[int]] = []
+    for position in positions:
+        if runs and _separators_between(chars, runs[-1][-1], position) is not None:
+            runs[-1].append(position)
+        else:
+            runs.append([position])
+    return runs
+
+
+def merge_spaced_chars(chars: Sequence[PdfChar], config: PdfReaderConfig) -> list[PdfChar]:
+    """Ghép ký tự rời TRƯỚC khi dựng dòng (GĐ0 0B(4)): chuỗi ≥ `char_merge_min_chars` ký tự đứng riêng (PDFium tách
+    bằng ký tự trắng hay ngắt dòng tự sinh), cùng baseline, khoảng cách đều ⇒ bỏ ký tự tự sinh giữa chúng để thành
+    một dòng; ranh giới từ giữ một ký tự trắng tự sinh. Chuỗi không thoả điều kiện giữ nguyên; dòng thường (ký tự
+    không đứng riêng) không đổi. Chỉ BỎ ký tự tự sinh, không thêm hay đổi ký tự nào (I3).
+    """
+    drop: set[int] = set()
+    for run in _runs(chars, _standalone_positions(chars)):
+        if len(run) < config.char_merge_min_chars:
+            continue
+        decisions = _merge_run(chars, run, config)
+        if decisions is None:
+            continue
+        drop.update(index for index, keep in decisions.items() if not keep)
+    return [char for index, char in enumerate(chars) if index not in drop]
+
+
+# --------------------------------------------------------------------------- #
+# Header/footer, token, cổng glyph (GĐ0 0B(3), 0B(5), 0C)
+# --------------------------------------------------------------------------- #
+
+
+def mark_header_footer(lines: Sequence[RawTextLine], keys: frozenset[TextKey], step: float) -> list[RawTextLine]:
+    """Dòng khớp một khoá TEXT template (cùng chuỗi chuẩn hoá, hộp trong ±1 ô) ⇒ `header_footer = True` (0B(5))."""
+    if not keys:
+        return list(lines)
+    marked: list[RawTextLine] = []
+    for line in lines:
+        key = text_key(line.text, line.bbox, step)
+        is_template = key is not None and matches_text_key(key, keys)
+        marked.append(line.model_copy(update={"header_footer": True}) if is_template else line)
+    return marked
+
+
+def tokens(text: str) -> list[str]:
+    """Token (GĐ0 0C, 0D): chuỗi con tối đa khớp `\\w+` của văn bản đã NFC và casefold."""
+    return _TOKEN.findall(unicodedata.normalize("NFC", text).casefold())
+
+
+def content_lines(lines: Iterable[RawTextLine]) -> list[RawTextLine]:
+    """Các dòng không phải header/footer."""
+    return [line for line in lines if not line.header_footer]
+
+
+def content_token_count(lines: Iterable[RawTextLine]) -> int:
+    """Số token của lớp chữ (đã lọc chữ ẩn ở worker), không tính dòng header/footer (0C)."""
+    return sum(len(tokens(line.text)) for line in content_lines(lines))
+
+
+_GLYPH_SYMBOLS = frozenset(chr(code) for code in range(0x00A1, 0x00C0)) | {"\u00d7", "\u00f7"}
+
+
+def _is_letter(char: str) -> bool:
+    return unicodedata.category(char).startswith("L")
+
+
+def font_encoding_suspect(text: str) -> bool:
+    """Cổng glyph (GĐ0 0B(3)): U+FFFD, ký tự điều khiển (`Cc`, trừ tab), vùng PUA U+E000–U+F8FF, hoặc U+00A1–U+00BF,
+    `×`, `÷` có chữ cái (`L*`) liền trước hoặc liền sau. Chỉ gắn cờ, không sửa chữ."""
+    for index, char in enumerate(text):
+        if char == "\ufffd" or 0xE000 <= ord(char) <= 0xF8FF:
+            return True
+        if unicodedata.category(char) == "Cc" and char != "\t":
+            return True
+        if char in _GLYPH_SYMBOLS:
+            before = index > 0 and _is_letter(text[index - 1])
+            after = index + 1 < len(text) and _is_letter(text[index + 1])
+            if before or after:
+                return True
+    return False
 
 
 # --------------------------------------------------------------------------- #
@@ -290,7 +472,9 @@ def page_text(lines: Sequence[RawTextLine]) -> str:
     return "\n".join(line.text for line in lines)
 
 
-OcrReason = Literal["empty_text_layer", "garbled_text_layer", "sparse_text_on_image", "image_covers_page"]
+OcrReason = Literal[
+    "empty_text_layer", "garbled_text_layer", "sparse_text_on_image", "image_covers_page", "image_needs_reading"
+]
 
 
 def content_image_area(raw: RawPdfPage) -> float:
@@ -300,6 +484,20 @@ def content_image_area(raw: RawPdfPage) -> float:
     khi đó là `image_area_ratio`, đúng hành vi cũ.
     """
     return raw.image_area_ratio if raw.content_image_area_ratio is None else raw.content_image_area_ratio
+
+
+def content_path_area(raw: RawPdfPage) -> float:
+    """Diện tích đường vẽ không-template, không-nền (GĐ0 0A); None (dữ liệu trước GĐ0) ⇒ `path_area_ratio`."""
+    return raw.path_area_ratio if raw.content_path_area_ratio is None else raw.content_path_area_ratio
+
+
+def image_needs_reading(raw: RawPdfPage, config: PdfReaderConfig) -> bool:
+    """Điều kiện (e) của 0C: lớp chữ (đã trừ header/footer) có `< figure_text_min_tokens` token VÀ ảnh nội dung phủ
+    `≥ image_read_area_min` diện tích trang."""
+    return (
+        content_token_count(raw.lines) < config.figure_text_min_tokens
+        and content_image_area(raw) >= config.image_read_area_min
+    )
 
 
 def ocr_reason(raw: RawPdfPage, config: PdfReaderConfig) -> OcrReason | None:
@@ -314,10 +512,13 @@ def ocr_reason(raw: RawPdfPage, config: PdfReaderConfig) -> OcrReason | None:
     - `image_covers_page` (sửa đổi 2026-10-30): lớp chữ sạch, có dưới `text_full_image_max_chars` ký tự không trắng,
       ảnh nhúng phủ ít nhất `text_full_image_min` diện tích trang: nội dung nằm trong ảnh, chữ còn lại chỉ là tiêu
       đề, header, số trang dưới ảnh. Lớp chữ đầy đủ trên ảnh phủ kín (PDF scan đã có lớp chữ) vẫn giữ lớp chữ.
-    Thứ tự xét: rỗng, rác, trang ảnh ít chữ, ảnh phủ gần kín. Ít chữ trên trang không có ảnh lớn KHÔNG phải lý do bỏ
-    lớp chữ. "Ảnh" ở hai luật cuối là ảnh KHÔNG phải template (`content_image_area`, sửa đổi 2026-10-30): ảnh nền,
-    dải tiêu đề lặp lại trên đa số trang không làm trang thành trang ảnh. Hai luật đầu không dùng độ phủ ảnh, nên ảnh
-    template không bao giờ làm trang có lớp chữ rỗng hay rác thoát OCR.
+    - `image_needs_reading` (GĐ0 0C, luật (e)): lớp chữ có `< figure_text_min_tokens` token (trừ header/footer) VÀ
+      ảnh nội dung phủ `≥ image_read_area_min`.
+    Thứ tự xét: rỗng, rác, trang ảnh ít chữ, ảnh phủ gần kín, (e). Ít chữ trên trang không có ảnh lớn KHÔNG phải lý do
+    bỏ lớp chữ. "Ảnh" ở ba luật cuối là ảnh KHÔNG phải template (`content_image_area`, sửa đổi 2026-10-30): ảnh nền,
+    dải tiêu đề lặp lại trên đa số trang không làm trang thành trang ảnh; ảnh không phải template thì không bao giờ là
+    nền. Hai luật đầu không dùng độ phủ ảnh, nên ảnh template không bao giờ làm trang có lớp chữ rỗng hay rác thoát
+    OCR. `non_ws` của luật (c) không tính dòng header/footer (GĐ0, trả nợ BE-009); luật (d) tính mọi dòng.
     """
     text = page_text(raw.lines)
     non_ws = non_whitespace_count(text)
@@ -326,10 +527,13 @@ def ocr_reason(raw: RawPdfPage, config: PdfReaderConfig) -> OcrReason | None:
     if text_score(text, config) < config.text_layer_min:
         return "garbled_text_layer"
     image = content_image_area(raw)
-    if non_ws < config.text_sparse_chars and image >= config.text_sparse_image_min:
+    content_non_ws = non_whitespace_count(page_text(content_lines(raw.lines)))
+    if content_non_ws < config.text_sparse_chars and image >= config.text_sparse_image_min:
         return "sparse_text_on_image"
     if non_ws < config.text_full_image_max_chars and image >= config.text_full_image_min:
         return "image_covers_page"
+    if image_needs_reading(raw, config):
+        return "image_needs_reading"
     return None
 
 
@@ -368,10 +572,11 @@ def has_figure(
 ) -> bool:
     """PDF số: ảnh nhúng đủ lớn; diện tích đường vẽ chỉ được tính khi trang có ảnh (không dùng một mình).
 
-    Nhánh ảnh (`figure_image_area_min`) dùng độ phủ ảnh KHÔNG phải template `content_image_area_ratio` (None ⇒
-    `image_area_ratio`; sửa đổi 2026-10-30). Nhánh đường vẽ giữ như trước (người dùng quyết 2026-10-30): điều kiện
-    "có ảnh" tính MỌI ảnh, kể cả ảnh template, và `path_area_ratio` không trừ gì. Hệ quả tạm: slide có khung template
-    vẽ bằng vector trên ảnh nền template bị gắn cờ hình thừa, đến khi loại đường vẽ template (nợ ADR-008).
+    Nhánh ảnh (`figure_image_area_min`) dùng `content_image_area_ratio` (None ⇒ `image_area_ratio`). Nhánh đường vẽ:
+    trang có ảnh (`image_area_ratio > 0`) VÀ `path_area_ratio ≥ figure_path_area_min`. GĐ0 (sửa đổi 2026-10-31, trả
+    BE-007): nơi gọi (`tiers.page_flags`) truyền độ phủ ảnh NỘI DUNG (không-template) làm cả `image_area_ratio` lẫn
+    `content_image_area_ratio`, và diện tích đường vẽ không-template, không-nền làm `path_area_ratio`, nên chỉ đối
+    tượng nội dung bật cờ hình.
     """
     content = image_area_ratio if content_image_area_ratio is None else content_image_area_ratio
     if content >= config.figure_image_area_min:

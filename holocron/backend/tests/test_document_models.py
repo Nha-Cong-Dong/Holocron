@@ -54,7 +54,15 @@ def _page(**overrides: Any) -> PageExtraction:
 def test_literals_match_spec() -> None:
     assert set(get_args(LineEngine)) == {"text_layer", "tesseract", "vlm", "human"}
     assert get_args(TierUsed) == ("text_layer", "ocr", "layout", "vlm")
-    assert get_args(LineFlag) == ("LOW_LINE_CONF", "TOKEN_MISMATCH", "HIGH_LINE_CER")
+    # GĐ0 (§5.7, 2026-10-31): ba cờ dòng lớp chữ mới, khai báo sau các cờ cũ.
+    assert get_args(LineFlag) == (
+        "LOW_LINE_CONF",
+        "TOKEN_MISMATCH",
+        "HIGH_LINE_CER",
+        "LOW_TEXT_CONTRAST",
+        "TEXT_OCCLUDED",
+        "FONT_ENCODING_SUSPECT",
+    )
     assert get_args(FailureReason) == ("PAGE_TIMEOUT", "PAGE_ERROR", "OCR_ENGINE_MISSING", "TOO_MANY_LINES")
     assert REVIEW_REASON_ORDER == get_args(ReviewReason)
     assert REVIEW_REASON_ORDER == (
@@ -69,6 +77,13 @@ def test_literals_match_spec() -> None:
         "CROSS_CHECK_UNAVAILABLE",
         "HIGH_PAGE_CER",
         "OCR_ENGINE_MISSING",
+        # GĐ0 (§5.7, 2026-10-31): khai báo SAU các lý do cũ để thứ tự sắp của trang cũ không đổi.
+        "LOW_TEXT_CONTRAST",
+        "TEXT_OCCLUDED",
+        "FONT_ENCODING_SUSPECT",
+        "IMAGE_NEEDS_READING",
+        "PAGE_ROLE_UNCERTAIN",
+        "DENOISE_UNAVAILABLE",
     )
 
 

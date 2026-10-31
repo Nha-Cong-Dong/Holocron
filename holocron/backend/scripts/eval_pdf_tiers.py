@@ -377,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
             "text_full_image_min": config.text_full_image_min,
             "text_full_image_max_chars": config.text_full_image_max_chars,
             "figure_image_area_min": config.figure_image_area_min,
-            "template_image_min_page_ratio": config.template_image_min_page_ratio,
+            "template_min_page_ratio": config.template_min_page_ratio,
             "template_image_min_pages": config.template_image_min_pages,
             "template_image_bbox_step": config.template_image_bbox_step,
         },

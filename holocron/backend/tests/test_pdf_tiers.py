@@ -10,7 +10,13 @@ import unicodedata
 import pytest
 
 from holocron_core.infrastructure.document_readers.config import PdfReaderConfig
-from holocron_core.infrastructure.document_readers.protocol import RawPdfPage, RawTextLine, RawWord
+from holocron_core.infrastructure.document_readers.protocol import (
+    RawOcrLine,
+    RawOcrPage,
+    RawPdfPage,
+    RawTextLine,
+    RawWord,
+)
 from holocron_core.infrastructure.document_readers.text_layer import (
     PdfChar,
     clean_char_ratio,
@@ -210,7 +216,8 @@ def test_page_flags_select_tier() -> None:
     assert with_table.has_table and with_table.status == "needs_review"
     assert (with_table.tier_used, with_table.review_reasons) == ("text_layer", ["TIER3_UNAVAILABLE"])
     with_image = assemble_text_layer_page(_raw_page(body, image=0.3), DOC_ID, CONFIG)
-    assert with_image.has_figure and with_image.review_reasons == ["TIER3_UNAVAILABLE"]
+    # GĐ0 0C (§5.7, 2026-10-31): trang đủ token có hình chỉ ghi vùng ảnh, không lý do xem lại vì hình.
+    assert with_image.has_figure and with_image.review_reasons == []
     frame_only = assemble_text_layer_page(_raw_page(body, path=0.9), DOC_ID, CONFIG)
     assert not frame_only.has_figure and frame_only.status == "ok"
     formula = body + [_prose_line("∑ ∫ √ ≤ ≥ ± α β γ δ ε ζ η θ λ μ π σ φ ω", 0.8)]
@@ -222,6 +229,25 @@ def test_page_flags_select_tier() -> None:
     assert scan.text_score is not None and scan.text_score < CONFIG.text_layer_min
     empty = assemble_text_layer_page(_raw_page([]), DOC_ID, CONFIG)
     assert (empty.status, empty.failure_reason, empty.text_score) == ("failed", "OCR_ENGINE_MISSING", 0.0)
+
+
+def test_few_tokens_with_large_content_image_stays_in_review() -> None:
+    """I5 (thay luật cũ "trang có hình ⇒ TIER3_UNAVAILABLE", §5.7 0C): trang có < `FIGURE_TEXT_MIN_TOKENS` token và
+    ảnh không-template phủ ≥ `IMAGE_READ_AREA_MIN` không thoát Gate: đi OCR và mang `IMAGE_NEEDS_READING`
+    (`needs_review`); không có engine OCR thì `failed`, không bao giờ `ok` từ lớp chữ."""
+    title = [_prose_line("Bieudo thoigian cuabus dulieu tren vixuly ARMcortex", 0.05)]  # 7 token
+    raw = _raw_page(title, image=CONFIG.image_read_area_min)
+    without_engine = assemble_text_layer_page(raw, DOC_ID, CONFIG)
+    assert (without_engine.status, without_engine.failure_reason) == ("failed", "OCR_ENGINE_MISSING")
+    ocr = RawOcrPage(
+        dpi=300.0,
+        lines=[RawOcrLine(text="Bieu do", bbox=(0.1, 0.05, 0.5, 0.08), words=[], conf=0.99)],
+        ink_outside_text_ratio=0.0,
+        secondary=None,
+    )
+    read = assemble_text_layer_page(raw.model_copy(update={"ocr": ocr}), DOC_ID, CONFIG)
+    assert read.tier_used == "ocr" and read.status == "needs_review"
+    assert "IMAGE_NEEDS_READING" in read.review_reasons
 
 
 def test_assembled_lines_follow_spec() -> None:

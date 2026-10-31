@@ -16,7 +16,7 @@ import re
 from collections.abc import Sequence
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Literal
+from typing import Annotated, Literal, get_args
 from uuid import uuid4
 
 from pydantic import Field, field_validator, model_validator
@@ -117,8 +117,18 @@ def find_term_spans(term: str, quote: str) -> list[tuple[int, int]]:
     return [(match.start(), match.end()) for match in pattern.finditer(quote)]
 
 
+PairGate = Literal["G1_SOURCE", "G2_GLYPH", "G3_OCCLUDED", "G4_COLUMN_MIX", "G5_NUMBERS", "EXERCISE"]
+"""Cổng tích sẵn của cặp (§5.8, ADR-007 mục 3); thứ tự khai báo là thứ tự sắp của `ConceptPair.failed_gates`."""
+
+PAIR_GATE_ORDER: tuple[PairGate, ...] = get_args(PairGate)
+
+
 class ConceptPair(StrictModel):
-    """Cặp khái niệm – trích dẫn định nghĩa (§5.8, ADR-007 mục 1)."""
+    """Cặp khái niệm – trích dẫn định nghĩa (§5.8, ADR-007 mục 1).
+
+    `pre_selected` (máy tích sẵn ô Chấp nhận) và `failed_gates` (cổng trượt) do code tính một lần lúc lưu cặp (ADR-007
+    mục 3). Tích sẵn không phải xác nhận: `status` vẫn `proposed`. `pre_selected = true` chỉ khi `failed_gates` rỗng.
+    """
 
     pair_id: str = Field(default_factory=lambda: f"cp_{uuid4().hex[:16]}")
     chunk_id: str = Field(min_length=1, max_length=128)
@@ -133,11 +143,20 @@ class ConceptPair(StrictModel):
     version: int = Field(default=1, ge=1)
     created_at: datetime
     confirmed_at: datetime | None = None
+    pre_selected: bool = False
+    failed_gates: list[PairGate] = Field(default_factory=list)
 
     @field_validator("term")
     @classmethod
     def _term_nfc(cls, value: str) -> str:
         return normalize_quote(value)
+
+    @field_validator("failed_gates")
+    @classmethod
+    def _gates_ordered_unique(cls, value: list[PairGate]) -> list[PairGate]:
+        """Sắp theo thứ tự khai báo của `PairGate`, bỏ trùng."""
+        present = set(value)
+        return [gate for gate in PAIR_GATE_ORDER if gate in present]
 
     @field_validator("definition_quote")
     @classmethod
@@ -151,6 +170,8 @@ class ConceptPair(StrictModel):
     def _rules(self) -> ConceptPair:
         if (self.status is ConceptPairStatus.CONFIRMED) != (self.confirmed_at is not None):
             raise ValueError("confirmed_at có giá trị khi và chỉ khi status = confirmed")
+        if self.pre_selected and self.failed_gates:
+            raise ValueError("pre_selected = true chỉ khi failed_gates rỗng")
         # Vị trí term luôn do code tính lại từ term và definition_quote đã chuẩn hoá.
         self.term_spans = find_term_spans(self.term, self.definition_quote)
         return self
@@ -199,3 +220,66 @@ def link_practice_chunks(chunks: Sequence[KnowledgeChunk]) -> dict[str, list[str
                     found.add(_nearest_theory(chunk, candidates))
         links[chunk.chunk_id] = sorted(found)
     return links
+
+
+# --------------------------------------------------------------------------- #
+# Job nền đề xuất cặp (§5.8 "Job nền đề xuất cặp", §6.6; ADR-007 mục 3)
+# --------------------------------------------------------------------------- #
+
+ProposalJobStatus = Literal["queued", "running", "succeeded", "partial", "failed", "cancelled"]
+ProposalRejectReason = Literal[
+    "quote_not_verbatim",
+    "unknown_chunk",
+    "invalid_term",
+    "invalid_quote",
+    "duplicate",
+    "chunk_limit",
+    "proposal_limit",
+    "unknown_span",
+    "span_cross_chunk",
+    "term_span_cross_chunk",
+    "term_not_in_span",
+    "anchor_not_found",
+    "anchor_ambiguous",
+]
+"""Lý do loại một đề xuất. `term_span_cross_chunk`: span của term khác chunk với span định nghĩa (mã con trỏ thứ sáu, do
+`services/concept_proposal_pointer.py` đặt khi `term_span_id` không cùng chunk với `def_span_ids`; có trong
+`src/types/holocron.ts`, spec §6.6 mới liệt kê năm mã con trỏ)."""
+BatchErrorKind = Literal["llm_upstream", "deadline", "format"]
+PROPOSAL_JOB_ID_PATTERN = r"^pjob_[0-9a-f]{16}$"
+MAX_PROPOSAL_JOB_BATCH_CHUNKS = 20
+
+
+class ProposalJob(StrictModel):
+    """Trạng thái một job nền đề xuất cặp; mọi số đếm do backend tính, frontend chỉ hiển thị (I1)."""
+
+    job_id: str = Field(pattern=PROPOSAL_JOB_ID_PATTERN)
+    subject_code: str = Field(pattern=SUBJECT_CODE_PATTERN)
+    trigger: Literal["document_confirmed", "manual"]
+    document_id: str | None
+    status: ProposalJobStatus
+    chunk_count: int = Field(ge=1)
+    batch_size: int = Field(ge=1, le=MAX_PROPOSAL_JOB_BATCH_CHUNKS)
+    batches_total: int = Field(ge=1)
+    batches_done: int = Field(ge=0)
+    batches_failed: int = Field(ge=0)
+    batch_errors: dict[BatchErrorKind, int] = Field(default_factory=dict)
+    proposed_count: int = Field(ge=0)
+    pre_selected_count: int = Field(ge=0)
+    rejected_count: int = Field(ge=0)
+    rejected_by_reason: dict[ProposalRejectReason, int] = Field(default_factory=dict)
+    exercise_chunks: int = Field(ge=0)
+    cancel_requested: bool = False
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _counts(self) -> ProposalJob:
+        if sum(self.rejected_by_reason.values()) != self.rejected_count:
+            raise ValueError("tổng rejected_by_reason phải bằng rejected_count")
+        if self.batches_done + self.batches_failed > self.batches_total:
+            raise ValueError("batches_done + batches_failed không vượt batches_total")
+        if self.pre_selected_count > self.proposed_count:
+            raise ValueError("pre_selected_count không vượt proposed_count")
+        return self

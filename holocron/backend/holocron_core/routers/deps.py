@@ -12,13 +12,14 @@ from datetime import UTC, datetime
 from functools import cache
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException, Request
 
 from ..domain.repositories import AppStore, VaultRepository
 from ..infrastructure.llm_config import RuntimeConfig, load_runtime_config_lenient
 from ..infrastructure.storage import open_store_from_env
 from ..infrastructure.template_library import InMemoryTemplateRegistry
 from ..launcher_logging import LOG_DIR_ENV, BuildInfo, read_build_info
+from ..services.concept_proposal_job import ProposalJobRuntime
 from ..services.extraction import DocumentExtractor, MockDualPassExtractor
 from ..services.pipeline import TemplateAuthor
 from ..services.twin_batch import CitationProvider, NoCitationProvider, UnconfiguredTemplateAuthor
@@ -36,6 +37,24 @@ def _default_store() -> AppStore:
 
 def get_store() -> AppStore:
     return _default_store()
+
+
+PROPOSAL_JOBS_STATE_ATTR = "proposal_jobs"
+PROPOSAL_JOBS_UNAVAILABLE_DETAIL = "Job đề xuất cặp chưa sẵn sàng: ứng dụng đang khởi động hoặc đang tắt."
+
+
+def create_proposal_job_runtime(config: RuntimeConfig) -> ProposalJobRuntime:
+    """Runtime job đề xuất cặp của một app (§5.8): `lifespan` tạo khi khởi động, gắn vào `app.state`, đóng khi tắt
+    (trước khi đóng kho). Cấu hình lấy từ `config.llm.proposal`, cùng nguồn với từng request."""
+    return ProposalJobRuntime(config.llm.proposal)
+
+
+def get_proposal_jobs(request: Request) -> ProposalJobRuntime:
+    """Runtime job của app. Không có (`lifespan` chưa chạy hoặc đã gỡ khi tắt app) ⇒ 500 kèm `detail`, như bộ nhập."""
+    jobs = getattr(request.app.state, PROPOSAL_JOBS_STATE_ATTR, None)
+    if isinstance(jobs, ProposalJobRuntime):
+        return jobs
+    raise HTTPException(status_code=500, detail=PROPOSAL_JOBS_UNAVAILABLE_DETAIL)
 
 
 def get_extractor() -> DocumentExtractor:
@@ -102,3 +121,4 @@ LogDirDep = Annotated[str | None, Depends(get_log_dir)]
 AuthorDep = Annotated[TemplateAuthor, Depends(get_template_author)]
 CitationDep = Annotated[CitationProvider, Depends(get_citation_provider)]
 ClockDep = Annotated[Callable[[], datetime], Depends(get_clock)]
+ProposalJobsDep = Annotated[ProposalJobRuntime, Depends(get_proposal_jobs)]

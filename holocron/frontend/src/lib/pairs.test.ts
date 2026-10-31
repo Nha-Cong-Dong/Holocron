@@ -80,6 +80,8 @@ const PAIR_BODY = {
   version: 2,
   created_at: "2026-10-28T00:00:00Z",
   confirmed_at: null,
+  pre_selected: false,
+  failed_gates: [],
 };
 
 describe("khoảng trắng như Python", () => {

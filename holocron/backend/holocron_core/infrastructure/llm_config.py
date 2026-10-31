@@ -104,6 +104,34 @@ class LlmHttpLimits(BaseModel):
     read_chunk_bytes: int = Field(default=64 * 1024, ge=1)
 
 
+PROPOSAL_JOB_BATCH_CHUNKS = 20
+PROPOSAL_JOB_MAX_PARALLEL = 2
+PAIR_PRESELECT_ENABLED = False
+PROPOSAL_JOB_KEEP_FINISHED = 100
+CHUNK_LABEL_WRITE_RETRIES = 3
+
+
+class ConceptProposalSettings(BaseModel):
+    """Cấu hình đề xuất cặp khái niệm (spec §5.8 "Job nền đề xuất cặp", ADR-007 mục 3); field có mặc định, không phải
+    biến môi trường.
+
+    - `job_batch_chunks` (`PROPOSAL_JOB_BATCH_CHUNKS`): số chunk tối đa mỗi lô của job nền (1–20).
+    - `job_max_parallel` (`PROPOSAL_JOB_MAX_PARALLEL`): số lô chạy song song tối đa trên toàn app.
+    - `job_keep_finished`: số job đã kết thúc được giữ trong bộ nhớ (cũ nhất bị bỏ trước).
+    - `pair_preselect_enabled` (`PAIR_PRESELECT_ENABLED`): bật luật tích sẵn; tắt thì `pre_selected` luôn `false`
+      nhưng `failed_gates` vẫn được tính. Chỉ bật khi luật đạt precision ≥ 90% trên mẫu chấm (ADR-007 mục 3).
+    - `label_write_retries`: số lần đọc lại rồi thử ghi lại nhãn `is_exercise` khi version của chunk vừa đổi.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    job_batch_chunks: int = Field(default=PROPOSAL_JOB_BATCH_CHUNKS, ge=1, le=20)
+    job_max_parallel: int = Field(default=PROPOSAL_JOB_MAX_PARALLEL, ge=1)
+    job_keep_finished: int = Field(default=PROPOSAL_JOB_KEEP_FINISHED, ge=1)
+    pair_preselect_enabled: bool = PAIR_PRESELECT_ENABLED
+    label_write_retries: int = Field(default=CHUNK_LABEL_WRITE_RETRIES, ge=0)
+
+
 class LlmSettings(BaseModel):
     """Endpoint tương thích OpenAI Chat Completions; trường nào `None` là biến tương ứng chưa đặt."""
 
@@ -116,6 +144,7 @@ class LlmSettings(BaseModel):
     timeout_s: float = DEFAULT_TIMEOUT_S
     task_limits: LlmTaskLimits = Field(default_factory=LlmTaskLimits)
     http_limits: LlmHttpLimits = Field(default_factory=LlmHttpLimits)
+    proposal: ConceptProposalSettings = Field(default_factory=ConceptProposalSettings)
 
     @property
     def missing(self) -> tuple[str, ...]:

@@ -943,7 +943,7 @@ class SQLiteStore:
             conn.execute(
                 "INSERT INTO chunks (chunk_id, document_id, subject_code, chapter_code, category, page_number, "
                 "page_end, raw_text, verbatim_quote, tags_json, linked_chunk_ids_json, token_count, label_status, "
-                "mapping_confidence, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "mapping_confidence, version, is_exercise) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     chunk.chunk_id,
                     chunk.doc_id,
@@ -960,6 +960,7 @@ class SQLiteStore:
                     chunk.label_status,
                     chunk.mapping_confidence,
                     chunk.version,
+                    None if chunk.is_exercise is None else int(chunk.is_exercise),
                 ),
             )
         except sqlite3.IntegrityError as exc:
@@ -1022,13 +1023,14 @@ class SQLiteStore:
                 "label_status": row["label_status"],
                 "mapping_confidence": row["mapping_confidence"],
                 "version": row["version"],
+                "is_exercise": None if row["is_exercise"] is None else bool(row["is_exercise"]),
             }
         )
 
     _CHUNK_SELECT = (
         "SELECT chunk_id, document_id, subject_code, chapter_code, category, page_number, page_end, raw_text, "
-        "verbatim_quote, tags_json, linked_chunk_ids_json, token_count, label_status, mapping_confidence, version "
-        "FROM chunks"
+        "verbatim_quote, tags_json, linked_chunk_ids_json, token_count, label_status, mapping_confidence, version, "
+        "is_exercise FROM chunks"
     )
 
     def _load_chunks(self, conn: sqlite3.Connection, where: str, params: Sequence[object]) -> list[KnowledgeChunk]:
@@ -1143,6 +1145,25 @@ class SQLiteStore:
             stored = self._load_chunks(conn, "WHERE chunk_id = ?", (chunk.chunk_id,))
         return stored[0]
 
+    def set_chunk_exercise(self, chunk_id: str, is_exercise: bool | None, expected_version: int) -> KnowledgeChunk:
+        """Một giao dịch: chỉ cột `is_exercise` và `version` (§5.8); nhãn khác và người sửa giữ nguyên."""
+        with self._write() as conn:
+            cursor = conn.execute(
+                "UPDATE chunks SET is_exercise = ?, version = version + 1 WHERE chunk_id = ? AND version = ?",
+                (None if is_exercise is None else int(is_exercise), chunk_id, expected_version),
+            )
+            if cursor.rowcount == 0:
+                raise _version_conflict(
+                    conn,
+                    "chunk",
+                    chunk_id,
+                    expected_version,
+                    "SELECT version FROM chunks WHERE chunk_id = ?",
+                    (chunk_id,),
+                )
+            stored = self._load_chunks(conn, "WHERE chunk_id = ?", (chunk_id,))
+        return stored[0]
+
     # ------------------------------------------------------------------ #
     # Cặp khái niệm (§5.8, ADR-007)
     # ------------------------------------------------------------------ #
@@ -1150,7 +1171,7 @@ class SQLiteStore:
     _PAIR_SELECT = (
         "SELECT p.pair_id, p.chunk_id, p.subject_code, p.chapter_code, p.term, p.definition_quote, "
         "p.term_spans_json, p.status, p.proposed_by, p.mapping_confidence, p.created_at, p.confirmed_at, p.version, "
-        "c.raw_text FROM concept_pairs AS p LEFT JOIN chunks AS c ON c.chunk_id = p.chunk_id"
+        "p.pre_selected, p.failed_gates_json, c.raw_text FROM concept_pairs AS p LEFT JOIN chunks AS c ON c.chunk_id = p.chunk_id"
     )
 
     @staticmethod
@@ -1170,6 +1191,8 @@ class SQLiteStore:
                 "created_at": row["created_at"],
                 "confirmed_at": row["confirmed_at"],
                 "version": row["version"],
+                "pre_selected": bool(row["pre_selected"]),
+                "failed_gates": json.loads(str(row["failed_gates_json"])),
             }
         )
 
@@ -1212,7 +1235,8 @@ class SQLiteStore:
                 conn.execute(
                     "INSERT INTO concept_pairs (pair_id, chunk_id, subject_code, chapter_code, term, definition_quote, "
                     "term_spans_json, status, proposed_by, mapping_confidence, created_at, confirmed_at, version, "
-                    "edited_by, edited_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "edited_by, edited_at, pre_selected, failed_gates_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         pair.pair_id,
                         pair.chunk_id,
@@ -1229,6 +1253,8 @@ class SQLiteStore:
                         pair.version,
                         edited_by,
                         edited_at,
+                        int(pair.pre_selected),
+                        json.dumps(pair.failed_gates),
                     ),
                 )
             except sqlite3.IntegrityError as exc:

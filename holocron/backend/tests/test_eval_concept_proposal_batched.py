@@ -51,6 +51,10 @@ def _args(fixture: Path, out: Path, mode: str, *extra: str) -> list[str]:
         "5",
         "--mode",
         mode,
+        "--subject-code",
+        "IT3070",
+        "--chapter-code",
+        "ch1",
         *extra,
     ]
 
@@ -74,19 +78,21 @@ def test_batched_dry_run_needs_no_key(tmp_path: Path, mode: str, capsys: pytest.
 
 def test_batched_run_writes_counts_for_both_protocols(tmp_path: Path) -> None:
     fixture = _transcript(tmp_path / "t.json")
-    _, _, [chunk] = load_fixture(fixture)
+    _, _, [chunk] = load_fixture(fixture, "IT3070", "ch1")
     legacy = json.dumps([{"term": "Thanh ghi", "definition_quote": DEFINITION, "chunk_id": chunk.chunk_id}])
     pointer = json.dumps(
-        [
-            {
-                "term_span_id": "S2",
-                "term_exact": "Thanh ghi",
-                "def_span_ids": ["S2"],
-                "def_start_words": "Thanh ghi là",
-                "def_end_words": "bộ xử lý.",
-            },
-            {"chunk_id": chunk.chunk_id, "is_exercise": False},
-        ]
+        {
+            "chunks": [{"chunk_id": chunk.chunk_id, "is_exercise": False}],
+            "pairs": [
+                {
+                    "term_span_id": "S2",
+                    "term_exact": "Thanh ghi",
+                    "def_span_ids": ["S2"],
+                    "def_start_words": "Thanh ghi là",
+                    "def_end_words": "bộ xử lý.",
+                }
+            ],
+        }
     )
     config = load_runtime_config(CONFIGURED_ENV)
     for mode, response in (("legacy", legacy), ("pointer", pointer)):
@@ -105,3 +111,27 @@ def test_batched_mode_checks_batch_size_and_configuration(tmp_path: Path) -> Non
     assert run(bad, load_runtime_config({})) == 2
     unconfigured = _parser().parse_args(_args(fixture, tmp_path / "o", "pointer"))
     assert run(unconfigured, load_runtime_config({})) == 2
+
+
+@pytest.mark.parametrize("mode", ["single", "pointer"])
+def test_transcript_without_subject_or_chapter_is_a_usage_error(
+    tmp_path: Path, mode: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Không có mã môn hay chương mặc định: file bản chép tay bắt buộc truyền cả hai."""
+    fixture = _transcript(tmp_path / "t.json")
+    args = _parser().parse_args(
+        [
+            str(fixture),
+            "--output-dir",
+            str(tmp_path / "o"),
+            "--price-input-per-mtok",
+            "1",
+            "--price-output-per-mtok",
+            "5",
+        ]
+        + ["--mode", mode, "--subject-code", "IT3070", "--dry-run"]
+    )
+    assert run(args, load_runtime_config({})) == 2
+    assert "--chapter-code" in capsys.readouterr().err
+    with pytest.raises(ValueError):
+        load_fixture(fixture)

@@ -31,7 +31,7 @@ Chạy trong `holocron/backend`:
   lượt gọi lại, và với `pointer` thêm một lượt xin mốc) × request HTTP mỗi lượt × cận trên token của lượt đắt nhất.
 - File chunk dạng bản chép tay của `eval_data` (`{"document", "page_count", "pages": [{"page", "blocks": [{"type",
   "text"}]}]}`) cũng được nhận: mỗi khối (trừ `page_number`, `header`) thành các dòng của trang, khối cách nhau bằng
-  một dòng rỗng; `--subject-code` và `--chapter-code` đặt nhãn.
+  một dòng rỗng; BẮT BUỘC truyền `--subject-code` và `--chapter-code` (không có giá trị mặc định).
 """
 
 from __future__ import annotations
@@ -167,12 +167,15 @@ def transcript_pages(data: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def load_fixture(
-    path: Path, subject_code: str = "ET4010", chapter_code: str = "ch2"
+    path: Path, subject_code: str | None = None, chapter_code: str | None = None
 ) -> tuple[IngestionStore, str, list[KnowledgeChunk]]:
-    """Kho in-memory chứa tài liệu mẫu đã cắt chunk bằng đúng bộ cắt của Vault."""
+    """Kho in-memory chứa tài liệu mẫu đã cắt chunk bằng đúng bộ cắt của Vault. File bản chép tay bắt buộc có
+    `subject_code` và `chapter_code` (thiếu ⇒ `ValueError`)."""
     raw = path.read_bytes()
     data: dict[str, Any] = {key: value for key, value in json.loads(raw).items() if not key.startswith("_")}
     if "document" in data and "pages" in data:
+        if subject_code is None or chapter_code is None:
+            raise ValueError("file bản chép tay cần --subject-code và --chapter-code")
         data = {"subject_code": subject_code, "chapter_code": chapter_code, "pages": transcript_pages(data)}
     document = UploadedDocument.from_content(raw, path.name, "application/pdf")
     store = IngestionStore()
@@ -204,8 +207,8 @@ def _parser() -> argparse.ArgumentParser:
         "--mode", choices=("single", "legacy", "pointer"), default="single", help="chế độ đề xuất (xem docstring)"
     )
     parser.add_argument("--batch-chunks", type=int, default=20, help="số chunk mỗi lô của chế độ legacy/pointer")
-    parser.add_argument("--subject-code", default="ET4010", help="môn gán cho file bản chép tay")
-    parser.add_argument("--chapter-code", default="ch2", help="chương gán cho file bản chép tay")
+    parser.add_argument("--subject-code", default=None, help="môn gán cho file bản chép tay (bắt buộc với file đó)")
+    parser.add_argument("--chapter-code", default=None, help="chương gán cho file bản chép tay (bắt buộc với file đó)")
     return parser
 
 
@@ -268,7 +271,11 @@ def run(
         return run_batched(args, config, connect)
     model = config.llm.model_extract or ""
     limits = config.llm.task_limits
-    store, subject_code, chunks = load_fixture(args.chunks_json, args.subject_code, args.chapter_code)
+    try:
+        store, subject_code, chunks = load_fixture(args.chunks_json, args.subject_code, args.chapter_code)
+    except ValueError as exc:
+        print(f"{exc}.", file=sys.stderr)
+        return EXIT_USAGE
     messages = build_messages(chunks)
     input_sha256 = request_key(model, messages, args.max_tokens)
     client = CachingClient(
@@ -382,7 +389,11 @@ def run_batched(
         return EXIT_USAGE
     model = config.llm.model_extract or ""
     limits = config.llm.task_limits.model_copy(update={"max_tokens": args.max_tokens})
-    store, subject_code, chunks = load_fixture(args.chunks_json, args.subject_code, args.chapter_code)
+    try:
+        store, subject_code, chunks = load_fixture(args.chunks_json, args.subject_code, args.chapter_code)
+    except ValueError as exc:
+        print(f"{exc}.", file=sys.stderr)
+        return EXIT_USAGE
     batches = [chunks[start : start + args.batch_chunks] for start in range(0, len(chunks), args.batch_chunks)]
     calls_per_batch = 1 + limits.json_retry_max + (1 if args.mode == "pointer" else 0)
     client = CachingClient(

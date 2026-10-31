@@ -278,25 +278,40 @@ def test_selection_is_checked_against_normalized_candidates() -> None:
     assert checked_selection([nfd], "Bộ nhớ và") == unicodedata.normalize("NFC", "Bộ nhớ và")
 
 
-def test_chapter_patch_title_length_is_checked_after_normalization() -> None:
+def test_chapter_patch_title_length_is_checked_raw_and_after_normalization() -> None:
+    """§6.5: 1–300 trên chuỗi thô (Field), rồi kiểm lại 1–300 sau chuẩn hoá."""
     assert DocumentChapterPatch(editor_id="u", chapter_title="x" * 300).chapter_title == "x" * 300
-    padded = DocumentChapterPatch(editor_id="u", chapter_title="  " + "x" * 300 + "  ")
-    assert padded.chapter_title == "x" * 300, "khoảng trắng đầu/cuối không tính vào 300 ký tự"
-    spaced = DocumentChapterPatch(editor_id="u", chapter_title="a  " * 150)
-    assert spaced.chapter_title == " ".join(["a"] * 150)
-    for bad in ("x" * 301, "   ", " \t "):
+    padded = DocumentChapterPatch(editor_id="u", chapter_title="  " + "x" * 296 + "  ")
+    assert padded.chapter_title == "x" * 296, "khoảng trắng đầu/cuối không tính vào tên"
+    spaced = DocumentChapterPatch(editor_id="u", chapter_title="a  " * 100)
+    assert spaced.chapter_title == " ".join(["a"] * 100)
+    for bad in ("x" * 301, "   ", " 	 ", " " * 5000 + "Tên", "  " + "x" * 300 + "  ", "a  " * 150):
         with pytest.raises(ValidationError):
             DocumentChapterPatch(editor_id="u", chapter_title=bad)
 
 
-def test_reservations_count_each_hold() -> None:
+def test_ticket_opens_in_arrival_order_per_subject_and_closes() -> None:
     reservations = ChapterReservations()
-    reservations.add("ET4010", "ch2")
-    reservations.add("ET4010", "ch2")
-    reservations.add("IT3070", "ch1")
-    assert reservations.codes("ET4010") == {"ch2"} and len(reservations) == 3
-    reservations.remove("ET4010", "ch2")
-    assert reservations.codes("ET4010") == {"ch2"}, "lần giữ thứ hai vẫn còn"
-    reservations.remove("ET4010", "ch2")
-    reservations.remove("IT3070", "ch1")
-    assert reservations.codes("ET4010") == frozenset() and len(reservations) == 0
+    first, opened_first = reservations.open("ET4010", "doc_1")
+    second, opened_second = reservations.open("ET4010", "doc_2")
+    other, _ = reservations.open("IT3070", "doc_3")
+    assert opened_first and opened_second
+    assert (first.order, second.order, other.order) == (0, 1, 0)
+    assert reservations.earlier(second) == [first] and reservations.earlier(first) == [] == reservations.earlier(other)
+    assert len(reservations) == 3
+    reservations.close(first)
+    assert first.done.is_set() and reservations.earlier(second) == [] and len(reservations) == 2
+    reservations.close(second)
+    reservations.close(other)
+    assert len(reservations) == 0
+
+
+def test_second_ticket_for_the_same_document_is_refused_across_subjects() -> None:
+    reservations = ChapterReservations()
+    first, _ = reservations.open("ET4010", "doc_1")
+    again, opened = reservations.open("IT3070", "doc_1")
+    assert not opened and again is first and len(reservations) == 1
+    reservations.close(first)
+    reopened, opened = reservations.open("IT3070", "doc_1")
+    assert opened and reopened is not first and first.done.is_set()
+    reservations.close(reopened)

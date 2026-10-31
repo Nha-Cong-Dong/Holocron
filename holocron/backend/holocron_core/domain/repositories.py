@@ -402,6 +402,15 @@ class VaultRepository(Protocol):
         """
         ...
 
+    def set_chunk_exercise(self, chunk_id: str, is_exercise: bool | None, expected_version: int) -> KnowledgeChunk:
+        """So-và-ghi nguyên tử nhãn `is_exercise` của chunk (LLM gắn trong job đề xuất cặp, §5.8; `None` khi LLM thiếu
+        nhãn, trả null hay nhãn xung đột); trả chunk đã lưu với `version = expected_version + 1`.
+
+        Chỉ ghi `is_exercise`; nhãn khác, `label_status` và văn bản giữ nguyên. Lệch version ⇒
+        `VersionConflictError`; không có chunk ⇒ `RecordNotFoundError`.
+        """
+        ...
+
     def add_concept_pair(self, pair: ConceptPair, edit: VaultEdit | None = None) -> ConceptPair:
         """Ghi cặp mới. Chunk không có ⇒ `MissingReferenceError`; trích dẫn không khớp nguyên văn chunk ⇒
         `QuoteMismatchError` (I3, kiểm trong giao dịch ghi)."""

@@ -47,6 +47,7 @@ function chunk(
     label_status: "confirmed",
     mapping_confidence: null,
     version: 1,
+    is_exercise: null,
   };
 }
 

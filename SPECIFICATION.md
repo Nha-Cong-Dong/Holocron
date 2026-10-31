@@ -748,7 +748,49 @@ class DocumentImport(StrictModel):
         # code (thêm 2026-10-31, GĐ1 1B): trang được giữ nhưng chưa xác nhận và không thuộc pages_needs_review: không
         # pending/failed/dropped, chưa confirmed, status = "ok" (ví dụ parallel_visual_series, trang restored, trang đã hoàn
         # tác tự xác nhận, trang không qua luật độ tin cậy nguồn); đây là các trang "Chấp nhận" sẽ xác nhận theo lô
+    # --- thêm 2026-11-01 (T1e, màn kết quả nhập; người dùng duyệt hướng 2026-11-01; tên field là đề xuất suy ra, chờ xác
+    # nhận). Mọi field dưới đây do backend tính lúc dựng response; KHÔNG lưu, không cột, không migration (§5.13). Frontend
+    # chỉ hiển thị, không tự đếm từ `pages` (I1, §3.3)
+    pages_failed: int = Field(default=0, ge=0)
+        # code: số trang status = "failed" (cùng định nghĩa DocumentSummary.pages_failed) (thêm suy ra, chờ xác nhận)
+    review_reason_counts: list[ReviewReasonCount] = []
+        # code: số trang theo từng ReviewReason, chỉ xét các trang được đếm vào pages_needs_review (status = needs_review,
+        # không dropped, chưa confirmed); một trang mang nhiều lý do được đếm ở mỗi lý do. Chỉ có lý do với count ≥ 1;
+        # sắp theo thứ tự khai báo của ReviewReason (ổn định)
+    dropped_role_counts: list[DroppedRoleCount] = []
+        # code: số trang bỏ mềm theo page_role, chỉ xét trang dropped = true; tổng count = pages_dropped. Chỉ có vai trò
+        # với count ≥ 1; sắp theo thứ tự khai báo của PageRole (ổn định)
+    proposal_job: ProposalJob | None = None
+        # code: job đề xuất cặp MỚI NHẤT của tài liệu (§5.8) trong ProposalJobRuntime: job có document_id = meta.doc_id,
+        # mọi trigger, created_at lớn nhất (hoà: tạo sau thắng, như GET …/jobs). Chép nguyên ProposalJob (status,
+        # batches_done/batches_total, proposed_count, rejected_count, rejected_by_reason, …); không có job ⇒ null
+    proposal_job_absent_reason: ProposalJobAbsentReason | None = None
+        # code: lý do không có proposal_job; null ⇔ proposal_job khác null (xem quy tắc dưới khối mã)
+
+class ReviewReasonCount(StrictModel):            # thêm 2026-11-01 (T1e; đề xuất suy ra)
+    reason: ReviewReason
+    count: int = Field(ge=1)                      # code: = len(pages)
+    pages: list[int]                              # code: page_number tăng dần, không trùng
+
+class DroppedRoleCount(StrictModel):             # thêm 2026-11-01 (T1e; đề xuất suy ra)
+    reason: Literal["cover_or_course_nav", "chapter_nav", "build_step"]   # các PageRole được phép bỏ mềm (validator ở trên)
+    count: int = Field(ge=1)                      # code: = len(pages)
+    pages: list[int]                              # code: page_number tăng dần, không trùng
+
+ProposalJobAbsentReason = Literal[               # thêm 2026-11-01 (T1e; đề xuất suy ra, chờ xác nhận)
+    "not_confirmed",     # tài liệu chưa `confirmed` (còn processing/review/failed): chưa cắt chunk nên chưa có job
+    "past_exam",         # source_kind = past_exam: không cắt chunk (§6.5), không có job
+    "no_chunks",         # tài liệu confirmed nhưng Vault không có chunk nào của tài liệu
+    "llm_unavailable",   # khả năng concept_pair_llm_proposal không khả dụng (GET /v1/runtime, §5.12, §11.4)
+    "not_retained",      # đủ điều kiện nhưng runtime không còn job nào của tài liệu: app khởi động lại, job bị đẩy khỏi
+                         # 100 job giữ lại, tạo job lỗi lúc xác nhận, hoặc tài liệu xác nhận khi LLM chưa cấu hình rồi
+                         # sau đó mới cấu hình. Người dùng chạy lại bằng POST /v1/vault/concept-pairs/jobs (§6.6)
+]
 ```
+
+- **Quy tắc `proposal_job` / `proposal_job_absent_reason` (T1e; đề xuất suy ra, chờ xác nhận).** Mọi endpoint trả `DocumentImport` (§6.5: `POST /v1/documents`, `GET /v1/documents/{document_id}`, `POST …/confirm`, `PATCH …/chapter`) điền ĐÚNG MỘT trong hai field. Có job của tài liệu trong runtime ⇒ `proposal_job` (kể cả khi LLM đã bị gỡ cấu hình sau đó). Không có ⇒ lý do đầu tiên đúng theo thứ tự: `not_confirmed` → `past_exam` → `no_chunks` → `llm_unavailable` → `not_retained`. Lý do tính lại ở mỗi lần đọc từ trạng thái hiện tại (không lưu). `llm_unavailable` lấy từ CÙNG hàm khả năng của `GET /v1/runtime` (§5.12), không phải nguồn thứ hai. Validator: hai field không cùng khác null; `proposal_job.document_id = meta.doc_id`.
+- Tiến độ job: frontend hỏi lại `GET /v1/documents/{document_id}` (hoặc `GET /v1/vault/concept-pairs/jobs/{job_id}`, §6.6) 1–2 s một lần khi `proposal_job.status ∈ {queued, running}`; mọi con số do backend đếm (I1).
+- `DocumentSummary` (§6.5) KHÔNG thêm các field T1e (đề xuất suy ra: màn kết quả đọc `DocumentImport`; danh sách tài liệu không cần).
 
 ```python
 # thêm 2026-10-31 (GĐ1 1A, duyệt 2026-10-31; tên là đề xuất suy ra, chờ xác nhận)
@@ -1038,7 +1080,9 @@ class ProposalJob(StrictModel):
     created_at: datetime; started_at: datetime | None = None; finished_at: datetime | None = None   # code
 ```
 
-- **Khi nào chạy:** tự tạo ngay sau khi một tài liệu thành `confirmed` và đã cắt chunk (bước chốt §5.7; `trigger = "document_confirmed"`, mọi chunk của tài liệu), nếu khả năng `concept_pair_llm_proposal` khả dụng (§11.4); không khả dụng thì không tạo job nào, chỉ ghi log (đề xuất suy ra). Gọi tay qua §6.6 (`trigger = "manual"`); không khả dụng ⇒ 409 `CapabilityError` như endpoint đồng bộ. Trích cặp bằng luật offline (không LLM) thuộc GĐ2, chưa có.
+- **Khi nào chạy:** tự tạo ngay sau khi một tài liệu thành `confirmed` và đã cắt chunk (bước chốt §5.7; `trigger = "document_confirmed"`, mọi chunk của tài liệu), nếu khả năng `concept_pair_llm_proposal` khả dụng (§11.4); không khả dụng thì không tạo job nào, chỉ ghi log (đề xuất suy ra), và `DocumentImport.proposal_job_absent_reason = "llm_unavailable"` (§5.7; thêm 2026-11-01, T1b).
+- **Một lần cho mỗi lần đóng tài liệu (T1b; thêm 2026-11-01, đề xuất suy ra, chờ xác nhận):** job tự tạo đúng ở lần bước chốt chuyển tài liệu từ chưa `confirmed` sang `confirmed` (mọi đường chốt: `POST /v1/documents/{document_id}/confirm`, xác nhận trang cuối, cuối lần đọc với tài liệu không có trang tự xác nhận). Quyết định "vừa đóng" được lấy dưới khoá của tài liệu, nên hai lời gọi đồng thời chỉ tạo một job; lời gọi `submit` chạy sau khi nhả khoá. Gọi lại xác nhận trên tài liệu đã `confirmed` (kể cả đường `SETTLE_PENDING` chỉ chạy lại bước chốt mà tài liệu đã đóng) KHÔNG tạo job mới. Tài liệu đã đóng mà chưa có job (`not_retained`, `llm_unavailable` rồi cấu hình LLM) chỉ chạy lại bằng tay (§6.6).
+- **Lỗi job không làm hỏng xác nhận:** `submit` lỗi (runtime đã đóng, lỗi bất kỳ) ⇒ ghi log, xác nhận vẫn trả 200 với tài liệu `confirmed` và chunk đã cắt; lô lỗi về sau chỉ đổi `ProposalJob.status`/`batches_failed`, không đổi trạng thái tài liệu, trang hay chunk. Gọi tay qua §6.6 (`trigger = "manual"`); không khả dụng ⇒ 409 `CapabilityError` như endpoint đồng bộ. Trích cặp bằng luật offline (không LLM) thuộc GĐ2, chưa có.
 - **Chạy:** chia chunk thành lô ≤ `PROPOSAL_JOB_BATCH_CHUNKS` (mặc định 5, trần 20; người dùng duyệt 2026-11-01, lý do: lô 12–20 chunk hỏng với `max_tokens` 4096 trên tài liệu thật); chạy song song tối đa `PROPOSAL_JOB_MAX_PARALLEL` lô (mặc định 2) trên toàn app; job xếp hàng FIFO. Mỗi lô dùng cùng giới hạn `LlmTaskLimits` (hạn tổng, số lần gọi lại khi JSON lỗi, trần số đề xuất) như endpoint đồng bộ. Lỗi một lô (LLM lỗi, hết hạn, JSON hỏng sau mọi lần thử) chỉ tăng `batches_failed`, không làm hỏng lô khác. Hai cấu hình trên là field có giá trị mặc định ở `infrastructure/llm_config.py` (cùng chỗ `LlmTaskLimits`), không phải biến môi trường (đề xuất suy ra).
 - **Huỷ:** đặt `cancel_requested`; lô chưa bắt đầu không chạy; lô đang chạy được chạy hết (không ngắt lời gọi HTTP) và cặp của nó vẫn được lưu; job thành `cancelled` (đề xuất suy ra).
 - **Lưu trạng thái job:** trong bộ nhớ của tiến trình, giữ trong một runtime cấp qua `Depends` (như `ImportRuntime`), không phải dict cấp module (CLAUDE.md §2.2); tắt app thì mất job (cặp đã lưu vẫn còn), không tự chạy lại. Không thêm bảng hay migration cho job (đề xuất suy ra: ít đổi contract nhất). Job đã kết thúc giữ tối đa 100 job gần nhất.
@@ -1921,6 +1965,8 @@ class DocumentSummary(StrictModel):              # đề xuất
     # status = needs_review
 ```
 
+- **Màn kết quả nhập (T1e; thêm 2026-11-01).** Màn hình đọc `GET /v1/documents/{document_id}` (`DocumentImport`, §5.7): `pages_kept`, `pages_dropped`, `pages_needs_review`, `pages_auto_confirmed`, `pages_kept_unconfirmed`, `pages_failed`, `review_reason_counts`, `dropped_role_counts`, `proposal_job` hoặc `proposal_job_absent_reason`. Không thêm endpoint mới; `DocumentSummary` giữ nguyên (đề xuất suy ra, ít đổi contract nhất).
+
 #### `PATCH /v1/documents/{document_id}/pages/{page_number}/lines`
 
 Sửa văn bản của một trang trước khi xác nhận.
@@ -1953,7 +1999,7 @@ Sửa văn bản của một trang trước khi xác nhận.
 | Method | Path | Body | Ngữ nghĩa | Lỗi |
 |---|---|---|---|---|
 | POST | `/v1/documents/{document_id}/pages/{page_number}/confirm` | `{editor_id, expected_version}` | Nhận trang `ok` và `needs_review`; với trang `needs_review`, xác nhận nghĩa là người dùng đã xem lại (duyệt 2026-10-26). `confirmed = true`, ghi `confirmed_at`; trả `200 PageExtraction`. Gọi lại trên trang đã xác nhận trả 200, không đổi gì | 404; 409 khi trang `pending`, trang `failed` (duyệt 2026-10-26), version lệch, trang không có dòng nào có văn bản (dòng header/footer không tính, thêm 2026-10-31), trang đang bỏ mềm (`dropped = true`; thêm 2026-10-31, GĐ0, `detail` đề xuất: "Trang đang bị bỏ qua; hãy hoàn tác trước khi xác nhận"), hoặc tài liệu nhập trước khi có `chapter_code` (duyệt 2026-10-26 chiều, §5.7); 409 `SETTLE_PENDING_DETAIL` khi Vault đã có chunk của tài liệu mà tài liệu chưa `confirmed` (duyệt 2026-10-28); 422 khi trang vượt giới hạn trang của Vault (tối đa 5000 dòng có văn bản, mỗi dòng tối đa 2000 ký tự; nay chỉ là kiểm tra phòng thủ vì trang quá nhiều dòng đã thành `failed` lúc đọc, `TOO_MANY_LINES`; duyệt 2026-10-28) |
-| POST | `/v1/documents/{document_id}/confirm` | `{editor_id}` | Xác nhận mọi trang `ok` chưa xác nhận; trả `200 DocumentImport`. Xác nhận theo lô chỉ nhận trang `ok` (duyệt 2026-10-26, theo ADR-008 mục 7): trang `needs_review` phải được xác nhận từng trang; trang `failed` không xác nhận được; trang bỏ mềm (`dropped = true`) bị bỏ qua, không xác nhận và không chặn việc chốt (thêm 2026-10-31, GĐ0). Từ 2026-10-31 (GĐ1 1B) đây là nút "Chấp nhận" một lần của luồng nhập: trang tự xác nhận giữ nguyên `confirmed_by = "auto"`, trang `ok` còn lại nhận `confirmed_by = "user"`, và chỉ bước chốt chạy trong endpoint này mới đóng được tài liệu có trang tự xác nhận (§5.7 "Chốt trạng thái"); còn trang `needs_review` chưa xác nhận thì tài liệu giữ `review`, người dùng xác nhận các trang đó rồi bấm "Chấp nhận" lần nữa (đề xuất suy ra) | 404; 409 khi còn trang `pending`, hoặc tài liệu nhập trước khi có `chapter_code` (duyệt 2026-10-26 chiều, §5.7); 409 `SETTLE_PENDING_DETAIL` khi còn trang cần xác nhận mà Vault đã có chunk của tài liệu và tài liệu chưa `confirmed` (nếu không còn trang nào cần xác nhận thì chỉ chạy lại bước chốt, §5.7); trang vượt giới hạn trang của Vault bị bỏ qua (không 422; code ghi cảnh báo vào log), trang `failed` do `TOO_MANY_LINES` không chặn việc chốt và các trang còn lại xác nhận như thường (duyệt 2026-10-28) |
+| POST | `/v1/documents/{document_id}/confirm` | `{editor_id}` | Xác nhận mọi trang `ok` chưa xác nhận; trả `200 DocumentImport`. Xác nhận theo lô chỉ nhận trang `ok` (duyệt 2026-10-26, theo ADR-008 mục 7): trang `needs_review` phải được xác nhận từng trang; trang `failed` không xác nhận được; trang bỏ mềm (`dropped = true`) bị bỏ qua, không xác nhận và không chặn việc chốt (thêm 2026-10-31, GĐ0). Từ 2026-10-31 (GĐ1 1B) đây là nút "Chấp nhận" một lần của luồng nhập: trang tự xác nhận giữ nguyên `confirmed_by = "auto"`, trang `ok` còn lại nhận `confirmed_by = "user"`, và chỉ bước chốt chạy trong endpoint này mới đóng được tài liệu có trang tự xác nhận (§5.7 "Chốt trạng thái"); còn trang `needs_review` chưa xác nhận thì tài liệu giữ `review`, người dùng xác nhận các trang đó rồi bấm "Chấp nhận" lần nữa (đề xuất suy ra). Từ 2026-11-01 (T1b): lời gọi đóng được tài liệu thì, sau khi cắt chunk, tự tạo job đề xuất cặp (§5.8 "Job nền đề xuất cặp", `trigger = "document_confirmed"`) và response có `proposal_job` (`status = "queued"`); LLM không khả dụng ⇒ không tạo job, vẫn 200, `proposal_job_absent_reason = "llm_unavailable"`; idempotent: gọi lại trên tài liệu đã `confirmed` trả 200 với job hiện có (nếu còn), không tạo job trùng; tạo job lỗi không đổi kết quả xác nhận (§5.7 quy tắc `proposal_job`) | 404; 409 khi còn trang `pending`, hoặc tài liệu nhập trước khi có `chapter_code` (duyệt 2026-10-26 chiều, §5.7); 409 `SETTLE_PENDING_DETAIL` khi còn trang cần xác nhận mà Vault đã có chunk của tài liệu và tài liệu chưa `confirmed` (nếu không còn trang nào cần xác nhận thì chỉ chạy lại bước chốt, §5.7); trang vượt giới hạn trang của Vault bị bỏ qua (không 422; code ghi cảnh báo vào log), trang `failed` do `TOO_MANY_LINES` không chặn việc chốt và các trang còn lại xác nhận như thường (duyệt 2026-10-28) |
 
 - MVP không có bỏ xác nhận (đề xuất), trừ hoàn tác tự xác nhận của trang `confirmed_by = "auto"` (`POST …/unconfirm` dưới đây; thêm 2026-10-31, GĐ1 1B); muốn đọc lại thì xoá tài liệu và nhập lại.
 - Xác nhận từng trang hay theo lô ghi `confirmed_by = "user"` (thêm 2026-10-31). Đọc lại riêng một trang `failed` là việc sau MVP (duyệt 2026-10-26 chiều, §1.6).
@@ -2063,6 +2109,8 @@ class SearchHit(StrictModel):                    # đề xuất
 | GET | `/v1/vault/concept-pairs/jobs/{job_id}` | — | `200 ProposalJob` (client hỏi tiến độ 1–2 s một lần, như §6.5) | 404 (kể cả job đã mất khi khởi động lại) |
 | POST | `/v1/vault/concept-pairs/jobs/{job_id}/cancel` | — | `200 ProposalJob`; gọi trên job đã kết thúc trả 200, không đổi gì | 404 |
 
+- Job tự tạo khi xác nhận tài liệu (T1b, `trigger = "document_confirmed"`) đi qua cùng hàng đợi và hiện ở `GET …/jobs` như job gọi tay; trạng thái job mới nhất của một tài liệu cũng có ở `DocumentImport.proposal_job` (§5.7).
+- **Trạng thái "không có LLM" của màn khái niệm (T1b mục 3; thêm 2026-11-01, đề xuất suy ra, chờ xác nhận):** nguồn DUY NHẤT là `GET /v1/runtime` (§5.12), khả năng `concept_pair_llm_proposal` có `available = false` (lý do `llm_not_configured` hoặc mã khác của `CapabilityReason`). Khi đó màn khái niệm hiện "Cần cấu hình LLM để tự đề xuất" và ẩn nút tạo job. `DocumentImport.proposal_job_absent_reason = "llm_unavailable"` chỉ là hệ quả của cùng khả năng đó cho màn kết quả nhập, không phải nguồn thứ hai.
 - Job không gọi mạng khi tạo; lời gọi LLM chạy nền theo §5.8. Tiến độ (`batches_done`, `batches_failed`, `proposed_count`, `rejected_count`) do backend đếm; frontend chỉ hiển thị (I1).
 - Dữ liệu rời máy như `propose` (§13.1).
 

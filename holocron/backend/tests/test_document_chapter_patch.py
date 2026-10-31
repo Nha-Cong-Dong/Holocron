@@ -221,6 +221,24 @@ def test_invalid_body_is_422_and_changes_nothing(env: ImportEnv, body: dict[str,
     assert _get(env, doc_id) == before
 
 
+def test_padded_title_over_300_raw_characters_is_422(env: ImportEnv) -> None:
+    """§6.5: `chapter_title` dài 1–300 ký tự trên chuỗi thô; chuỗi thô quá dài bị chặn dù chuẩn hoá còn ngắn."""
+    doc_id, _ = _import(env, "dai-tho")
+    before = _get(env, doc_id)
+    for raw in (" " * 5000 + "Tên", "Tên" + " " * 5000, "a " * 200):
+        assert _patch(env, doc_id, chapter_title=raw).status_code == 422
+    assert _get(env, doc_id) == before
+    assert _patch(env, doc_id, chapter_title=" " * 297 + "Tên").status_code == 200, "đúng 300 ký tự thô thì nhận"
+    assert _get(env, doc_id)["chapter_title"] == "Tên"
+
+
+def test_openapi_documents_the_chapter_title_length() -> None:
+    schemas: dict[str, Any] = app.openapi()["components"]["schemas"]
+    options: list[dict[str, Any]] = schemas["DocumentChapterPatch"]["properties"]["chapter_title"]["anyOf"]
+    text = next(option for option in options if option.get("type") == "string")
+    assert (text["minLength"], text["maxLength"]) == (1, 300)
+
+
 # --------------------------------------------------------------------------- #
 # Nhánh còn thiếu (report mutation feat-chapter-auto 2026-10-31)
 # --------------------------------------------------------------------------- #

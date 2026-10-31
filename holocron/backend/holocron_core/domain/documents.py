@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import unicodedata
 from datetime import datetime
-from typing import Literal, get_args
+from typing import Annotated, Literal, get_args
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, StringConstraints, field_validator, model_validator
 
 from .ingestion import ExtractedTable
 from .limits import MAX_LINE_CHARS
@@ -160,6 +160,11 @@ CHAPTER_FLAG_ORDER: tuple[ChapterFlag, ...] = get_args(ChapterFlag)
 ChapterCodeSource = Literal["user", "file_name", "next_free"]
 ChapterTitleSource = Literal["user", "repeated_header", "file_name", "llm"]
 MAX_CHAPTER_TITLE_CHARS = 300
+# Độ dài 1–300 tính trên chuỗi thô: `strip_whitespace=False` ghi đè cấu hình của `StrictModel`, nếu không khoảng trắng
+# đầu/cuối bị bỏ trước khi đếm và 5000 dấu cách kèm một tên ngắn lọt qua
+RawChapterTitle = Annotated[
+    str, StringConstraints(strip_whitespace=False, min_length=1, max_length=MAX_CHAPTER_TITLE_CHARS)
+]
 
 
 def normalize_chapter_title(value: str) -> str:
@@ -335,8 +340,8 @@ class DocumentChapterPatch(StrictModel):
 
     editor_id: str = Field(min_length=1, max_length=MAX_EDITOR_ID_CHARS)
     chapter_code: str | None = Field(default=None, pattern=CHAPTER_CODE_PATTERN)
-    # Độ dài 1–300 kiểm SAU khi chuẩn hoá (NFC, gộp khoảng trắng) trong `_normalized_title`
-    chapter_title: str | None = None
+    # §6.5: 1–300 ký tự trên chuỗi thô (`RawChapterTitle`), rồi kiểm lại 1–300 sau chuẩn hoá (NFC, gộp khoảng trắng)
+    chapter_title: RawChapterTitle | None = None
 
     @field_validator("chapter_title")
     @classmethod

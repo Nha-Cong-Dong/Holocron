@@ -70,13 +70,12 @@ from ..infrastructure.document_readers.config import PdfReaderConfig
 from ..infrastructure.document_readers.pdf_reader import PDF_MAGIC, PdfInputError, PdfReader, PdfWorkerError
 from ..infrastructure.document_readers.tiers import failed_page
 from ..infrastructure.storage.original_files import StagedFile
-from .chapter_naming import InitialChapter
+from .chapter_naming import DEFAULT_TITLE, InitialChapter
 from .chapter_reservation import ChapterReservations, reserve_chapter
 from .vault import ingest_confirmed_text
 
 MAX_FILENAME_LENGTH = 255
 DEFAULT_FILENAME = "upload.pdf"
-DEFAULT_TITLE = "Tài liệu"
 MAX_TITLE_LENGTH = 300
 PDF_MEDIA_TYPE = "application/pdf"
 # `Content-Type` khai báo được chấp nhận (§6.5 bước 2): rỗng, `application/octet-stream` hoặc đúng PDF.
@@ -599,9 +598,10 @@ def accept_document(
     Vault ngay (xem `read_document`).
 
     Sau bước kiểm byte (§6.5 bước 1–2), lần nhận đi qua cổng `runtime.gate` cho tới khi xong, nên `runtime.close`
-    chờ cả lượt đang ghi file tạm hay mở thử. Chương được chọn và giữ chỗ dưới khoá của môn (`reserve_chapter`,
-    để hai file nhập cùng lúc không nhận cùng chương trống, §5.7; khoá môn nhả ngay sau đó, không bọc bước mở thử).
-    Phần còn lại chạy dưới khoá của `document_id` (`runtime.locks`):
+    chờ cả lượt đang ghi file tạm hay mở thử. Lần nhận lấy một phiếu theo thứ tự đến của môn (`reserve_chapter`, khoá môn nhả
+    ngay sau đó, không bọc bước mở thử); chương chỉ được chọn sau khi mở thử xong và sau khi các phiếu đến trước kết
+    thúc, nên kết quả nhập đồng thời tương đương một thứ tự tuần tự (§5.7); cùng nội dung đang nhận ở lần khác thì
+    chờ lần đó kết thúc. Phần còn lại chạy dưới khoá của `document_id` (`runtime.locks`):
     request thứ hai cùng nội dung chờ request đầu xong rồi thấy tài liệu đã có (200, hoặc 409 theo
     `_existing_outcome`). Tài liệu
     cùng mọi trang `pending` được tạo trong MỘT giao dịch (`create_imported_document`); nếu một tiến trình khác vẫn
@@ -632,7 +632,7 @@ def accept_document(
                 filename=filename,
                 chapter_code=request.chapter_code,
                 document_id=document_id,
-            ) as chapter,
+            ) as turn,
             runtime.locks.hold(document_id),
         ):
             existing = store.get_imported_document(document_id)
@@ -649,7 +649,7 @@ def accept_document(
                     sha256=staged.sha256,
                     page_count=page_count,
                     now=now,
-                    chapter=chapter,
+                    chapter=turn.settle(),
                 )
             except BaseException:
                 runtime.files.discard(staged)

@@ -35,6 +35,9 @@ from ..domain.repositories import ImportedDocument
 MIN_CHAPTER_NUMBER = 1
 MAX_CHAPTER_NUMBER = 99
 
+# Tiêu đề mặc định của §6.5 khi tên file không còn ký tự nào; `document_import` nhập lại từ đây
+DEFAULT_TITLE = "Tài liệu"
+
 _ASCII_DIGIT_RUN = re.compile(r"[0-9]+")  # `[0-9]` chỉ khớp chữ số ASCII
 _FILENAME_SEPARATORS = str.maketrans({"_": " ", "-": " "})
 
@@ -140,11 +143,7 @@ def clean_filename_title(filename: str) -> str:
     cleaned = cleaned[:MAX_CHAPTER_TITLE_CHARS].rstrip()
     if cleaned:
         return cleaned
-    # Không còn ký tự nào (ví dụ "___.pdf") ⇒ tiêu đề mặc định của §6.5. Import trong hàm: `document_import` nhập
-    # module này khi khởi tạo, nên import ở đầu file sẽ vòng.
-    from .document_import import DEFAULT_TITLE
-
-    return DEFAULT_TITLE
+    return DEFAULT_TITLE  # không còn ký tự nào (ví dụ "___.pdf")
 
 
 def _only_marks(text: str) -> bool:

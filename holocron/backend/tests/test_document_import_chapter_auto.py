@@ -22,6 +22,7 @@ import pytest
 
 from holocron_core.domain.repositories import AppStore, ImportedDocument
 from holocron_core.domain.schemas import DocumentMeta, SourceKind
+from holocron_core.infrastructure.document_readers.pdf_reader import PdfInputError
 from holocron_core.infrastructure.storage.original_files import OriginalFileStore
 from holocron_core.routers.api import app
 from holocron_core.services.chapter_naming import ChapterChoice, auto_chapter
@@ -206,6 +207,20 @@ class MeetingProbeReader(FakePdfReader):
         return super().probe(path)
 
 
+@dataclass
+class FailingAfterMeetingReader(MeetingProbeReader):
+    """Như `MeetingProbeReader`, nhưng file có nội dung `bad_content` bị từ chối (`OPEN_FAILED`) sau khi hai lần nhận
+    đã cùng ở bước mở thử."""
+
+    bad_content: bytes = b""
+
+    def probe(self, path: Path) -> int:
+        self.meeting.wait()
+        if path.read_bytes() == self.bad_content:
+            raise PdfInputError("OPEN_FAILED")
+        return FakePdfReader.probe(self, path)
+
+
 @dataclass(frozen=True)
 class Importer:
     store: AppStore
@@ -262,6 +277,8 @@ def test_two_files_with_the_same_number_at_once(store: AppStore, tmp_path: Path)
     outcomes = _run_two(importer, ("a", "ET4010", "Chuong-2.pdf"), ("b", "ET4010", "Chuong-2-ban-2.pdf"))
     chapters = sorted((o.document.chapter_code, o.document.chapter_source.code) for o in outcomes)
     assert chapters == [("ch1", "next_free"), ("ch2", "file_name")]
+    flags = {o.document.chapter_code: o.document.chapter_flags for o in outcomes}
+    assert flags == {"ch1": ["CHAPTER_NUMBER_TAKEN"], "ch2": []}, "chỉ lần nhận sau bị cờ trùng số"
 
 
 def test_imports_of_different_subjects_do_not_wait_for_each_other(store: AppStore, tmp_path: Path) -> None:
@@ -317,3 +334,51 @@ def test_subject_lock_is_released_before_the_document_lock_is_taken(store: AppSt
     )
     Importer(store, runtime, FakePdfReader(page_count=1), threading.Barrier(1))("thu-tu")
     assert events == ["+subject", "-subject", "+doc", "-doc"]
+
+
+def test_failed_file_does_not_take_the_chapter_of_a_concurrent_valid_file(store: AppStore, tmp_path: Path) -> None:
+    """File hỏng (422) và file hợp lệ cùng số chương, cùng ở bước mở thử: dù ai đến trước, kết quả phải như tuần tự
+    (file hỏng không tạo gì), tức file hợp lệ nhận đúng số trong tên, không bị cờ trùng số."""
+    reader = FailingAfterMeetingReader(page_count=1, bad_content=pdf_bytes("hong"))
+    importer = _importer(store, tmp_path / "files", reader)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        bad = pool.submit(importer, "hong", "ET4010", "Chuong-2.pdf")
+        good = pool.submit(importer, "tot", "ET4010", "Chuong-2-ban-hop-le.pdf")
+        with pytest.raises(DocumentImportError) as raised:
+            bad.result(timeout=2 * WAIT_S)
+        outcome = good.result(timeout=2 * WAIT_S)
+    assert raised.value.code == "OPEN_FAILED"
+    assert (outcome.document.chapter_code, outcome.document.chapter_source.code) == ("ch2", "file_name")
+    assert outcome.document.chapter_flags == []
+    assert [d.chapter_code for d in store.list_imported_documents("ET4010")] == ["ch2"]
+    assert len(importer.runtime.chapter_reservations) == 0
+
+
+def test_same_content_sent_twice_at_once_does_not_take_a_second_chapter(store: AppStore, tmp_path: Path) -> None:
+    """Gửi trùng file A song song với file B: A (hai lần) chỉ chiếm MỘT chương nên B nhận chương trống kế, không nhảy
+    cách một số. Lặp nhiều vòng (mỗi vòng một môn) để thứ tự đến thay đổi."""
+    importer = _importer(store, tmp_path / "files", FakePdfReader(page_count=1), parties=3)
+    for round_number in range(15):
+        subject = f"ET{4100 + round_number}"
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures = [
+                pool.submit(importer, f"a{round_number}", subject, "a.pdf"),
+                pool.submit(importer, f"a{round_number}", subject, "a-lai.pdf"),
+                pool.submit(importer, f"b{round_number}", subject, "b.pdf"),
+            ]
+            first, second, other = (future.result(timeout=2 * WAIT_S) for future in futures)
+        assert sorted([first.created, second.created]) == [False, True], "một lần tạo, một lần trả bản cũ"
+        assert first.document.chapter_code == second.document.chapter_code
+        assert sorted(d.chapter_code or "" for d in store.list_imported_documents(subject)) == ["ch1", "ch2"]
+        assert other.created and other.document.chapter_code != first.document.chapter_code
+    assert len(importer.runtime.chapter_reservations) == 0 and len(importer.runtime.locks) == 0
+
+
+def test_user_chapter_does_not_wait_for_an_earlier_file(store: AppStore, tmp_path: Path) -> None:
+    """Mã do người dùng nhập không phụ thuộc lần nhận khác: hai file cùng mở thử một lúc (nếu một bên chờ bên kia thì
+    `Barrier` hết giờ), mỗi bên giữ nguyên mã của mình."""
+    importer = _importer(store, tmp_path / "files", MeetingProbeReader(page_count=1))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(importer, tag, "ET4010", f"{tag}.pdf", "ch3") for tag in ("u1", "u2")]
+        outcomes = [future.result(timeout=2 * WAIT_S) for future in futures]
+    assert [(o.document.chapter_code, o.document.chapter_source.code) for o in outcomes] == [("ch3", "user")] * 2

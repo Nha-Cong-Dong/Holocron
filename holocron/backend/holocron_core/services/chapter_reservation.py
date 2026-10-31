@@ -1,21 +1,32 @@
-"""Giữ chỗ chương lúc nhận file (SPECIFICATION §6.5 bước 5, §5.7 "Chương tự động"; GĐ1 1A).
+"""Thứ tự nhận file trong cùng môn (SPECIFICATION §6.5 bước 5, §5.7 "Chương tự động"; GĐ1 1A).
 
-Hai file cùng môn nhập cùng lúc không được nhận cùng chương trống. Chọn chương cần biết chương đã có của môn, nhưng
-tài liệu chỉ được tạo sau khi mở thử PDF (tới vài giây). Để không giữ khoá môn suốt lúc mở thử, việc chọn chương
-chạy dưới khoá của môn và GIỮ CHỖ chương vừa chọn; lần chọn sau cùng môn coi chương đã giữ chỗ như chương đã có.
-Chỗ được trả khi lần nhận kết thúc (đã tạo tài liệu, trả bản cũ, hay lỗi), nên sau đó chương được tính từ kho.
+Yêu cầu: kết quả nhiều lần nhận chạy đồng thời phải tương đương MỘT thứ tự tuần tự nào đó của chúng. Chọn chương cần
+biết chương đã có của môn, nhưng tài liệu chỉ được tạo sau khi mở thử PDF (tới vài giây), và một lần nhận có thể lỗi
+(file hỏng) mà không tạo gì. Cách làm: mỗi lần nhận lấy một PHIẾU theo thứ tự đến (số thứ tự theo môn) rồi mở thử PDF
+đồng thời với các lần khác; chỉ tới lúc cần chọn chương (đã mở thử xong, sắp tạo tài liệu) lần nhận mới CHỜ mọi phiếu
+đến trước của cùng môn kết thúc (đã tạo tài liệu, trả bản cũ, hay lỗi: phiếu được trả ở `finally`), rồi chọn chương từ
+kho. Phiếu đến sau không chọn trước phiếu đến trước nên chương không bị chiếm bởi một lần nhận rồi lỗi.
 
-Thứ tự khoá: khoá môn chỉ giữ trong lúc chọn và giữ chỗ, nhả TRƯỚC khi lấy khoá của tài liệu; không bao giờ lấy khoá
-môn khi đang giữ khoá tài liệu.
+- Nhập lại cùng nội dung: chỉ có một phiếu sống cho mỗi `document_id` (toàn cục, kể cả khác môn). Lần nhận thứ hai
+  cùng nội dung chờ lần đầu kết thúc rồi mới lấy phiếu: thấy tài liệu đã có thì trả bản cũ và KHÔNG chọn chương (không
+  chiếm chương nào); lần đầu lỗi thì lần hai thành lần nhận chính.
+- Mã người dùng nhập (`chapter_code`) không phụ thuộc lần nhận khác nên không chờ.
+
+Không có vòng chờ: lần nhận chỉ chờ phiếu đến trước nó (khác `document_id`, vì mỗi `document_id` chỉ một phiếu sống),
+mà phiếu đó chỉ có thể chờ phiếu còn sớm hơn; khoá của tài liệu chỉ do chính chủ phiếu tương ứng hoặc luồng đọc (không
+chờ phiếu nào) giữ.
+
+Thứ tự khoá: khoá môn chỉ giữ trong lúc lấy phiếu, nhả TRƯỚC khi lấy khoá của tài liệu; không bao giờ lấy khoá môn
+khi đang giữ khoá tài liệu.
 """
 
 from __future__ import annotations
 
 import contextlib
 import threading
-from collections import Counter
 from collections.abc import Iterator
 from contextlib import AbstractContextManager
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from ..domain.repositories import DocumentRepository
@@ -26,35 +37,78 @@ class KeyedLock(Protocol):
     def hold(self, key: str) -> AbstractContextManager[None]: ...
 
 
+@dataclass(eq=False)
+class ChapterTicket:
+    """Phiếu của một lần nhận đang chạy; `done` được bật khi lần nhận kết thúc (mọi kết cục)."""
+
+    subject_code: str
+    document_id: str
+    order: int
+    done: threading.Event = field(default_factory=threading.Event)
+
+
 class ChapterReservations:
-    """Chương đã chọn cho lần nhận đang chạy, theo môn; đếm số lần giữ (hai lần nhận có thể giữ cùng mã người dùng
-    nhập)."""
+    """Các phiếu đang sống của lần nhận file; thứ tự phiếu tính theo từng môn."""
 
     def __init__(self) -> None:
         self._guard = threading.Lock()
-        self._codes: dict[str, Counter[str]] = {}
+        self._live: list[ChapterTicket] = []
+        self._next_order: dict[str, int] = {}
 
-    def codes(self, subject_code: str) -> frozenset[str]:
+    def open(self, subject_code: str, document_id: str) -> tuple[ChapterTicket, bool]:
+        """Lấy phiếu mới. Đã có phiếu sống của cùng `document_id` thì không lấy: trả phiếu đó kèm `False`."""
         with self._guard:
-            return frozenset(self._codes.get(subject_code, Counter()))
+            for live in self._live:
+                if live.document_id == document_id:
+                    return live, False
+            order = self._next_order.get(subject_code, 0)
+            self._next_order[subject_code] = order + 1
+            ticket = ChapterTicket(subject_code, document_id, order)
+            self._live.append(ticket)
+            return ticket, True
 
-    def add(self, subject_code: str, chapter_code: str) -> None:
+    def earlier(self, ticket: ChapterTicket) -> list[ChapterTicket]:
+        """Phiếu sống của cùng môn đến trước `ticket`."""
         with self._guard:
-            self._codes.setdefault(subject_code, Counter())[chapter_code] += 1
+            return [
+                live for live in self._live if live.subject_code == ticket.subject_code and live.order < ticket.order
+            ]
 
-    def remove(self, subject_code: str, chapter_code: str) -> None:
+    def close(self, ticket: ChapterTicket) -> None:
         with self._guard:
-            codes = self._codes[subject_code]
-            codes[chapter_code] -= 1
-            if codes[chapter_code] <= 0:
-                del codes[chapter_code]
-            if not codes:
-                del self._codes[subject_code]
+            self._live.remove(ticket)
+            if not any(live.subject_code == ticket.subject_code for live in self._live):
+                del self._next_order[ticket.subject_code]
+        ticket.done.set()
 
     def __len__(self) -> int:
-        """Số chỗ đang giữ (mọi môn)."""
+        """Số phiếu đang sống (mọi môn)."""
         with self._guard:
-            return sum(codes.total() for codes in self._codes.values())
+            return len(self._live)
+
+
+@dataclass(frozen=True)
+class ChapterTurn:
+    """Lượt nhận của một file: `settle` chọn chương và tên tạm khi tới lúc tạo tài liệu."""
+
+    reservations: ChapterReservations
+    ticket: ChapterTicket
+    store: DocumentRepository
+    filename: str
+    chapter_code: str | None
+
+    def settle(self) -> InitialChapter:
+        """Chờ mọi lần nhận đến trước của cùng môn kết thúc (trừ khi mã do người dùng nhập, không phụ thuộc ai), rồi
+        chọn chương từ kho. Gọi một lần, ngay trước khi dựng bản ghi tài liệu mới; không giữ khoá môn."""
+        if not self.chapter_code:
+            for earlier in self.reservations.earlier(self.ticket):
+                earlier.done.wait()
+        return initial_chapter(
+            self.filename,
+            self.chapter_code,
+            self.store.list_imported_documents(self.ticket.subject_code),
+            self.ticket.document_id,
+        )
 
 
 @contextlib.contextmanager
@@ -67,18 +121,16 @@ def reserve_chapter(
     filename: str,
     chapter_code: str | None,
     document_id: str,
-) -> Iterator[InitialChapter]:
-    """Chọn chương và tên tạm (`initial_chapter`) dưới khoá của môn, giữ chỗ chương đó cho tới khi thoát khối."""
-    with subject_locks.hold(subject_code):
-        chapter = initial_chapter(
-            filename,
-            chapter_code,
-            store.list_imported_documents(subject_code),
-            document_id,
-            reservations.codes(subject_code),
-        )
-        reservations.add(subject_code, chapter.chapter_code)
+) -> Iterator[ChapterTurn]:
+    """Lấy phiếu theo thứ tự đến (dưới khoá của môn, nhả ngay), giữ tới khi thoát khối. Cùng nội dung đang được nhận
+    ở lần khác thì chờ lần đó kết thúc rồi thử lại."""
+    while True:
+        with subject_locks.hold(subject_code):
+            ticket, opened = reservations.open(subject_code, document_id)
+        if opened:
+            break
+        ticket.done.wait()
     try:
-        yield chapter
+        yield ChapterTurn(reservations, ticket, store, filename, chapter_code)
     finally:
-        reservations.remove(subject_code, chapter.chapter_code)
+        reservations.close(ticket)

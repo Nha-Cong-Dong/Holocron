@@ -514,6 +514,13 @@ export interface DocumentImport {
   chapter_code: string;
   status: DocumentStatus;
   pages: PageSummary[];
+  /** Tên chương (1–300 ký tự); null chỉ với tài liệu nhập trước khi có tên chương. */
+  chapter_title: string | null;
+  chapter_source: ChapterSource;
+  /** Cờ chương do code đặt (thứ tự khai báo, không trùng); chỉ để hiển thị. */
+  chapter_flags: ChapterFlag[];
+  /** Cài đặt "Tự xác nhận" gửi khi nhập (field form `auto_confirm`, mặc định bật). */
+  auto_confirm: boolean;
 }
 
 /** Một phần tử của `GET /v1/documents`, mới nhất trước. */

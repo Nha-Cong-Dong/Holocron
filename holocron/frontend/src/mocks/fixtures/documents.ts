@@ -215,6 +215,10 @@ export function mockDocumentImport(
     chapter_code: "ch1",
     status,
     pages: pages.map(pageSummaryOf),
+    chapter_title: "tai lieu mau lich on tap",
+    chapter_source: { code: "user", title: "file_name" },
+    chapter_flags: [],
+    auto_confirm: true,
   };
 }
 

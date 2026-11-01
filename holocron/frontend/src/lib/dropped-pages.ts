@@ -96,6 +96,21 @@ export function withoutDropped<T extends { pages: readonly DroppedFlag[] }>(docu
 export const RESTORE_DONE_VI =
   "Đã khôi phục trang. Trang này giờ như mọi trang khác: xem lại rồi xác nhận thì mới vào kho tri thức.";
 
+/** Câu cho trình đọc màn hình khi khôi phục không thành công (không phải lần bấm bị chặn). */
+export const RESTORE_FAILED_STATUS_VI = "Chưa khôi phục được trang.";
+
+/**
+ * Kết quả một lần chạy thao tác ghi ở màn xem lại: `blocked` là lần bấm bị cờ gửi một lần chặn vì đang có thao tác ghi
+ * khác (KHÔNG phải lỗi: thao tác đang chạy tự báo kết quả của nó).
+ */
+export type WriteOutcome = "done" | "failed" | "blocked";
+
+/** Chữ cho vùng thông báo khôi phục; `null` (lần bấm bị chặn) nghĩa là giữ nguyên vùng, không báo thất bại. */
+export function restoreStatusText(outcome: WriteOutcome): string | null {
+  if (outcome === "blocked") return null;
+  return outcome === "done" ? RESTORE_DONE_VI : RESTORE_FAILED_STATUS_VI;
+}
+
 /** 409 lệch phiên bản: trang đã đổi ở nơi khác, nút "Tải lại bản mới nhất". */
 const RESTORE_CHANGED_VI = "Trang đã đổi (có thể đã được khôi phục hoặc sửa ở nơi khác). Tải lại để xem bản mới nhất.";
 

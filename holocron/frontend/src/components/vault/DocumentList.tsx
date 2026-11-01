@@ -17,6 +17,7 @@ import { vaultLocationTarget } from "@/lib/legacy-routes";
 import type { VaultHrefFor } from "@/lib/vault";
 
 import type { DocumentsSnapshot } from "./DocumentsPanel";
+import { ImportResult } from "./ImportResult";
 import { PageStrip } from "./PageStrip";
 import styles from "./Vault.module.css";
 
@@ -70,6 +71,7 @@ interface DocumentItemProps {
 function DocumentItem({ summary, progress, onChanged, hrefFor }: DocumentItemProps) {
   const ids = useId();
   const [warningsOpen, setWarningsOpen] = useState(false);
+  const [resultOpen, setResultOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const processing = summary.status === "processing";
   // Tài liệu còn việc xác nhận (chờ xác nhận, hoặc không đọc được nhưng còn trang xác nhận được) ⇒ "Xem lại".
@@ -124,6 +126,17 @@ function DocumentItem({ summary, progress, onChanged, hrefFor }: DocumentItemPro
           <button
             type="button"
             className={`${styles.secondary} ${styles.small}`}
+            aria-expanded={resultOpen}
+            aria-controls={`${ids}-result`}
+            onClick={() => setResultOpen((open) => !open)}
+          >
+            {resultOpen ? "Ẩn kết quả nhập" : "Kết quả nhập"}
+          </button>
+        )}
+        {!processing && (
+          <button
+            type="button"
+            className={`${styles.secondary} ${styles.small}`}
             aria-expanded={warningsOpen}
             aria-controls={`${ids}-warnings`}
             onClick={() => setWarningsOpen((open) => !open)}
@@ -140,6 +153,16 @@ function DocumentItem({ summary, progress, onChanged, hrefFor }: DocumentItemPro
         >
           Xoá tài liệu
         </button>
+      </div>
+      <div id={`${ids}-result`}>
+        {resultOpen && (
+          <ImportResult
+            documentId={summary.docId}
+            subjectCode={summary.subjectCode}
+            hrefFor={hrefFor}
+            onChanged={onChanged}
+          />
+        )}
       </div>
       <div id={`${ids}-warnings`}>
         {warningsOpen && (

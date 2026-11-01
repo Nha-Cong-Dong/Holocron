@@ -12,15 +12,30 @@ của lớp chữ (I3): ghép ký tự rời chỉ bỏ ký tự trắng/ngắt 
 from __future__ import annotations
 
 import itertools
+import math
 import re
 import statistics
 import unicodedata
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
-from typing import Literal
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass, field, replace
+from typing import Literal, NamedTuple
 
-from .config import PdfReaderConfig
-from .protocol import MAX_RAW_LINE_CHARS, RawLineFlag, RawPdfPage, RawTextLine, RawWord, TextKey, UnitBBox
+from .config import BOLD_NAME_TOKENS, ITALIC_NAME_TOKENS, MONOSPACE_NAME_TOKENS, PdfReaderConfig
+from .protocol import (
+    FONT_NAME_MAX_CHARS,
+    FONT_SIZE_MAX_PT,
+    FONT_SIZE_MIN_PT,
+    MAX_PAGE_FONTS,
+    MAX_PAGE_WORDS,
+    MAX_RAW_LINE_CHARS,
+    RawFont,
+    RawLineFlag,
+    RawPdfPage,
+    RawTextLine,
+    RawWord,
+    TextKey,
+    UnitBBox,
+)
 from .template_images import matches_text_key, text_key
 
 PdfBox = tuple[float, float, float, float]  # (left, bottom, right, top), toạ độ PDF gốc dưới-trái
@@ -71,12 +86,19 @@ class PdfChar:
 
     `generated`: PDFium tự sinh ký tự này (khoảng trắng, ngắt dòng; `FPDFText_IsGenerated`). `flags`: cờ dòng của
     đối tượng chữ chứa ký tự (GĐ0 0B), dòng nhận hợp các cờ của ký tự của nó.
+
+    Font (ADR-010 mục 5; chỉ đường đọc trang lớp chữ, không qua giao thức): `font` là font của đối tượng chữ chứa ký
+    tự, `font_size_pt` là cỡ hiệu dụng đã kẹp và làm tròn (`effective_font_size`), `font_id` là chỉ số vào bảng font
+    của trang (`assign_font_ids`; None khi font không vào được bảng).
     """
 
     text: str
     box: PdfBox | None
     generated: bool = False
     flags: frozenset[RawLineFlag] = field(default_factory=frozenset)
+    font: RawFont | None = None
+    font_size_pt: float | None = None
+    font_id: int | None = None
 
 
 # Token (GĐ0 0C, 0D): chuỗi con tối đa khớp `\w+` (Unicode) của văn bản đã NFC và casefold.
@@ -125,27 +147,66 @@ def _union(boxes: Sequence[UnitBBox]) -> UnitBBox | None:
     )
 
 
-_LineChar = tuple[str, UnitBBox | None, frozenset[RawLineFlag]]
+class _LineChar(NamedTuple):
+    text: str
+    box: UnitBBox | None
+    flags: frozenset[RawLineFlag]
+    font_id: int | None
+    font_size_pt: float | None
+
+
+def _majority[T](values: Iterable[T | None]) -> T | None:
+    """Giá trị chiếm đa số (bỏ qua None); hoà ⇒ giá trị xuất hiện trước (I4); không có giá trị nào ⇒ None."""
+    counts: dict[T, int] = {}
+    for value in values:
+        if value is not None:
+            counts[value] = counts.get(value, 0) + 1
+    if not counts:
+        return None
+    best = max(counts.values())
+    return next(value for value, count in counts.items() if count == best)
+
+
+def _word(chars: Sequence[_LineChar]) -> RawWord:
+    return RawWord(
+        text="".join(c.text for c in chars),
+        bbox=_union([c.box for c in chars if c.box is not None]),
+        font_id=_majority(c.font_id for c in chars),
+        font_size_pt=_majority(c.font_size_pt for c in chars),
+    )
 
 
 def _build_line(chars: Sequence[_LineChar]) -> RawTextLine | None:
-    text = "".join(c for c, _, _ in chars)
+    """Dòng từ ký tự; mỗi chuỗi ký tự không trắng tối đa là một từ, kể cả từ không có hộp (`bbox = None`).
+
+    `font_id`, `font_size_pt` của từ và dòng: giá trị chiếm đa số ký tự không trắng (`_majority`).
+    """
+    text = "".join(c.text for c in chars)
     if not text.strip():
         return None
     words: list[RawWord] = []
     current: list[_LineChar] = []
-    for item in [*chars, (" ", None, frozenset())]:
-        if item[0].isspace():
-            word_box = _union([b for _, b, _ in current if b is not None])
-            if current and word_box is not None:
-                words.append(RawWord(text="".join(c for c, _, _ in current), bbox=word_box))
+    for item in chars:
+        if item.text.isspace():
+            if current:
+                words.append(_word(current))
             current = []
         else:
             current.append(item)
+    if current:
+        words.append(_word(current))
     flags: set[RawLineFlag] = set()
-    for _, _, char_flags in chars:
-        flags |= char_flags
-    return RawTextLine(text=text, bbox=_union([w.bbox for w in words]), words=words, flags=sorted(flags))
+    for char in chars:
+        flags |= char.flags
+    voters = [c for c in chars if not c.text.isspace()]
+    return RawTextLine(
+        text=text,
+        bbox=_union([w.bbox for w in words if w.bbox is not None]),
+        words=words,
+        flags=sorted(flags),
+        font_id=_majority(c.font_id for c in voters),
+        font_size_pt=_majority(c.font_size_pt for c in voters),
+    )
 
 
 def group_lines(chars: Sequence[PdfChar], page_box: PdfBox, rotation: int) -> list[RawTextLine]:
@@ -165,8 +226,157 @@ def group_lines(chars: Sequence[PdfChar], page_box: PdfBox, rotation: int) -> li
             if char.text in _LINE_BREAKS:
                 continue
         box = None if char.box is None else normalize_box(char.box, page_box, rotation)
-        current.append((char.text, box, char.flags))
+        current.append(_LineChar(char.text, box, char.flags, char.font_id, char.font_size_pt))
     return lines
+
+
+def cap_boxless_words(lines: list[RawTextLine]) -> tuple[list[RawTextLine], bool]:
+    """Từ không hộp không được làm trang vượt `MAX_PAGE_WORDS` (ADR-010 mục 5).
+
+    Trang vượt trần mà có từ không hộp ⇒ bỏ MỌI từ không hộp của trang, phần tử thứ hai là True
+    (`boxless_words_dropped`: các từ không còn phủ đủ dòng nên trang không có geometry). Văn bản dòng không đổi.
+    Trang vượt trần chỉ bằng từ có hộp thì không đổi gì ở đây (giới hạn của `RawPdfPage` xử lý như trước).
+    """
+    if sum(len(line.words) for line in lines) <= MAX_PAGE_WORDS:
+        return lines, False
+    if all(word.bbox is not None for line in lines for word in line.words):
+        return lines, False
+    kept = [line.model_copy(update={"words": [w for w in line.words if w.bbox is not None]}) for line in lines]
+    return kept, True
+
+
+# --------------------------------------------------------------------------- #
+# Font (ADR-010 mục 5)
+# --------------------------------------------------------------------------- #
+
+_SUBSET_PREFIX = re.compile(r"^[A-Z]{6}\+")
+_NAME_SEPARATORS = re.compile(r"[-_, ]+")
+# Token CamelCase: cụm chữ hoa đứng trước một chữ hoa + chữ thường (`PS` trong `PSBold`), chữ hoa + chữ thường, cụm
+# chữ hoa, chữ số.
+_CAMEL_TOKEN = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+")
+# Cờ font của PDF (bảng 121 của PDF 1.7): bit 1 FixedPitch, bit 7 Italic.
+FONT_FLAG_FIXED_PITCH = 1
+FONT_FLAG_ITALIC = 1 << 6
+
+
+def clean_font_name(raw: bytes) -> str | None:
+    """Tên font an toàn: tới NUL đầu tiên, chỉ giữ ASCII in được (U+0020–U+007E), bỏ tiền tố subset `^[A-Z]{6}+`,
+    cắt `FONT_NAME_MAX_CHARS` ký tự, bỏ khoảng trắng đầu/cuối; rỗng ⇒ None."""
+    printable = bytes(byte for byte in raw.split(b"\0", 1)[0] if 0x20 <= byte <= 0x7E).decode("ascii")
+    name = _SUBSET_PREFIX.sub("", printable)[:FONT_NAME_MAX_CHARS].strip()
+    return name or None
+
+
+def font_name_tokens(name: str | None) -> frozenset[str]:
+    """Token của tên font (chữ thường): tách tại `-`, `_`, `,`, dấu cách và ranh giới CamelCase."""
+    if name is None:
+        return frozenset()
+    return frozenset(token.lower() for part in _NAME_SEPARATORS.split(name) for token in _CAMEL_TOKEN.findall(part))
+
+
+def classify_font(
+    name: str | None, weight: int | None, flags: int | None, italic_angle: int | None, config: PdfReaderConfig
+) -> RawFont:
+    """Thuộc tính font từ dữ liệu PDFium (None: không đọc được tín hiệu đó; weight hay cờ âm cũng coi như không có).
+
+    Đậm: weight `≥ bold_min_weight` (nguồn `weight`), ngược lại token tên (nguồn `name`). Nghiêng, đơn cách: cờ font
+    (bit Italic hay góc nghiêng ≠ 0; bit FixedPitch) trước (nguồn `flag`), rồi token tên (nguồn `name`).
+    """
+    tokens = font_name_tokens(name)
+    bold_source: Literal["weight", "name"] | None = None
+    if weight is not None and weight >= config.bold_min_weight:
+        bold_source = "weight"
+    elif tokens & BOLD_NAME_TOKENS:
+        bold_source = "name"
+    font_flags = flags if flags is not None and flags >= 0 else 0
+    italic_source: Literal["flag", "name"] | None = None
+    if font_flags & FONT_FLAG_ITALIC or italic_angle not in (None, 0):
+        italic_source = "flag"
+    elif tokens & ITALIC_NAME_TOKENS:
+        italic_source = "name"
+    monospace_source: Literal["flag", "name"] | None = None
+    if font_flags & FONT_FLAG_FIXED_PITCH:
+        monospace_source = "flag"
+    elif tokens & MONOSPACE_NAME_TOKENS:
+        monospace_source = "name"
+    return RawFont(
+        font_name=name,
+        bold=bold_source is not None,
+        italic=italic_source is not None,
+        monospace=monospace_source is not None,
+        bold_source=bold_source,
+        italic_source=italic_source,
+        monospace_source=monospace_source,
+    )
+
+
+def effective_font_size(size: float, determinants: Iterable[float]) -> float | None:
+    """Cỡ chữ hiệu dụng = |cỡ PDFium| × √|det| của ma trận chữ và của từng ma trận form chứa nó (ADR-010 mục 5).
+
+    Một det bằng 0 hay không hữu hạn, cỡ bằng 0, hoặc kết quả không hữu hạn (NaN, inf) ⇒ None; còn lại kẹp vào
+    [`FONT_SIZE_MIN_PT`, `FONT_SIZE_MAX_PT`] rồi làm tròn 0.1 pt.
+    """
+    value = abs(size)
+    for det in determinants:
+        if not math.isfinite(det) or det == 0.0:
+            return None
+        value *= math.sqrt(abs(det))
+    if not math.isfinite(value) or value == 0.0:
+        return None
+    return round(min(FONT_SIZE_MAX_PT, max(FONT_SIZE_MIN_PT, value)), 1)
+
+
+def assign_font_ids(chars: Sequence[PdfChar]) -> tuple[list[RawFont], list[PdfChar]]:
+    """Bảng font của trang và ký tự kèm `font_id` (ADR-010 mục 5).
+
+    Chỉ ký tự không trắng có font tham gia; gọi SAU khi lọc chữ ẩn (font chỉ có ở chữ ẩn không vào bảng). Khử trùng
+    theo (tên, bold, italic, monospace); `font_id` theo thứ tự xuất hiện đầu tiên. Font thứ `MAX_PAGE_FONTS + 1` trở
+    đi: ký tự có `font_id = None` (cỡ chữ giữ nguyên).
+    """
+    fonts: list[RawFont] = []
+    ids: dict[tuple[str | None, bool, bool, bool], int] = {}
+    out: list[PdfChar] = []
+    for char in chars:
+        font = char.font
+        if font is None or char.text.isspace():
+            out.append(char)
+            continue
+        key = (font.font_name, font.bold, font.italic, font.monospace)
+        font_id = ids.get(key)
+        if font_id is None and len(fonts) < MAX_PAGE_FONTS:
+            font_id = ids[key] = len(fonts)
+            fonts.append(font)
+        out.append(replace(char, font_id=font_id))
+    return fonts, out
+
+
+def independent_nonws_counts(
+    chars: Sequence[tuple[PdfChar, int | None]], hidden: Callable[[int | None], bool]
+) -> tuple[int, int]:
+    """(`pdfium_nonws_total`, `hidden_nonws_dropped`): số đếm ĐỘC LẬP theo đơn vị ledger (ADR-010 mục 6).
+
+    Đọc thẳng dòng ký tự PDFium (ký tự, chủ là đối tượng chữ chứa nó), TRƯỚC lọc chữ ẩn, ghép ký tự rời và dựng dòng;
+    không gọi hàm dựng dòng/từ. Bỏ ký tự tự sinh; tách đoạn tối đa ký tự không trắng liền nhau (ngắt ở ký tự trắng,
+    ký tự tự sinh, ngắt dòng và khi đổi chủ); NFC từng đoạn; cộng số code point không trắng. Đoạn có chủ mà `hidden`
+    trả True (đối tượng chữ bị loại vì chữ ẩn) được cộng cả vào số thứ hai. Giới hạn đã biết: dấu kết hợp nằm ở đối
+    tượng chữ khác chữ cái gốc tạo hai đoạn, NFC không ghép được như ở từ của dòng (ledger lệch và trang được báo).
+    """
+    total = 0
+    hidden_total = 0
+    segment: list[str] = []
+    owner: int | None = None
+    for char, char_owner in [*chars, (PdfChar(text="\n", box=None, generated=True), None)]:
+        breaks = char.generated or char.text.isspace() or char.text in _LINE_BREAKS
+        if segment and (breaks or char_owner != owner):
+            count = sum(1 for c in unicodedata.normalize("NFC", "".join(segment)) if not c.isspace())
+            total += count
+            if hidden(owner):
+                hidden_total += count
+            segment = []
+        if not breaks:
+            owner = char_owner
+            segment.append(char.text)
+    return total, hidden_total
 
 
 # --------------------------------------------------------------------------- #
@@ -586,15 +796,15 @@ def has_figure(
 
 def _row_cells(line: RawTextLine, width_pt: float, height_pt: float, config: PdfReaderConfig) -> list[float]:
     """Mép trái các ô của một dòng: tách khi khoảng trống ngang lớn hơn `table_gap_em` lần chiều cao dòng."""
-    if line.bbox is None or not line.words:
+    boxes = sorted((word.bbox for word in line.words if word.bbox is not None), key=lambda box: box[0])
+    if line.bbox is None or not boxes:
         return []
     line_height_pt = (line.bbox[3] - line.bbox[1]) * height_pt
     min_gap = config.table_gap_em * max(line_height_pt, 1e-9)
-    words = sorted(line.words, key=lambda w: w.bbox[0])
-    lefts = [words[0].bbox[0]]
-    for previous, word in itertools.pairwise(words):
-        if (word.bbox[0] - previous.bbox[2]) * width_pt > min_gap:
-            lefts.append(word.bbox[0])
+    lefts = [boxes[0][0]]
+    for previous, box in itertools.pairwise(boxes):
+        if (box[0] - previous[2]) * width_pt > min_gap:
+            lefts.append(box[0])
     return lefts
 
 

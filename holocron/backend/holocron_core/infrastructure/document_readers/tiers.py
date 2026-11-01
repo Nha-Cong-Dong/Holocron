@@ -16,26 +16,37 @@ Có tầng 1 (lớp chữ) và tầng 2 (OCR Tesseract, đối chiếu chéo b�
   glyph) thành lý do xem lại cùng tên; dòng header/footer mang `is_header_footer`.
 - Trang OCR: văn bản từ lượt chính, lý do xem lại theo §5.7 (điểm, độ phủ dòng, mực ngoài hộp chữ, hình/công
   thức trên trang scan, dòng điểm thấp, token lệch, thiếu lượt đối chiếu).
+- Bộ dựng khối (ADR-010 mục 5): `assemble_text_layer_page_read` trả thêm `PageGeometry` của trang lớp chữ không
+  `failed` (model nội bộ `PageRead`, không ra response); lỗi dựng hay vượt trần ⇒ `geometry = None`, `PageExtraction`
+  không đổi.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from ...domain.documents import (
+    GEOMETRY_VERSION,
     CrossCheck,
     ExtractedLine,
     FailureReason,
+    GeoFont,
+    GeoLine,
+    GeoWord,
     LineFlag,
     PageExtraction,
+    PageGeometry,
     PageImage,
+    PageRead,
     ReviewReason,
     TokenMismatch,
 )
-from ...domain.limits import MAX_LINE_CHARS
+from ...domain.limits import MAX_GEOMETRY_JSON_BYTES, MAX_LINE_CHARS
 from .config import PdfReaderConfig
 from .cross_check import CrossCheckLimitError, CrossCheckLimits, coverage_ratio, cross_check_lines
 from .protocol import RawOcrLine, RawOcrPage, RawPdfPage, RawTextLine
@@ -180,13 +191,98 @@ def _chunks(text: str) -> list[str]:
     return [stripped[i : i + MAX_LINE_CHARS] for i in range(0, len(stripped), MAX_LINE_CHARS)]
 
 
+# Lỗi khi dựng `PageGeometry` (gồm `ValidationError`, lớp con của `ValueError`): trang không có geometry, không
+# bao giờ làm trang `failed` (ADR-010 mục 5).
+GEOMETRY_ERRORS = (ValueError, TypeError, LookupError, ArithmeticError, MemoryError, RecursionError)
+
+
+def reader_settings_sha256(config: PdfReaderConfig) -> str:
+    """sha256 của JSON chuẩn hoá (`sort_keys`, không ASCII-hoá, không khoảng trắng; ADR-010 mục 3) của TOÀN BỘ
+    `PdfReaderConfig.model_dump(mode="json")`; field kiểu tập được sắp để hash không phụ thuộc thứ tự duyệt tập."""
+    payload: dict[str, Any] = config.model_dump(mode="json")
+    for name, value in config:
+        if isinstance(value, set | frozenset):
+            payload[name] = sorted(payload[name])
+    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _text_layer_pieces(lines: Sequence[RawTextLine]) -> tuple[list[tuple[str, RawTextLine]], list[list[int]]]:
+    """Các mảnh `ExtractedLine` theo thứ tự (`_chunks` của từng dòng thô) và, cho mỗi dòng thô, chỉ số các mảnh của nó
+    (`GeoLine.extracted_line_indices`; dòng chỉ gồm khoảng trắng không có mảnh nào)."""
+    pieces: list[tuple[str, RawTextLine]] = []
+    indices: list[list[int]] = []
+    for line in lines:
+        chunks = _chunks(line.text)
+        indices.append(list(range(len(pieces), len(pieces) + len(chunks))))
+        pieces.extend((chunk, line) for chunk in chunks)
+    return pieces, indices
+
+
+def _geo_line(line: RawTextLine, extracted_line_indices: list[int]) -> GeoLine:
+    return GeoLine(
+        words=[
+            GeoWord(text=word.text, bbox=word.bbox, font_id=word.font_id, font_size_pt=word.font_size_pt)
+            for word in line.words
+        ],
+        bbox=line.bbox,
+        font_id=line.font_id,
+        font_size_pt=line.font_size_pt,
+        flags=list(line.flags),
+        header_footer=line.header_footer,
+        extracted_line_indices=extracted_line_indices,
+    )
+
+
+def text_layer_geometry(
+    raw: RawPdfPage, extracted_line_indices: Sequence[list[int]], config: PdfReaderConfig
+) -> PageGeometry | None:
+    """`PageGeometry` của trang lớp chữ (ADR-010 mục 5); None khi worker đã bỏ từ không hộp (`boxless_words_dropped`),
+    khi vượt trần (từ, dòng, font, `MAX_GEOMETRY_JSON_BYTES`) hay khi dữ liệu worker không dựng được geometry."""
+    if raw.boxless_words_dropped or len(extracted_line_indices) != len(raw.lines):
+        return None
+    try:
+        geometry = PageGeometry(
+            version=GEOMETRY_VERSION,
+            reader_settings_sha256=reader_settings_sha256(config),
+            source="text_layer",
+            lines=[_geo_line(line, indices) for line, indices in zip(raw.lines, extracted_line_indices, strict=True)],
+            fonts=[GeoFont.model_validate(font.model_dump()) for font in raw.fonts],
+            font_data_dropped=raw.font_data_dropped,
+            pdfium_nonws_total=raw.pdfium_nonws_total,
+            hidden_nonws_dropped=raw.hidden_nonws_dropped,
+        )
+        if len(geometry.model_dump_json().encode("utf-8")) > MAX_GEOMETRY_JSON_BYTES:
+            return None
+    except GEOMETRY_ERRORS:
+        return None
+    return geometry
+
+
+def page_geometry(raw: RawPdfPage, extraction: PageExtraction, config: PdfReaderConfig) -> PageGeometry | None:
+    """Geometry của trang đã dựng bằng `assemble_text_layer_page`: chỉ trang lớp chữ không `failed`
+    (`tier_used = "text_layer"`) có geometry (`text_layer_geometry`); trang OCR (X11) và trang `failed` ⇒ None."""
+    if extraction.status == "failed" or extraction.tier_used != "text_layer":
+        return None
+    _, extracted_line_indices = _text_layer_pieces(raw.lines)
+    return text_layer_geometry(raw, extracted_line_indices, config)
+
+
+def assemble_text_layer_page_read(raw: RawPdfPage, document_id: str, config: PdfReaderConfig) -> PageRead:
+    """`PageRead` của trang (ADR-010 mục 5): `PageExtraction` của `assemble_text_layer_page` (không đổi) kèm
+    `PageGeometry` (`page_geometry`); lỗi dựng geometry hay vượt trần chỉ làm `geometry = None`."""
+    extraction = assemble_text_layer_page(raw, document_id, config)
+    return PageRead(extraction=extraction, geometry=page_geometry(raw, extraction, config))
+
+
 def assemble_text_layer_page(raw: RawPdfPage, document_id: str, config: PdfReaderConfig) -> PageExtraction:
     """Dựng `PageExtraction` từ dữ liệu worker mà tiến trình cha đã validate (tầng 3 chưa có).
 
     Trang cần OCR theo `ocr_reason` (cùng hàm worker dùng để quyết định OCR) dùng `raw.ocr` khi có
     (`assemble_ocr_page`), không có thì `failed` với `OCR_ENGINE_MISSING`; trang còn lại chọn tầng bằng `select_tier`
     với cờ bảng và công thức (GĐ0: cờ hình không đưa trang lên tầng 3 nữa, luật 0C). Trang giữ lớp chữ có hình mà
-    khử nhiễu không chạy đầy đủ (`denoise_unavailable`) mang `DENOISE_UNAVAILABLE`.
+    khử nhiễu không chạy đầy đủ (`denoise_unavailable`) mang `DENOISE_UNAVAILABLE`. Mảnh dòng theo
+    `_text_layer_pieces` (cùng hàm `page_geometry` dùng cho `GeoLine.extracted_line_indices`).
     """
     text = page_text(raw.lines)
     score = text_score(text, config)
@@ -200,7 +296,7 @@ def assemble_text_layer_page(raw: RawPdfPage, document_id: str, config: PdfReade
         return failed_page(document_id, page_number, "OCR_ENGINE_MISSING", score=score, flags=flags, raw=raw)
     tier_flags = PageFlags(has_table=flags.has_table, has_formula=flags.has_formula)
     decision = select_tier(score, tier_flags, config, layout_available=False)
-    pieces = [(chunk, line) for line in raw.lines for chunk in _chunks(line.text)]
+    pieces, _ = _text_layer_pieces(raw.lines)
     lines = [
         ExtractedLine(
             line_index=index,

@@ -64,6 +64,15 @@ TESSDATA_DEFAULT_DIRS: tuple[str, ...] = (
     "/usr/share/tessdata",
 )
 
+# Token tên font (ADR-010 mục 5): tên font tách thành token tại `-`, `_`, `,`, dấu cách và ranh giới CamelCase, so
+# NGUYÊN token không phân biệt hoa thường (`SemiBold` ⇒ `semi`, `bold`; `Blackadder`, `Monotype` không khớp). Đơn
+# cách theo tên chỉ là tín hiệu phụ (cờ FixedPitch xét trước).
+BOLD_NAME_TOKENS: frozenset[str] = frozenset({"bold", "black", "heavy", "semibold"})
+ITALIC_NAME_TOKENS: frozenset[str] = frozenset({"italic", "oblique"})
+MONOSPACE_NAME_TOKENS: frozenset[str] = frozenset(
+    {"mono", "courier", "consolas", "menlo", "monaco", "inconsolata", "typewriter", "console"}
+)
+
 
 class PdfReaderConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
@@ -248,6 +257,10 @@ class PdfReaderConfig(BaseModel):
     table_min_rows: int = Field(default=3, ge=2)
     table_min_cols: int = Field(default=2, ge=2)
     table_col_tolerance: float = Field(default=0.02, gt=0.0, le=1.0)
+
+    # Font (ADR-010 mục 5): font đậm khi weight PDFium `≥ bold_min_weight` (font nhúng thường trả 400) hoặc tên font
+    # chứa một token của `BOLD_NAME_TOKENS`.
+    bold_min_weight: int = Field(default=600, ge=100, le=1000)
 
     @model_validator(mode="after")
     def _tesseract_fits_in_page(self) -> PdfReaderConfig:

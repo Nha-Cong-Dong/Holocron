@@ -341,6 +341,11 @@ class PageGeometry(StrictModel):
         font_ids = [line.font_id for line in lines] + [word.font_id for line in lines for word in line.words]
         if any(font_id is not None and font_id >= len(self.fonts) for font_id in font_ids):
             raise ValueError("font_id phải nhỏ hơn số font của trang")
+        if self.pdfium_nonws_total is None:
+            if self.hidden_nonws_dropped != 0:
+                raise ValueError("hidden_nonws_dropped phải là 0 khi pdfium_nonws_total là null")
+        elif self.hidden_nonws_dropped > self.pdfium_nonws_total:
+            raise ValueError("hidden_nonws_dropped không được vượt pdfium_nonws_total")
         return self
 
 

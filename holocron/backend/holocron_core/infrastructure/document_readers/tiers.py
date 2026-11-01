@@ -47,7 +47,7 @@ from ...domain.documents import (
     TokenMismatch,
 )
 from ...domain.limits import MAX_GEOMETRY_JSON_BYTES, MAX_LINE_CHARS
-from .config import PdfReaderConfig
+from .config import PdfReaderConfig, font_name_token_settings
 from .cross_check import CrossCheckLimitError, CrossCheckLimits, coverage_ratio, cross_check_lines
 from .protocol import RawOcrLine, RawOcrPage, RawPdfPage, RawTextLine
 from .text_layer import (
@@ -198,11 +198,12 @@ GEOMETRY_ERRORS = (ValueError, TypeError, LookupError, ArithmeticError, MemoryEr
 
 def reader_settings_sha256(config: PdfReaderConfig) -> str:
     """sha256 của JSON chuẩn hoá (`sort_keys`, không ASCII-hoá, không khoảng trắng; ADR-010 mục 3) của TOÀN BỘ
-    `PdfReaderConfig.model_dump(mode="json")`; field kiểu tập được sắp để hash không phụ thuộc thứ tự duyệt tập."""
+    `PdfReaderConfig.model_dump(mode="json")` cộng ba tập token tên font (`font_name_token_settings`); field kiểu tập được sắp để hash không phụ thuộc thứ tự duyệt tập."""
     payload: dict[str, Any] = config.model_dump(mode="json")
     for name, value in config:
         if isinstance(value, set | frozenset):
             payload[name] = sorted(payload[name])
+    payload.update(font_name_token_settings())
     canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 

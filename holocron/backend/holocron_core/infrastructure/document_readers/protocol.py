@@ -372,6 +372,15 @@ class RawPdfPage(_OmitDefaults):
             raise ValueError(f"trang có quá {MAX_PAGE_WORDS} từ")
         return self
 
+    @model_validator(mode="after")
+    def _hidden_count_consistent(self) -> RawPdfPage:
+        if self.pdfium_nonws_total is None:
+            if self.hidden_nonws_dropped != 0:
+                raise ValueError("hidden_nonws_dropped phải là 0 khi pdfium_nonws_total là null")
+        elif self.hidden_nonws_dropped > self.pdfium_nonws_total:
+            raise ValueError("hidden_nonws_dropped không được vượt pdfium_nonws_total")
+        return self
+
 
 class ReadyMessage(_Frozen):
     kind: Literal["ready"] = "ready"

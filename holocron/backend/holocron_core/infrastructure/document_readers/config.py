@@ -74,6 +74,16 @@ MONOSPACE_NAME_TOKENS: frozenset[str] = frozenset(
 )
 
 
+def font_name_token_settings() -> dict[str, list[str]]:
+    """Ba tập token tên font (đã sắp) để đưa vào `reader_settings_sha256`: đổi token đổi cách gán đậm, nghiêng, đơn
+    cách nên PHẢI đổi hash (ADR-010 mục 15, I4). Đọc hằng module ở lúc gọi."""
+    return {
+        "bold_name_tokens": sorted(BOLD_NAME_TOKENS),
+        "italic_name_tokens": sorted(ITALIC_NAME_TOKENS),
+        "monospace_name_tokens": sorted(MONOSPACE_NAME_TOKENS),
+    }
+
+
 class PdfReaderConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 

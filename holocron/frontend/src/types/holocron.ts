@@ -542,7 +542,16 @@ export interface PageExtraction {
   /** GĐ0 0D: trang bỏ mềm (không vào chunk, không tính "cần xem"); hoàn tác qua `POST …/restore`. */
   dropped: boolean;
   restored: boolean;
+  /** GĐ1 1B: audit của lần xác nhận; "auto" = luật tự xác nhận cấp trang (§5.7), null khi chưa xác nhận (trang xác nhận trước GĐ1 cũng null). */
+  confirmed_by: ConfirmedBy | null;
+  /** Tên và phiên bản luật tự xác nhận đã áp (hiện "page_clean_v1"); khác null khi và chỉ khi `confirmed_by = "auto"`. */
+  confirm_rule: string | null;
+  /** True sau khi người dùng hoàn tác tự xác nhận (`POST …/unconfirm`); trang này không bao giờ tự xác nhận lại. */
+  auto_confirm_undone: boolean;
 }
+
+/** Người xác nhận một trang (GĐ1 1B). */
+export type ConfirmedBy = "user" | "auto";
 
 export type DocumentStatus = "processing" | "review" | "confirmed" | "failed";
 
@@ -556,6 +565,7 @@ export interface PageSummary {
   confirmed: boolean;
   page_role: PageRole;
   dropped: boolean;
+  confirmed_by: ConfirmedBy | null;
 }
 
 /**
@@ -582,6 +592,10 @@ export interface DocumentImport {
   chapter_flags: ChapterFlag[];
   /** Cài đặt "Tự xác nhận" gửi khi nhập (field form `auto_confirm`, mặc định bật). */
   auto_confirm: boolean;
+  /** Số trang `confirmed_by = "auto"` (backend đếm; frontend chỉ hiển thị). */
+  pages_auto_confirmed: number;
+  /** Trang giữ nhưng chưa xác nhận và không thuộc "cần xem": nút "Chấp nhận" sẽ xác nhận theo lô. */
+  pages_kept_unconfirmed: number;
 }
 
 /** Một phần tử của `GET /v1/documents`, mới nhất trước. */
@@ -617,6 +631,12 @@ export interface PageConfirmRequest {
 
 /** Body của `POST /v1/documents/{document_id}/pages/{page_number}/restore` (GĐ0 0D); trả `PageExtraction`. */
 export interface PageRestoreRequest {
+  editor_id: string;
+  expected_version: number;
+}
+
+/** Body của `POST /v1/documents/{document_id}/pages/{page_number}/unconfirm` (GĐ1 1B); trả `PageExtraction`. */
+export interface PageUnconfirmRequest {
   editor_id: string;
   expected_version: number;
 }

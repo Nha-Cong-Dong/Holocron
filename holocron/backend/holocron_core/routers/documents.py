@@ -1,5 +1,5 @@
 """Bộ nhập tài liệu PDF (SPECIFICATION §6.5): nhận file, hỏi trạng thái, xem trang, sửa dòng, xác nhận, hoàn tác bỏ
-mềm (GĐ0 0D), đổi chương, xoá.
+mềm (GĐ0 0D), hoàn tác tự xác nhận (GĐ1 1B), đổi chương, xoá.
 
 Chưa có ở đây: tạo item từ trang (`POST …/pages/{n}/items`, cần đổi `IngestionItem`).
 
@@ -34,6 +34,7 @@ from ..domain.documents import (
     PageExtraction,
     PageLinesPatch,
     PageRestoreRequest,
+    PageUnconfirmRequest,
 )
 from ..domain.repositories import AppStore, DocumentExistsError, VersionConflictError
 from ..domain.schemas import SourceKind
@@ -68,6 +69,7 @@ from ..services.document_import import (
     remove_orphan_files,
     requeue_pending,
     restore_page,
+    unconfirm_page,
 )
 from .deps import ClockDep, StoreDep, VaultDep
 
@@ -187,7 +189,7 @@ def import_document(
     chapter_code: Annotated[str | None, Form(pattern=CHAPTER_CODE_PATTERN)] = None,
     output_language: Annotated[OutputLanguage, Form()] = "vi",
     title: Annotated[str | None, Form(min_length=1, max_length=MAX_TITLE_LENGTH)] = None,
-    # §6.5 (GĐ1 1B): chỉ lưu vào `DocumentImport.auto_confirm`; hành vi tự xác nhận chưa có ở nhánh này
+    # §6.5 (GĐ1 1B): lưu vào `DocumentImport.auto_confirm`; bật luật tự xác nhận cấp trang `page_clean_v1` (§5.7)
     auto_confirm: Annotated[bool, Form()] = True,
 ) -> DocumentImport:
     if title is not None and not title.strip():
@@ -312,6 +314,22 @@ def restore_document_page(
     """Hoàn tác bỏ mềm một trang (§6.5, GĐ0 0D; tên và đường dẫn là đề xuất suy ra, chờ duyệt)."""
     try:
         return restore_page(store, vault, runtime, document_id, page_number, body)
+    except _REVIEW_ERRORS as exc:
+        raise _review_error(exc) from exc
+
+
+@router.post("/v1/documents/{document_id}/pages/{page_number}/unconfirm", response_model=PageExtraction)
+def unconfirm_document_page(
+    store: StoreDep,
+    vault: VaultDep,
+    runtime: RuntimeDep,
+    document_id: str,
+    page_number: int,
+    body: PageUnconfirmRequest,
+) -> PageExtraction:
+    """Hoàn tác tự xác nhận một trang (§6.5, GĐ1 1B; tên và đường dẫn là đề xuất suy ra, chờ duyệt)."""
+    try:
+        return unconfirm_page(store, vault, runtime, document_id, page_number, body)
     except _REVIEW_ERRORS as exc:
         raise _review_error(exc) from exc
 

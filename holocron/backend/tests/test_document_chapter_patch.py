@@ -46,6 +46,7 @@ def _doc_id(content: bytes) -> str:
 def _import(env: ImportEnv, tag: str, **kwargs: Any) -> tuple[str, dict[str, Any]]:
     kwargs.setdefault("chapter_code", None)
     kwargs.setdefault("filename", "Chuong-2_Vi-xu-ly-ARM.pdf")
+    kwargs.setdefault("auto_confirm", None)  # các test này kiểm mặc định của field form (bật), nên không gửi field
     response = env.post(pdf_bytes(tag), **kwargs)
     assert response.status_code == 202, response.text
     body: dict[str, Any] = response.json()

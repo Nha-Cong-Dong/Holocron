@@ -56,6 +56,9 @@ GT_TYPE_MAP: dict[str, str] = {
 }
 GT_HEADING_LEVEL = 1
 NOT_MEASURED = "chưa đo"
+MAX_CER_PAGE_CHARS = 20_000
+MAX_PRED_BYTES = 50 * 1024 * 1024
+MAX_PRED_BLOCKS = 200_000
 
 
 class PredictionFormatError(Exception):
@@ -206,11 +209,16 @@ def parse_predictions(raw: object, where: str) -> NeutralDoc:
 
 
 def parse_predictions_file(path: Path) -> dict[str, NeutralDoc]:
+    if path.stat().st_size > MAX_PRED_BYTES:
+        raise PredictionFormatError(f"file dự đoán quá lớn (> {MAX_PRED_BYTES} byte)")
     data = json.loads(path.read_text(encoding="utf-8"))
     chapters = data.get("chapters") if isinstance(data, dict) else None
     if not isinstance(chapters, dict):
         raise PredictionFormatError("file dự đoán phải có `chapters` là đối tượng")
-    return {str(name): parse_predictions(body, f"dự đoán {name}") for name, body in chapters.items()}
+    docs = {str(name): parse_predictions(body, f"dự đoán {name}") for name, body in chapters.items()}
+    if sum(len(doc.blocks) for doc in docs.values()) > MAX_PRED_BLOCKS:
+        raise PredictionFormatError(f"file dự đoán có quá nhiều khối (> {MAX_PRED_BLOCKS})")
+    return docs
 
 
 @dataclass
@@ -241,6 +249,7 @@ class LayoutTally:
     taus: list[float] = field(default_factory=list)
     cells_gt: int = 0
     cells_tp: int = 0
+    cer_skipped: int = 0
 
     def merge(self, other: LayoutTally) -> None:
         for name in (
@@ -264,6 +273,7 @@ class LayoutTally:
             "ledger_covered",
             "cells_gt",
             "cells_tp",
+            "cer_skipped",
         ):
             setattr(self, name, getattr(self, name) + getattr(other, name))
         self.type_tp.update(other.type_tp)
@@ -276,7 +286,10 @@ def _ordered_text(blocks: Sequence[LBlock]) -> str:
     return normalize(" ".join(b.text for b in sorted(blocks, key=lambda b: b.order)))
 
 
-def _tree(blocks: Sequence[LBlock]) -> Counter[tuple[int, str]]:
+def _tree(blocks: Sequence[LBlock], *, flat: bool = False) -> Counter[tuple[int, str]]:
+    """Khoá cây = (cấp, chữ). `flat` (ground truth không có cấp): bỏ cấp khỏi khoá, mọi heading tham gia (chữ + trang)."""
+    if flat:
+        return Counter((0, normalize(b.text)) for b in blocks if b.type == "heading")
     return Counter((b.level, normalize(b.text)) for b in blocks if b.type == "heading" and b.level is not None)
 
 
@@ -301,6 +314,7 @@ def page_tally(
     ledger: LedgerPage | None = None,
     *,
     has_ledger: bool = False,
+    flat_levels: bool = False,
 ) -> LayoutTally:
     """Đếm một trang. `pairs` = khớp ranh giới (chỉ số ground truth, chỉ số dự đoán) do bộ gọi tính; `pred is None` = thiếu trang.
 
@@ -309,8 +323,10 @@ def page_tally(
     t = LayoutTally(pages=1, gt_blocks=len(gt))
     t.type_gt.update(b.type for b in gt)
     gt_text = _ordered_text(gt)
-    t.cer_chars = len(gt_text)
-    gt_tree = _tree(gt)
+    cer_ok = len(gt_text) <= MAX_CER_PAGE_CHARS
+    if cer_ok:
+        t.cer_chars = len(gt_text)
+    gt_tree = _tree(gt, flat=flat_levels)
     t.tree_gt = sum(gt_tree.values())
     gt_code = _code_lines(gt)
     t.code_gt = sum(gt_code.values())
@@ -322,7 +338,10 @@ def page_tally(
             t.ledger_exact = int(ledger.accounted == ledger.total_chars)
     if pred is None:
         t.missing_pages = 1
-        t.cer_edits = len(gt_text)
+        if cer_ok:
+            t.cer_edits = len(gt_text)
+        else:
+            t.cer_skipped = 1
         return t
     t.pred_blocks = len(pred)
     t.matched = len(pairs)
@@ -330,8 +349,13 @@ def page_tally(
     for gi, pi in pairs:
         if gt[gi].type == pred[pi].type:
             t.type_tp[gt[gi].type] += 1
-    t.cer_edits = levenshtein(_ordered_text(pred), gt_text)
-    pred_tree = _tree(pred)
+    pred_text = _ordered_text(pred)
+    if cer_ok and len(pred_text) <= MAX_CER_PAGE_CHARS:
+        t.cer_edits = levenshtein(pred_text, gt_text)
+    else:
+        t.cer_skipped = 1
+        t.cer_chars = 0
+    pred_tree = _tree(pred, flat=flat_levels)
     t.tree_pred = sum(pred_tree.values())
     t.tree_tp = sum((gt_tree & pred_tree).values())
     t.code_tp = sum((gt_code & _code_lines(pred)).values())
@@ -377,7 +401,8 @@ def summarize_layout(t: LayoutTally) -> dict[str, float | int | str | None]:
         "tree_f1": _f1(t.tree_tp, t.tree_pred, t.tree_gt),
         "table_cell_accuracy": _ratio(t.cells_tp, t.cells_gt) if t.cells_gt else NOT_MEASURED,
         "code_line_match": _ratio(t.code_tp, t.code_gt),
-        "page_cer": _ratio(t.cer_edits, t.cer_chars),
+        "page_cer": _ratio(t.cer_edits, t.cer_chars) if t.cer_chars or not t.cer_skipped else NOT_MEASURED,
+        "page_cer_skipped_pages": t.cer_skipped,
         "silent_wrong": t.silent_wrong,
         "text_blocks_pred": t.text_pred,
         "ledger_coverage": _ratio(t.ledger_covered, t.ledger_total) if t.ledger_pages else None,

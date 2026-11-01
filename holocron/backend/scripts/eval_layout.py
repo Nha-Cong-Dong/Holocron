@@ -10,6 +10,15 @@ Chạy trong `holocron/backend`:
         [--iou 0.5] [--dev ch2] [--output <file JSON kết quả, ngoài repo>]
     python -m scripts.eval_layout --gt-root <...> --write-oracle <file dự đoán tổng hợp, ngoài repo>
 
+Chế độ đo cấu trúc bóc tách (BlockType, F1 loại khối, cây tiêu đề, code, CER trang, "sai không báo", ledger):
+
+    python -m scripts.eval_layout <eval_data> <thư mục kết quả ngoài repo> [--pred <file>] [--ai-pred <file>] \\
+        [--no-ocr] [--dev ch2] [--iou 0.5]
+
+Không có `--pred`: đường nền = bộ đọc PDF hiện có, mỗi dòng là một khối paragraph (mỗi chương đúng một PDF có .json
+cùng tên). Hình dạng JSON dự đoán (flags, level, cells, source, ledger) xem docstring `scripts/layout_metrics.py`.
+Ghi `results.json` và `results.md`; `--output` và `--write-oracle` không dùng ở chế độ này.
+
 Ground truth: mọi `*.json` trong `<gt-root>/arm_ch*/` (chương = hậu tố `chN` của tên thư mục), dạng
 `{document, page_count, pages: [{page, source, topic, traps, blocks: [{order, type, text}]}]}`. KHÔNG có bbox và KHÔNG
 có `unit_id`. Nội dung ground truth không được chép vào repo hay test.
@@ -522,12 +531,8 @@ def md_title_levels(text: str) -> dict[int, list[int]]:
     return levels
 
 
-def load_heading_levels(gt_root: Path, chapters: Sequence[str]) -> tuple[HeadingLevels, str]:
-    """Cấp tiêu đề ground truth đọc từ .md cùng tên với .json; trả (cấp theo chương, `"flat"` | `"from_md"`).
-
-    Mọi tiêu đề cùng số dấu `#` (hoặc không có .md) ⇒ chuẩn hoá về cấp 1 và `"flat"`: F1 cây chỉ kiểm chữ và trang.
-    Ngược lại cấp = số dấu `#` trừ số nhỏ nhất cộng 1.
-    """
+def raw_heading_levels(gt_root: Path, chapters: Sequence[str]) -> HeadingLevels:
+    """Số dấu `#` thô của các khối `[title]` theo chương và trang, từ mọi .md có .json cùng tên."""
     raw: HeadingLevels = {}
     for chapter in chapters:
         per_page: dict[int, list[int]] = {}
@@ -537,6 +542,26 @@ def load_heading_levels(gt_root: Path, chapters: Sequence[str]) -> tuple[Heading
             for number, found in md_title_levels(md.read_text(encoding="utf-8")).items():
                 per_page.setdefault(number, []).extend(found)
         raw[chapter] = per_page
+    return raw
+
+
+def count_level_mismatch_pages(truth: dict[str, dict[int, Page]], raw: HeadingLevels) -> int:
+    """Số trang mà số title trong .md khác số title trong .json (cấp của trang đó rơi về 1, không im lặng)."""
+    count = 0
+    for chapter, pages in truth.items():
+        for number, page in pages.items():
+            titles = sum(1 for b in page.blocks if map_gt_type(b.type) == "heading")
+            count += int(len(raw.get(chapter, {}).get(number, [])) != titles)
+    return count
+
+
+def load_heading_levels(gt_root: Path, chapters: Sequence[str]) -> tuple[HeadingLevels, str]:
+    """Cấp tiêu đề ground truth đọc từ .md cùng tên với .json; trả (cấp theo chương, `"flat"` | `"from_md"`).
+
+    Mọi tiêu đề cùng số dấu `#` (hoặc không có .md) ⇒ chuẩn hoá về cấp 1 và `"flat"`: F1 cây chỉ kiểm chữ và trang.
+    Ngược lại cấp = số dấu `#` trừ số nhỏ nhất cộng 1.
+    """
+    raw = raw_heading_levels(gt_root, chapters)
     every = {n for per in raw.values() for found in per.values() for n in found}
     if len(every) <= 1:
         return {}, "flat"
@@ -581,6 +606,7 @@ def evaluate_layout_chapter(
     mode: str,
     iou: float,
     heading_levels: dict[int, list[int]] | None = None,
+    flat_levels: bool = False,
 ) -> tuple[LayoutTally, int]:
     """Đếm một chương; `doc is None` ⇒ mọi trang thiếu. Trả (số đếm, số khối ground truth `unmapped`)."""
     total = LayoutTally()
@@ -597,12 +623,12 @@ def evaluate_layout_chapter(
         unmapped += skipped
         gt = _filter(gt_all, mode)
         if doc is None or (number not in by_page and number not in doc.pages):
-            total.merge(page_tally(gt, None, (), ledger_of.get(number), has_ledger=has_ledger))
+            total.merge(page_tally(gt, None, (), ledger_of.get(number), has_ledger=has_ledger, flat_levels=flat_levels))
             continue
         pred = _filter(by_page.get(number, []), mode)
         page_text, gt_intervals = gt_spans(_as_blocks(gt))
         pairs = greedy_match(gt_intervals, locate_all(page_text, _as_blocks(pred)), iou)
-        tally = page_tally(gt, pred, pairs, ledger_of.get(number), has_ledger=has_ledger)
+        tally = page_tally(gt, pred, pairs, ledger_of.get(number), has_ledger=has_ledger, flat_levels=flat_levels)
         tau = kendall_tau([(gt[g].order, pred[p].order) for g, p in pairs])
         if tau is not None:
             tally.taus.append(tau)
@@ -624,6 +650,7 @@ def evaluate_layout(
     iou: float = DEFAULT_IOU,
     dev: Sequence[str] = ("ch2",),
     heading_levels: HeadingLevels | None = None,
+    flat_levels: bool = False,
 ) -> dict[str, dict[str, Metrics]]:
     """`{mode: {chương | "dev" | "blind": chỉ số}}` cho một nguồn dự đoán."""
     unknown = sorted(set(docs) - set(truth))
@@ -633,14 +660,16 @@ def evaluate_layout(
     for mode in MODES:
         per: dict[str, Metrics] = {}
         dev_tally, blind_tally = LayoutTally(), LayoutTally()
+        unmapped_by = {True: 0, False: 0}
         for chapter in sorted(truth):
             tally, unmapped = evaluate_layout_chapter(
-                truth[chapter], docs.get(chapter), mode, iou, (heading_levels or {}).get(chapter)
+                truth[chapter], docs.get(chapter), mode, iou, (heading_levels or {}).get(chapter), flat_levels
             )
             per[chapter] = {**summarize_layout(tally), "unmapped": unmapped}
             (dev_tally if chapter in dev else blind_tally).merge(tally)
-        per["dev"] = dict(summarize_layout(dev_tally))
-        per["blind"] = dict(summarize_layout(blind_tally))
+            unmapped_by[chapter in dev] += unmapped
+        per["dev"] = {**summarize_layout(dev_tally), "unmapped": unmapped_by[True]}
+        per["blind"] = {**summarize_layout(blind_tally), "unmapped": unmapped_by[False]}
         report[mode] = per
     return report
 
@@ -669,7 +698,7 @@ def match_pdfs(directory: Path) -> tuple[list[Path], list[Path]]:
 
 
 def baseline_docs(eval_data: Path, chapters: Sequence[str], *, use_ocr: bool) -> dict[str, NeutralDoc]:
-    """Chạy bộ đọc PDF như app (worker, OCR theo biến môi trường) trên MỌI PDF có JSON cùng tên của `arm_<chương>/`."""
+    """Chạy bộ đọc PDF như app (worker, OCR theo biến môi trường) trên PDF có JSON cùng tên của `arm_<chương>/` (nhiều hơn một ⇒ lỗi, chưa hỗ trợ)."""
     from holocron_core.infrastructure.document_readers.config import (
         PdfReaderConfig,
         load_ocr_settings,
@@ -679,6 +708,10 @@ def baseline_docs(eval_data: Path, chapters: Sequence[str], *, use_ocr: bool) ->
     docs: dict[str, NeutralDoc] = {}
     for chapter in chapters:
         matched, unmatched = match_pdfs(eval_data / f"arm_{chapter}")
+        if len(matched) > 1:
+            raise EvalLayoutError(
+                f"{chapter}: có {len(matched)} PDF khớp JSON, đường nền chưa hỗ trợ nhiều PDF mỗi chương"
+            )
         for orphan in unmatched:
             print(f"cảnh báo: {chapter}: {orphan.name} không có .json cùng tên, bỏ qua", file=sys.stderr)
         pages: list[Any] = []
@@ -735,19 +768,26 @@ def run_layout(args: argparse.Namespace) -> int:
     require_outside_repo(args.results_dir, "<thư mục kết quả>")
     truth = load_ground_truth(args.eval_data)
     dev = tuple(args.dev or ["ch2"])
+    if args.dev is not None:
+        missing = sorted(set(args.dev) - set(truth))
+        if missing:
+            raise EvalLayoutError(f"--dev có chương không có trong ground truth: {', '.join(missing)}")
     levels, levels_mode = load_heading_levels(args.eval_data, sorted(truth))
+    flat = levels_mode == "flat"
+    mismatch = count_level_mismatch_pages(truth, raw_heading_levels(args.eval_data, sorted(truth)))
     if args.pred is not None:
         offline_docs, source_note = load_predictions(args.pred), "--pred"
     else:
         offline_docs, source_note = baseline_docs(args.eval_data, sorted(truth), use_ocr=not args.no_ocr), BASELINE_NOTE
-    per_source = {"offline": evaluate_layout(truth, offline_docs, args.iou, dev, levels)}
+    per_source = {"offline": evaluate_layout(truth, offline_docs, args.iou, dev, levels, flat)}
     if args.ai_pred is not None:
-        per_source["ai"] = evaluate_layout(truth, load_predictions(args.ai_pred), args.iou, dev, levels)
+        per_source["ai"] = evaluate_layout(truth, load_predictions(args.ai_pred), args.iou, dev, levels, flat)
     results = {
         "iou": args.iou,
         "dev": list(dev),
         "offline_source": source_note,
         "gt_heading_levels": levels_mode,
+        "heading_level_mismatch_pages": mismatch,
         "no_ground_truth": no_ground_truth_sets(args.eval_data, sorted(truth)),
         "results": {mode: {name: per_source[name][mode] for name in per_source} for mode in MODES},
     }
@@ -821,6 +861,9 @@ def run(args: argparse.Namespace) -> int:
     if args.gt_root is None:
         raise EvalLayoutError("cần <eval_data> <thư mục kết quả> hoặc --gt-root")
     truth = load_ground_truth(args.gt_root)
+    unknown_dev = sorted(set(args.dev or ()) - set(truth))
+    if unknown_dev:
+        raise EvalLayoutError(f"--dev có chương không có trong ground truth: {', '.join(unknown_dev)}")
     if args.write_oracle is not None:
         require_outside_repo(args.write_oracle, "--write-oracle")
         args.write_oracle.parent.mkdir(parents=True, exist_ok=True)

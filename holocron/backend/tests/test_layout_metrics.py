@@ -331,3 +331,73 @@ def test_layout_mode_requires_results_dir_and_rejects_legacy_outputs(tmp_path: P
     out = tmp_path / "out"
     assert el.main([str(root), str(out), "--write-oracle", str(tmp_path / "o.json")]) == 2
     assert el.main([str(root), str(out), "--output", str(tmp_path / "r.json")]) == 2
+
+
+def test_flat_levels_match_on_text_and_page_only() -> None:
+    gt = [lm.LBlock("g", 1, "heading", "A", 0, 1)]
+    pred = [lm.LBlock("p", 1, "heading", "A", 0, 2), lm.LBlock("q", 1, "heading", "B", 1)]
+    flat = lm.summarize_layout(lm.page_tally(gt, pred, [(0, 0)], flat_levels=True))
+    assert flat["tree_f1"] == pytest.approx(2 / 3)
+    strict = lm.summarize_layout(lm.page_tally(gt, pred[:1], [(0, 0)]))
+    assert strict["tree_f1"] == 0.0
+
+
+def test_from_md_levels_still_require_exact_level(tmp_path: Path) -> None:
+    root = _eval_data(tmp_path, MD_LEVELS)
+    levels, mode = el.load_heading_levels(root, ["ch2"])
+    assert mode == "from_md"
+    truth = {"ch2": {1: _gt_page(1, [("title", "A"), ("title", "B")])}}
+    wrong = lm.NeutralDoc(
+        (lm.LBlock("a", 1, "heading", "A", 0, 1), lm.LBlock("b", 1, "heading", "B", 1, 1)), None, frozenset({1})
+    )
+    assert el.evaluate_layout(truth, {"ch2": wrong}, heading_levels=levels)["all"]["ch2"]["tree_f1"] == 0.5
+
+
+def test_level_mismatch_pages_counted_in_results(tmp_path: Path) -> None:
+    root = _eval_data(tmp_path, "## Trang 1\n\n#### [title]\nA\n")
+    raw = el.raw_heading_levels(root, ["ch2"])
+    truth = {"ch2": {1: _gt_page(1, [("title", "A"), ("title", "B")])}}
+    assert el.count_level_mismatch_pages(truth, raw) == 1
+    pred = tmp_path / "p.json"
+    pred.write_text(json.dumps(_pred([{"type": "paragraph", "text": "A"}])), encoding="utf-8")
+    out = tmp_path / "out"
+    assert el.main([str(root), str(out), "--pred", str(pred)]) == 0
+    assert json.loads((out / "results.json").read_text(encoding="utf-8"))["heading_level_mismatch_pages"] == 1
+
+
+def test_page_cer_skipped_over_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(lm, "MAX_CER_PAGE_CHARS", 5)
+    gt = [lm.LBlock("g", 1, "paragraph", "abcdefghij", 0)]
+    pred = [lm.LBlock("p", 1, "paragraph", "abcdefghij", 0)]
+    metrics = lm.summarize_layout(lm.page_tally(gt, pred, [(0, 0)]))
+    assert metrics["page_cer"] == lm.NOT_MEASURED and metrics["page_cer_skipped_pages"] == 1
+    small = lm.summarize_layout(lm.page_tally([lm.LBlock("g", 1, "paragraph", "abc", 0)], None, []))
+    assert small["page_cer"] == 1.0 and small["page_cer_skipped_pages"] == 0
+
+
+def test_pred_file_size_and_block_caps_exit_2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    args = _bad(tmp_path, _pred([{"type": "paragraph", "text": "a"}, {"type": "paragraph", "text": "b"}]))
+    assert el.main(args) == 0
+    monkeypatch.setattr(lm, "MAX_PRED_BLOCKS", 1)
+    assert el.main(args) == 2
+    monkeypatch.setattr(lm, "MAX_PRED_BLOCKS", 100)
+    monkeypatch.setattr(lm, "MAX_PRED_BYTES", 10)
+    assert el.main(args) == 2
+
+
+def test_baseline_with_several_pdfs_in_a_chapter_is_an_error(tmp_path: Path) -> None:
+    arm = tmp_path / "arm_ch2"
+    arm.mkdir()
+    for name in ("a.pdf", "a.json", "b.pdf", "b.json"):
+        (arm / name).write_bytes(b"x")
+    with pytest.raises(el.EvalLayoutError):
+        el.baseline_docs(tmp_path, ["ch2"], use_ocr=False)
+
+
+def test_unknown_dev_chapter_exits_2_and_unmapped_sums_into_groups(tmp_path: Path) -> None:
+    args = _bad(tmp_path, _pred([{"type": "paragraph", "text": "a"}]))
+    assert el.main([*args, "--dev", "ch9"]) == 2
+    assert el.main([*args, "--dev", "ch2"]) == 0
+    results = json.loads((tmp_path / "out" / "results.json").read_text(encoding="utf-8"))
+    assert results["results"]["all"]["offline"]["dev"]["unmapped"] == 0
+    assert results["results"]["all"]["offline"]["blind"]["unmapped"] == 0

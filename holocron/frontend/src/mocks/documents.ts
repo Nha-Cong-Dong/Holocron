@@ -116,6 +116,20 @@ function confirmPage(documentId: string, pageNumber: number, expectedVersion: nu
   return Promise.resolve(pageView(page));
 }
 
+/**
+ * `POST …/restore` (§6.5, GĐ0 0D). Tài liệu mẫu không có trang bỏ mềm, nên theo contract trang nào cũng "không bỏ mềm":
+ * trả nguyên trang, không kiểm version. Nhánh trang bỏ mềm vẫn làm đúng contract (lệch version ⇒ 409, `version` + 1) để
+ * fixture có trang `dropped` sau này không cần sửa handler.
+ */
+function restorePage(documentId: string, pageNumber: number, expectedVersion: number): Promise<PageView> {
+  const session = liveSession(documentId);
+  const page = session === null ? undefined : pageOf(session, pageNumber);
+  if (page === undefined) return reject(404, "không tìm thấy tài liệu hoặc trang", REVIEW);
+  if (!page.dropped) return Promise.resolve(pageView(page));
+  if (page.version !== expectedVersion) return reject(409, `version lệch: hiện tại ${page.version}`, EDIT_VERSIONED);
+  return Promise.resolve(pageView({ ...page, dropped: false, restored: true, version: page.version + 1 }));
+}
+
 /** M5: bước "xác nhận theo lô" của kịch bản (sau khi đã sửa trang 2) chuyển sang bản `confirmed` dựng sẵn. */
 function confirmDocument(documentId: string): Promise<DocumentView> {
   const session = liveSession(documentId);
@@ -138,6 +152,7 @@ export const mockDocumentApi = {
   getDocumentPage,
   patchPageLines,
   confirmPage,
+  restorePage,
   confirmDocument,
   deleteDocument,
 };

@@ -32,6 +32,13 @@ import {
   tierLabel,
 } from "@/lib/documents";
 import type { DocumentStatusView, DocumentView, LineView, PageStatusView, PageView } from "@/lib/documents-data";
+import {
+  explainRestoreFailure,
+  isDropped,
+  RESTORE_DONE_VI,
+  splitDroppedPages,
+  withoutDropped,
+} from "@/lib/dropped-pages";
 import type { UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
 import { vaultLocationTarget } from "@/lib/legacy-routes";
@@ -80,6 +87,7 @@ import {
 import type { VaultHrefFor } from "@/lib/vault";
 
 import { DeleteDialog } from "./DocumentList";
+import { DroppedPageNav, DroppedPagePanel } from "./DroppedPages";
 import pageStyles from "./PageReview.module.css";
 import styles from "./Vault.module.css";
 
@@ -151,6 +159,9 @@ export function PageReview({
   const writes = useRef(createSingleFlight());
   // Trang vừa xác nhận thành công trên màn này, sau khi đã đọc lại tài liệu: hiện nút "Sang trang cần xem kế tiếp".
   const [confirmedHere, setConfirmedHere] = useState<number | null>(null);
+  // Kết quả khôi phục trang cho trình đọc màn hình: vùng `role="status"` luôn có mặt (vùng gắn muộn thường không được
+  // đọc), chữ chỉ đổi khi có kết quả; sang trang khác thì xoá.
+  const [restoreStatus, setRestoreStatus] = useState("");
   // Trang hiện lần trước, để biết trang mới hiện là đổi trang hay vẽ lại cùng trang (đặt focus, `focusOnShow`).
   const lastShownPage = useRef<number | null>(null);
   // Nháp chưa lưu theo số trang (`lib/review-drafts.ts`): giữ ở đây, không ở `PagePanel`, để vùng trang vẽ lại (lưu dòng
@@ -224,6 +235,7 @@ export function PageReview({
     setActionError(null);
     setNotice(null);
     setConfirmedHere(null);
+    setRestoreStatus("");
     loadPage();
     const counter = pageCalls.current;
     return () => counter.invalidate();
@@ -270,10 +282,16 @@ export function PageReview({
 
   /**
    * Chạy một thao tác ghi; thành công thì áp trang trả về và đọc lại tài liệu để cập nhật danh sách trang.
-   * `onDocumentReloaded` chạy khi bản đọc lại đó đã áp (không chạy nếu đọc lỗi hoặc có lần đọc mới hơn).
+   * `onDocumentReloaded` chạy khi bản đọc lại đó đã áp (không chạy nếu đọc lỗi hoặc có lần đọc mới hơn). `explain`
+   * (nếu có) đổi lỗi bắt được thành lỗi hiển thị; mặc định là `toUiError`.
    */
   const runWrite = useCallback(
-    async (write: () => Promise<PageView>, done: string, onDocumentReloaded?: () => void): Promise<boolean> => {
+    async (
+      write: () => Promise<PageView>,
+      done: string,
+      onDocumentReloaded?: () => void,
+      explain?: (caught: unknown) => Promise<UiError>,
+    ): Promise<boolean> => {
       if (!writes.current.tryEnter()) return false;
       setBusy(true);
       setActionError(null);
@@ -288,7 +306,7 @@ export function PageReview({
         });
         return true;
       } catch (caught) {
-        setActionError(toUiError(caught));
+        setActionError(explain === undefined ? toUiError(caught) : await explain(caught));
         return false;
       } finally {
         writes.current.leave();
@@ -296,6 +314,28 @@ export function PageReview({
       }
     },
     [fetchDocument],
+  );
+
+  /**
+   * "Khôi phục trang" (§6.5 `POST …/restore`): gửi `expected_version` của bản đang hiển thị. Cờ gửi một lần của
+   * `runWrite` chặn bấm đúp. Thành công thì trang trả về thay vùng trang (đổi `key`) và tài liệu được đọc lại để cập nhật
+   * số đếm; lỗi 409 được phân loại bằng cách đọc lại trang (`classifyRestoreConflict`), không đọc chữ `detail`.
+   */
+  const restorePage = useCallback(
+    async (target: PageView): Promise<void> => {
+      const ok = await runWrite(
+        () => api.restorePage(documentId, target.pageNumber, target.version),
+        RESTORE_DONE_VI,
+        undefined,
+        (caught) =>
+          explainRestoreFailure(caught, {
+            load: () => api.getDocumentPage(documentId, target.pageNumber),
+            expectedVersion: target.version,
+          }),
+      );
+      setRestoreStatus(ok ? RESTORE_DONE_VI : "Chưa khôi phục được trang.");
+    },
+    [documentId, runWrite],
   );
 
   const confirmAll = useCallback(async () => {
@@ -325,7 +365,8 @@ export function PageReview({
   // Mở tài liệu không kèm số trang: chuyển tới trang cần xem lại đầu tiên (không có thì trang đầu tiên).
   useEffect(() => {
     if (pageNumber !== null || readyDocument === null || wrongSubject) return;
-    const first = reviewQueue(readyDocument)[0] ?? readyDocument.pages[0]?.pageNumber ?? 1;
+    const firstKept = readyDocument.pages.find((item) => !isDropped(item));
+    const first = reviewQueue(readyDocument)[0] ?? firstKept?.pageNumber ?? readyDocument.pages[0]?.pageNumber ?? 1;
     router.replace(hrefFor({ subject: readyDocument.subjectCode, doc: readyDocument.docId, page: first }));
   }, [pageNumber, readyDocument, wrongSubject, router, hrefFor]);
 
@@ -354,10 +395,13 @@ export function PageReview({
       </div>
     );
   }
-  const docBlock = bulkConfirmBlock(doc, drafts);
+  // Trang bỏ mềm không xác nhận được và không chặn việc chốt (§5.7): các điều kiện xác nhận cả tài liệu bỏ qua chúng.
+  const confirmable = withoutDropped(doc);
+  const { kept: keptPages, dropped: droppedPages } = splitDroppedPages(doc.pages);
+  const docBlock = bulkConfirmBlock(confirmable, drafts);
   // Trang còn nháp (mọi trang của tài liệu còn hiện nháp, kể cả trang đã khoá sửa, như điều kiện khoá nút): nhãn chữ
   // trong danh sách trang và câu liệt kê dưới dòng nhắc khi nút "Xác nhận các trang đọc tốt" khoá vì nháp.
-  const draftPages = pagesWithDrafts(drafts, doc.pages);
+  const draftPages = pagesWithDrafts(drafts, confirmable.pages);
   const draftPageSet = new Set(draftPages);
   const draftNote = docBlock === "unsaved_lines" ? draftPagesNote(draftPages) : null;
   const subjectHref = hrefFor({ subject: doc.subjectCode });
@@ -402,7 +446,7 @@ export function PageReview({
             className={styles.secondary}
             onClick={() => {
               // Kiểm lại đúng điều kiện của `disabled` lúc bấm; còn nháp ở trang nào thì không gửi, không lưu hộ.
-              if (busy || bulkConfirmBlock(doc, drafts) !== null) return;
+              if (busy || bulkConfirmBlock(confirmable, drafts) !== null) return;
               void confirmAll();
             }}
             disabled={busy || docBlock !== null}
@@ -439,7 +483,7 @@ export function PageReview({
       <div className={styles.review}>
         <nav aria-label="Các trang của tài liệu">
           <ol className={styles.pageNav}>
-            {doc.pages.map((item) => (
+            {keptPages.map((item) => (
               <li key={item.pageNumber}>
                 <Link
                   className={styles.pageLink}
@@ -458,11 +502,21 @@ export function PageReview({
               </li>
             ))}
           </ol>
+          <DroppedPageNav
+            pages={droppedPages}
+            currentPage={pageNumber}
+            subjectCode={doc.subjectCode}
+            documentId={doc.docId}
+            hrefFor={hrefFor}
+          />
         </nav>
 
         <div className={styles.reviewMain}>
           <div className="visually-hidden" role="status">
             {announced.text}
+          </div>
+          <div className="visually-hidden" role="status">
+            {restoreStatus}
           </div>
           {notice !== null && <output className={styles.successNote}>{notice}</output>}
           {actionError !== null && <ErrorNotice error={actionError} onRetry={reloadAll} onReload={reloadAll} />}
@@ -485,7 +539,19 @@ export function PageReview({
               )}
             </div>
           )}
-          {page.kind === "ready" && (
+          {page.kind === "ready" && page.value.dropped && (
+            <DroppedPagePanel
+              key={`${page.value.pageNumber}:${page.value.version}`}
+              page={page.value}
+              documentId={doc.docId}
+              subjectCode={doc.subjectCode}
+              hrefFor={hrefFor}
+              busy={busy}
+              onShown={markShown}
+              onRestore={() => void restorePage(page.value)}
+            />
+          )}
+          {page.kind === "ready" && !page.value.dropped && (
             <PagePanel
               key={`${page.value.pageNumber}:${page.value.version}`}
               page={page.value}

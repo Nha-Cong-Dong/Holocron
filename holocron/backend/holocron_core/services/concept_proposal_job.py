@@ -21,6 +21,12 @@
   đóng gặp lỗi kho và được tính là lô lỗi (không ghi được gì vào kho đã đóng).
 
 Job không gọi mạng khi tạo; LLM KHÔNG BAO GIỜ xác nhận cặp.
+
+**Job tự tạo khi tài liệu đóng (T1b, spec §5.8 "Khi nào chạy", §6.5):** `DocumentProposals.start` được bộ nhập tài
+liệu gọi SAU khi nhả khoá của tài liệu, đúng một lần cho mỗi lần tài liệu chuyển sang `confirmed` (bộ nhập phát hiện
+việc chuyển dưới khoá). Tài liệu `past_exam`, không có chunk, hoặc khả năng `concept_pair_llm_proposal` không khả dụng
+⇒ không tạo job, chỉ ghi log; tạo job lỗi ⇒ ghi log, không ném lỗi. `DocumentProposals.latest_job` cấp job mới nhất
+của tài liệu cho `DocumentImport.proposal_job` (T1e, §5.7).
 """
 
 from __future__ import annotations
@@ -37,8 +43,8 @@ from datetime import UTC, datetime
 from typing import Literal, Protocol
 
 from ..domain.llm import ChatCompletionClient
-from ..domain.repositories import VaultRepository
-from ..domain.schemas import KnowledgeChunk
+from ..domain.repositories import AppStore, VaultRepository
+from ..domain.schemas import KnowledgeChunk, SourceKind
 from ..domain.vault import ProposalJob, ProposalJobStatus
 from ..infrastructure.llm_config import ConceptProposalSettings, LlmTaskLimits
 from .concept_proposal_gates import PageSource
@@ -185,6 +191,17 @@ class ProposalJobRuntime:
         ordered.sort(key=lambda job: job.created_at, reverse=True)
         return [job.model_copy(deep=True) for job in ordered]
 
+    def latest_for_document(self, document_id: str) -> ProposalJob | None:
+        """Job mới nhất của tài liệu (mọi `trigger`): `created_at` lớn nhất, hoà thì job tạo sau thắng (như
+        `list_jobs`); không có ⇒ `None`."""
+        with self._condition:
+            latest: ProposalJob | None = None
+            for state in self._shared.jobs.values():
+                job = state.job
+                if job.document_id == document_id and (latest is None or job.created_at >= latest.created_at):
+                    latest = job
+            return None if latest is None else latest.model_copy(deep=True)
+
     def cancel(self, job_id: str) -> ProposalJob | None:
         """Đặt `cancel_requested`; bỏ lô chưa chạy; không còn lô chạy thì kết thúc ngay. Job đã kết thúc giữ nguyên."""
         with self._condition:
@@ -330,3 +347,70 @@ class ProposalJobRuntime:
         while len(self._shared.finished) > self._settings.job_keep_finished:
             self._shared.jobs.pop(self._shared.finished.popleft(), None)
         self._condition.notify_all()
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+@dataclass(frozen=True)
+class DocumentProposals:
+    """Job đề xuất cặp của bộ nhập tài liệu (T1b, T1e): tầng router dựng cho mỗi request (hoặc mỗi lần hook nền chạy).
+
+    - `jobs`: runtime của app; `None` khi app chạy không qua `lifespan` (không tạo job, không có job để trả).
+    - `llm_available`: khả năng `concept_pair_llm_proposal` theo CÙNG hàm của `GET /v1/runtime`
+      (`services.capabilities.compute_capabilities`), do router tính.
+    - `make_client_factory`: dựng hàm tạo client LLM cho các lô (cùng hàm của `POST /v1/vault/concept-pairs/jobs`);
+      chỉ gọi khi thật sự tạo job; ném lỗi ⇒ không tạo job.
+    """
+
+    store: AppStore
+    jobs: ProposalJobRuntime | None
+    llm_available: bool
+    make_client_factory: Callable[[], ClientFactory] | None = None
+    limits: LlmTaskLimits = field(default_factory=LlmTaskLimits)
+    settings: ConceptProposalSettings | None = None
+    clock: Callable[[], datetime] = _utc_now
+
+    def latest_job(self, document_id: str) -> ProposalJob | None:
+        """Job mới nhất của tài liệu trong runtime (T1e); không có runtime ⇒ `None`."""
+        return None if self.jobs is None else self.jobs.latest_for_document(document_id)
+
+    def start(self, document_id: str) -> ProposalJob | None:
+        """Tự tạo job `trigger = "document_confirmed"` cho mọi chunk của tài liệu vừa đóng (§5.8 "Khi nào chạy").
+
+        Người gọi (bộ nhập) chỉ gọi khi tài liệu VỪA chuyển sang `confirmed` và đã nhả khoá của tài liệu. Không tạo
+        job (trả `None`, chỉ ghi log) khi: không có runtime, tài liệu không còn hoặc chưa `confirmed`, `past_exam`,
+        không có chunk, LLM không khả dụng, hoặc dựng client/xếp job lỗi. Không bao giờ ném lỗi `Exception`.
+        """
+        try:
+            return self._start(document_id)
+        except Exception:  # tạo job lỗi không được đổi kết quả xác nhận tài liệu (§6.5)
+            logger.exception("tài liệu %s đã xác nhận nhưng chưa tạo được job đề xuất cặp", document_id)
+            return None
+
+    def _start(self, document_id: str) -> ProposalJob | None:
+        if self.jobs is None:
+            logger.info("không tạo job đề xuất cặp cho tài liệu %s: runtime job chưa sẵn sàng", document_id)
+            return None
+        document = self.store.get_imported_document(document_id)
+        if document is None or document.status != "confirmed" or document.meta.source_kind == SourceKind.PAST_EXAM:
+            return None
+        subject_code = document.meta.subject_code
+        chunk_ids = [chunk.chunk_id for chunk in self.store.list_chunks(subject_code) if chunk.doc_id == document_id]
+        if not chunk_ids:
+            return None
+        if not self.llm_available or self.make_client_factory is None:
+            logger.info("không tạo job đề xuất cặp cho tài liệu %s: LLM không khả dụng", document_id)
+            return None
+        return self.jobs.submit(
+            subject_code=subject_code,
+            chunk_ids=chunk_ids,
+            document_id=document_id,
+            store=self.store,
+            client_factory=self.make_client_factory(),
+            limits=self.limits,
+            now=self.clock(),
+            settings=self.settings,
+            trigger="document_confirmed",
+        )

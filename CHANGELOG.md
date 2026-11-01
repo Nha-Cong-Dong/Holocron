@@ -5,6 +5,9 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 
 ## [Unreleased]
 
+### 🚀 Tính năng mới
+- Bộ nhập PDF đọc metadata font (ADR-010 mục 3, 5, 15; spec §5.7, §5.15; không thêm dependency): bảng font mỗi trang (`RawFont`: tên đã làm sạch, đậm/nghiêng/đơn cách kèm nguồn weight/cờ/tên), cỡ chữ hiệu dụng theo ma trận, số đếm độc lập (`pdfium_nonws_total`, `hidden_nonws_dropped`) và `PageGeometry` kèm `reader_settings_sha256` (sha256 của toàn bộ `PdfReaderConfig`, gồm cả ba tập token tên font).
+
 ## [0.2.0-alpha] - 2026-10-28
 
 ### 🚀 Tính năng mới

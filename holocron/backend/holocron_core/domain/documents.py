@@ -14,7 +14,14 @@ from typing import Annotated, Literal, get_args
 from pydantic import Field, StringConstraints, field_validator, model_validator
 
 from .ingestion import ExtractedTable
-from .limits import MAX_LINE_CHARS
+from .limits import (
+    FONT_NAME_MAX_CHARS,
+    MAX_LINE_CHARS,
+    MAX_PAGE_FONTS,
+    MAX_PAGE_GEOMETRY_LINES,
+    MAX_PAGE_RULES,
+    MAX_PAGE_WORDS,
+)
 from .schemas import DocumentMeta, StrictModel
 from .vault import ProposalJob
 
@@ -256,6 +263,100 @@ class PageExtraction(StrictModel):
         if self.auto_confirm_undone and self.confirmed_by == "auto":
             raise ValueError("auto_confirm_undone = true thì confirmed_by không được là 'auto'")
         return self
+
+
+# --------------------------------------------------------------------------- #
+# Hình học trang cho bộ dựng khối (ADR-010 mục 5, 20; SPECIFICATION §5.7 "Dữ liệu cho bộ dựng khối")
+# --------------------------------------------------------------------------- #
+
+# Tăng khi worker đo khác (cấu hình tầng đọc, ADR-010 mục 15 (g''')).
+GEOMETRY_VERSION = 1
+GeoLineFlag = Literal["LOW_TEXT_CONTRAST", "TEXT_OCCLUDED"]
+
+
+class GeoFont(StrictModel):
+    """Một font của bảng font cấp trang (chép `RawFont` của giao thức worker)."""
+
+    font_name: str | None = Field(max_length=FONT_NAME_MAX_CHARS)
+    bold: bool
+    italic: bool
+    monospace: bool
+    bold_source: Literal["weight", "name"] | None
+    italic_source: Literal["flag", "name"] | None
+    monospace_source: Literal["flag", "name"] | None
+
+
+class GeoWord(StrictModel):
+    """Một từ của dòng thô: chuỗi ký tự không trắng tối đa (chưa NFC); `bbox` null khi không ký tự nào có hộp."""
+
+    text: str = Field(min_length=1)
+    bbox: BBox | None
+    font_id: int | None = Field(default=None, ge=0)
+    font_size_pt: float | None = None
+    conf: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class GeoLine(StrictModel):
+    """Một dòng thô theo thứ tự PDFium; `extracted_line_indices` là các `ExtractedLine.line_index` tạo từ dòng này
+    (dòng dài bị cắt thành nhiều dòng; dòng chỉ gồm khoảng trắng: `words = []`, `extracted_line_indices = []`)."""
+
+    words: list[GeoWord]
+    bbox: BBox | None
+    font_id: int | None = Field(default=None, ge=0)
+    font_size_pt: float | None = None
+    flags: list[GeoLineFlag] = Field(default_factory=list)
+    header_footer: bool = False
+    extracted_line_indices: list[int]
+
+
+class GeoRule(StrictModel):
+    """Đoạn kẻ của trang (X07)."""
+
+    bbox: BBox
+    kind: Literal["stroke", "thin_fill"]
+
+
+class PageGeometry(StrictModel):
+    """Hình học của một trang cho bộ dựng khối; KHÔNG có trong `PageExtraction` hay response API.
+
+    Vượt trần (số từ, số dòng, số font; byte JSON `MAX_GEOMETRY_JSON_BYTES` do code dựng kiểm) ⇒ trang không có
+    geometry (None), trang vẫn đọc và xác nhận bình thường bằng dòng.
+    """
+
+    version: int = Field(ge=1)
+    reader_settings_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source: Literal["text_layer", "ocr"]
+    lines: list[GeoLine] = Field(default_factory=list, max_length=MAX_PAGE_GEOMETRY_LINES)
+    fonts: list[GeoFont] = Field(default_factory=list, max_length=MAX_PAGE_FONTS)
+    rules: list[GeoRule] = Field(default_factory=list, max_length=MAX_PAGE_RULES)
+    rules_over_cap: bool = False
+    font_data_dropped: bool = False
+    ocr_lines: list[GeoLine] = Field(default_factory=list, max_length=MAX_PAGE_GEOMETRY_LINES)
+    pdfium_nonws_total: int | None = Field(default=None, ge=0)
+    hidden_nonws_dropped: int = Field(default=0, ge=0)
+    ocr_nonws_total: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _bounded(self) -> PageGeometry:
+        lines = [*self.lines, *self.ocr_lines]
+        if sum(len(line.words) for line in lines) > MAX_PAGE_WORDS:
+            raise ValueError(f"geometry có quá {MAX_PAGE_WORDS} từ")
+        font_ids = [line.font_id for line in lines] + [word.font_id for line in lines for word in line.words]
+        if any(font_id is not None and font_id >= len(self.fonts) for font_id in font_ids):
+            raise ValueError("font_id phải nhỏ hơn số font của trang")
+        if self.pdfium_nonws_total is None:
+            if self.hidden_nonws_dropped != 0:
+                raise ValueError("hidden_nonws_dropped phải là 0 khi pdfium_nonws_total là null")
+        elif self.hidden_nonws_dropped > self.pdfium_nonws_total:
+            raise ValueError("hidden_nonws_dropped không được vượt pdfium_nonws_total")
+        return self
+
+
+class PageRead(StrictModel):
+    """Kết quả nội bộ của tầng đọc cho một trang (`tiers.assemble_text_layer_page_read`); không ra response."""
+
+    extraction: PageExtraction
+    geometry: PageGeometry | None = None
 
 
 # --------------------------------------------------------------------------- #

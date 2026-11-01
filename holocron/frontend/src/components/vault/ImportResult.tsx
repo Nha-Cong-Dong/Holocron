@@ -194,6 +194,7 @@ export function ImportResult({ documentId, subjectCode, hrefFor, onChanged }: Im
     try {
       await api.startProposalJob(subjectCode, documentId);
       apply(await api.getImportResult(documentId));
+      setPollEnd(null);
     } catch (caught) {
       setRestartError(toUiError(caught));
     } finally {

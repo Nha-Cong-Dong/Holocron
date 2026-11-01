@@ -10,12 +10,16 @@
  */
 
 import type {
+  BatchErrorKind,
   Citation,
   CognitiveLevel,
   DocumentImport,
   OptionKey,
   PageExtraction,
   PageSummary,
+  ProposalJob,
+  ProposalJobStatus,
+  ProposalRejectReason,
   QuestionFormat,
   ReviewReason,
   ReviewStatus,
@@ -82,61 +86,14 @@ export interface PageExtractionPending extends Omit<PageExtraction, "review_reas
 
 // ------------------------------------------------------- §5.7, §5.8, §6.5 màn kết quả nhập (T1e, T1b)
 
-/**
- * Giá trị của `ProposalJobStatus` (§5.8). `succeeded`, `partial`, `failed` và `cancelled` là trạng thái kết thúc; chỉ
- * `queued` và `running` còn chạy. Gỡ khi `holocron.ts` có kiểu thật.
- */
-export type ProposalJobStatus = "queued" | "running" | "succeeded" | "partial" | "failed" | "cancelled";
-
-/** `ProposalRejectReason` (§5.8): lý do một đề xuất cặp bị loại. Gỡ khi `holocron.ts` có kiểu thật. */
-export type ProposalRejectReason =
-  | "quote_not_verbatim"
-  | "unknown_chunk"
-  | "invalid_term"
-  | "invalid_quote"
-  | "duplicate"
-  | "chunk_limit"
-  | "proposal_limit"
-  | "unknown_span"
-  | "span_cross_chunk"
-  | "term_span_cross_chunk"
-  | "term_not_in_span"
-  | "anchor_not_found"
-  | "anchor_ambiguous";
-
-/** `BatchErrorKind` (§5.8): loại lỗi của cả một lô. */
-export type BatchErrorKind = "llm_upstream" | "deadline" | "format";
-
-/**
- * `ProposalJob` (§5.8, GĐ1 1C; T1b): job nền đề xuất cặp khái niệm. Mọi số do backend đếm. Gỡ khi `holocron.ts` có
- * field thật.
- */
-export interface ProposalJob {
-  job_id: string;
-  subject_code: string;
-  trigger: "document_confirmed" | "manual";
-  document_id: string | null;
-  status: ProposalJobStatus;
-  chunk_count: number;
-  batch_size: number;
-  batches_total: number;
-  batches_done: number;
-  batches_failed: number;
-  batch_errors: Partial<Record<BatchErrorKind, number>>;
-  proposed_count: number;
-  pre_selected_count: number;
-  rejected_count: number;
-  rejected_by_reason: Partial<Record<ProposalRejectReason, number>>;
-  exercise_chunks: number;
-  cancel_requested: boolean;
-  created_at: string;
-  started_at: string | null;
-  finished_at: string | null;
-}
-
 // Các field T1e của `DocumentImport` (§5.7) đã có ở backend (#116) và ở `holocron.ts`; xuất lại ở đây cho nơi còn import
 // từ file này. `ReviewReasonCount.reason` là `ReviewReason` của backend (không có `LOW_TEXT_SCORE`).
 export type { DroppedRoleCount, ProposalJobAbsentReason, ReviewReasonCount } from "@/types/holocron";
+/**
+ * `ProposalJob`, `ProposalJobStatus`, `ProposalRejectReason` và `BatchErrorKind` (§5.8) đã có ở backend và ở `holocron.ts`
+ * (T1b); xuất lại ở đây cho nơi còn import từ file này. `DocumentImportPending` dùng đúng kiểu đó.
+ */
+export type { BatchErrorKind, ProposalJob, ProposalJobStatus, ProposalRejectReason };
 
 /** Bí danh giữ cho nơi còn import từ file này: `DocumentImport` của `holocron.ts` đã có đủ field T1e. */
 export type DocumentImportPending = DocumentImport;

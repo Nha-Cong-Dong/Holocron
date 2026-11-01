@@ -596,7 +596,34 @@ export interface DocumentImport {
   pages_auto_confirmed: number;
   /** Trang giữ nhưng chưa xác nhận và không thuộc "cần xem": nút "Chấp nhận" sẽ xác nhận theo lô. */
   pages_kept_unconfirmed: number;
+  /** T1e: số trang `status = "failed"` (cùng định nghĩa `DocumentSummary.pages_failed`; backend đếm). */
+  pages_failed: number;
+  /** T1e: số trang "cần xem" theo từng lý do (trang nhiều lý do đếm ở mỗi lý do); thứ tự khai báo của `ReviewReason`. */
+  review_reason_counts: ReviewReasonCount[];
+  /** T1e: số trang bỏ mềm theo vai trò; tổng `count` = `pages_dropped`; thứ tự khai báo của `PageRole`. */
+  dropped_role_counts: DroppedRoleCount[];
+  /** T1e: job đề xuất cặp mới nhất của tài liệu (§5.8); null ⇔ `proposal_job_absent_reason` khác null. */
+  proposal_job: ProposalJob | null;
+  /** T1e: lý do không có `proposal_job`; null ⇔ `proposal_job` khác null. */
+  proposal_job_absent_reason: ProposalJobAbsentReason | null;
 }
+
+/** Số trang "cần xem" mang một lý do (T1e, §5.7); `count` = số phần tử của `pages` (tăng dần, không trùng). */
+export interface ReviewReasonCount {
+  reason: ReviewReason;
+  count: number;
+  pages: number[];
+}
+
+/** Số trang bỏ mềm theo một vai trò bỏ được (T1e, §5.7); `count` = số phần tử của `pages` (tăng dần, không trùng). */
+export interface DroppedRoleCount {
+  reason: "cover_or_course_nav" | "chapter_nav" | "build_step";
+  count: number;
+  pages: number[];
+}
+
+/** Lý do `DocumentImport` không có job đề xuất cặp (T1e, §5.7), xét theo đúng thứ tự khai báo. */
+export type ProposalJobAbsentReason = "not_confirmed" | "past_exam" | "no_chunks" | "llm_unavailable" | "not_retained";
 
 /** Một phần tử của `GET /v1/documents`, mới nhất trước. */
 export interface DocumentSummary {
@@ -648,8 +675,12 @@ export interface DocumentConfirmRequest {
 
 // Chương tự động (SPECIFICATION §5.7 "Chương tự động", §6.5; GĐ1 1A)
 
-/** Cờ chương: chỉ để hiển thị, không chặn xác nhận. */
-export type ChapterFlag = "CHAPTER_NUMBER_NOT_IN_FILENAME" | "CHAPTER_NUMBER_TAKEN";
+/**
+ * Cờ chương: chỉ để hiển thị, không chặn xác nhận. `CHAPTER_NUMBER_SHARED`: số trong tên file trùng chương đã có của
+ * môn, số được giữ. `CHAPTER_NUMBER_TAKEN` chỉ còn ở tài liệu nhập trước 2026-11-01 (khi đó số trùng ⇒ chương trống
+ * nhỏ nhất); backend không ghi mới cờ này nhưng vẫn trả khi bản ghi cũ còn.
+ */
+export type ChapterFlag = "CHAPTER_NUMBER_NOT_IN_FILENAME" | "CHAPTER_NUMBER_SHARED" | "CHAPTER_NUMBER_TAKEN";
 export type ChapterCodeSource = "user" | "file_name" | "next_free";
 export type ChapterTitleSource = "user" | "repeated_header" | "file_name" | "llm";
 

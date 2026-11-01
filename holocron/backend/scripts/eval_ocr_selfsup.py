@@ -46,6 +46,7 @@ import importlib
 import io
 import json
 import statistics
+import subprocess
 import sys
 import time
 import unicodedata
@@ -65,12 +66,22 @@ from holocron_core.infrastructure.document_readers.config import (
 )
 from holocron_core.infrastructure.document_readers.pdfium_adapter import PdfiumBackend, PdfiumDocument
 from holocron_core.infrastructure.document_readers.protocol import RawPdfPage
-from holocron_core.infrastructure.document_readers.rapidocr_adapter import CLS_MODEL, DET_MODEL, REC_MODEL
+from holocron_core.infrastructure.document_readers.rapidocr_adapter import (
+    BUILTIN_ERRORS,
+    CLS_MODEL,
+    DET_MODEL,
+    REC_MODEL,
+    library_errors,
+)
 from holocron_core.infrastructure.document_readers.raster import encode_png_gray
-from holocron_core.infrastructure.document_readers.template_images import TemplateFilter, scan_template_images
+from holocron_core.infrastructure.document_readers.template_images import (
+    READ_ERRORS,
+    TemplateFilter,
+    scan_template_images,
+)
 from holocron_core.infrastructure.document_readers.tesseract import (
     TesseractEngine,
-    run_bounded,
+    vietnamese_letters,
 )
 from holocron_core.infrastructure.document_readers.text_layer import non_whitespace_count, ocr_reason
 from scripts.eval_pdf_ocr import digit_accuracy_micro, digit_correct, simulate_scan
@@ -92,11 +103,21 @@ def normalize(text: str) -> str:
     return " ".join(unicodedata.normalize("NFC", text).split())
 
 
+def _vietnamese_marked_letters() -> frozenset[str]:
+    """Chữ cái tiếng Việt có dấu: ă â ê ô ơ ư đ và 5 thanh (bảng chữ của `tesseract.vietnamese_letters`)."""
+    return frozenset(
+        letter
+        for letter in vietnamese_letters()
+        if letter in "đĐ" or any(unicodedata.combining(part) for part in unicodedata.normalize("NFD", letter))
+    )
+
+
+VIETNAMESE_MARKED = _vietnamese_marked_letters()
+
+
 def has_diacritic(char: str) -> bool:
-    """Ký tự có dấu: sau NFD có dấu ghép (thanh, mũ, móc, trăng…), hoặc đ/Đ."""
-    if char in "đĐ":
-        return True
-    return any(unicodedata.combining(part) for part in unicodedata.normalize("NFD", char))
+    """Ký tự có dấu theo bảng chữ tiếng Việt (NFC); chữ có dấu ngoài tiếng Việt (ü, ç...) không tính."""
+    return unicodedata.normalize("NFC", char) in VIETNAMESE_MARKED
 
 
 def diacritic_chars(text: str) -> str:
@@ -232,9 +253,35 @@ def aggregate(scores: Sequence[PageScore], seconds: Sequence[float], failures: i
     }
 
 
+def repo_roots(repo_root: Path = REPO_ROOT) -> list[Path]:
+    """Worktree đang chạy và checkout chính (thư mục cha của `git rev-parse --git-common-dir`), tuyệt đối.
+
+    Không chạy được git thì chỉ có `repo_root`.
+    """
+    roots = [repo_root.resolve()]
+    try:
+        done = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=repo_root,
+            capture_output=True,
+            encoding="utf-8",
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return roots
+    common = done.stdout.strip()
+    if done.returncode == 0 and common:
+        main_checkout = Path(common).resolve().parent
+        if main_checkout not in roots:
+            roots.append(main_checkout)
+    return roots
+
+
 def refuses_output_dir(out_dir: Path, repo_root: Path = REPO_ROOT) -> bool:
-    """True khi `out_dir` nằm trong repo (script từ chối ghi kết quả vào đó)."""
-    return out_dir.resolve().is_relative_to(repo_root.resolve())
+    """True khi `out_dir` nằm trong worktree đang chạy hoặc checkout chính (script từ chối ghi kết quả vào đó)."""
+    target = out_dir.resolve()
+    return any(target.is_relative_to(root) for root in repo_roots(repo_root))
 
 
 def parse_int_list(text: str) -> list[int]:
@@ -332,7 +379,7 @@ def tesseract_text(
     if engine.tessdata_dir is not None:
         args += ["--tessdata-dir", engine.tessdata_dir]
     args += ["--dpi", str(dpi), "--psm", str(psm)]
-    result = run_bounded(args, png, config.tesseract_timeout_s, config.max_message_bytes)
+    result = engine.run(args, png, config.tesseract_timeout_s, config.max_message_bytes)
     if result.status != "ok":
         return "", False
     try:
@@ -352,7 +399,7 @@ class ComboPage:
     psm: int | None
     ok: bool
     seconds: float
-    score: PageScore
+    score: PageScore | None
 
 
 @dataclass
@@ -383,7 +430,11 @@ def eligible_pages(
     eligible: list[tuple[int, str]] = []
     skipped = 0
     for index in range(count):
-        raw = document.read_page(index) if templates is None else document.read_page(index, templates)
+        try:
+            raw = document.read_page(index, templates, config)
+        except READ_ERRORS:
+            skipped += 1
+            continue
         truth = normalize(truth_text(raw))
         if ocr_reason(raw, config) is not None or non_whitespace_count(truth) < min_chars:
             skipped += 1
@@ -392,47 +443,65 @@ def eligible_pages(
     return eligible, skipped
 
 
+@dataclass(frozen=True)
+class Engines:
+    """Engine OCR và tài nguyên chạy; `rapid_errors` là tập lỗi của app (`BUILTIN_ERRORS` + `library_errors()`)."""
+
+    tesseract: TesseractEngine
+    rapid: Callable[[bytes], object] | None
+    rapid_errors: tuple[type[Exception], ...]
+    pool: ThreadPoolExecutor
+    config: PdfReaderConfig
+
+
 def run_page(
     document: PdfiumDocument,
     index: int,
     truth: str,
     meta: tuple[str, str, str],
     args: argparse.Namespace,
-    config: PdfReaderConfig,
-    tesseract: TesseractEngine,
-    rapid: Callable[[bytes], object] | None,
-    pool: ThreadPoolExecutor,
+    engines: Engines,
 ) -> list[ComboPage]:
+    """Chạy mọi tổ hợp cho một trang; lỗi engine hay render ghi `ok=False` (không chấm điểm) và chạy tiếp."""
     set_name, group, file_name = meta
+    config = engines.config
     rows: list[ComboPage] = []
 
-    def add(engine: str, dpi: int, psm: int | None, text: str, ok: bool, seconds: float) -> None:
+    def add(engine: str, dpi: int, psm: int | None, text: str | None, seconds: float) -> None:
+        score = None if text is None else score_page(truth, text)
         rows.append(
-            ComboPage(set_name, group, file_name, index + 1, engine, dpi, psm, ok, seconds, score_page(truth, text))
+            ComboPage(set_name, group, file_name, index + 1, engine, dpi, psm, text is not None, seconds, score)
         )
 
     for dpi in args.dpi:
-        image = document.render_gray(index, dpi, config.ocr_max_pixels)
-        if args.degrade:
-            rng = np.random.default_rng([args.seed, index, dpi])
-            image = simulate_scan(image, args.blur * dpi / 300, args.noise, rng)
-        png = encode_png_gray(image)
+        try:
+            image = document.render_gray(index, dpi, config.ocr_max_pixels)
+            if args.degrade:
+                rng = np.random.default_rng([args.seed, index, dpi])
+                image = simulate_scan(image, args.blur * dpi / 300, args.noise, rng)
+            png = encode_png_gray(image)
+        except READ_ERRORS:
+            for psm in args.psm:
+                add(TESSERACT, dpi, psm, None, 0.0)
+            if engines.rapid is not None:
+                add(RAPIDOCR, dpi, None, None, 0.0)
+            continue
         actual_dpi = max(1, round(image.dpi))
 
-        def timed(psm: int, png: bytes = png, actual_dpi: int = actual_dpi) -> tuple[int, str, bool, float]:
+        def timed(psm: int, png: bytes = png, actual_dpi: int = actual_dpi) -> tuple[int, str | None, float]:
             started = time.perf_counter()
-            text, ok = tesseract_text(tesseract, png, actual_dpi, psm, config)
-            return psm, text, ok, time.perf_counter() - started
+            text, ok = tesseract_text(engines.tesseract, png, actual_dpi, psm, config)
+            return psm, text if ok else None, time.perf_counter() - started
 
-        for psm, text, ok, seconds in pool.map(timed, args.psm):
-            add(TESSERACT, dpi, psm, text, ok, seconds)
-        if rapid is not None:
+        for psm, text, seconds in engines.pool.map(timed, args.psm):
+            add(TESSERACT, dpi, psm, text, seconds)
+        if engines.rapid is not None:
             started = time.perf_counter()
             try:
-                text, ok = rapidocr_text(rapid, png), True
-            except (RuntimeError, ValueError, OSError, TypeError, LookupError, ArithmeticError):
-                text, ok = "", False
-            add(RAPIDOCR, dpi, None, text, ok, time.perf_counter() - started)
+                rapid_result: str | None = rapidocr_text(engines.rapid, png)
+            except engines.rapid_errors:
+                rapid_result = None
+            add(RAPIDOCR, dpi, None, rapid_result, time.perf_counter() - started)
     return rows
 
 
@@ -462,8 +531,11 @@ def summarize(pages: Sequence[ComboPage]) -> dict[str, dict[str, dict[str, objec
         out[label] = {}
         for engine, dpi, psm in combos_of(members):
             rows = _select(members, engine=engine, dpi=dpi, psm=psm)
+            good = [r for r in rows if r.ok and r.score is not None]
             out[label][combo_key(engine, dpi, psm)] = aggregate(
-                [r.score for r in rows], [r.seconds for r in rows], sum(1 for r in rows if not r.ok)
+                [r.score for r in good if r.score is not None],
+                [r.seconds for r in good],
+                sum(1 for r in rows if not r.ok),
             )
     return out
 
@@ -474,7 +546,7 @@ def _fmt(value: object, pattern: str = "{:.1%}") -> str:
 
 def _table(block: dict[str, dict[str, object]]) -> list[str]:
     lines = [
-        "| Tổ hợp | Trang | CER | CER trung vị | WER | CER dấu | Giữ dấu | Chữ số đúng | s/trang | Lỗi gọi |",
+        "| Tổ hợp | Trang chấm | CER | CER trung vị | WER | CER dấu | Giữ dấu | Chữ số đúng | s/trang | Lỗi gọi |",
         "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for key, m in sorted(block.items()):
@@ -497,6 +569,19 @@ def recommendation(summary: dict[str, dict[str, dict[str, object]]], degrade: bo
     """Khuyến nghị cấu hình bitmap (X11): chọn theo dev, đối chiếu mù; nhận định dấu của RapidOCR."""
     dev, blind = summary.get("dev", {}), summary.get("blind", {})
     lines: list[str] = []
+    failed = {
+        f"{label} {key}": int(str(m["failures"]))
+        for label, block in (("dev", dev), ("mù", blind))
+        for key, m in block.items()
+        if isinstance(m["failures"], int) and m["failures"] > 0
+    }
+    if failed:
+        lines.append(
+            "- CẢNH BÁO: có lần gọi engine/render thất bại (không chấm như chuỗi rỗng, đã loại khỏi CER/WER/chữ số, "
+            f"đếm ở cột Lỗi gọi): {failed}."
+        )
+    else:
+        lines.append("- Không có lần gọi engine/render nào thất bại (cột Lỗi gọi đều 0).")
     best_t, best_r = _best(dev, TESSERACT), _best(dev, RAPIDOCR)
     if best_t is not None:
         key, m = best_t
@@ -565,11 +650,47 @@ def markdown(report: Report, summary: dict[str, dict[str, dict[str, object]]]) -
 
 def to_payload(report: Report, summary: dict[str, dict[str, dict[str, object]]]) -> dict[str, object]:
     pages = [
-        {**{k: v for k, v in asdict(p).items() if k != "score"}, **asdict(p.score), "cer": p.score.cer}
+        {
+            **{k: v for k, v in asdict(p).items() if k != "score"},
+            **({} if p.score is None else {**asdict(p.score), "cer": p.score.cer}),
+        }
         for p in report.pages
     ]
     meta = {k: v for k, v in asdict(report).items() if k != "pages"}
     return {"meta": meta, "summary": summary, "pages": pages}
+
+
+def write_results(out_dir: Path, report: Report) -> None:
+    """Ghi `results.json` và `results.md` (gọi sau mỗi bộ và trong `finally`, nên kết quả dở dang vẫn còn)."""
+    summary = summarize(report.pages)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "results.json").write_text(
+        json.dumps(to_payload(report, summary), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (out_dir / "results.md").write_text(markdown(report, summary), encoding="utf-8")
+
+
+def format_minutes(seconds: float) -> str:
+    return f"{seconds / 60:.0f} phút"
+
+
+def select_pages(
+    backend: PdfiumBackend, directory: Path, config: PdfReaderConfig, args: argparse.Namespace
+) -> tuple[list[tuple[Path, int, str]], int, int]:
+    """(trang đã chọn, số trang đủ điều kiện, số trang loại) của một bộ; lấy mẫu đều tất định."""
+    candidates: list[tuple[Path, int, str]] = []
+    skipped = 0
+    for path in sorted(directory.glob("*.pdf")):
+        document = backend.open(path.read_bytes())
+        if isinstance(document, str):
+            skipped += 1
+            continue
+        with document:
+            eligible, dropped = eligible_pages(document, config, args.min_truth_chars)
+        skipped += dropped
+        candidates += [(path, index, truth) for index, truth in eligible]
+    chosen = [candidates[i] for i in sample_evenly(list(range(len(candidates))), args.max_pages)]
+    return chosen, len(candidates), skipped
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -592,54 +713,45 @@ def main(argv: list[str] | None = None) -> int:
     if not sets and any(root.glob("*.pdf")):
         sets = [root]
     report = Report(str(root), args.dpi, args.psm, args.degrade, args.seed, args.max_pages, args.min_truth_chars)
-    backend = PdfiumBackend.load()
-    estimated = False
-    with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
-        for directory in sets:
-            set_name = directory.name
-            group = "dev" if set_name == DEV_SET else "blind"
-            candidates: list[tuple[Path, int, str]] = []
-            skipped = 0
-            for path in sorted(directory.glob("*.pdf")):
-                document = backend.open(path.read_bytes())
-                if isinstance(document, str):
-                    skipped += 1
-                    continue
-                with document:
-                    eligible, dropped = eligible_pages(document, config, args.min_truth_chars)
-                skipped += dropped
-                candidates += [(path, index, truth) for index, truth in eligible]
-            chosen = [candidates[i] for i in sample_evenly(list(range(len(candidates))), args.max_pages)]
-            report.selected[set_name] = len(chosen)
-            report.skipped[set_name] = skipped
-            print(f"{set_name}: {len(chosen)} trang đã chọn / {len(candidates)} đủ điều kiện ({skipped} loại)")
-            by_file: dict[Path, list[tuple[int, str]]] = defaultdict(list)
-            for path, index, truth in chosen:
-                by_file[path].append((index, truth))
-            for path, items in by_file.items():
-                document = backend.open(path.read_bytes())
-                if isinstance(document, str):
-                    continue
-                with document:
-                    for index, truth in items:
-                        started = time.perf_counter()
-                        report.pages += run_page(
-                            document, index, truth, (set_name, group, path.name), args, config, tesseract, rapid, pool
-                        )
-                        if not estimated:
-                            estimated = True
-                            per_page = time.perf_counter() - started
-                            total = len(chosen)
-                            print(
-                                f"Ước tính: {per_page:.0f} s/trang (trang đầu), cả bộ {set_name} ~ {per_page * total / 60:.0f} phút"
-                            )
-    summary = summarize(report.pages)
     out_dir = args.out_dir.resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "results.json").write_text(
-        json.dumps(to_payload(report, summary), ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    (out_dir / "results.md").write_text(markdown(report, summary), encoding="utf-8")
+    backend = PdfiumBackend.load()
+    plan: list[tuple[str, list[tuple[Path, int, str]]]] = []
+    for directory in sets:
+        chosen, eligible_count, skipped = select_pages(backend, directory, config, args)
+        report.selected[directory.name] = len(chosen)
+        report.skipped[directory.name] = skipped
+        plan.append((directory.name, chosen))
+        print(f"{directory.name}: {len(chosen)} trang đã chọn / {eligible_count} đủ điều kiện ({skipped} loại)")
+    total_pages = sum(len(chosen) for _, chosen in plan)
+    done_pages = 0
+    started_all = time.perf_counter()
+    try:
+        with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
+            engines = Engines(tesseract, rapid, BUILTIN_ERRORS + library_errors(), pool, config)
+            for set_name, chosen in plan:
+                group = "dev" if set_name == DEV_SET else "blind"
+                for path in dict.fromkeys(item[0] for item in chosen):
+                    document = backend.open(path.read_bytes())
+                    if isinstance(document, str):
+                        continue
+                    with document:
+                        for _, index, truth in (item for item in chosen if item[0] == path):
+                            report.pages += run_page(
+                                document, index, truth, (set_name, group, path.name), args, engines
+                            )
+                            done_pages += 1
+                            if done_pages == 1:
+                                per_page = time.perf_counter() - started_all
+                                print(
+                                    f"Ước tính trước khi chạy: {per_page:.0f} s/trang (trang mẫu đầu) x {total_pages} trang "
+                                    f"~ {format_minutes(per_page * total_pages)}"
+                                )
+                write_results(out_dir, report)
+                per_page = (time.perf_counter() - started_all) / max(1, done_pages)
+                remaining = total_pages - done_pages
+                print(f"Xong bộ {set_name}; còn {remaining} trang ~ {format_minutes(per_page * remaining)}")
+    finally:
+        write_results(out_dir, report)
     print(f"Đã ghi {out_dir / 'results.md'}")
     return 0
 

@@ -829,7 +829,7 @@ class ChapterSource(StrictModel):
 
 **Tự xác nhận cấp trang (GĐ1 1B; ADR-008 mục 7, duyệt 2026-10-31).** Cấp KHỐI chờ đề xuất `docs/proposals/block-level-lock.md` (file chưa tồn tại, sẽ được viết; chưa duyệt): mục này KHÔNG có contract khoá cấp khối và KHÔNG đổi các lỗi 409 hiện có.
 - **Luật độ tin cậy nguồn `source_trust_v1`** (một luật dùng chung cho `page_clean_v1` ở đây và cổng G1 của cặp khái niệm, §5.8; thêm 2026-10-31, đề xuất suy ra, chờ xác nhận): trang là nguồn đáng tin khi (a) `tier_used = "text_layer"` VÀ `scan_text_layer = false`, HOẶC (b) `tier_used = "ocr"` VÀ `cross_check.status = "ok"`. Mọi trường hợp khác không đáng tin: `scan_text_layer = true`, `tier_used = "vlm"`, `tier_used = "layout"`, trang OCR có `cross_check.status` khác `ok` (`unavailable`, `mismatch`, `not_applicable`), trang `pending` hay `failed`. Một hàm thuần duy nhất ở `domain/` hoặc `services/` cài luật này; hai nơi gọi không viết lại điều kiện.
-- **Điều kiện** (luật `page_clean_v1`): `DocumentImport.auto_confirm = true`; tài liệu `source_kind` khác `past_exam` (trang đề đi tiếp vào Gate qua item; giữ người xác nhận: đề xuất suy ra, phương án an toàn); trang qua `source_trust_v1`; trang `status = "ok"` (tức `review_reasons` rỗng), `page_role = "content"`, `dropped = false`, chưa `confirmed`, `auto_confirm_undone = false`, có ít nhất một dòng có chữ (§5.7 "Chốt trạng thái"), vừa giới hạn trang của Vault (`_fits_vault`). Thêm 2026-11-01 (ADR-010 mục 13; orchestrator chốt, chặt hơn, không nới I5): trang có khối mang một trong các cờ `layout_uncertain`, `table_unresolved`, `vlm_gate_rejected`, `crop_failed`, `ai_proposal_rejected` (§5.15) KHÔNG được tự xác nhận (trang chưa có khối: điều kiện này đúng hiển nhiên, nên hành vi hiện có của `page_clean_v1` không đổi; tên luật giữ nguyên). "Không BLOCKING": trang chưa có `GateIssue`; điều kiện này áp khi có khối (sau khi đề xuất cấp khối được viết và duyệt).
+- **Điều kiện** (luật `page_clean_v1`): `DocumentImport.auto_confirm = true`; tài liệu `source_kind` khác `past_exam` (trang đề đi tiếp vào Gate qua item; giữ người xác nhận: đề xuất suy ra, phương án an toàn); trang qua `source_trust_v1`; trang `status = "ok"` (tức `review_reasons` rỗng), `page_role = "content"`, `dropped = false`, chưa `confirmed`, `auto_confirm_undone = false`, có ít nhất một dòng có chữ (§5.7 "Chốt trạng thái"), vừa giới hạn trang của Vault (`_fits_vault`). Thêm 2026-11-01 (ADR-010 mục 13; orchestrator chốt, chặt hơn, không nới I5): trang có khối mang một trong các cờ `layout_uncertain`, `table_unresolved`, `table_token_mismatch`, `vlm_gate_rejected`, `crop_failed`, `ai_proposal_rejected` (§5.15) KHÔNG được tự xác nhận (trang chưa có khối: điều kiện này đúng hiển nhiên, nên hành vi hiện có của `page_clean_v1` không đổi; tên luật giữ nguyên). "Không BLOCKING": trang chưa có `GateIssue`; điều kiện này áp khi có khối (sau khi đề xuất cấp khối được viết và duyệt).
 - **Khi nào:** ở bước kết thúc lần đọc, SAU bước 0D (vai trò trang), dưới khoá của tài liệu. Ghi `confirmed = true`, `confirmed_at`, `confirmed_by = "auto"`, `confirm_rule = "page_clean_v1"`, `version` + 1 (so version như xác nhận thường).
 - **Tự xác nhận KHÔNG đóng tài liệu và KHÔNG cắt chunk** (sửa 2026-10-31 theo review; đề xuất suy ra, chờ xác nhận, khớp mục tiêu "bấm MỘT lần Chấp nhận"). Tự xác nhận chỉ đặt trạng thái trang. Tài liệu có ít nhất một trang `confirmed_by = "auto"` chỉ chuyển `confirmed` (và cắt chunk, tạo job đề xuất cặp) khi NGƯỜI DÙNG gọi `POST /v1/documents/{document_id}/confirm` (nút "Chấp nhận", §6.5); bước chốt chạy ở cuối lần đọc hay sau khi người dùng xác nhận từng trang KHÔNG đóng tài liệu đó (quy tắc ở "Chốt trạng thái" dưới đây). Nhờ vậy, tới lúc người dùng bấm "Chấp nhận", văn bản tài liệu còn mở: hoàn tác bỏ mềm (`…/restore`), hoàn tác tự xác nhận (`…/unconfirm`), đổi `chapter_code` (`PATCH …/chapter`) và luật đánh giá lại trang bìa của tài liệu nhập trước (0D) đều còn chạy được.
 - **Audit:** `confirmed_by`, `confirm_rule`, `confirmed_at` trong `PageExtraction` là bản ghi audit của lần tự xác nhận (actor `"auto"`); không thêm bảng, không ghi `PageEditAudit` (không đổi dòng nào) (đề xuất suy ra). Khi người dùng bấm "Chấp nhận", trang tự xác nhận giữ `confirmed_by = "auto"` (audit cho biết máy xác nhận trang, người chấp nhận tài liệu).
@@ -943,8 +943,11 @@ class ChapterSource(StrictModel):
 **Dữ liệu cho bộ dựng khối: font, số đếm độc lập, đoạn kẻ, ảnh cắt, `PageGeometry` (ADR-010 mục 5, 6, 9; duyệt 2026-11-01 (ADR-010)).** Giao thức worker (`document_readers/protocol.py`) là nội bộ, không phải contract API; ghi ở đây vì các PR X04, X07, V02, X11 cài nó. Mọi field mới có mặc định nên thông điệp và JSON cũ vẫn parse được. Không nâng trần nào của ADR-008 (`max_message_bytes` = 8 MiB, `MAX_PAGE_LINES`, `MAX_PAGE_WORDS`); `test_bad_pdf_limits` (§9 I5) giữ nguyên.
 
 ```python
-# --- giao thức worker (infrastructure/document_readers/protocol.py); tên hằng là đề xuất suy ra trừ khi ghi khác
+# --- hằng trần ở domain/limits.py (orchestrator chốt), protocol.py re-export; tên là đề xuất suy ra
 FONT_NAME_MAX_CHARS = 64; MAX_PAGE_FONTS = 256; FONT_SIZE_MIN_PT = 1.0; FONT_SIZE_MAX_PT = 1000.0; MAX_PAGE_RULES = 20_000
+MAX_PAGE_LINES = 10_000; MAX_PAGE_WORDS = 50_000
+MAX_GEOMETRY_JSON_BYTES = 8 * 1024 * 1024        # trần byte JSON của PageGeometry: hằng domain, KHÔNG phải field PdfReaderConfig
+# --- giao thức worker (infrastructure/document_readers/protocol.py)
 
 class RawFont(_Frozen):                           # một font của trang (bảng font cấp trang)
     font_name: str | None = Field(default=None, max_length=FONT_NAME_MAX_CHARS)
@@ -957,13 +960,18 @@ class RawFont(_Frozen):                           # một font của trang (bả
     bold_source: Literal["weight", "name"] | None = None        # null ⇔ bold = false
     italic_source: Literal["flag", "name"] | None = None        # null ⇔ italic = false
     monospace_source: Literal["flag", "name"] | None = None     # null ⇔ monospace = false
+    # Luật bảng font (orchestrator chốt): khử trùng theo (tên làm sạch, bold, italic, monospace); font_id theo thứ tự xuất
+    # hiện đầu tiên trên trang. bold_source: weight trước, chỉ xét tên khi weight < bold_min_weight; italic/monospace: cờ
+    # trước rồi tên; weight âm/lỗi ⇒ không có tín hiệu weight. Khớp tên theo token tách ở ranh giới CamelCase và dấu phân
+    # cách (-, _, dấu phẩy, dấu cách). Đọc font tắt ở lượt quét template và đường OCR
 
 class RawWord(_Frozen):                           # sửa: mọi chuỗi ký tự không trắng tối đa của dòng là một từ
     text: str; bbox: UnitBBox | None              # bbox null khi không ký tự nào của từ có hộp (trước đây từ đó bị bỏ)
     font_id: int | None = Field(default=None, ge=0, lt=MAX_PAGE_FONTS)   # worker: chỉ số vào RawPdfPage.fonts
     font_size_pt: float | None = Field(default=None, ge=FONT_SIZE_MIN_PT, le=FONT_SIZE_MAX_PT)
         # worker: FPDFText_GetFontSize × √|det| (ma trận chữ × ma trận các form chứa nó), kẹp khoảng, không hữu hạn ⇒ null.
-        # Từ/dòng: giá trị chiếm đa số ký tự không trắng (cỡ làm tròn 0.1 pt); hoà ⇒ giá trị của ký tự đầu tiên (I4)
+        # Từ/dòng: giá trị chiếm đa số ký tự không trắng (cỡ làm tròn 0.1 pt); hoà ⇒ giá trị của ký tự đầu tiên (I4).
+        # Ký tự có font_id = null không bỏ phiếu font (vẫn bỏ phiếu cỡ)
 class RawTextLine(_Frozen):                       # thêm hai field như RawWord, cùng luật đa số
     font_id: int | None = None; font_size_pt: float | None = None
 
@@ -984,7 +992,9 @@ class RawPdfPage(_Frozen):                        # thêm
         # worker: như trên, chỉ trên ký tự của đối tượng chữ bị loại vì chữ ẩn; đi kèm hidden_chars_dropped (giữ nghĩa cũ:
         # đếm ký tự không tự sinh, kể cả ký tự trắng)
     rules: list[RawRule] = Field(default_factory=list, max_length=MAX_PAGE_RULES)
-    rules_over_cap: bool = False                  # worker: vượt MAX_PAGE_RULES ⇒ rules = [], trang không dựng bảng từ đoạn kẻ
+    rules_over_cap: bool = False
+        # worker: vượt MAX_PAGE_RULES, HOẶC thông điệp trang vượt max_message_bytes vì rules (như font_data_dropped, không
+        # báo lỗi thông điệp quá lớn; orchestrator chốt) ⇒ rules = [], trang không dựng bảng từ đoạn kẻ
 
 class RawOcrPage(_Frozen):                        # thêm (X11)
     ocr_nonws_total: int | None = Field(default=None, ge=0)
@@ -1009,7 +1019,7 @@ class CropBatchMessage(_Frozen):
     crops: list[CropPng] = []; errors: list[CropError] = []   # mỗi region_id xuất hiện đúng một lần ở một trong hai danh sách
 ```
 
-- **Trần của `CropRequest`** (field `PdfReaderConfig`, đề xuất suy ra): `crop_max_regions_per_request = 32`, `crop_max_per_page = 64`, `crop_max_per_document = 3000`, `crop_max_edge_px = 1024`, `crop_max_image_bytes = 1 MiB`, `crop_margin = 0.005` (nới lề hộp), `crop_request_timeout_s = 30.0` (ngân sách một lượt; hết hạn ⇒ vùng còn lại `over_budget`). Trần byte tính trên KÍCH THƯỚC THÔNG ĐIỆP đã mã hoá (JSON chứa base64, kèm tiền tố và `\n`) so với `max_message_bytes` (ADR-010 mục 9 (t')): worker dừng thêm ảnh khi ảnh kế tiếp làm thông điệp vượt trần. Tiến trình cha kiểm lại từng ảnh: base64 chuẩn, `size_bytes` khớp, magic PNG, IHDR khớp `width_px`/`height_px`, cạnh dài ≤ `max_edge_px`, sha256 khớp (danh sách kiểm cho ảnh cắt chốt tại đây; kiểm và trần riêng của ảnh gửi VLM, gồm `HOLOCRON_VLM_MAX_EDGE_PX`, chốt ở X02b: ADR-009 bản cập nhật, merge SAU ADR-010; tới khi đó đường VLM không bật); sai ⇒ coi như `render_error`. Vượt trần số vùng của tài liệu/trang ⇒ khối nhận `crop_capped`, lỗi khác ⇒ `crop_failed`; khối giữ `crop_pending`, luồng nhập không ném lỗi.
+- **Trần của `CropRequest`** (field `PdfReaderConfig`, đề xuất suy ra): `crop_max_regions_per_request = 32`, `crop_max_per_page = 64`, `crop_max_per_document = 3000`, `crop_max_edge_px = 1024`, `crop_max_image_bytes = 1 MiB`, `crop_margin = 0.005` (nới lề hộp), `crop_request_timeout_s = 30.0` (ngân sách một lượt; hết hạn ⇒ vùng còn lại `over_budget`); validator cấu hình: `crop_max_edge_px` ≤ 1024 và `crop_max_image_bytes` ≤ 1 MiB (trần của `CropImage`, §5.15; orchestrator chốt). Khối `bbox = null` không có vùng cắt, không mang `crop_pending`. Trần byte tính trên KÍCH THƯỚC THÔNG ĐIỆP đã mã hoá (JSON chứa base64, kèm tiền tố và `\n`) so với `max_message_bytes` (ADR-010 mục 9 (t')): worker dừng thêm ảnh khi ảnh kế tiếp làm thông điệp vượt trần. Tiến trình cha kiểm lại từng ảnh: base64 chuẩn, `size_bytes` khớp, magic PNG, IHDR khớp `width_px`/`height_px`, cạnh dài ≤ `max_edge_px`, sha256 khớp (danh sách kiểm cho ảnh cắt chốt tại đây; kiểm và trần riêng của ảnh gửi VLM, gồm `HOLOCRON_VLM_MAX_EDGE_PX`, chốt ở X02b: ADR-009 bản cập nhật, merge SAU ADR-010; tới khi đó đường VLM không bật); sai ⇒ coi như `render_error`. Vượt trần số vùng của tài liệu/trang ⇒ khối nhận `crop_capped`, lỗi khác ⇒ `crop_failed`; khối giữ `crop_pending`, luồng nhập không ném lỗi.
 
 ```python
 # --- domain/documents.py (X04 tạo; X07 thêm rules, X11 thêm ocr_lines/ocr_nonws_total). Từ migration 0007 lưu ở cột
@@ -1052,11 +1062,12 @@ class PageGeometry(StrictModel):
     rules_over_cap: bool = False; font_data_dropped: bool = False
     ocr_lines: list[GeoLine] = Field(default=[], max_length=10_000)       # X11: dòng Tesseract có từ và toạ độ
     pdfium_nonws_total: int | None = None; hidden_nonws_dropped: int = 0; ocr_nonws_total: int | None = None   # worker
-    # validator: tổng số từ (lines + ocr_lines) ≤ MAX_PAGE_WORDS (50 000); font_id < len(fonts); JSON ≤ max_message_bytes
+    # validator: tổng số từ (lines + ocr_lines) ≤ MAX_PAGE_WORDS (50 000); font_id < len(fonts). Code dựng geometry kiểm
+    # thêm JSON ≤ MAX_GEOMETRY_JSON_BYTES; vượt bất kỳ trần nào ⇒ geometry = None (trang vẫn đọc bình thường bằng dòng)
 ```
 
 - `PageGeometry` chỉ có ở trang đọc xong không `failed`; trang lưu trước khi có cột `pages.geometry_json` không có (cột null).
-- **Tách khỏi `PageExtraction` (ADR-010 mục 5; đề xuất suy ra, làm rõ Phụ lục A3 (p'')):** `PageExtraction` KHÔNG có field geometry, nên `response_model=PageExtraction` của `routers/documents.py` và `model_dump_json()` vào `pages.extraction_json` không đổi. `tiers.assemble_text_layer_page` (và đường OCR ở X11) trả model nội bộ `PageRead {extraction: PageExtraction, geometry: PageGeometry | None}` (tên đề xuất suy ra; không ra response). Từ X04 tới trước khi migration 0007 (X09) merge: service chỉ giữ geometry trong bộ nhớ của lần đọc rồi bỏ, KHÔNG lưu, KHÔNG ra response; tài liệu nhập trong khoảng đó có `layout_version = null` (đi `build_chunks`). Từ X09: repository ghi geometry vào `pages.geometry_json` bằng method riêng, cùng giao dịch với `extraction_json` của trang.
+- **Tách khỏi `PageExtraction` (ADR-010 mục 5; đề xuất suy ra, làm rõ Phụ lục A3 (p'')):** `PageExtraction` KHÔNG có field geometry, nên `response_model=PageExtraction` của `routers/documents.py` và `model_dump_json()` vào `pages.extraction_json` không đổi. Hàm mới `tiers.assemble_text_layer_page_read` (và đường OCR ở X11) trả model nội bộ `PageRead {extraction: PageExtraction, geometry: PageGeometry | None}` (tên đề xuất suy ra; không ra response); `tiers.assemble_text_layer_page` giữ chữ ký cũ và trả `.extraction` (orchestrator chốt). Geometry tới service qua tham số keyword-only `geometry_sink` của `WorkerPdfReader.read_pages` (gọi với `page_number` 1-based TRƯỚC khi yield trang; lỗi trong sink lan ra), không thuộc `Protocol` `PdfReader` (orchestrator chốt). Từ X04 tới trước khi migration 0007 (X09) merge: service chỉ giữ geometry trong bộ nhớ của lần đọc rồi bỏ, KHÔNG lưu, KHÔNG ra response; tài liệu nhập trong khoảng đó có `layout_version = null` (đi `build_chunks`). Từ X09: repository ghi geometry vào `pages.geometry_json` bằng method riêng, cùng giao dịch với `extraction_json` của trang.
 - **Sau `PATCH …/lines`** (ADR-010 mục 13): `PageGeometry` không đổi; khối của trang được dựng lại từ dòng đã xác nhận (§5.15 "Dựng lại"), ledger chuyển `ledger_basis = "confirmed_lines"`.
 
 ### 5.8 Knowledge Vault (ADR-006, ADR-007)
@@ -1734,7 +1745,7 @@ Toàn bộ mục này đã duyệt 2026-10-25, trừ bảng `subjects` (đề xu
 | `chunks` | `chunk_id` | `document_id`, `subject_code`, `chapter_code`, `category`, `page_number`, `page_end`, `raw_text`, `verbatim_quote`, `tags_json`, `linked_chunk_ids_json`, `token_count`, `label_status`, `mapping_confidence`, `version`; thêm 2026-10-31 (GĐ1, migration `0005_concept_pair_preselect.sql`, đề xuất suy ra): `is_exercise` (INTEGER 0/1, null) | `document_id` → `documents` ON DELETE CASCADE | `(subject_code, chapter_code)`, `(document_id, page_number)` |
 | `chunk_topics` | `(chunk_id, topic_key)` | — | `chunk_id` → `chunks` ON DELETE CASCADE | `(topic_key)` |
 | `chunks_fts` (FTS5) | rowid | `body` (văn bản qua bước 1–3 của ADR-006 mục 5), `chunk_id` UNINDEXED, `subject_code` UNINDEXED; `tokenize = 'unicode61 remove_diacritics 0'` (ADR-006) | repository ghi cùng giao dịch với `chunks` | FTS5 |
-| `chunks_fts_nodiac` (FTS5) | rowid | như trên, nhưng `body` = token chính sau `search_text.strip_diacritics` (Python bỏ dấu); `tokenize = 'unicode61 remove_diacritics 0'` + cùng `tokenchars` như `chunks_fts` (sửa câu chữ 2026-11-01 cho khớp `fts5_vault.sql:27`/`search_text.py:89` và `tests/test_vault_fts_parity.py`, hành vi không đổi; câu cũ ghi `remove_diacritics 2`); chỉ dùng khi chỉ mục chính không trả kết quả (ADR-006 mục 5) | như trên | FTS5 |
+| `chunks_fts_nodiac` (FTS5) | rowid | như trên, `tokenize = 'unicode61 remove_diacritics 2'`; chỉ dùng khi chỉ mục chính không trả kết quả (ADR-006 mục 5) | như trên | FTS5 |
 | `concept_pairs` | `pair_id` | `chunk_id`, `subject_code`, `chapter_code`, `term`, `definition_quote`, `term_spans_json`, `status`, `proposed_by`, `mapping_confidence`, `created_at`, `confirmed_at`, `version`; thêm 2026-10-31 (GĐ1, migration `0005_concept_pair_preselect.sql`, đề xuất suy ra): `pre_selected` (INTEGER 0/1, mặc định 0), `failed_gates_json` (TEXT, mặc định `[]`) | `chunk_id` → `chunks` ON DELETE CASCADE | `(subject_code, status, chapter_code)` |
 | `ingestion_items` | `item_id` | `source_doc_id`, `page_number`, `topic_key`, `approved`, `non_cloneable`, `item_json` (`IngestionItem` trừ `audits`), `updated_at`, `version` | `source_doc_id` → `documents` ON DELETE RESTRICT | `(source_doc_id, page_number)` |
 | `patch_audits` | `audit_id` INTEGER AUTOINCREMENT | `item_id`, `from_version`, `to_version`, `editor_id`, `changes_json`, `at` | `item_id` → `ingestion_items` ON DELETE CASCADE | `(item_id, audit_id)` |
@@ -1895,7 +1906,8 @@ BlockFlag = Literal[                              # đóng (ADR-010 mục 3); ng
     "crop_failed",             # render vùng lỗi hoặc ảnh không qua kiểm của tiến trình cha (§5.7 CropRequest)
     "crop_capped",             # vượt trần ảnh/trang, ảnh/tài liệu, hoặc trần byte ảnh in-memory
     "table_unresolved",        # lưới bảng không khép/ô mơ hồ ⇒ khối là figure
-    "table_token_mismatch",    # ô bảng đọc bằng VLM có token số/mã lệch OCR (X11; BLOCKING cấp bảng, giữ 409)
+    "table_token_mismatch",    # ô bảng có token số/mã lệch đối chiếu: BLOCKING, bảng GIỮ cấu trúc (không thành figure),
+                               # chặn tự xác nhận, không đủ điều kiện tới khi gỡ cờ (ReviewReason/409 chốt ở X02b)
     "boxed",                   # văn xuôi nằm trong khung vector (ADR-010 mục 10)
     "formula_text_unverified", # chữ công thức lấy nguyên văn lớp chữ, chưa kiểm cấu trúc toán
     "code_layout_uncertain",   # khối code lẫn font/dòng chồng; khoảng trắng dựng lại có thể sai
@@ -1935,7 +1947,8 @@ class Block(StrictModel):
     type: BlockType                               # code (bộ dựng), V03 đổi qua cổng ma trận
     bbox: tuple[float, float, float, float] | None
         # code: hợp hộp các từ nguồn (figure ảnh nhúng: hộp ảnh), ∈ [0, 1], gốc trên-trái, trang đã xoay;
-        # null chỉ khi mọi tham chiếu là dòng gõ thêm (bbox null)
+        # null chỉ khi mọi tham chiếu là dòng gõ thêm hoặc từ không có hộp; khối bbox null không cắt ảnh, không mang
+        # crop_pending (orchestrator chốt)
     text: str | None = Field(default=None, max_length=50_000)
         # code: dựng theo type (quy tắc dưới); null ⇔ type ∈ {table, figure}. source = "vlm": chữ VLM ĐÃ QUA cổng (NFC)
     line_refs: list[SourceRef] = []               # code; rỗng chỉ ở figure
@@ -1952,8 +1965,9 @@ class Block(StrictModel):
     ocr_text: str | None = None                   # code: chỉ source = "vlm": chữ OCR đối chiếu của vùng (quy tắc paragraph)
     reading_order: int = Field(ge=0)              # code: XY-cut (X05), V03 hoán vị qua cổng; liên tục 0..n-1 trong trang
     # validator: level ⇔ heading; list_depth ⇔ list_item; cells ⇔ table; label_line_refs/labels chỉ ở figure;
-    # caption_of chỉ ở caption; ocr_text ⇔ source = "vlm"; type ∈ {table, figure, formula} ⇒ crop_ref khác null HOẶC
-    # flags có crop_pending; mọi SourceRef của trang xuất hiện ở đúng một khối (kiểm ở ledger)
+    # caption_of chỉ ở caption; ocr_text ⇔ source = "vlm"; type ∈ {table, figure, formula} và bbox khác null ⇒ crop_ref
+    # khác null HOẶC flags có crop_pending; bbox null ⇒ không crop_pending; table_token_mismatch chỉ ở table; mọi
+    # SourceRef của trang xuất hiện ở đúng một khối (kiểm ở ledger)
 
 SectionFlag = Literal["untitled", "continued_across_pages", "level_uncertain"]
 
@@ -1981,21 +1995,28 @@ class LedgerTypeCount(StrictModel):
 class LedgerFlagCount(StrictModel):               # thông tin: ký tự vẫn thuộc khối, dòng nguồn mang cờ
     reason: Literal["occluded", "low_contrast"]; count: int = Field(ge=0)
 
+LedgerBasis = Literal["pdfium", "confirmed_lines", "ocr"]
+class LedgerBasisCount(StrictModel):              # một basis của trang (orchestrator chốt: ledger theo TỪNG basis)
+    ledger_basis: LedgerBasis                     # tên theo Phụ lục A4 (p''')
+    source_count: int = Field(ge=0)
+        # số đếm ĐỘC LẬP: pdfium ⇒ PageGeometry.pdfium_nonws_total (worker); confirmed_lines ⇒ tổng đơn vị của mọi
+        # ExtractedLine của trang (code, từ PageExtraction.lines); ocr ⇒ PageGeometry.ocr_nonws_total (worker; với
+        # vùng OCR/VLM trên trang lớp chữ: đếm trên từ OCR của các vùng đó)
+    assigned_count: int = Field(ge=0)
+        # code: tổng đơn vị của tham chiếu thuộc basis này (word → pdfium, ocr_word → ocr, confirmed_line → confirmed_lines;
+        # trang có dòng sửa: tham chiếu word còn lại cũng tính vào confirmed_lines)
+    dropped: list[LedgerDrop] = []                # code: pdfium ⇒ [hidden = hidden_nonws_dropped]; basis khác ⇒ []
+
 class ExtractionLedger(StrictModel):              # một trang (ADR-010 mục 6)
     document_id: str = Field(pattern=r"^doc_[0-9a-f]{16}$"); page_number: int = Field(ge=1)
     unit: Literal["nonws_nfc_codepoint"] = "nonws_nfc_codepoint"
-    ledger_basis: Literal["pdfium", "confirmed_lines", "ocr"]  # code
-    source_count: int = Field(ge=0)
-        # số đếm ĐỘC LẬP: pdfium ⇒ PageGeometry.pdfium_nonws_total (worker); confirmed_lines ⇒ tổng đơn vị của mọi
-        # ExtractedLine của trang (code, từ PageExtraction.lines); ocr ⇒ PageGeometry.ocr_nonws_total (worker)
-    assigned_count: int = Field(ge=0)             # code: tổng đơn vị của mọi tham chiếu nguồn của mọi khối
-    dropped: list[LedgerDrop] = []                # code: pdfium ⇒ [hidden = hidden_nonws_dropped]; basis khác ⇒ []
-    by_type: list[LedgerTypeCount] = []           # code: phân rã assigned_count theo loại khối
+    bases: list[LedgerBasisCount] = Field(min_length=1)   # code: mỗi basis có mặt trên trang đúng một phần tử, theo thứ tự khai báo
+    by_type: list[LedgerTypeCount] = []           # code: phân rã Σ bases.assigned_count theo loại khối
     flagged: list[LedgerFlagCount] = []           # code
     page_drop_reason: Literal["cover_or_course_nav", "chapter_nav", "build_step"] | None = None
         # code: = page_role khi trang bỏ mềm (build_step = "build_step_duplicate" của file quyết định mục 1)
-    balanced: bool                                # code: source_count == assigned_count + Σ dropped.count
-    # validator: balanced khớp phương trình; Σ by_type.count == assigned_count
+    balanced: bool                                # code: MỌI basis có source_count == assigned_count + Σ dropped.count
+    # validator: balanced khớp phương trình của từng basis; Σ by_type.count == Σ bases.assigned_count
 
 class CropImage(StrictModel):                     # ADR-010 mục 8
     crop_ref: str = Field(pattern=r"^[0-9a-f]{64}$")           # code: sha256 của byte PNG
@@ -2006,19 +2027,25 @@ class CropImage(StrictModel):                     # ADR-010 mục 8
     media_type: Literal["image/png"] = "image/png"
 ```
 
-- **Nơi chạy và thứ tự** (ADR-010 mục 13; thứ tự orchestrator chốt): tiến trình cha, `services/`. Trang lớp chữ đọc xong ⇒ `services/block_pipeline.py` chạy các stage theo thứ tự chốt ở đó (X05 khối cơ sở, `heading` nhận `level = 1` sơ bộ → X07 bảng/hình vector → X06 code). Bước kết thúc lần đọc, sau 0D: số trang CẤP TÀI LIỆU (`services/page_numbers.py`, sau mọi trang) → X08 cây mục (đặt `level` thật) → V03 (tuỳ chọn) → X08 lại nếu V03 đổi cấp/loại → kiểm ledger → ảnh cắt SAU mọi đổi loại (`RegionRenderer` cho khối `crop_pending`; lỗi/trần ⇒ giữ `crop_pending` + `crop_failed`/`crop_capped`, không ném) → lưu khối, mục, ledger, `layout_version`, `layout_settings_sha256` → tên chương, tự xác nhận, chốt (§6.5). `layout_settings_sha256` = sha256 JSON chuẩn hoá danh sách `fingerprint()` (`{"name", "version", "settings"}`) của các stage tất định theo thứ tự chạy (stage của `block_pipeline`, `page_numbers`, X08, phần tất định của cổng V03); stage nào dùng mẫu `infrastructure/lang/*.toml` thì `settings` của nó gồm sha256 nội dung mẫu đã nạp (sửa toml ⇒ đổi hash). Không gồm cấu hình tầng đọc (`PageGeometry.version`, `reader_settings_sha256`) và kết quả AI (lưu riêng kèm model + `PROMPT_VERSION`).
+- **Nơi chạy và thứ tự** (ADR-010 mục 13; thứ tự orchestrator chốt): tiến trình cha, `services/`. Trang lớp chữ đọc xong ⇒ `services/block_pipeline.py` chạy các stage theo thứ tự chốt ở đó (X05 khối cơ sở, `heading` nhận `level = 1` sơ bộ → X07 bảng/hình vector → X06 code). Bước kết thúc lần đọc, sau 0D: số trang CẤP TÀI LIỆU (`services/page_numbers.py`, sau mọi trang) → X08 cây mục (đặt `level` thật) → V03 (tuỳ chọn) → X08 lại nếu V03 đổi cấp/loại → kiểm ledger → ảnh cắt SAU mọi đổi loại (`RegionRenderer` cho khối `crop_pending`; lỗi/trần ⇒ giữ `crop_pending` + `crop_failed`/`crop_capped`, không ném) → lưu khối, mục, ledger, `layout_version`, `layout_settings_sha256` → tên chương, tự xác nhận, chốt (§6.5). `layout_settings_sha256` = sha256 JSON chuẩn hoá của `{"layout_version": LAYOUT_VERSION, "fingerprints": [...]}` (orchestrator chốt: `LAYOUT_VERSION` nằm trong hash), `fingerprints` = danh sách `fingerprint()` (`{"name", "version", "settings"}`) của các stage tất định theo thứ tự chạy (stage của `block_pipeline`, `page_numbers`, X08, phần tất định của cổng V03); stage nào dùng mẫu `infrastructure/lang/*.toml` thì `settings` của nó gồm `lang_patterns_sha256` = sha256 JSON chuẩn hoá của mẫu đã hợp (sửa toml ⇒ đổi hash); `settings` của XY-cut gồm `xy_cut_max_depth`, `xy_cut_max_nodes`.
+- **Số trang hai bước** (orchestrator chốt): stage từng trang tạo khối ỨNG VIÊN riêng cho mỗi dòng có hộp nằm trong dải lề và khớp mẫu số trang; `services/page_numbers.py` (cấp tài liệu) đổi `type` của ứng viên đạt luật thành `page_number` và cập nhật `ledger.by_type` (id không chứa `type` nên không đổi).
+- **`PageBlocks` nội bộ** (orchestrator chốt): kết quả pipeline một trang là model `PageBlocks` ở `services/block_pipeline.py` (không ra response; response khối của trang ở §6.10 tên `PageBlockList`). Trang `LAYOUT_FAILED` ⇒ `blocks = []`. Ledger là `None` khi thiếu geometry hoặc stage lỗi trước khi đếm; khi đó X09 không lưu hàng `extraction_ledgers` cho trang (trang vẫn mang `LAYOUT_FAILED`).
+- **Thứ tự đọc khi thiếu hộp** (orchestrator chốt): dòng/từ `bbox = null` đứng ngay sau khối có hộp kề trước nó theo thứ tự PDFium, mang cờ `reading_order_uncertain`; đứng đầu trang theo thứ tự PDFium ⇒ đứng đầu; trang không có hộp nào ⇒ toàn trang theo thứ tự PDFium. Chỉ chồng lấn hình học mới ⇒ `figure` + `layout_uncertain`; dòng bị che ở lại khối của nó với cờ `text_occluded`. Không gồm cấu hình tầng đọc (`PageGeometry.version`, `reader_settings_sha256`) và kết quả AI (lưu riêng kèm model + `PROMPT_VERSION`).
 - **`PageGeometry` thiếu** (orchestrator chốt): geometry vượt trần (từ, dòng, byte) ⇒ `geometry = None`, trang vẫn đọc và xác nhận bình thường bằng dòng. Trang lớp chữ của tài liệu có `layout_version` khác null mà không có geometry ⇒ không có khối, trang nhận `LAYOUT_FAILED` và đi đường dòng.
-- **Chọn model phẳng:** `Block` là MỘT model phẳng có validator theo `type` (đúng danh sách field của ADR-010 Phụ lục A, X05 tạo theo đó) thay cho discriminated union theo loại (CLAUDE.md §2.3); field riêng theo loại chỉ có `level`, `list_depth`, `cells`, `labels`/`label_line_refs`, `caption_of`, `ocr_text`, validator cưỡng chế chúng. Đổi sang union là việc sau, cần sửa ADR-010.
+- **Chọn model phẳng (OPEN cho người dùng; nợ LAYOUT-001 ở ADR-004):** `Block` là MỘT model phẳng có validator theo `type` (đúng danh sách field của ADR-010 Phụ lục A, X05 tạo theo đó), lệch quy tắc discriminated union của CLAUDE.md §2.3; field riêng theo loại chỉ có `level`, `list_depth`, `cells`, `labels`/`label_line_refs`, `caption_of`, `ocr_text`, validator cưỡng chế chúng. Đổi sang union cần sửa ADR-010 và tăng `LAYOUT_VERSION`.
+- **Bảng có ô lệch** (orchestrator chốt): khối `table` có ô số/mã lệch đối chiếu giữ là `table` (giữ cấu trúc) + cờ BLOCKING `table_token_mismatch`, không thành `figure`; chặn tự xác nhận (§5.7) và loại khỏi tập đủ điều kiện tới khi cờ được gỡ. `ReviewReason`, 409 ở §6.5 và cách gỡ cờ chốt ở X02b (OPEN); tới đó đường VLM không bật nên cờ không phát sinh.
 - **Đơn vị ledger:** số code point không trắng (`str.isspace()` sai) của NFC(từ), cộng theo từ; dòng xác nhận: của `ExtractedLine.text`. Đếm trên không gian chỉ số của `PageGeometry` (dòng thô), không trên `ExtractedLine`. Mỗi đơn vị của trang thuộc đúng một khối (qua `line_refs`, `label_line_refs`) hoặc nằm trong `dropped`. Ký tự header/footer thuộc khối `header_footer`, số trang thuộc khối `page_number`, chữ bị che/tương phản thấp thuộc khối có cờ (bảng lý do ở ADR-010 mục 6). Lệch dù 1 đơn vị ⇒ khối của trang bị bỏ, trang dùng đường dòng, ledger lưu `balanced = false`, trang nhận `LAYOUT_FAILED` (§5.7). Bộ dựng lỗi hoặc vượt trần (`MAX_PAGE_BLOCKS = 10 000`, đề xuất suy ra) xử lý như ledger lệch.
 - **Dựng văn bản theo loại** (ADR-010 mục 7): `paragraph`, `list_item`, `heading`, `caption`, `header_footer`, `page_number` = các từ nguồn theo (dòng, từ) nối bằng MỘT dấu cách (xuống dòng ⇒ một khoảng trắng, gộp khoảng trắng), GIỮ gạch nối cuối dòng; `code` = giữ dòng (`\n`), khoảng trắng đầu dòng và giữa từ dựng lại từ toạ độ x theo bề rộng ký tự đơn cách (không vào ledger); `formula` = từ cùng dòng nối bằng dấu cách, dòng nối bằng `\n`, cờ `formula_text_unverified`; `table` = `text` null, chữ ở ô; `figure` = `text` null, `labels`. Chữ khối lớp chữ là NFC của từng từ (rồi nối). Khối `paragraph` dài quá 50 000 ký tự được tách tại ranh giới dòng; khối loại khác vượt `max_length` ⇒ trang `LAYOUT_FAILED`. Khối `source = "vlm"`: `text` = chữ VLM đã qua cổng (khớp OCR độc lập theo ngưỡng, token số/mã trùng tuyệt đối; ngưỡng cổng chốt ở X02b: ADR-009 bản cập nhật, merge SAU ADR-010; tới khi đó đường VLM không bật, không có khối `vlm`), `line_refs` trỏ từ OCR của vùng, `ocr_text` giữ chữ OCR; không qua cổng ⇒ `figure` + `vlm_gate_rejected`.
 - **I3 (không đổi định nghĩa, §0):** văn bản khối lớp chữ là chuỗi con (sau NFC + gộp khoảng trắng) của nối `line_refs`; trích dẫn của chunk theo khối là chuỗi con của `raw_text` = các `text` khối nối bằng `\n\n`; trích dẫn trong khối `vlm` là chuỗi con của `text` khối sau NFC.
 - **Id:** `block_id` = `"blk_"` + 16 hex đầu của sha256 JSON chuẩn hoá `["block", document_id, page_number, refs]`, `refs` = danh sách đã sắp `[kind, line_idx, word_idx, line_sha256]` (`confirmed_line`: `[kind, line_index, 0, line_sha256]`), `line_sha256` = sha256 UTF-8 của nội dung dòng nguồn (dòng thô: các từ NFC nối bằng một dấu cách; dòng xác nhận: `ExtractedLine.text`); figure dùng `label_line_refs`, khối `vlm` dùng từ OCR. Khối không có từ nào (ảnh nhúng, vùng thuần ảnh): `["block_noref", document_id, page_number, type, bbox × 1000 làm tròn, region_index]`, `region_index` đếm trong nhóm khối không có từ của trang theo (y0, x0, y1, x1) rồi `type`. JSON chuẩn hoá = `json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=False)`. `section_id` = `"sec_"` + 16 hex của sha256 `["section", document_id, path, sibling_ordinal]`, `path` = tiêu đề tổ tiên (không gồm gốc) tới chính nó, chuẩn hoá NFC + `casefold` + gộp khoảng trắng (không tiêu đề: `""`).
 - **Section:** khối thuộc đúng MỘT Section (sâu nhất đang mở tại vị trí khối). Trang liền nhau có `heading` cùng tiêu đề (so sau NFC + `casefold` + gộp khoảng trắng, bỏ hậu tố nối trang) hoặc có hậu tố nối trang (`continuation_suffixes` của `infrastructure/lang/{vi,en}.toml`) ⇒ cùng Section, cờ `continued_across_pages`. Không có tiêu đề rõ ⇒ `title = null` + `untitled`. Cấp tiêu đề (X08): phân cụm cỡ/độ đậm khối `heading` toàn tài liệu + đánh số đa cấp + vùng tiêu đề template; chương theo cơ chế hiện có (§5.7 "Chương tự động").
 - **Số trang** (ADR-010 mục 12): dòng trong dải lề trên/dưới `page_number_margin = 0.10`, ≤ 12 ký tự không trắng, khớp mẫu số trang, và hiệu (số − `page_number`) không đổi trên ≥ 3 trang ⇒ `page_number` (thắng `header_footer`). Mẫu có chữ ("Trang n", "Page n of m") ở `lang/*.toml`; bộ nạp nạp HỢP các tệp ngôn ngữ.
-- **Tập khối đủ điều kiện** (ADR-010 mục 13; một hàm store `refresh_eligible_blocks(document_id, page_number | None)`, X09 sở hữu, ghi `blocks.eligible` trong CÙNG giao dịch với xác nhận trang/tài liệu, `…/unconfirm`, `…/restore`, `PATCH …/lines`, kết thúc lần đọc, xoá): MỘT luật cho cây, tra cứu khối và chunk (orchestrator chốt): khối đủ điều kiện ⇔ tài liệu `status = "confirmed"` (người dùng đã bấm "Chấp nhận" hay mọi trang đã xác nhận, §5.7 "Chốt trạng thái"), không phải `past_exam`; trang `confirmed`, không `dropped`, không `failed`; `type ∉ {header_footer, page_number}`. Trang người dùng xác nhận khi tài liệu chưa `confirmed` CHƯA đủ điều kiện. Chunk (§12.1), chỉ mục tra cứu khối (§12.3) và cây (§6.10) CHỈ dùng tập này.
-- **Dựng lại sau `PATCH …/lines`** (chọn khuyến nghị của ADR-010 mục 13): trong cùng giao dịch, trang được dựng lại từ dòng đã xác nhận: dòng thô không có mảnh `ExtractedLine` nào bị sửa giữ tham chiếu `word`; dòng thô có mảnh bị sửa và dòng gõ thêm dùng `confirmed_line`; khối chứa chúng có `human_edited`; ledger `ledger_basis = "confirmed_lines"`; khối có tập tham chiếu không đổi giữ `block_id` và `crop_ref`, khối đổi nhận id mới; X08 chạy lại cho tài liệu; bước ảnh cắt thuộc đường dựng lại này: khối đổi id cần ảnh ⇒ cắt lại (chạy sau khi giao dịch dựng lại commit, vì gọi worker; tới lúc đó khối giữ `crop_pending`), ảnh không còn khối nào trỏ tới bị xoá. `layout_settings_sha256` đã lưu khác hash của code hiện tại ⇒ dựng lại mọi trang lớp chữ của tài liệu bằng code hiện tại và ghi `layout_version`/hash mới (PATCH chỉ được khi tài liệu chưa `confirmed`, chưa có chunk).
+- **Tập khối đủ điều kiện** (ADR-010 mục 13; một hàm store `refresh_eligible_blocks(document_id, page_number | None)`, X09 sở hữu, ghi `blocks.eligible` trong CÙNG giao dịch với xác nhận trang/tài liệu, `…/unconfirm`, `…/restore`, `PATCH …/lines`, kết thúc lần đọc, xoá): MỘT luật cho cây, tra cứu khối và chunk (orchestrator chốt): khối đủ điều kiện ⇔ tài liệu `status = "confirmed"` (người dùng đã bấm "Chấp nhận" hay mọi trang đã xác nhận, §5.7 "Chốt trạng thái"), không phải `past_exam`; trang `confirmed`, không `dropped`, không `failed`; `type ∉ {header_footer, page_number}`; khối không mang `table_token_mismatch`. Trang người dùng xác nhận khi tài liệu chưa `confirmed` CHƯA đủ điều kiện. Chunk (§12.1), chỉ mục tra cứu khối (§12.3) và cây (§6.10) CHỈ dùng tập này.
+- **Cây từ khối đủ điều kiện** (orchestrator chốt): X08 dựng Section trên tập ỨNG VIÊN = khối sẽ đủ điều kiện khi tài liệu `confirmed` (bỏ trang `dropped`/`failed`, khối `header_footer`/`page_number`/`table_token_mismatch`); trang `dropped` không sinh Section. Tập ứng viên đổi (`…/restore`, `PATCH …/lines`, gỡ cờ) ⇒ X08 chạy lại trong cùng đường xử lý. `PATCH …/chapter` cập nhật `chapter_code` và `title` của Section gốc (id không đổi).
+- **Thứ tự chunk** (orchestrator chốt, để `chunk_id` tất định): một bộ đếm `ordinal` chung; chunk sắp theo trang đầu, trong cùng trang theo `reading_order` của khối đầu; chunk `build_chunks` của dãy trang không có khối (`LAYOUT_FAILED`, OCR) chen đúng vị trí trang đầu của dãy, sau chunk theo khối bắt đầu ở trang trước đó.
+- **Dựng lại sau `PATCH …/lines`** (chọn khuyến nghị của ADR-010 mục 13): trong cùng giao dịch, trang được dựng lại từ dòng đã xác nhận: dòng thô không có mảnh `ExtractedLine` nào bị sửa giữ tham chiếu `word`; dòng thô có mảnh bị sửa và dòng gõ thêm dùng `confirmed_line`; khối chứa chúng có `human_edited`; ledger có phần tử `ledger_basis = "confirmed_lines"`; khối có tập tham chiếu không đổi giữ `block_id` và `crop_ref`, khối đổi nhận id mới; X08 chạy lại cho tài liệu; bước ảnh cắt thuộc đường dựng lại này: khối đổi id cần ảnh ⇒ cắt lại (chạy sau khi giao dịch dựng lại commit, vì gọi worker; tới lúc đó khối giữ `crop_pending`), ảnh không còn khối nào trỏ tới bị xoá. `layout_settings_sha256` đã lưu khác hash của code hiện tại ⇒ dựng lại mọi trang lớp chữ của tài liệu bằng code hiện tại và ghi `layout_version`/hash mới (PATCH chỉ được khi tài liệu chưa `confirmed`, chưa có chunk).
 - **Đề xuất cấu trúc của LLM/VLM (V03)** chỉ là thao tác tham chiếu id (`set_type`, `reorder`, `set_level`, `set_list_depth`, `set_semantic_label`), không có trường chữ; cổng và ma trận chuyển loại đầy đủ ở ADR-010 mục 14 (không bao giờ sang `figure`, `table`, `header_footer`, `page_number`; sang `heading` chỉ khi cỡ/đậm nằm trong cụm tiêu đề X08 đã nhận hoặc chữ khớp mẫu đánh số đa cấp; sang `code` chỉ qua hàm dựng X06; sang `formula` chỉ khi dựng lại từ `line_refs`). Vi phạm ⇒ bỏ cả đề xuất của trang, cờ `ai_proposal_rejected`.
-- **I4 (không đổi định nghĩa, §0):** bảo đảm trên kết quả ĐÃ LƯU. Tài liệu cũ (`layout_version = null`) giữ `raw_text`/chunk; không tự nhập lại hay dựng lại khi `LAYOUT_VERSION` tăng. Cùng `PageGeometry` + cùng `layout_settings_sha256` (không bước AI) ⇒ cùng khối, mục, id; hash gồm sha256 mẫu `lang/*.toml` đã nạp, nên sửa toml cũng đổi hash. Kết quả AI lưu riêng (`structure_proposals`, cache AI) kèm model + `PROMPT_VERSION`, không tái lập được từ hash.
+- **I4 (không đổi định nghĩa, §0):** bảo đảm trên kết quả ĐÃ LƯU. Tài liệu cũ (`layout_version = null`) giữ `raw_text`/chunk; không tự nhập lại hay dựng lại khi `LAYOUT_VERSION` tăng. Cùng `PageGeometry` + cùng `layout_settings_sha256` (không bước AI) ⇒ cùng khối, mục, id; hash gồm `LAYOUT_VERSION` và sha256 mẫu `lang/*.toml` đã hợp, nên tăng version hay sửa toml đều đổi hash. Kết quả AI lưu riêng (`structure_proposals`, cache AI) kèm model + `PROMPT_VERSION`, không tái lập được từ hash.
 - **Test cưỡng chế đề xuất:** bảng ở ADR-010 mục 21 (chờ người dùng duyệt bổ sung bảng CLAUDE.md §9).
 
 ## 6. API Contracts
@@ -2335,7 +2362,7 @@ class DocumentChapterPatch(StrictModel):
     # validator: chapter_code và chapter_title không cùng null
 ```
 
-**Ngữ nghĩa:** giá trị được đặt nhận nguồn `"user"` (`chapter_source.code` hoặc `.title`); đặt `chapter_code` xoá mọi `chapter_flags`. Không có `expected_version` (tài liệu không lộ `version` trong response); ghi dưới khoá của tài liệu, người ghi sau thắng (đề xuất suy ra). Đổi `chapter_code` không đổi chunk nào vì chỉ được phép khi Vault chưa có chunk của tài liệu. Đặt `chapter_code` trùng chương của tài liệu khác cùng môn được phép (như form).
+**Ngữ nghĩa:** giá trị được đặt nhận nguồn `"user"` (`chapter_source.code` hoặc `.title`); đặt `chapter_code` xoá mọi `chapter_flags`. Không có `expected_version` (tài liệu không lộ `version` trong response); ghi dưới khoá của tài liệu, người ghi sau thắng (đề xuất suy ra). Đổi `chapter_code` không đổi chunk nào vì chỉ được phép khi Vault chưa có chunk của tài liệu. Thêm 2026-11-01 (ADR-010 mục 13; orchestrator chốt): tài liệu có khối thì `chapter_code`/`chapter_title` mới được ghi vào Section gốc (§5.15) trong cùng giao dịch; `section_id` không đổi. Đặt `chapter_code` trùng chương của tài liệu khác cùng môn được phép (như form).
 
 **Response:** `200 DocumentImport`. **Lỗi:** 404; 409 khi đổi `chapter_code` mà tài liệu đã `confirmed` hoặc Vault đã có chunk của tài liệu (`chapter_title` vẫn đổi được lúc đó; request có cả hai trường thì không đổi gì và trả 409), hoặc tài liệu nhập trước khi có `chapter_code`; 422 khi body sai.
 
@@ -2548,7 +2575,7 @@ Phạm vi endpoint duyệt 2026-11-01 (ADR-010) (file quyết định mục 3: "
 |---|---|---|---|---|---|
 | GET | `/v1/vault/tree` | query `subject_code` (bắt buộc) | `200 SubjectTree` | 404 (môn không có), 422 | X09 |
 | GET | `/v1/documents/{document_id}/sections/{section_id}/blocks` | query `scope` ∈ `eligible` (mặc định) \| `all`, `offset` ≥ 0 (mặc định 0), `limit` 1–500 (mặc định 200) | `200 SectionBlocks` | 404 (tài liệu, mục), 422 | X09 |
-| GET | `/v1/documents/{document_id}/pages/{page_number}/blocks` | — | `200 PageBlocks` (mọi khối của trang, kể cả chưa đủ điều kiện; dùng cho màn xem lại) | 404 (tài liệu, trang ngoài `1..page_count`) | X09 |
+| GET | `/v1/documents/{document_id}/pages/{page_number}/blocks` | — | `200 PageBlockList` (mọi khối của trang, kể cả chưa đủ điều kiện; dùng cho màn xem lại) | 404 (tài liệu, trang ngoài `1..page_count`) | X09 |
 | GET | `/v1/documents/{document_id}/crops/{crop_ref}` | `crop_ref` khớp `^[0-9a-f]{64}$` | `200` byte PNG | 404 (tài liệu, ảnh không thuộc tài liệu này, file mất), 422 (`crop_ref` sai mẫu) | X09 |
 | GET | `/v1/vault/blocks/search` | query `q` (1–200 ký tự sau NFC và bỏ khoảng trắng đầu/cuối; ≤ 32 token sau gấp dấu), `subject_code` (bắt buộc), `document_id` (lặp được), `chapter_code` (lặp được), `type` (`BlockType`, lặp được; `header_footer`, `page_number` ⇒ 422), `offset` 0–1000 (mặc định 0), `limit` 1–50 (mặc định 20) | `200 BlockSearchPage` | 422 | X10 |
 
@@ -2563,6 +2590,9 @@ class SourceNode(StrictModel):                    # "Nguồn" = một tài liệ
     layout_version: int | None                    # chép DocumentImport
     chapter_shared_with: list[str]                # code: document_id khác cùng môn, cùng chapter_code, theo uploaded_at
     root: SectionNode | None                      # code: null khi tài liệu không có khối (layout_version null)
+    # --- đếm trang không có khối, để không hụt im lặng (orchestrator chốt; tên đề xuất suy ra). Code đếm; frontend chỉ hiển thị
+    layout_failed_pages: list[int] = []           # code: page_number tăng dần của trang có LAYOUT_FAILED (nội dung chỉ ở chunk dòng)
+    ocr_pages_without_blocks: list[int] = []      # code: page_number của trang OCR/bitmap chưa có khối (tới khi X11 làm)
 
 class SubjectTree(StrictModel):                   # "Môn" (§5.14)
     subject_code: str; display_name: str          # chép Subject
@@ -2574,7 +2604,7 @@ class SectionBlocks(StrictModel):
     section: Section; total: int = Field(ge=0)    # code: số khối theo scope
     blocks: list[Block]                           # code: theo (trang, reading_order); scope = eligible ⇒ chỉ khối đủ điều kiện
 
-class PageBlocks(StrictModel):
+class PageBlockList(StrictModel):                 # tên khác PageBlocks nội bộ của services/block_pipeline.py (§5.15)
     document_id: str; page_number: int
     layout_version: int | None                    # chép DocumentImport
     blocks: list[Block]                           # code: theo reading_order; rỗng khi trang chưa có khối
@@ -2606,11 +2636,16 @@ class BlockSearchPage(StrictModel):
     total_capped: bool                            # code: true khi số kết quả thật > 1000
     hits: list[BlockSearchHit]
     engine: Literal["fts5", "fts5_trigram", "python"]   # code: đường đã dùng (thông tin chẩn đoán)
+    layout_failed_pages: int = Field(ge=0)        # code: số trang LAYOUT_FAILED trong phạm vi lọc (không tra cứu khối được)
+    ocr_pages_without_blocks: int = Field(ge=0)   # code: số trang OCR/bitmap chưa có khối trong phạm vi lọc
+        # hai số trên đếm trên tài liệu confirmed khớp bộ lọc subject_code/document_id/chapter_code (orchestrator chốt; tên
+        # đề xuất suy ra); frontend hiện cảnh báo "có N trang chưa tra cứu theo khối được", không tự đếm
 ```
 
 - **Tra cứu** (ADR-010 mục 18): chỉ khối đủ điều kiện (§5.15) của `subject_code`; truy vấn và chữ khối qua cùng hàm gấp dấu (NFC → `casefold` → NFD → bỏ dấu kết hợp → `đ` thành `d` → NFC; ADR-010 mục 18). Xếp hạng tất định: `match_kind` (exact > folded > fuzzy), rồi `score` giảm dần, rồi `document_id`, `page_number`, `reading_order`, `block_id`. Kết quả khớp qua `labels` của figure có cờ `figure_label_text` trong `block.flags`. Ký tự đặc biệt của FTS5 (`"`, `*`, `NEAR`, `:`) trong `q` không bao giờ đi thẳng vào câu `MATCH` (truy vấn dựng từ token đã gấp dấu, mỗi token đặt trong ngoặc kép). Mục tiêu p95 < 100 ms trên 3 chương đo bằng `scripts/eval_search.py`, không phải ngưỡng trong pytest. `GET /v1/vault/search` (§6.6) không đổi.
 - **Ảnh cắt:** header `Content-Type: image/png`, `X-Content-Type-Options: nosniff`, `Cache-Control: private, max-age=31536000, immutable`; body là đúng byte PNG đã kiểm (sha256 = `crop_ref`). Frontend tải qua `lib/api.ts` (gửi `X-Holocron-Token` khi có) → blob → object URL, thu hồi khi unmount; KHÔNG đặt token vào URL, KHÔNG `<img src>` trỏ thẳng endpoint.
-- **Cây:** đổi `chapter_title` (`PATCH …/chapter`) đổi `title` của Section gốc, không đổi `section_id` (§5.15).
+- **Cây:** dựng từ khối đủ điều kiện (§5.15). `PATCH …/chapter` cập nhật `chapter_code` và `title` của Section gốc, không đổi `section_id` (§5.15). `…/unconfirm` và `…/restore` làm khối rời tập đủ điều kiện ⇒ rời khỏi cây và chỉ mục tra cứu trong cùng giao dịch.
+- **Lỗi 422 của tra cứu khối:** `type` là `header_footer`/`page_number`, `q` rỗng sau khi bỏ khoảng trắng hoặc > 200 ký tự hoặc > 32 token, `offset` > 1000, `limit` ngoài 1–50.
 
 ## 7. Ingestion Gate
 
@@ -2856,7 +2891,7 @@ Ghi chú:
 ### 12.1 Bóc tách chunk
 - Nguồn: chỉ văn bản người dùng đã xác nhận ở bộ nhập PDF (§6.5, ADR-006 mục 1). Code cắt chunk tất định; LLM không cắt chunk (ADR-006 mục 3).
 - Cắt theo heading của slide/giáo trình; chunk dài hơn 450 token được tách tại ranh giới đoạn, chồng lấn 1 câu. Từ 2026-11-01 (ADR-010 mục 16; duyệt 2026-11-01 (ADR-010)) câu này chỉ áp cho đường `build_chunks`: tài liệu có `layout_version = null` (nhập trước khi có khối), tài liệu không phải PDF, và các dãy trang không có khối trong tài liệu có khối (trang OCR/bitmap tới khi X11 làm, trang `LAYOUT_FAILED`). Từ khoá tiêu đề phụ thuộc ngôn ngữ của `build_chunks` chuyển sang `heading_keywords` của `infrastructure/lang/{vi,en}.toml`, không đổi hành vi (ADR-010 mục 16).
-- **Cắt theo khối (ADR-010 mục 16; duyệt 2026-11-01 (ADR-010)):** tài liệu có `layout_version` khác null, trang có khối: với mỗi Section (§5.15), lấy khối đủ điều kiện có `text` khác null theo (trang, `reading_order`), bỏ khối `heading` lặp do nối trang (giữ khối tiêu đề đầu), gom thành chunk ≤ 450 token (`search_tokens`) tại ranh giới khối; khối dài hơn được tách theo câu/từ bằng hàm hiện có. Không chồng lấn giữa các chunk (đề xuất suy ra). `raw_text` = `text` các khối nối bằng `\n\n`; chunk mang `section_id`, `block_ids` (§5.8); `page_number`/`page_end` = trang đầu/cuối của các khối. `figure`/`table` (`text = null`), `header_footer`, `page_number` không thành chunk. Khối ngắn hơn 8 ký tự ⇒ gộp với khối kề trong cùng Section; không có ⇒ không thành chunk, cờ `too_short_for_chunk`. Chunk sinh theo thứ tự trang, `chunk_id = chunk_id_for(doc_id, ordinal, raw_text)` với một bộ đếm `ordinal` chung cho cả hai đường. Trích dẫn mặc định như bước 4 hiện có (câu đầu ≥ 8 ký tự, ưu tiên khối không phải `heading`, ≤ 600 ký tự).
+- **Cắt theo khối (ADR-010 mục 16; duyệt 2026-11-01 (ADR-010)):** tài liệu có `layout_version` khác null, trang có khối: với mỗi Section (§5.15), lấy khối đủ điều kiện có `text` khác null theo (trang, `reading_order`), bỏ khối `heading` lặp do nối trang (giữ khối tiêu đề đầu), gom thành chunk ≤ 450 token (`search_tokens`) tại ranh giới khối; khối dài hơn được tách theo câu/từ bằng hàm hiện có. Không chồng lấn giữa các chunk (đề xuất suy ra). `raw_text` = `text` các khối nối bằng `\n\n`; chunk mang `section_id`, `block_ids` (§5.8); `page_number`/`page_end` = trang đầu/cuối của các khối. `figure`/`table` (`text = null`), `header_footer`, `page_number` không thành chunk. Khối ngắn hơn 8 ký tự ⇒ gộp với khối kề trong cùng Section; không có ⇒ không thành chunk, cờ `too_short_for_chunk`. `chunk_id = chunk_id_for(doc_id, ordinal, raw_text)` với một bộ đếm `ordinal` chung cho cả hai đường, theo thứ tự tất định ở §5.15 "Thứ tự chunk" (trang đầu, rồi `reading_order` của khối đầu; chunk `build_chunks` của dãy trang không có khối chen đúng vị trí trang). Trích dẫn mặc định như bước 4 hiện có (câu đầu ≥ 8 ký tự, ưu tiên khối không phải `heading`, ≤ 600 ký tự).
 - Khi cắt, code đặt `category = THEORY` cho mọi chunk, `topic_keys = []` và `chapter_code` lấy từ tài liệu nhập (duyệt 2026-10-26, §6.5); code không tự phân loại nội dung. Tag `#theory` / `#practice_example` gắn tự động theo category (validator cưỡng chế).
 - Tiêu chí gán `category` khi người dùng (hoặc LLM đề xuất, nếu có key) sửa nhãn qua `PATCH /v1/vault/chunks/{chunk_id}/labels` (§6.6): `THEORY` khi chunk chứa định nghĩa/định lý/công thức; `PRACTICE` khi chứa bảng số liệu hoặc lời giải ví dụ.
 - `linked_chunk_ids`: chunk `PRACTICE` liên kết tới chunk `THEORY` có cùng `topic_keys` gần nhất về trang. Lúc cắt mọi chunk là `THEORY` với `topic_keys = []`, nên `linked_chunk_ids` khởi đầu rỗng. Tính lại khi nhãn đổi (duyệt 2026-10-26 chiều): sau mỗi `PATCH …/labels` thành công, code tính lại `linked_chunk_ids` cho mọi chunk cùng `subject_code` với chunk vừa sửa (không chỉ cùng `doc_id`), trong cùng giao dịch ghi. Việc tính lại KHÔNG tăng `version` của các chunk khác (chỉ chunk vừa sửa tăng `version`), để sửa nhãn một chunk không làm `expected_version` của chunk khác lệch. Với mỗi `topic_key` của chunk `PRACTICE`, chunk `THEORY` "gần nhất" xét lần lượt: cùng tài liệu trước tài liệu khác, khoảng cách trang nhỏ hơn, trang nhỏ hơn, `chunk_id` nhỏ hơn; danh sách sắp theo `chunk_id`, không trùng (`link_practice_chunks`, `domain/vault.py`). Chunk `THEORY` và chunk có `topic_keys = []` không liên kết.

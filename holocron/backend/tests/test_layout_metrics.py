@@ -221,3 +221,113 @@ def test_baseline_line_blocks_from_real_pdf(tmp_path: Path) -> None:
     assert {b.type for b in doc.blocks} == {"paragraph"} and all(b.source == "text_layer" for b in doc.blocks)
     metrics = _eval([("paragraph", "Dong mot Dong hai")], {"ch2": doc})
     assert metrics["pred_blocks"] == 2 and metrics["page_cer"] == 0.0
+
+
+def _eval_data(tmp_path: Path, md: str | None = None) -> Path:
+    root = tmp_path / "eval_data"
+    arm = root / "arm_ch2"
+    arm.mkdir(parents=True, exist_ok=True)
+    pages = [
+        {
+            "page": 1,
+            "topic": "t",
+            "blocks": [{"order": 0, "type": "title", "text": "A"}, {"order": 1, "type": "title", "text": "B"}],
+        }
+    ]
+    (arm / "x.json").write_text(json.dumps({"document": "x.pdf", "page_count": 1, "pages": pages}), encoding="utf-8")
+    if md is not None:
+        (arm / "x.md").write_text(md, encoding="utf-8")
+    return root
+
+
+MD_LEVELS = "# Tài liệu\n\n## Quy ước\n\n## Trang 1\n- nguồn: x\n\n#### [title]\nA\n\n### [title]\nB\n"
+
+
+def test_md_title_levels_skip_page_markers_and_document_title() -> None:
+    assert lm_levels(MD_LEVELS) == {1: [4, 3]}
+    assert lm_levels("## Trang 2\n\n#### [paragraph]\nx\n") == {}
+
+
+def lm_levels(text: str) -> dict[int, list[int]]:
+    return el.md_title_levels(text)
+
+
+def test_heading_levels_from_md_are_relative_and_used(tmp_path: Path) -> None:
+    root = _eval_data(tmp_path, MD_LEVELS)
+    levels, mode = el.load_heading_levels(root, ["ch2"])
+    assert mode == "from_md" and levels == {"ch2": {1: [2, 1]}}
+    blocks, _ = el.gt_lblocks(_gt_page(1, [("title", "A"), ("title", "B")]), levels["ch2"][1])
+    assert [b.level for b in blocks] == [2, 1]
+    docs = {
+        "ch2": lm.NeutralDoc(
+            (lm.LBlock("a", 1, "heading", "A", 0, 2), lm.LBlock("b", 1, "heading", "B", 1, 1)), None, frozenset({1})
+        )
+    }
+    truth = {"ch2": {1: _gt_page(1, [("title", "A"), ("title", "B")])}}
+    assert el.evaluate_layout(truth, docs, heading_levels=levels)["all"]["ch2"]["tree_f1"] == 1.0
+    assert el.evaluate_layout(truth, docs)["all"]["ch2"]["tree_f1"] == 0.5
+
+
+def test_flat_heading_levels_reported_in_results(tmp_path: Path) -> None:
+    root = _eval_data(tmp_path, "## Trang 1\n\n#### [title]\nA\n\n#### [title]\nB\n")
+    assert el.load_heading_levels(root, ["ch2"]) == ({}, "flat")
+    pred = tmp_path / "p.json"
+    pred.write_text(json.dumps(_pred([{"type": "paragraph", "text": "A"}])), encoding="utf-8")
+    out = tmp_path / "out"
+    assert el.main([str(root), str(out), "--pred", str(pred)]) == 0
+    assert json.loads((out / "results.json").read_text(encoding="utf-8"))["gt_heading_levels"] == "flat"
+
+
+def test_level_count_mismatch_falls_back_to_level_one() -> None:
+    blocks, _ = el.gt_lblocks(_gt_page(1, [("title", "A")]), [3, 2])
+    assert blocks[0].level == lm.GT_HEADING_LEVEL
+
+
+def test_prediction_pages_outside_ground_truth_count_as_silent_wrong() -> None:
+    extra = lm.NeutralDoc(
+        (
+            lm.LBlock("a", 9, "paragraph", "zz", 0),
+            lm.LBlock("b", 9, "paragraph", "yy", 1, flags=("X",)),
+            lm.LBlock("c", 9, "figure", "f", 2),
+        ),
+        None,
+        frozenset({1, 9}),
+    )
+    truth = {"ch2": {1: _gt_page(1, [("paragraph", "abc")])}}
+    metrics = el.evaluate_layout(truth, {"ch2": extra})["all"]["ch2"]
+    assert metrics["silent_wrong"] == 1 and metrics["text_blocks_pred"] == 2 and metrics["pred_blocks"] == 3
+
+
+def test_match_pdfs_pairs_by_stem(tmp_path: Path) -> None:
+    for name in ("a.pdf", "a.json", "b.pdf", "c.json"):
+        (tmp_path / name).write_bytes(b"x")
+    matched, unmatched = el.match_pdfs(tmp_path)
+    assert [p.name for p in matched] == ["a.pdf"] and [p.name for p in unmatched] == ["b.pdf"]
+
+
+def _bad(tmp_path: Path, content: str | dict[str, object]) -> list[str]:
+    root = _eval_data(tmp_path)
+    pred = tmp_path / "bad.json"
+    pred.write_text(content if isinstance(content, str) else json.dumps(content), encoding="utf-8")
+    return [str(root), str(tmp_path / "out"), "--pred", str(pred)]
+
+
+def test_layout_mode_error_paths_return_2(tmp_path: Path) -> None:
+    assert el.main(_bad(tmp_path, {"chapters": {"ch9": {"pages": []}}})) == 2
+    assert el.main(_bad(tmp_path, {"chapters": {"ch2": {"pages": [{"page": 1}, {"page": 1}]}}})) == 2
+    assert el.main(_bad(tmp_path, "{not json")) == 2
+    for ledger in (
+        {"total_chars": -1, "assigned_chars": 0},
+        {"total_chars": "5", "assigned_chars": 0},
+        {"total_chars": 5, "assigned_chars": 0, "dropped_by_reason": {"a": -2}},
+        {"total_chars": 5, "assigned_chars": 0, "dropped_by_reason": []},
+    ):
+        assert el.main(_bad(tmp_path, _pred([{"type": "paragraph", "text": "a"}], ledger))) == 2
+
+
+def test_layout_mode_requires_results_dir_and_rejects_legacy_outputs(tmp_path: Path) -> None:
+    root = _eval_data(tmp_path)
+    assert el.main([str(root)]) == 2
+    out = tmp_path / "out"
+    assert el.main([str(root), str(out), "--write-oracle", str(tmp_path / "o.json")]) == 2
+    assert el.main([str(root), str(out), "--output", str(tmp_path / "r.json")]) == 2

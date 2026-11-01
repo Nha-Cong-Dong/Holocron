@@ -47,9 +47,11 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import io
 import json
 import math
+import re
 import subprocess
 import sys
 import unicodedata
@@ -62,6 +64,7 @@ from typing import Any
 from scripts.layout_metrics import CHROME_TYPES as NEUTRAL_CHROME_TYPES
 from scripts.layout_metrics import (
     GT_HEADING_LEVEL,
+    NON_TEXT_TYPES,
     LayoutTally,
     LBlock,
     LedgerPage,
@@ -496,16 +499,70 @@ BASELINE_NOTE = "đường nền: mỗi dòng của bộ đọc PDF là một kh
 Metrics = dict[str, float | int | str | None]
 
 
-def gt_lblocks(page: Page) -> tuple[list[LBlock], int]:
-    """Khối ground truth theo BlockType; loại không ánh xạ được ⇒ đếm `unmapped`, không đoán. Cấp tiêu đề cố định."""
+HeadingLevels = dict[str, dict[int, list[int]]]
+_MD_PAGE = re.compile(r"^##\s+Trang\s+(\d+)\s*$")
+_MD_BLOCK = re.compile(r"^(#{1,6})\s*\[(\w+)\]\s*$")
+
+
+def md_title_levels(text: str) -> dict[int, list[int]]:
+    """Số dấu `#` của từng dòng khối `[title]` trong .md, theo trang và thứ tự xuất hiện.
+
+    `## Trang N` là mốc trang và `#` đầu file là tiêu đề tài liệu, cả hai KHÔNG phải khối nên không vào kết quả.
+    """
+    levels: dict[int, list[int]] = {}
+    page: int | None = None
+    for line in text.splitlines():
+        marker = _MD_PAGE.match(line)
+        if marker:
+            page = int(marker.group(1))
+            continue
+        block = _MD_BLOCK.match(line)
+        if block and page is not None and block.group(2) == "title":
+            levels.setdefault(page, []).append(len(block.group(1)))
+    return levels
+
+
+def load_heading_levels(gt_root: Path, chapters: Sequence[str]) -> tuple[HeadingLevels, str]:
+    """Cấp tiêu đề ground truth đọc từ .md cùng tên với .json; trả (cấp theo chương, `"flat"` | `"from_md"`).
+
+    Mọi tiêu đề cùng số dấu `#` (hoặc không có .md) ⇒ chuẩn hoá về cấp 1 và `"flat"`: F1 cây chỉ kiểm chữ và trang.
+    Ngược lại cấp = số dấu `#` trừ số nhỏ nhất cộng 1.
+    """
+    raw: HeadingLevels = {}
+    for chapter in chapters:
+        per_page: dict[int, list[int]] = {}
+        for md in sorted((gt_root / f"arm_{chapter}").glob("*.md")):
+            if not md.with_suffix(".json").is_file():
+                continue
+            for number, found in md_title_levels(md.read_text(encoding="utf-8")).items():
+                per_page.setdefault(number, []).extend(found)
+        raw[chapter] = per_page
+    every = {n for per in raw.values() for found in per.values() for n in found}
+    if len(every) <= 1:
+        return {}, "flat"
+    base = min(every)
+    return {c: {pg: [n - base + 1 for n in found] for pg, found in per.items()} for c, per in raw.items()}, "from_md"
+
+
+def gt_lblocks(page: Page, levels: Sequence[int] | None = None) -> tuple[list[LBlock], int]:
+    """Khối ground truth theo BlockType; loại không ánh xạ được ⇒ đếm `unmapped`, không đoán.
+
+    `levels` = cấp của các khối title theo thứ tự trên trang; thiếu hoặc lệch số lượng ⇒ cấp 1 (`GT_HEADING_LEVEL`).
+    """
     blocks: list[LBlock] = []
     unmapped = 0
+    titles = sum(1 for b in page.blocks if map_gt_type(b.type) == "heading")
+    usable = levels if levels is not None and len(levels) == titles else None
+    seen = 0
     for index, block in enumerate(page.blocks):
         kind = map_gt_type(block.type)
         if kind is None:
             unmapped += 1
             continue
-        level = GT_HEADING_LEVEL if kind == "heading" else None
+        level: int | None = None
+        if kind == "heading":
+            level = usable[seen] if usable is not None else GT_HEADING_LEVEL
+            seen += 1
         blocks.append(LBlock(f"gt{page.page}.{index}", page.page, kind, block.text, block.order, level))
     return blocks, unmapped
 
@@ -519,7 +576,11 @@ def _filter(blocks: Sequence[LBlock], mode: str) -> list[LBlock]:
 
 
 def evaluate_layout_chapter(
-    truth: dict[int, Page], doc: NeutralDoc | None, mode: str, iou: float
+    truth: dict[int, Page],
+    doc: NeutralDoc | None,
+    mode: str,
+    iou: float,
+    heading_levels: dict[int, list[int]] | None = None,
 ) -> tuple[LayoutTally, int]:
     """Đếm một chương; `doc is None` ⇒ mọi trang thiếu. Trả (số đếm, số khối ground truth `unmapped`)."""
     total = LayoutTally()
@@ -532,7 +593,7 @@ def evaluate_layout_chapter(
         ledger_of = {entry.page: entry for entry in doc.ledger or ()}
     has_ledger = doc is not None and doc.ledger is not None
     for number in sorted(truth):
-        gt_all, skipped = gt_lblocks(truth[number])
+        gt_all, skipped = gt_lblocks(truth[number], (heading_levels or {}).get(number))
         unmapped += skipped
         gt = _filter(gt_all, mode)
         if doc is None or (number not in by_page and number not in doc.pages):
@@ -550,6 +611,10 @@ def evaluate_layout_chapter(
         extra = _filter([b for b in doc.blocks if b.page not in truth], mode)
         total.pred_blocks += len(extra)
         total.type_pred.update(b.type for b in extra)
+        for block in extra:
+            if block.type not in NON_TEXT_TYPES:
+                total.text_pred += 1
+                total.silent_wrong += int(not block.flags)
     return total, unmapped
 
 
@@ -558,6 +623,7 @@ def evaluate_layout(
     docs: dict[str, NeutralDoc],
     iou: float = DEFAULT_IOU,
     dev: Sequence[str] = ("ch2",),
+    heading_levels: HeadingLevels | None = None,
 ) -> dict[str, dict[str, Metrics]]:
     """`{mode: {chương | "dev" | "blind": chỉ số}}` cho một nguồn dự đoán."""
     unknown = sorted(set(docs) - set(truth))
@@ -568,7 +634,9 @@ def evaluate_layout(
         per: dict[str, Metrics] = {}
         dev_tally, blind_tally = LayoutTally(), LayoutTally()
         for chapter in sorted(truth):
-            tally, unmapped = evaluate_layout_chapter(truth[chapter], docs.get(chapter), mode, iou)
+            tally, unmapped = evaluate_layout_chapter(
+                truth[chapter], docs.get(chapter), mode, iou, (heading_levels or {}).get(chapter)
+            )
             per[chapter] = {**summarize_layout(tally), "unmapped": unmapped}
             (dev_tally if chapter in dev else blind_tally).merge(tally)
         per["dev"] = dict(summarize_layout(dev_tally))
@@ -592,10 +660,16 @@ def lines_to_blocks(pages: Sequence[Any]) -> NeutralDoc:
     return NeutralDoc(tuple(blocks), None, frozenset(p.page_number for p in pages))
 
 
-def baseline_docs(eval_data: Path, chapters: Sequence[str], *, use_ocr: bool) -> dict[str, NeutralDoc]:
-    """Chạy bộ đọc PDF như app (worker, OCR theo biến môi trường) trên PDF đầu tiên của mỗi `arm_<chương>/`."""
-    import hashlib
+def match_pdfs(directory: Path) -> tuple[list[Path], list[Path]]:
+    """PDF có .json cùng tên (đọc được để đo) và PDF không có .json (bỏ qua, bộ gọi cảnh báo)."""
+    pdfs = sorted(directory.glob("*.pdf"))
+    return [p for p in pdfs if p.with_suffix(".json").is_file()], [
+        p for p in pdfs if not p.with_suffix(".json").is_file()
+    ]
 
+
+def baseline_docs(eval_data: Path, chapters: Sequence[str], *, use_ocr: bool) -> dict[str, NeutralDoc]:
+    """Chạy bộ đọc PDF như app (worker, OCR theo biến môi trường) trên MỌI PDF có JSON cùng tên của `arm_<chương>/`."""
     from holocron_core.infrastructure.document_readers.config import (
         PdfReaderConfig,
         load_ocr_settings,
@@ -604,12 +678,16 @@ def baseline_docs(eval_data: Path, chapters: Sequence[str], *, use_ocr: bool) ->
 
     docs: dict[str, NeutralDoc] = {}
     for chapter in chapters:
-        pdfs = sorted((eval_data / f"arm_{chapter}").glob("*.pdf"))
-        if not pdfs:
-            continue
-        reader = WorkerPdfReader(PdfReaderConfig(), load_ocr_settings() if use_ocr else None)
-        document_id = "doc_" + hashlib.sha256(pdfs[0].read_bytes()).hexdigest()[:16]
-        docs[chapter] = lines_to_blocks(list(reader.read_pages(pdfs[0], document_id)))
+        matched, unmatched = match_pdfs(eval_data / f"arm_{chapter}")
+        for orphan in unmatched:
+            print(f"cảnh báo: {chapter}: {orphan.name} không có .json cùng tên, bỏ qua", file=sys.stderr)
+        pages: list[Any] = []
+        for pdf in matched:
+            reader = WorkerPdfReader(PdfReaderConfig(), load_ocr_settings() if use_ocr else None)
+            document_id = "doc_" + hashlib.sha256(pdf.read_bytes()).hexdigest()[:16]
+            pages += list(reader.read_pages(pdf, document_id))
+        if matched:
+            docs[chapter] = lines_to_blocks(pages)
     return docs
 
 
@@ -633,6 +711,8 @@ def format_layout_md(results: dict[str, Any]) -> str:
         return value if isinstance(value, str) else str(value) if isinstance(value, int) else f"{value:.3f}"
 
     lines = [f"# Đo cấu trúc bóc tách (iou={results['iou']}, dev={','.join(results['dev'])})", ""]
+    if results["gt_heading_levels"] == "flat":
+        lines.append("Cấp tiêu đề ground truth: phẳng (mọi tiêu đề cùng cấp), F1 cây chỉ kiểm chữ và trang.")
     lines.append(f"Nguồn offline: {results['offline_source']}. Cột ai trống khi không có dự đoán AI.")
     if results["no_ground_truth"]:
         lines.append(f"Không có ground truth (bỏ qua): {', '.join(results['no_ground_truth'])}.")
@@ -650,20 +730,24 @@ def format_layout_md(results: dict[str, Any]) -> str:
 def run_layout(args: argparse.Namespace) -> int:
     if args.results_dir is None:
         raise EvalLayoutError("cần <thư mục kết quả> sau <eval_data>")
+    if args.output is not None or args.write_oracle is not None:
+        raise EvalLayoutError("--output và --write-oracle chỉ dùng với --gt-root, không dùng với <eval_data>")
     require_outside_repo(args.results_dir, "<thư mục kết quả>")
     truth = load_ground_truth(args.eval_data)
     dev = tuple(args.dev or ["ch2"])
+    levels, levels_mode = load_heading_levels(args.eval_data, sorted(truth))
     if args.pred is not None:
         offline_docs, source_note = load_predictions(args.pred), "--pred"
     else:
         offline_docs, source_note = baseline_docs(args.eval_data, sorted(truth), use_ocr=not args.no_ocr), BASELINE_NOTE
-    per_source = {"offline": evaluate_layout(truth, offline_docs, args.iou, dev)}
+    per_source = {"offline": evaluate_layout(truth, offline_docs, args.iou, dev, levels)}
     if args.ai_pred is not None:
-        per_source["ai"] = evaluate_layout(truth, load_predictions(args.ai_pred), args.iou, dev)
+        per_source["ai"] = evaluate_layout(truth, load_predictions(args.ai_pred), args.iou, dev, levels)
     results = {
         "iou": args.iou,
         "dev": list(dev),
         "offline_source": source_note,
+        "gt_heading_levels": levels_mode,
         "no_ground_truth": no_ground_truth_sets(args.eval_data, sorted(truth)),
         "results": {mode: {name: per_source[name][mode] for name in per_source} for mode in MODES},
     }

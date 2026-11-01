@@ -22,8 +22,10 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.client
 import io
 import json
+import math
 import re
 import sys
 import time
@@ -45,7 +47,9 @@ from holocron_core.infrastructure.llm_client import OpenAiChatClient, Transport,
 from holocron_core.infrastructure.llm_config import ConfigError, check_base_url, is_valid_key
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_OUT = Path("D:/prj/holocron-wt/eval/v01")
+MAX_KEY_LENGTH = 512
+INK_THRESHOLD = 128
+READ_CHUNK = 65536
 DEFAULT_MAX_REQUESTS = 10
 TIMEOUT_S = 90.0
 MAX_BODY_BYTES = 2_000_000
@@ -53,7 +57,21 @@ MAX_SHOWN = 200
 MIN_SECRET_SUBSTRING = 4
 MASK = "***"
 
-GATEWAY_PREFIXES = ("HOLOCRON_LLM",)
+# Nhà cung cấp công khai đã biết: ảnh lớn (d) chỉ gửi tới đây, tới host loopback, hoặc host mở tay bằng
+# `--allow-big-image-host`. Mọi host khác (kể cả host của `HOLOCRON_LLM_BASE_URL`) coi là gateway hạn mức nhỏ.
+PUBLIC_HOSTS = frozenset(
+    {
+        "generativelanguage.googleapis.com",
+        "api.openai.com",
+        "api.anthropic.com",
+        "openrouter.ai",
+        "api.groq.com",
+        "api.mistral.ai",
+        "api.together.xyz",
+        "api.deepseek.com",
+    }
+)
+LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost"})
 PREFIXES = ("HOLOCRON_LLM", "HOLOCRON_VLM", "HOLOCRON_PROBE_GEMINI", "HOLOCRON_PROBE_CUSTOM")
 
 TRUTH_TEXT = "Hóa đơn 4721: Tiếng Việt, Nguyễn Văn Ạ 1089"
@@ -86,21 +104,34 @@ class RequestCapReached(LlmUpstreamError):
 # --------------------------------------------------------------------------------------------------------------------
 
 
-def secret_fragments(keys: Sequence[str]) -> list[str]:
-    """Mọi chuỗi con dài ≥ 4 của các khoá, dài nhất trước."""
-    found: set[str] = set()
-    for key in keys:
-        for start in range(len(key)):
-            for end in range(start + MIN_SECRET_SUBSTRING, len(key) + 1):
-                found.add(key[start:end])
-    return sorted(found, key=len, reverse=True)
+def secret_windows(keys: Sequence[str]) -> frozenset[str]:
+    """Mọi cửa sổ 4 ký tự liên tiếp của các khoá (O(n) mỗi khoá)."""
+    width = MIN_SECRET_SUBSTRING
+    return frozenset(key[start : start + width] for key in keys for start in range(len(key) - width + 1))
+
+
+def mask_secrets(text: str, keys: Sequence[str]) -> str:
+    """Thay mọi đoạn bị phủ bởi một cửa sổ 4 ký tự của khoá (kể cả 4 ký tự cuối) bằng `***`, một lượt O(len(text))."""
+    windows = secret_windows(keys)
+    if not windows:
+        return text
+    width = MIN_SECRET_SUBSTRING
+    covered = [False] * len(text)
+    for start in range(len(text) - width + 1):
+        if text[start : start + width] in windows:
+            covered[start : start + width] = [True] * width
+    out: list[str] = []
+    for index, char in enumerate(text):
+        if not covered[index]:
+            out.append(char)
+        elif index == 0 or not covered[index - 1]:
+            out.append(MASK)
+    return "".join(out)
 
 
 def redact(text: str, keys: Sequence[str]) -> str:
-    """Thay mọi chuỗi con dài ≥ 4 của khoá (kể cả 4 ký tự cuối) bằng `***`; URL đầy đủ thành `<url>`."""
-    for fragment in secret_fragments(keys):
-        text = text.replace(fragment, MASK)
-    return _URL_RE.sub("<url>", text)
+    """Che khoá (mọi chuỗi con dài ≥ 4) bằng `***`; URL đầy đủ thành `<url>`."""
+    return _URL_RE.sub("<url>", mask_secrets(text, keys))
 
 
 def shown(text: str, keys: Sequence[str]) -> str:
@@ -130,14 +161,16 @@ class Provider:
     base_url: str = field(repr=False)
     api_key: str = field(repr=False)
     models: tuple[str, ...]
+    big_image_allowed: bool = False
 
     @property
     def host(self) -> str:
-        return urllib.parse.urlsplit(self.base_url).hostname or "?"
+        return (urllib.parse.urlsplit(self.base_url).hostname or "?").lower()
 
     @property
     def gateway(self) -> bool:
-        return any(prefix in GATEWAY_PREFIXES for prefix in self.prefixes)
+        """Mặc định an toàn: không gửi ảnh lớn trừ khi host công khai đã biết, loopback hoặc được mở tay."""
+        return not self.big_image_allowed
 
     @property
     def label(self) -> str:
@@ -148,6 +181,16 @@ class Provider:
 class Skipped:
     prefix: str
     missing: tuple[str, ...]
+
+
+def normalize_url(url: str) -> str:
+    """Scheme và host viết thường, bỏ `/` cuối (để gộp hai tiền tố trỏ cùng một endpoint)."""
+    parts = urllib.parse.urlsplit(url)
+    return f"{parts.scheme.lower()}://{parts.netloc.lower()}{parts.path.rstrip('/')}"
+
+
+def _host_of(url: str) -> str:
+    return (urllib.parse.urlsplit(url).hostname or "").lower()
 
 
 def _split(raw: str) -> list[str]:
@@ -165,7 +208,7 @@ def _models(prefix: str, env: Mapping[str, str]) -> list[str]:
     return []
 
 
-def load_providers(env: Mapping[str, str]) -> tuple[list[Provider], list[Skipped]]:
+def load_providers(env: Mapping[str, str], allow_big_hosts: Sequence[str] = ()) -> tuple[list[Provider], list[Skipped]]:
     """Nhà cung cấp đủ biến (đã gộp theo base URL + khoá) và các tiền tố bị bỏ qua kèm TÊN biến thiếu/sai."""
     merged: dict[tuple[str, str], tuple[list[str], list[str]]] = {}
     skipped: list[Skipped] = []
@@ -178,16 +221,27 @@ def load_providers(env: Mapping[str, str]) -> tuple[list[Provider], list[Skipped
                 check_base_url(url, url_name)
             except ConfigError:
                 problems.append(f"{url_name} (không hợp lệ)")
-        if not problems and not is_valid_key(key):
+        if not problems and not (is_valid_key(key) and len(key) <= MAX_KEY_LENGTH):
             problems.append(f"{key_name} (không hợp lệ)")
         if problems:
             skipped.append(Skipped(prefix, tuple(problems)))
             continue
-        prefixes, models = merged.setdefault((url.rstrip("/"), key), ([], []))
+        prefixes, models = merged.setdefault((normalize_url(url), key), ([], []))
         prefixes.append(prefix)
         models.extend(m for m in _models(prefix, env) if m not in models)
+    llm_url = env.get("HOLOCRON_LLM_BASE_URL", "").strip()
+    gateway_host = _host_of(llm_url) if llm_url else ""
+    allowed = {host.lower() for host in allow_big_hosts}
     providers = [
-        Provider(tuple(prefixes), url, key, tuple(models)) for (url, key), (prefixes, models) in merged.items()
+        Provider(
+            tuple(prefixes),
+            url,
+            key,
+            tuple(models),
+            big_image_allowed=_host_of(url) in allowed
+            or (_host_of(url) != gateway_host and (_host_of(url) in PUBLIC_HOSTS or _host_of(url) in LOOPBACK)),
+        )
+        for (url, key), (prefixes, models) in merged.items()
     ]
     return providers, skipped
 
@@ -204,7 +258,8 @@ class SmallImage:
     accents: bool
 
 
-def _pdf_with_text(text: str, font_bytes: bytes | None) -> bytes:
+def _pdf_with_text(text: str, font_bytes: bytes | None) -> bytes | None:
+    """PDF một dòng chữ; `None` khi pdfium không nạp được font hoặc không dựng được text object."""
     import ctypes
 
     import pypdfium2 as pdfium
@@ -217,9 +272,14 @@ def _pdf_with_text(text: str, font_bytes: bytes | None) -> bytes:
         font = raw.FPDFText_LoadFont(doc.raw, buffer, len(font_bytes), raw.FPDF_FONT_TRUETYPE, 1)
     else:
         font = raw.FPDFText_LoadStandardFont(doc.raw, b"Helvetica")
+    if not font:
+        return None
     obj = raw.FPDFPageObj_CreateTextObj(doc.raw, font, 24.0)
+    if not obj:
+        return None
     wide = ctypes.create_string_buffer((text + "\0").encode("utf-16-le"))
-    raw.FPDFText_SetText(obj, ctypes.cast(wide, ctypes.POINTER(ctypes.c_ushort)))
+    if not raw.FPDFText_SetText(obj, ctypes.cast(wide, ctypes.POINTER(ctypes.c_ushort))):
+        return None
     raw.FPDFPageObj_Transform(obj, 1, 0, 0, 1, 20, 50)
     raw.FPDFPage_InsertObject(page.raw, obj)
     raw.FPDFPage_GenerateContent(page.raw)
@@ -228,23 +288,36 @@ def _pdf_with_text(text: str, font_bytes: bytes | None) -> bytes:
     return out.getvalue()
 
 
-def make_small_image(font_paths: Sequence[str] = FONT_CANDIDATES) -> SmallImage:
-    """PNG xám của một PDF tự dựng: có dấu tiếng Việt nếu nhúng được font hệ thống, không thì chỉ ASCII."""
+def _render_gray(pdf_bytes: bytes) -> tuple[bytes, int, int]:
     import pypdfium2 as pdfium
 
-    font_bytes: bytes | None = None
+    bitmap = pdfium.PdfDocument(pdf_bytes)[0].render(scale=2.0, grayscale=True)
+    width, height, stride = bitmap.width, bitmap.height, bitmap.stride
+    buffer = bytes(bitmap.buffer)
+    return b"".join(buffer[row * stride : row * stride + width] for row in range(height)), width, height
+
+
+def make_small_image(font_paths: Sequence[str] = FONT_CANDIDATES) -> SmallImage:
+    """PNG xám của một PDF tự dựng: có dấu tiếng Việt nếu nhúng được font hệ thống, không thì chỉ ASCII.
+
+    Font không nạp được, text object NULL hoặc ảnh không có điểm tối (không có chữ) ⇒ lùi về chữ ASCII (Helvetica).
+    """
+    attempts: list[tuple[str, bytes | None]] = []
     for candidate in font_paths:
         path = Path(candidate)
         if path.is_file():
-            font_bytes = path.read_bytes()
+            attempts.append((TRUTH_TEXT, path.read_bytes()))
             break
-    text = TRUTH_TEXT if font_bytes is not None else ASCII_TRUTH_TEXT
-    pdf = pdfium.PdfDocument(_pdf_with_text(text, font_bytes))
-    bitmap = pdf[0].render(scale=2.0, grayscale=True)
-    width, height, stride = bitmap.width, bitmap.height, bitmap.stride
-    buffer = bytes(bitmap.buffer)
-    rows = b"".join(buffer[row * stride : row * stride + width] for row in range(height))
-    return SmallImage(encode_png_gray(GrayImage(rows, width, height, 144.0)), text, font_bytes is not None)
+    attempts.append((ASCII_TRUTH_TEXT, None))
+    for text, font_bytes in attempts:
+        pdf = _pdf_with_text(text, font_bytes)
+        if pdf is None:
+            continue
+        pixels, width, height = _render_gray(pdf)
+        if min(pixels) >= INK_THRESHOLD:
+            continue
+        return SmallImage(encode_png_gray(GrayImage(pixels, width, height, 144.0)), text, font_bytes is not None)
+    raise RuntimeError("không dựng được ảnh thử")
 
 
 def make_big_image(side: int = BIG_IMAGE_SIDE) -> bytes:
@@ -258,6 +331,10 @@ def make_big_image(side: int = BIG_IMAGE_SIDE) -> bytes:
 # --------------------------------------------------------------------------------------------------------------------
 # Gửi request có đếm
 # --------------------------------------------------------------------------------------------------------------------
+
+
+class ReadableBody(Protocol):
+    def read(self, size: int = -1, /) -> bytes: ...
 
 
 class HttpResponse(Protocol):
@@ -278,34 +355,60 @@ class Opener(Protocol):
 class CountingSender:
     """Transport có trần: mọi request thật (kể cả `GET /models` và retry) đi qua đây; vượt trần ⇒ `RequestCapReached`."""
 
-    def __init__(self, max_requests: int, *, opener: Opener | None = None) -> None:
+    def __init__(
+        self,
+        max_requests: int,
+        *,
+        opener: Opener | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
         self.max_requests = max_requests
         self.count = 0
         self.last_status = 0
         self.last_retry_after: str | None = None
         self.last_body = b""
         self.rate_limited = 0
+        self._monotonic = monotonic
         self._opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
 
     @property
     def remaining(self) -> int:
         return self.max_requests - self.count
 
+    def _read(self, response: ReadableBody, deadline: float) -> bytes:
+        """Đọc theo khối, tối đa `MAX_BODY_BYTES`; quá hạn tổng ⇒ `TimeoutError`."""
+        chunks: list[bytes] = []
+        total = 0
+        while total < MAX_BODY_BYTES:
+            if self._monotonic() > deadline:
+                raise TimeoutError("quá hạn tổng thời gian khi đọc phản hồi")
+            chunk = response.read(min(READ_CHUNK, MAX_BODY_BYTES - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        return b"".join(chunks)
+
     def __call__(self, request: urllib.request.Request, timeout_s: float) -> tuple[int, bytes]:
         if self.count >= self.max_requests:
             raise RequestCapReached("đã hết trần request của lần chạy", attempts=self.count)
         self.count += 1
-        self.last_retry_after = None
+        self.last_status, self.last_body, self.last_retry_after = 0, b"", None
+        deadline = self._monotonic() + timeout_s
         try:
             response = self._opener.open(request, timeout=timeout_s)
         except urllib.error.HTTPError as exc:
             status, headers = exc.code, exc.headers
-            body = exc.read(MAX_BODY_BYTES)
-            exc.close()
+            try:
+                body = self._read(exc, deadline)
+            finally:
+                exc.close()
         else:
             status, headers = int(response.status), response.headers
-            body = response.read(MAX_BODY_BYTES)
-            response.close()
+            try:
+                body = self._read(response, deadline)
+            finally:
+                response.close()
         self.last_status, self.last_body = status, body
         self.last_retry_after = headers.get("retry-after") if headers is not None else None
         if status == 429:
@@ -513,6 +616,10 @@ class Prober:
                 for skipped in plan[number:]:
                     if skipped.model is not None:
                         self.row(skipped.provider, skipped.model).not_run.append(skipped.kind)
+                    else:
+                        p = self.providers[skipped.provider]
+                        listing = self.listings.setdefault(skipped.provider, Listing(p.label, p.host))
+                        listing.error = "chưa chạy: hết trần request"
                 break
             self._run_one(task)
 
@@ -526,7 +633,7 @@ class Prober:
                 self._list(task.provider)
             elif task.kind == "big" and task.model:
                 self._big_image(task.provider, task.model)
-        except (OSError, ValueError, LlmUpstreamError) as exc:
+        except (OSError, ValueError, http.client.HTTPException, LlmUpstreamError) as exc:
             message = shown(f"{type(exc).__name__}: {exc}", self.keys)
             if task.kind == "list":
                 p = self.providers[task.provider]
@@ -569,8 +676,6 @@ class Prober:
         start = self._clock()
         try:
             result = client.complete([ChatMessage(role="user", content=TEXT_PROMPT)], max_tokens=300)
-        except RequestCapReached:
-            raise
         except LlmUpstreamError as exc:
             row.text_latency_s = round(self._clock() - start, 2)
             self._note_limits(row)
@@ -582,7 +687,7 @@ class Prober:
             return
         row.text_latency_s = round(self._clock() - start, 2)
         self._note_limits(row)
-        row.text_ok = "5" in result.content
+        row.text_ok = re.search(r"\b5\b", result.content) is not None
         row.text_tokens = (
             (result.usage.prompt_tokens, result.usage.completion_tokens) if result.usage is not None else None
         )
@@ -622,11 +727,15 @@ def _as_transport(sender: CountingSender) -> Transport:
 _MATCH_RANK = {"exact": 0, "digits": 1}
 
 
+def _latency_key(value: float | None) -> float:
+    return math.inf if value is None else value
+
+
 def recommend(rows: Sequence[Row]) -> dict[str, str]:
     """Chọn model theo vai: vlm = chép ảnh đúng nhất rồi nhanh nhất; llm = trả lời văn bản đúng rồi nhanh nhất."""
     vision = [r for r in rows if r.image_match in _MATCH_RANK]
-    vision.sort(key=lambda r: (_MATCH_RANK[r.image_match or ""], r.image_latency_s or 1e9))
-    text = sorted((r for r in rows if r.text_ok), key=lambda r: r.text_latency_s or 1e9)
+    vision.sort(key=lambda r: (_MATCH_RANK.get(r.image_match or "", 9), _latency_key(r.image_latency_s)))
+    text = sorted((r for r in rows if r.text_ok), key=lambda r: _latency_key(r.text_latency_s))
     return {
         "vlm": f"{vision[0].provider}/{vision[0].model} (chép ảnh: {vision[0].image_match})"
         if vision
@@ -653,6 +762,7 @@ def render_markdown(
         "",
         f"- Request đã gửi: {meta['requests']}/{meta['max_requests']}; gặp 429: {meta['rate_limited']}",
         f"- Chữ trong ảnh nhỏ: có dấu tiếng Việt = {_cell(meta['accents'])}",
+        f"- Lỗi giữa chừng: {_cell(meta['fatal'])}",
         "",
         TABLE_HEADER,
         "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
@@ -677,7 +787,7 @@ def render_markdown(
                     r.text_ok,
                     r.text_latency_s,
                     r.text_tokens,
-                    "gateway: không thử" if r.gateway and r.big_bytes is None else big,
+                    "không thử (host chưa được phép)" if r.gateway and r.big_bytes is None else big,
                     r.http_429,
                     ",".join(r.retry_after) or None,
                     errors,
@@ -710,7 +820,14 @@ def main(
 
     environment = os.environ if env is None else env
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
-    parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="thư mục ghi kết quả (ngoài repo)")
+    parser.add_argument("--out", type=Path, required=True, help="thư mục ghi kết quả (ngoài repo)")
+    parser.add_argument(
+        "--allow-big-image-host",
+        action="append",
+        default=[],
+        metavar="HOST",
+        help="cho phép gửi ảnh lớn (d) tới host này (mặc định chỉ host công khai đã biết và loopback)",
+    )
     parser.add_argument("--max-requests", type=int, default=DEFAULT_MAX_REQUESTS)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--live", action="store_true", help="gửi request thật")
@@ -725,7 +842,7 @@ def main(
         print("--max-requests phải ≥ 1", file=sys.stderr)
         return 2
 
-    providers, skipped = load_providers(environment)
+    providers, skipped = load_providers(environment, args.allow_big_image_host)
     keys = [p.api_key for p in providers]
     plan = build_plan(providers)
     for item in skipped:
@@ -747,15 +864,34 @@ def main(
         print("OPEN: chưa thử dấu tiếng Việt (không nhúng được font hệ thống)")
     counting = sender or CountingSender(args.max_requests)
     prober = Prober(providers, counting, small=small)
-    prober.run(plan)
+    completed = False
+    try:
+        prober.run(plan)
+        completed = True
+    finally:
+        _write_results(prober, counting, out_dir, skipped, args.max_requests, small.accents, completed)
+    return 0
 
+
+def _write_results(
+    prober: Prober,
+    counting: CountingSender,
+    out_dir: Path,
+    skipped: Sequence[Skipped],
+    max_requests: int,
+    accents: bool,
+    completed: bool,
+) -> None:
+    """Ghi results.json và results.md (cả khi chạy dở); mọi chuỗi qua `redact`."""
+    keys = prober.keys
     rows = list(prober.rows.values())
     listings = list(prober.listings.values())
     meta: dict[str, object] = {
         "requests": counting.count,
-        "max_requests": args.max_requests,
+        "max_requests": max_requests,
         "rate_limited": counting.rate_limited,
-        "accents": small.accents,
+        "accents": accents,
+        "fatal": None if completed else "chạy dở: ngoại lệ ngoài dự kiến",
     }
     document = redact_tree(
         {
@@ -773,7 +909,6 @@ def main(
     (out_dir / "results.md").write_text(markdown, encoding="utf-8")
     print(markdown)
     print(f"Đã ghi {out_dir / 'results.json'} và {out_dir / 'results.md'}")
-    return 0
 
 
 if __name__ == "__main__":

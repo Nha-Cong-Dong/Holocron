@@ -1,0 +1,261 @@
+# ADR 010: Bóc tách tài liệu theo khối, cây mục và sổ bảo toàn
+
+- Trạng thái: Chấp nhận (2026-11-01; người dùng duyệt tại .claude/state/briefs/hackathon-2026-11-01.md mục 3). Đây là "ADR Chấp nhận" theo CLAUDE.md §3 cho các PR thực hiện nó (X04–X12, V02, V03). Các chỗ ghi "đề xuất suy ra" trong ADR vẫn chờ người dùng xác nhận.
+- Ngày: 2026-11-01
+- Liên quan: ADR-006 (mục 3 bị thay cho tài liệu có khối; mục 5, 10 được bổ sung), ADR-008 (worker đọc PDF mục 3, giới hạn mục 4, cấu hình mục 12, GĐ0; ADR này bổ sung giao thức worker, không đổi giới hạn đã có), ADR-009 (model `Block` ở mục 2 và cache ở mục 8 được thay bằng contract ở đây; câu chữ ADR-009 cập nhật ở việc X02b), CLAUDE.md §1, §2.1, §2.3, §9. Contract ở spec §5.7, §5.8, §5.13, §5.15, §6.5, §6.10, §12.1, §12.3, §13.1.
+- Nguồn: file quyết định trên, mục 0, 1, 3, 5; brief X02a (Phụ lục A, A2, A3, A4; khi các phụ lục khác nhau, phụ lục sau thắng).
+- Quy ước nhãn: "duyệt 2026-11-01 (ADR-010)" = thuộc phạm vi người dùng đã duyệt ở mục 3 của file quyết định (contract `Block`/`Section`/`ExtractionLedger`, trường font, `layout_version`, migration khối/mục/ảnh cắt, endpoint cây và tra cứu, cắt chunk theo khối). "đề xuất suy ra" = tên, ngưỡng hay chi tiết do người viết đặt để code không phải đoán, chờ người dùng xác nhận.
+
+## Bối cảnh
+
+- Người dùng đổi trọng tâm sản phẩm ngày 2026-11-01 (file quyết định mục 0): nhập tài liệu của mọi môn ⇒ toàn bộ nội dung được bóc ra và hệ thống hoá thành cây Môn → Nguồn → Chương → Mục → Khối, tra cứu offline tức thì. Nguyên tắc tối cao (mục 1): **không bao giờ sai mà không báo**; mỗi khối hoặc dựng đúng cấu trúc, hoặc là ảnh cắt từ trang gốc kèm cờ lý do.
+- Sáu điều kiện đo được của mục 1: không mất gì (luật bảo toàn), đúng chữ, đúng khối, đúng thứ tự đọc, đúng cây, truy được nguồn.
+- Hiện trạng (kiểm trên develop 2026-11-01):
+  - Đơn vị của bộ nhập là DÒNG (`RawTextLine`, `ExtractedLine`); `PdfChar` không có tên font, cỡ chữ, độ đậm hay cờ đơn cách (`text_layer.py`).
+  - Ký tự bị loại thật khỏi `lines` chỉ có chữ ẩn (`pdfium_adapter.kept_chars`, đếm vào `hidden_chars_dropped`, đơn vị là ký tự không do PDFium tự sinh, kể cả ký tự trắng). Header/footer và chữ bị che là cờ dòng, dòng vẫn ở `lines`.
+  - `RawWord` chỉ được tạo cho từ có hộp toạ độ (`_build_line`); từ không có hộp vẫn nằm trong `RawTextLine.text` nhưng không có trong `words`.
+  - `tiers._chunks` chuẩn hoá NFC rồi cắt dòng thô dài thành nhiều `ExtractedLine` ≤ 2000 ký tự, có thể cắt giữa từ.
+  - `services/vault_chunking.py` cắt theo regex tiêu đề và tách câu; sai với slide (header lặp, không dấu câu) và chứa từ khoá ngôn ngữ trong code `services/`.
+  - ADR-009 mục 2 có một model `Block` khác (loại `header`, `title`, `list`; `order` theo mảng VLM; không có `bbox` hay tham chiếu dòng) gắn vào `PageExtraction.blocks`.
+- Ràng buộc giữ nguyên: I1–I5 (spec §0) không đổi định nghĩa; sandbox, cổng chất lượng, `cross_check.TOKEN_PATTERN`, `chunks_fts`, `chunks_fts_nodiac`, `GET /v1/vault/search` không đổi; không thêm dependency hay file model; không rẽ nhánh theo môn (CLAUDE.md §1); mẫu ngôn ngữ chỉ ở `infrastructure/lang/{vi,en}.toml` (ADR-006 mục 10).
+
+## Quyết định
+
+Mỗi mục dưới đây ghi mã của Phụ lục A trong ngoặc. Mỗi mã có đúng một quyết định; mục 22 là bảng truy vết.
+
+### 1. Phạm vi và nguyên tắc
+
+- Văn bản của trang CÓ lớp chữ luôn lấy từ lớp chữ. LLM/VLM chỉ đề xuất cấu trúc bằng id có sẵn (mục 14); chữ VLM chỉ vào khối của trang/vùng KHÔNG có lớp chữ, sau cổng đối chiếu OCR (mục 7, ADR-009).
+- Bộ dựng khối là Deterministic Core: hàm thuần ở `services/`, tín hiệu chỉ là hình học, kiểu chữ, cấu trúc. Không chuỗi theo môn trong code. Mẫu phụ thuộc ngôn ngữ (từ "Trang", "(tiếp)", "Chương") nằm ở `infrastructure/lang/{vi,en}.toml`; mẫu không phụ thuộc ngôn ngữ (chữ số, số La Mã, đánh số `1.2.3`) nằm trong settings model của module dùng nó.
+- Dòng (`ExtractedLine`) vẫn là đơn vị xem lại, sửa (`PATCH …/lines`) và xác nhận của bộ nhập (spec §6.5). Khối là đơn vị của Vault, cây mục và tra cứu. Ledger nối hai đơn vị.
+- Mọi field của contract ghi nguồn dữ liệu ở spec (worker, code, người dùng, LLM/VLM).
+
+### 2. `BlockType` (a)
+
+`BlockType = Literal["heading", "paragraph", "list_item", "table", "figure", "formula", "code", "caption", "header_footer", "page_number"]`, đóng. Thêm giá trị cần sửa ADR này và tăng `LAYOUT_VERSION` (mục 15). `header_footer` và `page_number` là KHỐI (không phải sổ loại bỏ) (duyệt 2026-11-01 (ADR-010)).
+
+### 3. `Block`, `SourceRef`, `BlockFlag` và id khối (b, b', b'')
+
+**Field** (đủ kiểu và nguồn ở spec §5.15): `block_id`, `document_id`, `page_number`, `type`, `bbox` (∈ [0, 1], gốc trên-trái, trang đã xoay; null chỉ khi mọi tham chiếu là dòng người dùng gõ thêm), `text` (`str | None`), `line_refs`, `label_line_refs` (chỉ `figure`), `labels` (chỉ `figure`), `level` (chỉ `heading`, 1–6), `list_depth` (chỉ `list_item`, 0–8), `cells` (chỉ `table`, mục 8), `caption_of` (chỉ `caption`), `semantic_label` (mục 8), `flags`, `crop_ref`, `source` ∈ `text_layer` | `ocr` | `vlm`, `ocr_text` (chỉ `source = vlm`, mục 7), `reading_order`. Khối KHÔNG có field mục (mục 13).
+
+**Tham chiếu nguồn (`SourceRef`, discriminated union theo `kind`)** — đơn vị gán của ledger là TỪ (d):
+- `{"kind": "word", "line_idx", "word_idx"}`: từ thứ `word_idx` của dòng thô thứ `line_idx` trong `PageGeometry.lines` (mục 5);
+- `{"kind": "ocr_word", "line_idx", "word_idx"}`: từ OCR trong `PageGeometry.ocr_lines` (X11);
+- `{"kind": "confirmed_line", "line_index"}`: một `ExtractedLine` đã sửa hoặc gõ thêm (dòng `engine = "human"` không có từ geometry) (p''').
+Tên field giữ là `line_refs` như Phụ lục A; nội dung là tham chiếu TỪ (một dòng PDFium vắt qua nhiều ô/cột/khung được tách cho nhiều khối). Không gian chỉ số là của `PageGeometry`, không phải của `ExtractedLine` (vì `tiers._chunks` cắt dòng thô dài) (p'').
+
+**Id khối (b'' thắng b, b'):** `block_id = "blk_" + sha256(JSON chuẩn hoá)[:16]`, theo NỘI DUNG nguồn, không theo thứ tự đọc:
+- Khối có ít nhất một tham chiếu nguồn (`line_refs` ∪ `label_line_refs`; với `figure` dùng `label_line_refs`; với khối `vlm` dùng từ OCR của vùng): khoá `["block", document_id, page_number, refs]`, `refs` là danh sách đã sắp của `[kind, line_idx, word_idx, line_sha256]` (`confirmed_line`: `[kind, line_index, 0, line_sha256]`), `line_sha256` = sha256 UTF-8 của nội dung dòng nguồn: dòng thô = các từ (NFC) nối bằng một dấu cách; dòng xác nhận = `ExtractedLine.text`. Vì vậy PATCH đổi chữ một dòng đổi id khối chứa dòng đó; khối khác giữ id.
+- Khối KHÔNG có từ nào (ảnh nhúng, vùng cắt thuần ảnh): id dự phòng, khoá `["block_noref", document_id, page_number, type, [round(1000·x0), round(1000·y0), round(1000·x1), round(1000·y1)], region_index]`, `region_index` = vị trí của khối trong nhóm khối không có từ của trang, sắp theo (y0, x0, y1, x1) lượng tử rồi `type`. Không trùng trong trang.
+- JSON chuẩn hoá: `json.dumps(…, sort_keys=True, separators=(",", ":"), ensure_ascii=False)` mã UTF-8. Hai khối khác nhau không thể có cùng tập tham chiếu vì mỗi từ thuộc đúng một khối (mục 6).
+- LLM hoán vị thứ tự đọc không đổi id (id không chứa `reading_order`). Test: `test_block_ids_stable_under_ai_permutation`, `test_patch_lines_keeps_unchanged_block_ids`.
+
+**`BlockFlag`** đóng (giữ mọi tên brief đã dùng; tên thêm là đề xuất suy ra): `crop_pending`, `crop_failed`, `crop_capped`, `table_unresolved`, `table_token_mismatch`, `boxed`, `formula_text_unverified`, `code_layout_uncertain`, `layout_uncertain`, `reading_order_uncertain`, `figure_label_text`, `text_occluded`, `low_text_contrast`, `font_encoding_suspect`, `human_edited`, `too_short_for_chunk`, `ai_proposal_applied`, `ai_proposal_rejected`, `vlm_invalid`, `vlm_gate_rejected`. Nghĩa từng cờ ở spec §5.15.
+
+### 4. `Section`, cây Môn → Nguồn → Chương → Mục; ánh xạ (c, n)
+
+- **Cây lưu theo TỪNG tài liệu.** Gốc là một `Section` `kind = "chapter"`, `level = 0`, mang `chapter_code` và tiêu đề = `DocumentImport.chapter_title` (spec §5.7 "Chương tự động"); dưới là `kind = "section"` (mục, `level = 1`) và mục con (`level` 2–6).
+- **Môn và Nguồn không lưu thành `Section`.** Endpoint cây (spec §6.10) dựng chúng lúc đọc: Môn = `Subject` (spec §5.14), Nguồn = tài liệu (`DocumentMeta`/`DocumentImport`), Chương = `Section` gốc của tài liệu đó (n).
+- **`chapter_code` dùng chung:** mỗi tài liệu có Section gốc riêng kể cả khi trùng `chapter_code` với tài liệu khác cùng môn (cờ `CHAPTER_NUMBER_SHARED`, slide + giáo trình). Nút Nguồn của endpoint cây có `chapter_shared_with` (các `document_id` khác cùng môn cùng `chapter_code`, backend tính). `KnowledgeChunk.chapter_code` giữ nguyên nghĩa.
+- **Khối thuộc đúng MỘT Section:** Section sâu nhất đang mở tại vị trí của khối theo thứ tự (trang, `reading_order`). Section cha có thể có khối trực tiếp (đoạn mở đầu trước mục con đầu tiên). Chunk không bao giờ vắt qua hai Section.
+- **Nối trang:** các trang liền nhau có khối `heading` cùng tiêu đề (so sau NFC + `casefold` + gộp khoảng trắng, đã bỏ hậu tố nối trang) hoặc tiêu đề có hậu tố nối trang (mẫu `continuation_suffixes` trong `lang/*.toml`) ⇒ cùng một Section: `heading_block_ids` giữ mọi khối tiêu đề lặp, `page_end` kéo dài, cờ `continued_across_pages`.
+- **Không có tiêu đề rõ** ⇒ Section `title = null` + cờ `untitled`; không đoán tên.
+- **Id Section (b''):** `section_id = "sec_" + sha256(JSON chuẩn hoá của ["section", document_id, path, sibling_ordinal])[:16]`, `path` = tiêu đề các Section tổ tiên (không gồm gốc) tới chính nó, mỗi tiêu đề chuẩn hoá NFC + `casefold` + gộp khoảng trắng (Section không tiêu đề: `""`); `sibling_ordinal` = vị trí trong anh em. Gốc: `path = []`, `sibling_ordinal = 0`, nên đổi tên chương (`PATCH …/chapter`) không đổi id.
+- Chương do cơ chế hiện có quyết định (`document_chapter.py`, `chapter_naming.py`); X08 không viết luật chương mới.
+
+### 5. `PageGeometry` và font (p'', f)
+
+**`PageGeometry`** (model ở `domain/documents.py`, X04 tạo; từ migration 0007 lưu CÙNG trang ở cột riêng `pages.geometry_json`, KHÔNG có trong response API).
+
+**Tách khỏi `PageExtraction` (làm rõ Phụ lục A3 (p''), đề xuất suy ra):** `PageExtraction` KHÔNG có field geometry, nên `response_model=PageExtraction` của `routers/documents.py` và `model_dump_json()` vào `pages.extraction_json` không đổi và không phải loại trừ field khi serialize. `tiers.assemble_text_layer_page` trả model nội bộ `PageRead {extraction, geometry}`. X04 merge trước 0007: từ X04 tới X09, service giữ geometry trong bộ nhớ của lần đọc rồi bỏ (không lưu, không ra response), tài liệu nhập trong khoảng đó có `layout_version = null`; từ X09, repository ghi geometry bằng method riêng vào `pages.geometry_json` trong cùng giao dịch với `extraction_json`. Lý do không gắn geometry vào `PageExtraction`: model đó vừa là response vừa là JSON lưu, gắn vào buộc mọi chỗ serialize phải nhớ loại trừ.
+
+Nội dung `PageGeometry`:
+- `version` (hằng `GEOMETRY_VERSION` của tầng đọc) và `reader_settings_sha256` (sha256 JSON chuẩn hoá các field của `PdfReaderConfig` ảnh hưởng tới geometry): cấu hình tầng đọc nằm ở đây, KHÔNG nằm trong `layout_settings_sha256` (g''').
+- `source` ∈ `text_layer` | `ocr`; `lines` (dòng thô theo thứ tự PDFium, mỗi dòng: `words`, `bbox`, `font_id`, `font_size_pt`, `flags` (cờ GĐ0), `header_footer`, `extracted_line_indices` = ánh xạ dòng thô → các `ExtractedLine.line_index` mà `tiers._chunks` tạo ra); `fonts` (bảng font cấp trang); `rules` (đoạn kẻ, X07); `ocr_lines` (từ OCR có toạ độ, X11); `pdfium_nonws_total`, `hidden_nonws_dropped`, `ocr_nonws_total` (mục 6); `font_data_dropped`, `rules_over_cap`.
+- **Từ:** mỗi chuỗi ký tự không trắng tối đa của dòng thô là một từ, kể cả từ không có hộp (`bbox = null`); vì vậy các từ phủ đủ ký tự không trắng của dòng (sửa hành vi `_build_line` bỏ từ không hộp, X04).
+- **Trần:** ≤ `MAX_PAGE_LINES` (10 000) dòng, ≤ `MAX_PAGE_WORDS` (50 000) từ (gồm `ocr_lines`), ≤ `MAX_PAGE_FONTS` font, ≤ `MAX_PAGE_RULES` đoạn kẻ; JSON đã mã hoá ≤ `max_message_bytes` (8 MiB, ADR-008). Không nâng trần nào.
+
+**Font (f)** — dữ liệu ở ba cấp:
+- *Ký tự (trong worker, không qua giao thức):* `PdfChar` thêm font của ký tự.
+- *Giao thức worker:* `RawPdfPage.fonts: list[RawFont]` (bảng font cấp trang, ≤ `MAX_PAGE_FONTS = 256`); `RawWord` và `RawTextLine` thêm `font_id: int | None` (chỉ số vào `fonts`) và `font_size_pt: float | None`. Tên field đúng như Phụ lục A (f).
+- *`RawFont`:* `font_name: str | None` (bỏ tiền tố subset `^[A-Z]{6}\+`, chỉ giữ ký tự ASCII in được U+0020–U+007E, cắt `FONT_NAME_MAX_CHARS = 64`, rỗng ⇒ null; đọc bằng bộ đệm cố định 256 byte, cache theo đối tượng font của trang), `bold: bool`, `italic: bool`, `monospace: bool`, `bold_source`, `italic_source`, `monospace_source` (`Literal["weight", "name"]`, `Literal["flag", "name"]`, `Literal["flag", "name"]`, null khi giá trị là `false`). Thuộc tính đậm/nghiêng/đơn cách là của font nên chỉ nằm ở bảng font; từ/dòng tra qua `font_id`.
+- `bold` = weight ≥ `bold_min_weight` (field `PdfReaderConfig`, mặc định 600; font nhúng thường trả 400) HOẶC tên font chứa một token trong hằng `BOLD_NAME_TOKENS` (`Bold`, `Black`, `Heavy`, `Semibold`; `config.py`). `italic` = cờ italic/góc nghiêng khác 0 của font HOẶC tên chứa `Italic`/`Oblique`. `monospace` = cờ FixedPitch HOẶC tên font trong hằng `MONOSPACE_NAME_TOKENS` (tín hiệu phụ).
+- `font_size_pt` hiệu dụng = `FPDFText_GetFontSize` × √|det| của ma trận chữ nhân ma trận các form chứa nó; không hữu hạn ⇒ null; kẹp vào [`FONT_SIZE_MIN_PT = 1.0`, `FONT_SIZE_MAX_PT = 1000.0`].
+- **Luật đa số:** từ/dòng nhận `font_id` và `font_size_pt` (làm tròn 0.1 pt) chiếm đa số ký tự không trắng của nhóm; hoà ⇒ giá trị của ký tự đầu tiên trong nhóm (tất định, I4).
+- Font thứ 257 trở đi của trang: ký tự của nó có `font_id = null` (cỡ chữ vẫn có). Thông điệp trang vượt `max_message_bytes` vì field font ⇒ worker bỏ toàn bộ field font của trang đó (`fonts = []`, mọi `font_id`/`font_size_pt` null) và đặt `font_data_dropped = true`; không nâng trần (test `test_bad_pdf_limits` của §9 giữ xanh).
+- Mọi field mới có mặc định (null, `[]`, `false`) nên dữ liệu cũ vẫn parse được.
+
+### 6. `ExtractionLedger` — luật bảo toàn (d, p, p''')
+
+**Đơn vị ledger** (`unit = "nonws_nfc_codepoint"`): số code point không phải khoảng trắng (`str.isspace()` sai) của NFC(từ), cộng theo từng từ. Với dòng xác nhận: của `ExtractedLine.text` (đã NFC). Đếm trên dòng thô (`RawTextLine` → `PageGeometry.lines`), không trên `ExtractedLine` (p''). Khoảng trắng dựng lại (code, mục 7) không vào ledger.
+
+**Gán:** mỗi đơn vị ledger của trang thuộc đúng MỘT khối (qua `line_refs`, `label_line_refs`; ô bảng: tham chiếu của ô là tập con của `line_refs` của khối bảng, rời nhau giữa các ô), hoặc nằm trong `dropped` kèm lý do.
+
+**Số đếm ĐỘC LẬP (không tự chứng minh):** `source_count` không tính từ khối hay từ dòng của bộ dựng:
+- `ledger_basis = "pdfium"` (trang lớp chữ chưa sửa): `pdfium_nonws_total` do worker đếm bằng một lượt riêng trên dòng ký tự PDFium TRƯỚC khi lọc chữ ẩn, ghép ký tự rời và dựng dòng: lấy mọi ký tự không do PDFium tự sinh, tách thành các đoạn tối đa gồm ký tự không trắng liền nhau (ngắt tại ký tự trắng, ký tự tự sinh, ngắt dòng, và khi đổi đối tượng chữ chủ), NFC từng đoạn, cộng số code point không trắng. `hidden_nonws_dropped` đếm cùng cách, chỉ trên ký tự của đối tượng chữ bị loại vì chữ ẩn; field này đi kèm `hidden_chars_dropped` hiện có (giữ nguyên nghĩa cũ để tương thích).
+- `ledger_basis = "confirmed_lines"` (trang có dòng đã sửa hay gõ thêm qua `PATCH …/lines`) (p'''): `source_count` = tổng đơn vị ledger của mọi `ExtractedLine` của trang (kể cả dòng header/footer), tính từ `PageExtraction.lines`. Dòng thô có ít nhất một mảnh `ExtractedLine` đã sửa ⇒ MỌI mảnh của dòng thô đó được tham chiếu bằng `confirmed_line`. Chữ ẩn không có trong `lines` nên `dropped` rỗng ở basis này.
+- `ledger_basis = "ocr"` (X11): `ocr_nonws_total` do worker đếm trên từ của TSV Tesseract (mỗi từ có chữ: đơn vị ledger của NFC(từ)) trước khi gom dòng.
+
+**Phương trình:** `source_count = assigned_count + Σ dropped[].count`, `assigned_count = Σ by_type[].count`. Lệch dù 1 đơn vị là lỗi. Giới hạn đã biết: dấu kết hợp đứng đầu một đoạn (sau chỗ ngắt mà lượt đếm độc lập và dòng thô cắt khác nhau) có thể làm NFC ghép khác nhau; khi đó ledger lệch và trang được báo (dưới đây), không bao giờ im lặng.
+
+**Ledger lệch hoặc bộ dựng lỗi/vượt trần** (đề xuất suy ra) ⇒ khối của trang bị bỏ, trang dùng đường dòng cũ (`build_chunks`) như trang chưa có khối, ledger vẫn lưu với `balanced = false`, và trang nhận `ReviewReason` mới `LAYOUT_FAILED` (khai báo sau mọi lý do hiện có), nên không được tự xác nhận.
+
+**Bảng lý do (file quyết định mục 1):**
+
+| Lý do | Xử lý | Ở ledger |
+|---|---|---|
+| `hidden` (chữ ẩn, 0B(1)) | LOẠI THẬT khỏi `lines` trong worker (`pdfium_adapter.kept_chars`) | `dropped[reason = "hidden"]` = `hidden_nonws_dropped` |
+| `template` (dòng khớp khoá TEXT template, 0B(5)) | cờ cấp dòng `is_header_footer`; dòng vẫn trong `lines` | thuộc khối `header_footer` (`by_type`) |
+| `header_footer` | KHỐI `header_footer` | `by_type` |
+| `page_number` | KHỐI `page_number` (mục 12) | `by_type` |
+| `occluded` (`TEXT_OCCLUDED`, 0B(2)) | cờ cấp dòng; dòng vẫn trong `lines`; khối chứa nó có cờ `text_occluded` | thuộc khối có cờ; đếm thêm ở `flagged[reason = "occluded"]` |
+| `low_contrast` (`LOW_TEXT_CONTRAST`) | như trên, cờ khối `low_text_contrast` | `flagged[reason = "low_contrast"]` |
+| `build_step_duplicate` (trang `build_step`, 0D) | trang bỏ mềm (cấp trang); khối vẫn dựng đủ (để hoàn tác) nhưng không vào tập đủ điều kiện (mục 13) | `page_drop_reason = page_role` |
+
+Ảnh và đường vẽ template (GĐ0 0A) không phải ký tự nên không vào ledger. Trang `failed` hay `pending` không có ledger.
+
+### 7. Dựng văn bản khối; I3 (h, h')
+
+Theo TỪNG `BlockType` (duyệt 2026-11-01 (ADR-010)):
+- `paragraph`, `list_item`, `heading`, `caption`, `header_footer`, `page_number`: các từ nguồn theo thứ tự (dòng, từ) nối bằng MỘT dấu cách (tương đương nối dòng, xuống dòng ⇒ một khoảng trắng, gộp khoảng trắng); GIỮ gạch nối cuối dòng (`trích-` + `dẫn` ⇒ `trích- dẫn`); bỏ khoảng trắng đầu/cuối. Bỏ gạch nối sẽ làm văn bản khối không còn là chuỗi con của dòng đã xác nhận (phá I3). Câu "chỉ chuẩn hoá khoảng trắng, gạch nối cuối dòng" của file quyết định mục 3 đọc được theo nghĩa bỏ gạch nối: ghi OPEN, chờ người dùng xác nhận cách hiểu "giữ".
+- `code`: giữ dòng (nối bằng `\n`); trong một dòng, số dấu cách đầu dòng = round((x0 dòng − x0 khối) / bề rộng ký tự), giữa hai từ = max(1, round(khoảng cách / bề rộng ký tự)), bề rộng ký tự = trung vị bước x của font đơn cách trên khối (X06). Khoảng trắng dựng lại không vào ledger.
+- `formula`: các từ của cùng dòng nối bằng một dấu cách, các dòng nối bằng `\n`; luôn có cờ `formula_text_unverified` và ảnh cắt.
+- `table`: `text = null`; chữ ở `cells[][].text` theo quy tắc `paragraph`.
+- `figure`: `text = null`; `labels[i]` = chữ của dòng nguồn thứ i trong khung (quy tắc `paragraph`), cờ `figure_label_text`.
+- Khối `source = "vlm"` (h', theo file quyết định mục 1, không đảo): `text` = chữ VLM ĐÃ QUA cổng (khớp OCR độc lập theo ngưỡng cấu hình của ADR-009, mọi token số/mã trùng tuyệt đối), NFC; `line_refs` trỏ các từ OCR của vùng (truy nguồn, ledger basis `ocr`); `ocr_text` = chữ OCR đối chiếu (quy tắc `paragraph`) để màn xem lại hiện cả hai. Không qua cổng ⇒ khối là `figure` + ảnh cắt + cờ `vlm_gate_rejected`, từ OCR của vùng vào `label_line_refs`; JSON VLM hỏng ⇒ cờ `vlm_invalid`.
+- **I3 (không đổi định nghĩa):** `raw_text` của chunk = các `text` khối nối bằng `\n\n` (mục 16), nên mọi trích dẫn mặc định là chuỗi con sau NFC + gộp khoảng trắng của nối các khối, và văn bản khối lớp chữ là chuỗi con (sau NFC + gộp khoảng trắng) của nối `line_refs`. Khối `vlm`: trích dẫn là chuỗi con của `text` khối sau NFC (test ở X11). Câu do AI viết lại không bao giờ là trích dẫn: VLM/LLM không đổi `text` của khối lớp chữ.
+
+### 8. `CropImage`, bảng, nhãn ngữ nghĩa, đoạn khớp tra cứu (e)
+
+- **`CropImage`:** `crop_ref` (= sha256 hex của byte PNG), `document_id`, `page_number`, `bbox` (vùng trên trang gốc ∈ [0, 1]), `width_px`, `height_px` (cạnh dài ≤ `crop_max_edge_px` = 1024, khớp khoảng ~896–1024 px của file quyết định mục 1, ≤ `HOLOCRON_VLM_MAX_EDGE_PX`), `size_bytes` (≤ `crop_max_image_bytes` = 1 MiB), `media_type = "image/png"`. Mọi `table`, `figure`, `formula` có ảnh cắt (hoặc cờ `crop_pending`/`crop_failed`/`crop_capped`).
+- **Khối `table`:** `cells: list[list[TableCell]]` (mỗi hàng liệt kê các ô BẮT ĐẦU ở hàng đó, theo cột tăng dần); `TableCell` = `text` (có thể rỗng), `line_refs`, `row`, `col` (vị trí góc trên-trái, 0-based), `rowspan ≥ 1`, `colspan ≥ 1`. Lưới phủ đủ, không chồng ô. Không dựng chắc ⇒ `figure` + `table_unresolved`.
+- **`semantic_label`** ∈ `definition` | `example` | `exercise` | null: chỉ V03 (LLM) gắn; offline luôn null. Không đổi chữ, không đổi chunk.
+- **Đoạn khớp tra cứu:** kết quả tra cứu trả các khoảng trong chữ GỐC của khối (mục 18, spec §6.10); frontend chỉ tô theo khoảng đó, không tự tính.
+
+### 9. `CropRequest` và đoạn kẻ (t, t')
+
+- **MỘT `CropRequest` dùng chung** (giao thức nội bộ worker, `document_readers/protocol.py`; V02 SỞ HỮU cài đặt qua `Protocol` `RegionRenderer.render_regions(path, requests)` ở `pdf_reader.py`, merge trước X07; X07 và X09 dùng lại; không thêm method vào `PdfReader`): tiến trình cha gửi SAU khi dựng khối `{regions: [{region_id, page_index, bbox}], max_edge_px}`; worker render từng vùng (nới lề `crop_margin = 0.005`), thu cạnh dài về `max_edge_px`, mã PNG, trả MỘT thông điệp `crop_batch` `{crops: [{region_id, width_px, height_px, size_bytes, sha256, png_base64}], errors: [{region_id, code}]}`; `code` ∈ `render_error`, `over_image_bytes`, `over_message_bytes`, `over_budget`, `bad_region`.
+- **Trần** (field `PdfReaderConfig`, đề xuất suy ra): `crop_max_regions_per_request = 32`, `crop_max_per_page = 64`, `crop_max_per_document = 3000`, `crop_max_image_bytes = 1 MiB`, `crop_request_timeout_s = 30.0` (ngân sách thời gian của một lượt; hết hạn ⇒ vùng còn lại `over_budget`). Trần byte tính trên KÍCH THƯỚC THÔNG ĐIỆP đã mã hoá (JSON chứa base64, kèm tiền tố và `\n`) so với `max_message_bytes` (8 MiB, không nâng) (t'): worker dừng thêm ảnh khi ảnh kế tiếp làm thông điệp vượt trần, vùng còn lại `over_message_bytes`. Tiến trình cha kiểm lại mọi ảnh như ADR-009 mục 5 bước 3 (base64 chuẩn, magic PNG, IHDR khớp, sha256 khớp, cạnh và byte trong trần).
+- **Đoạn kẻ (X07):** `RawPdfPage.rules: list[RawRule]`, `RawRule = {bbox (chuẩn hoá [0, 1]), kind ∈ "stroke" | "thin_fill"}`: nét ngang/dọc của path và hình chữ nhật tô có cạnh ngắn ≤ `rule_max_thickness` (0.004 khổ trang). Trần `MAX_PAGE_RULES = 20 000`; vượt ⇒ `rules = []`, `rules_over_cap = true`, trang không dựng bảng từ đoạn kẻ (không treo). Lưu ở `PageGeometry.rules`.
+
+### 10. Khung vector (u)
+
+Cụm khung = các hình chữ nhật vector (path đóng có viền hoặc tô, không phải template, không phải nền) chạm hoặc lồng nhau. Với mỗi khung đo: số từ bên trong, có dấu câu kết câu (ký tự Unicode `Po` cuối từ, không phụ thuộc ngôn ngữ), tỉ lệ diện tích khung / trang; với cụm: số khung.
+- Cụm 1 khung, chữ bên trong có ≥ `frame_prose_min_words` (12) từ HOẶC có dấu câu kết câu ⇒ khung văn xuôi: khối `paragraph`/`list_item` như thường + cờ `boxed`.
+- Cụm ≥ `frame_diagram_min_boxes` (3) khung, mọi khung ≤ `frame_label_max_words` (4) từ và không có dấu câu kết câu, diện tích bao cụm ≥ `frame_diagram_min_area` (0.02) ⇒ `figure`, chữ bên trong là `labels` (`label_line_refs`), không vào paragraph.
+- Còn lại ⇒ mục 11. Ngưỡng ở settings model của `services/figure_blocks.py` (đề xuất suy ra).
+
+### 11. Không chắc (k)
+
+Vùng chữ mà bộ dựng không chắc (dòng chồng lấn, chữ bị che một phần, khung không thuộc hai loại ở mục 10, thứ tự đọc không quyết được trong một vùng) ⇒ khối `figure` + cờ `layout_uncertain` + ảnh cắt (`crop_pending` tới khi có ảnh); từ của vùng vào `label_line_refs` (ledger vẫn bảo toàn, tra cứu thấy kèm cờ). Không bao giờ ra chữ rác dưới dạng `paragraph`.
+
+### 12. Số trang và mẫu ngôn ngữ (q)
+
+- Luật hình học tổng quát (X05): dòng có hộp nằm trong dải lề trên hoặc dưới `page_number_margin = 0.10` chiều cao trang, ≤ `page_number_max_chars` (12) ký tự không trắng, khớp một mẫu số trang, VÀ trên ≥ `page_number_min_pages` (3) trang của tài liệu hiệu (số đọc được − `page_number`) không đổi ⇒ khối `page_number`. Dòng vừa khớp khoá TEXT template vừa khớp luật này là `page_number`.
+- Mẫu chỉ gồm chữ số, `n/m`, số La Mã nằm ở settings model của module; mẫu có chữ ("Trang", "Page … of …") và hậu tố nối trang ("(tiếp)", "(cont.)") và từ khoá tiêu đề nằm ở `infrastructure/lang/{vi,en}.toml`, nạp bằng `tomllib` (ADR-006 mục 10). Bộ nạp (`infrastructure/lang_patterns.py`, X05) nạp HỢP các tệp ngôn ngữ, không đoán ngôn ngữ tài liệu (đề xuất suy ra).
+
+### 13. Nơi chạy, thứ tự, hình học lưu, PATCH, tập đủ điều kiện (r, r'', r''')
+
+- **Nơi chạy:** tiến trình cha (`services/`), không trong worker; đầu vào là `PageGeometry` + `PageExtraction` đã lưu. Khi một trang lớp chữ đọc xong: `services/block_pipeline.py` chạy các stage theo thứ tự chốt ở đó (X05 khối cơ sở → X07 bảng/hình vector → X06 code) cho trang. Ở bước kết thúc lần đọc (`_finish`), sau 0D: crop (gọi `RegionRenderer` cho khối `crop_pending` → `CropImage` → `crop_ref`, bỏ `crop_pending`; lỗi/trần ⇒ giữ `crop_pending` + `crop_failed`/`crop_capped`, không ném) → X08 cây mục → V03 (tuỳ chọn) → X08 chạy lại nếu V03 đổi cấp/loại → kiểm ledger → lưu khối, mục, ledger, `layout_version`, `layout_settings_sha256` → các bước GĐ1 như cũ (tên chương, tự xác nhận, chốt).
+- **V03** biểu diễn "gom khối vào mục" bằng đổi `level` của khối `heading` hoặc đổi loại khối ranh giới (không thêm trường mục vào `Block`).
+- **Lưu hình học:** `PageGeometry` (mục 5) trong `pages.geometry_json`; khối trong bảng `blocks`; Section trong `sections`; ledger trong `extraction_ledgers`.
+- **PATCH lines** (chọn khuyến nghị: dựng lại trang từ dòng đã xác nhận): sau `PATCH …/lines` thành công, trang được dựng lại trong cùng giao dịch: dòng thô không sửa giữ tham chiếu `word`, dòng sửa/gõ thêm dùng `confirmed_line` (`ledger_basis = "confirmed_lines"`), khối chứa chúng có cờ `human_edited`; khối có tập tham chiếu không đổi giữ id, khối đổi nhận id mới (b''); X08 chạy lại cho tài liệu; cache `structure_proposal` khoá theo input nên tự vô hiệu. Nếu `layout_settings_sha256` đã lưu của tài liệu khác hash của code hiện tại ⇒ dựng lại MỌI trang lớp chữ của tài liệu bằng code hiện tại và ghi version/hash mới (PATCH chỉ được khi tài liệu chưa `confirmed`, nên chưa có chunk nào).
+- **Tập khối đủ điều kiện (r''):** MỘT hàm store do X09 sở hữu, `refresh_eligible_blocks(document_id, page_number | None)`, ghi cột `blocks.eligible` trong CÙNG giao dịch với xác nhận trang, xác nhận tài liệu, `…/unconfirm`, `…/restore`, `PATCH …/lines`, kết thúc lần đọc và xoá. Khối đủ điều kiện ⇔ trang `confirmed = true`, `dropped = false`, không `failed`; (`confirmed_by` khác `"auto"` HOẶC tài liệu đã `confirmed`) (giữ quy tắc "không văn bản nào vào Vault khi người dùng chưa bấm xác nhận", spec §5.7); tài liệu không phải `past_exam`; `type` không thuộc {`header_footer`, `page_number`}. Khối `vlm` chỉ tồn tại sau cổng nên đủ điều kiện như khối khác. Chunk (mục 16) và chỉ mục tra cứu (mục 18) CHỈ dùng tập này.
+
+### 14. LLM/VLM chỉ đề xuất cấu trúc; ma trận chuyển loại (l, x, x', x'')
+
+- LLM/VLM (V03, LLM Gate) chỉ trả thao tác tham chiếu id khối của MỘT trang: `set_type`, `reorder` (hoán vị đủ tập id), `set_level` (1–6), `set_list_depth` (0–8), `set_semantic_label`. KHÔNG có trường chữ. Cổng (Deterministic Core): mọi id tồn tại; hoán vị đúng tập; một id tối đa một thao tác mỗi loại; trần số thao tác và byte JSON; mọi chuyển loại theo ma trận dưới. Vi phạm bất kỳ ⇒ bỏ CẢ đề xuất của trang, giữ kết quả hình học, mọi khối của trang nhận `ai_proposal_rejected`. Áp thành công ⇒ khối bị đổi nhận `ai_proposal_applied`; tham chiếu không đổi nên ledger vẫn bảo toàn (kiểm lại bằng hàm của X05).
+- **Ma trận `set_type` (đầy đủ; hàng = từ, cột = sang).** ✗ = cấm. R = cho phép, `text` dựng lại từ `line_refs` theo quy tắc `paragraph` (mục 7). H = cho phép khi cỡ chữ/độ đậm của khối nằm trong một cụm tiêu đề X08 đã nhận ra trong tài liệu HOẶC chữ khớp mẫu đánh số đa cấp; ngược lại cấm. C = cho phép chỉ khi hàm dựng code của X06 nhận tham chiếu đó (trả khối `code`); ngược lại cấm. F = cho phép, `text` dựng lại theo quy tắc `formula`, thêm `formula_text_unverified` và `crop_pending`.
+
+| từ \ sang | heading | paragraph | list_item | caption | code | formula | table | figure | header_footer | page_number |
+|---|---|---|---|---|---|---|---|---|---|---|
+| heading | — | R | R | R | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| paragraph | H | — | R | R | C | F | ✗ | ✗ | ✗ | ✗ |
+| list_item | H | R | — | R | C | F | ✗ | ✗ | ✗ | ✗ |
+| caption | H | R | R | — | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| code | ✗ | R | R | ✗ | — | F | ✗ | ✗ | ✗ | ✗ |
+| formula | ✗ | R | ✗ | ✗ | C | — | ✗ | ✗ | ✗ | ✗ |
+| table | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | — | ✗ | ✗ | ✗ |
+| figure | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | — | ✗ | ✗ |
+| header_footer | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | — | ✗ |
+| page_number | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | — |
+
+  Hệ quả (x''): không có chuyển nào sang `figure`, `table`, `header_footer`, `page_number`; sang `code` chỉ qua hàm dựng của X06; sang `formula` chỉ khi dựng lại từ `line_refs`. `set_level` chỉ trên `heading`, `set_list_depth` chỉ trên `list_item` (sau `set_type` cùng lượt).
+- Kết quả AI lưu riêng (bảng `structure_proposals` của migration khối, cache `ai_cache` kind `structure_proposal`) kèm model + `PROMPT_VERSION`; tên model chỉ ở DB cục bộ, không vào response hay log; KHÔNG tái lập được từ `layout_settings_sha256` (g').
+
+### 15. `layout_version`, `layout_settings_sha256`, I4 (g, g', g'', g''')
+
+- Hằng `LAYOUT_VERSION: int` ở `domain/blocks.py`, bắt đầu 1 (X05). **Luật tăng (g'' thắng g):** PR nào làm đầu ra của bộ dựng đổi với tài liệu đã lưu (X05–X08, X11, V03, …) thì tăng `LAYOUT_VERSION` đúng một lần trong PR đó.
+- `layout_settings_sha256` (g', X05 sở hữu hàm tính) = sha256 của JSON chuẩn hoá (mục 3) của DANH SÁCH `fingerprint()` các stage theo thứ tự chạy. Mỗi stage TẤT ĐỊNH (stage của `block_pipeline`, X08 `section_tree`, phần tất định của cổng V03, X06, X07) có `fingerprint() -> dict[str, Any]` = `{"name", "version", "settings"}`. Phạm vi hash (g'''): chỉ các stage dựng khối trên `PageGeometry` đã lưu; cấu hình tầng đọc nằm ở `PageGeometry.version`/`reader_settings_sha256`; kết quả AI không thuộc hash.
+- Hai giá trị lưu cùng tài liệu (cột `documents.layout_version`, `documents.layout_settings_sha256`; field `DocumentImport`); null ⇔ tài liệu nhập trước khi có khối.
+- **I4 (không đổi định nghĩa) bảo đảm trên kết quả ĐÃ LƯU:** tài liệu cũ giữ `raw_text`/chunk, không tự nhập lại, không tự dựng lại khi `LAYOUT_VERSION` tăng; cùng `PageGeometry` + cùng `layout_settings_sha256` (không có bước AI) ⇒ cùng khối, cùng mục, cùng id. Test: `test_layout_rebuild_reproducible_by_settings_sha256`, `test_default_layout_settings_hash_pinned` (ghim hash của ngưỡng mặc định; đổi ngưỡng mà không tăng `LAYOUT_VERSION` làm test đỏ), và mỗi stage có test "đổi ngưỡng ⇒ đổi hash".
+
+### 16. Cắt chunk (s; thay ADR-006 mục 3 cho tài liệu có khối)
+
+- Tài liệu có `layout_version` khác null: trang có khối cắt theo khối/mục; trang không có khối trong cùng tài liệu (trang OCR/bitmap tới khi X11 làm, trang `LAYOUT_FAILED`) cắt bằng `build_chunks` trên dòng đã xác nhận của các dãy trang liền nhau đó. Tài liệu có `layout_version = null` (nhập trước) và tài liệu không phải PDF giữ `build_chunks` như cũ. Chunk sinh theo thứ tự trang; `chunk_id` dùng `chunk_id_for(doc_id, ordinal, raw_text)` hiện có với một bộ đếm `ordinal` chung.
+- Cắt theo khối: với mỗi Section, lấy khối đủ điều kiện có `text` khác null theo (trang, `reading_order`), bỏ khối `heading` lặp do nối trang (chỉ giữ khối tiêu đề đầu), gom thành chunk ≤ 450 token (`search_tokens`) tại ranh giới khối; khối dài hơn tách theo câu/từ bằng hàm hiện có. Không chồng lấn giữa chunk (khối đã là đơn vị ngữ nghĩa; đề xuất suy ra). `raw_text` = `text` các khối nối bằng `\n\n`. `figure`/`table` (`text = null`) không thành chunk trích dẫn. Chunk mang `section_id` và `block_ids` (spec §5.8).
+- Khối làm chunk ngắn hơn 8 ký tự ⇒ gộp với khối kề trong cùng Section; không có ⇒ không thành chunk, khối nhận cờ `too_short_for_chunk`, vẫn trong tập đủ điều kiện (tra cứu thấy).
+- Trích dẫn mặc định: câu đầu tiên ≥ 8 ký tự, ưu tiên khối không phải `heading`, cắt ≤ 600 ký tự tại ranh giới từ (cùng hàm `default_quote`).
+- **Mẫu ngôn ngữ của `build_chunks`:** `HEADING_RE` ở `services/vault_chunking.py` chứa từ khoá ngôn ngữ (`chương`, `chapter`, `bài`, `phần`, `part`, `section`, `lecture`, `mục`, `unit`) trong code `services/`, trái ADR-006 mục 10. Quyết định: các từ khoá này chuyển sang khoá `heading_keywords` của `infrastructure/lang/{vi,en}.toml` (cùng bộ nạp ở mục 12), `build_chunks` nhận danh sách từ khoá qua tham số; phần mẫu không phụ thuộc ngôn ngữ (`#`, số mục `3.2`) ở lại settings của module. Không đổi hành vi: hợp hai tệp chứa đúng các từ khoá hiện có, `tests/test_vault_chunking*.py` giữ nguyên. Việc này thuộc X09 (sửa `vault_chunking.py`); tới khi xong là nợ ghi ở ADR-004.
+
+### 17. Migration (i, i')
+
+- Migration đánh số theo THỨ TỰ MERGE, liên tục, không khoảng trống (`migrator._check_sequence`): **0006** = cache AI (V02; bảng chung `ai_cache` có cột `kind`, V03 dùng `kind = "structure_proposal"`), **0007** = khối/mục/ảnh cắt/ledger (X09). Nhánh merge sau đổi số của mình sang số kế tiếp. Tên `0004_vlm_cache.sql` ở ADR-009 mục 8 bị thay bởi luật này.
+- 0007 gồm: cột `documents.layout_version`, `documents.layout_settings_sha256`, `pages.geometry_json`; bảng `blocks`, `sections`, `crop_images`, `extraction_ledgers`, `structure_proposals`; cột `chunks.section_id`, `chunks.block_ids_json` (spec §5.13). Dữ liệu cũ không mất: cột mới null/mặc định.
+- Chỉ mục FTS của khối KHÔNG nằm trong migration đánh số (i', mục 18). X10 không có migration đánh số; không có "0008 tra cứu khối" (Phụ lục A (i) bị (i') thay).
+
+### 18. Tra cứu offline (j, v, j', j'')
+
+- **Bảng FTS MỚI, additive**, trong hai script CÓ ĐIỀU KIỆN như `fts5_vault.sql` (chạy lại mỗi lần mở kho, `IF NOT EXISTS`): `fts5_blocks.sql` (bảng `blocks_fts`, `tokenize = 'unicode61 remove_diacritics 0'` + cùng `tokenchars` của `fts5_vault.sql`, `body` = token đã gấp dấu bằng Python nối bằng dấu cách; chạy khi probe FTS5 đạt) và `fts5_blocks_trigram.sql` (bảng `blocks_fts_trigram`, `tokenize = 'trigram'`, `body` = văn bản đã gấp dấu, gộp khoảng trắng; chỉ chạy khi probe trigram đạt: tạo thử bảng ảo trigram trong `temp` thành công và `sqlite_version() ≥ 3.34.0`). Bảng ảo không có khoá ngoại ⇒ xoá khối/tài liệu dọn chỉ mục bằng code trong cùng giao dịch (như `sqlite_store._delete_chunk_index`). FTS bật sau khi khối đã lưu ⇒ backfill từ tập đủ điều kiện khi mở kho. Thiếu FTS5/trigram, và kho in-memory ⇒ đường lùi Python cho cùng kết quả top-3 (test tương đương).
+- **Hàm gấp dấu Python** (một hàm ở `domain/search_text.py`, thêm mới, không đổi hàm cũ): NFC → `casefold` → NFD → bỏ dấu kết hợp → `đ` thành `d` → NFC; áp lúc lập chỉ mục VÀ truy vấn cho bảng không dấu, trigram và đường lùi. Hàm trả kèm bảng ánh xạ vị trí ký tự sau gấp → vị trí trong chuỗi gốc (để trả khoảng khớp, j''). **Nơi chốt duy nhất của luật gấp `đ`:** mục này. Chỉ mục KHỐI gấp `đ` thành `d`; chỉ mục CHUNK (`chunks_fts`, `chunks_fts_nodiac`, `/v1/vault/search`) giữ ADR-006 mục 5 bước 3 (giữ `đ`), không đổi. ADR-006 mục 5 chỉ trỏ về đây, không lặp lại luật.
+- **Token kỹ thuật** (chữ lẫn số, chữ hoa ≥ 2, mã `0x…`): khớp chính xác không phân biệt hoa thường, xếp trên kết quả mờ; trigram không bắt lỗi trong token < 3 ký tự ⇒ đường lùi khoảng cách sửa cho token ngắn. Mẫu hình thức và ngưỡng ở settings model của `services/search_index.py`, tổng quát.
+- **Lập chỉ mục:** chỉ tập khối đủ điều kiện (mục 13); `text` khối, ô bảng, `labels` của figure (kết quả kèm cờ `figure_label_text`), chú thích (`caption_of`) và chữ quanh hình do X10 chọn. `header_footer`, `page_number` không vào chỉ mục.
+- **Endpoint MỚI** `GET /v1/vault/blocks/search` (spec §6.10): lọc môn (bắt buộc), nguồn, chương, loại khối; phân trang; trần truy vấn; kết quả gồm khối (loại, trang, `bbox`, `crop_ref`), đường dẫn Section, kiểu khớp và các khoảng khớp trong chữ GỐC (j'', đơn vị UTF-16 code unit để frontend cắt trực tiếp; đề xuất suy ra). Xếp hạng tất định.
+
+### 19. Lưu và phục vụ ảnh cắt (w)
+
+- Kho SQLite: byte PNG ở `HOLOCRON_DATA_DIR/crops/<document_id>/<crop_ref>.png` (đường dẫn chỉ dựng từ id đã kiểm mẫu, không từ dữ liệu người dùng); metadata ở bảng `crop_images`. Kho in-memory: byte trong instance store (không dict cấp module), trần tổng `memory_crop_max_bytes = 256 MiB`; vượt ⇒ khối giữ `crop_pending` + `crop_capped`.
+- Xoá tài liệu xoá ảnh (hàng trong giao dịch, file sau khi commit; file mồ côi dọn khi khởi động).
+- `GET /v1/documents/{document_id}/crops/{crop_ref}`: `Content-Type: image/png`, `X-Content-Type-Options: nosniff`, `Cache-Control: private, max-age=31536000, immutable` (nội dung theo sha256); ảnh của tài liệu khác ⇒ 404. Frontend tải ảnh qua `lib/api.ts` (gửi header token như mọi request) → blob → object URL, thu hồi khi unmount; CẤM token trong URL, CẤM `<img src>` trỏ thẳng endpoint.
+- V03 và X08 là bước SAU bộ dựng (mục 13).
+
+### 20. Vị trí model (o)
+
+`Block`, `BlockType`, `BlockFlag`, `SourceRef`, `TableCell`, `Section`, `SectionFlag`, `ExtractionLedger`, `CropImage`, `LAYOUT_VERSION` ở `domain/blocks.py` (X05 tạo). `PageGeometry` ở `domain/documents.py` (X04); `PageRead` (giá trị trả nội bộ của `tiers`, không ra response) cạnh nó. Model kết quả tra cứu khối ở `domain/vault.py` (X10). Model giao thức worker (`RawFont`, `RawRule`, `CropRequest`, thông điệp `crop_batch`) ở `infrastructure/document_readers/protocol.py`. Model response nào đổi ⇒ cập nhật `holocron/frontend/src/types/holocron.ts` 1:1 (CLAUDE.md §2.3).
+
+### 21. Test cưỡng chế đề xuất
+
+Bảng dưới là đề xuất cho bảng CLAUDE.md §9 (OPEN: người dùng duyệt bổ sung bảng §9). "Bảo toàn" là điều kiện 1 của file quyết định mục 1, không phải bất biến I1–I5; đề xuất thêm một dòng riêng "Bảo toàn bóc tách (ADR-010)".
+
+| Bất biến | Test (file gợi ý; việc làm) |
+|---|---|
+| Bảo toàn bóc tách (ADR-010) | `test_ledger_conserves_every_char` (property ≥ 100 seed trên PDF tự tạo có cột, bullet, tiêu đề, header lặp, dòng không hộp, chữ ẩn; `tests/test_extraction_ledger.py`, X05); `test_ledger_patched_page_uses_confirmed_lines` (`tests/test_vault_blocks.py`, X09); `test_ocr_ledger_conserves_every_word` (`tests/test_ocr_blocks.py`, X11); `test_ai_proposal_keeps_ledger` (`tests/test_structure_proposal_gate.py`, V03); `test_ledger_mismatch_marks_layout_failed` (X05) |
+| I3 | `test_block_text_is_join_of_line_refs` (gồm ca gạch nối cuối dòng; X05); `test_code_block_quote_after_whitespace_collapse` (X06); `test_block_chunk_quote_is_substring` (X09); `test_vlm_block_quote_substring_of_block_text` (X11) |
+| I4 | `test_layout_rebuild_reproducible_by_settings_sha256` (X05, X09); `test_default_layout_settings_hash_pinned` (X05); `test_legacy_document_keeps_raw_text_after_migration` (`tests/test_migration_blocks.py`, X09); `test_block_ids_stable_under_ai_permutation` (V03); `test_patch_lines_keeps_unchanged_block_ids` (X09) |
+| I5 | `test_unconfirmed_or_dropped_page_blocks_not_chunked` (X09); `test_auto_confirmed_page_not_searchable_before_document_confirm` (X10); `test_ineligible_blocks_not_searchable` (X10); `test_forbidden_type_transition_rejected` (mọi ô ✗ của ma trận; V03); `test_crop_request_caps` (số vùng, ảnh/trang, ảnh/tài liệu, byte thông điệp, ngân sách thời gian; `tests/test_crop_request.py`, V02); `test_worker_rules_cap` (thêm vào `tests/test_pdf_input_limits.py`, X07); `test_vlm_table_cell_mismatch_blocks_confirm` (X11) |
+| Bảo mật ảnh cắt | `test_crop_endpoint_headers_and_scope` (`Content-Type`, `nosniff`, `Cache-Control`, 404 tài liệu khác), `test_crop_path_stays_in_data_dir` (`tests/test_api_sections.py`, X09) |
+
+Test cưỡng chế hiện có của §9 (I3: `test_chunk_rejects_quote_not_in_text`, `test_chunk_accepts_quote_in_nfd_against_nfc_text`, …; I5: `test_bad_pdf_limits`, `test_dropped_page_never_chunked`, …) giữ nguyên, không sửa assert.
+
+### 22. Truy vết Phụ lục A → mục
+
+(a) 2 · (b)(b')(b'') 3 · (c) 4 · (d)(p)(p''') 6 · (e) 8 · (f) 5 · (g)(g')(g'')(g''') 15 · (h)(h') 7 · (i)(i') 17 · (j)(v)(j')(j'') 18 · (k) 11 · (l)(x)(x')(x'') 14 · (n) 4 · (o) 20 · (p'') 5 · (q) 12 · (r)(r'')(r''') 13 · (s) 16 · (t)(t') 9 · (u) 10 · (w) 19.
+
+## Hệ quả
+
+- Vault, cây mục và tra cứu dựa trên khối có nguồn (trang + `bbox` + ảnh cắt), đo được bằng các chỉ số của file quyết định mục 1 (`scripts/eval_layout.py`).
+- Ledger biến "không mất gì" thành phép kiểm tuyệt đối mỗi trang; lệch thì trang lùi về đường dòng và bị báo `LAYOUT_FAILED`.
+- Hai đường cắt chunk cùng tồn tại (khối và `build_chunks`) cho tới khi mọi đường đọc vào khối; từ khoá ngôn ngữ của `build_chunks` chuyển sang `lang/*.toml` ở X09 (mục 16; nợ VAULT-001 ở ADR-004 tới khi xong).
+- Kho lớn hơn: `geometry_json` cỡ trăm KiB mỗi trang, ảnh cắt ≤ 1 MiB mỗi khối hình/bảng/công thức.
+- Rủi ro: luật hình học sai trên bố cục lạ ⇒ giảm thiểu bằng cờ + ảnh cắt (mục 11) và đo trên bộ mù; đề xuất AI sai ⇒ cổng ma trận (mục 14).
+- Kiểm chứng: mục 21.
+
+## Phương án đã loại
+
+- **Giữ `Block` của ADR-009 mục 2** (`order` theo mảng VLM, không `bbox`, không tham chiếu dòng): không truy được nguồn, không kiểm được bảo toàn.
+- **Gán ledger theo DÒNG:** một dòng PDFium vắt qua nhiều cột/ô/khung; gán theo dòng buộc một khối chứa chữ của khối khác.
+- **Id khối theo thứ tự hình học** (Phụ lục A (b)): đổi khi AI hoán vị hay khi sửa một dòng phía trên; thay bằng id theo nội dung nguồn.
+- **Bỏ gạch nối cuối dòng khi nối:** phá I3 (văn bản khối không còn là chuỗi con của dòng đã xác nhận).
+- **Chỉ mục FTS khối trong migration đánh số:** SQLite thiếu FTS5 sẽ không mở được kho; dùng script có điều kiện như `fts5_vault.sql`.
+- **Thêm pdfplumber hay model bố cục ONNX:** không được duyệt (file quyết định mục 3); bảng từ đoạn kẻ path object có sẵn.
+- **Để LLM trả chữ cho trang có lớp chữ:** trái nguyên tắc "lớp chữ thắng" và I3.

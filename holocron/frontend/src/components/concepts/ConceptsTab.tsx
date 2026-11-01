@@ -9,11 +9,6 @@ import { Button, EmptyState, ErrorState, Skeleton, useToast } from "@/components
 import { useReducedMotion } from "@/hooks/motion-hooks";
 import { api } from "@/lib/api";
 import {
-  acceptAllGate,
-  type BulkCandidate,
-  bulkCandidateOf,
-  bulkMessageOf,
-  bulkReducer,
   type ChangeNote,
   type ConceptFocus,
   type ConceptView,
@@ -21,11 +16,9 @@ import {
   conceptErrorText,
   conceptsScreen,
   conceptView,
-  editingSkippedToast,
   failedReloadEffects,
   focusAfterRemoval,
   groupPairs,
-  IDLE_BULK,
   mergeChange,
   NO_STALE,
   newlyConfirmed,
@@ -35,17 +28,36 @@ import {
   reloadNoteText,
   reloadRetryHinted,
   screenErrorText,
-  sendQueued,
   staleReducer,
   staleView,
   visibleConceptEntrances,
   withoutIds,
 } from "@/lib/concept-board";
+import {
+  BATCH_EDITING_VI,
+  type BatchItem,
+  type BatchOp,
+  batchButtons,
+  batchSummary,
+  chosenIds,
+  deselectAfter,
+  EMPTY_SELECTION,
+  editingAmong,
+  needsCheckReason,
+  practiceTarget,
+  progressText,
+  runBatch,
+  selectAllEvent,
+  selectAllState,
+  selectionReducer,
+  shouldOpenPractice,
+  withoutSettled,
+} from "@/lib/concept-proposals";
 import { toUiError, type UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
 import { PAIRS_CHUNK_MAX_REQUESTS, PAIRS_CHUNK_PAGE_SIZE } from "@/lib/limits";
 import { type ChunkMapResult, loadChunkMap, type PairsLocation, parsePairsLocation, runLatest } from "@/lib/pairs";
-import { freshRuntime, isCapabilityBlocked } from "@/lib/runtime";
+import { capabilityOf, freshRuntime, isCapabilityBlocked } from "@/lib/runtime";
 import { buildSkyLayout } from "@/lib/sky";
 import { skyGains } from "@/lib/sky-gains";
 import type { ChunkView } from "@/lib/vault";
@@ -55,13 +67,8 @@ import { type AcceptedEntry, AcceptedList } from "./AcceptedList";
 import styles from "./ConceptsTab.module.css";
 import { PassagePanel } from "./PassagePanel";
 import { type CardLeaving, EditingConceptsContext } from "./ProposalCard";
+import { ProposalJobPanel } from "./ProposalJobPanel";
 import { type ProposalEntry, ProposalList } from "./ProposalList";
-
-/**
- * Đề xuất khái niệm tự động chưa có trong bản này: lối vào bị ẩn hẳn. Khi contract khả năng tương ứng được duyệt và
- * merge, thay hằng này bằng đúng một lời gọi `capabilityOf(runtime, …)`.
- */
-const AUTO_PROPOSAL_AVAILABLE = false;
 
 /** Hết giờ dự phòng chờ animation rời đi của thẻ (animation thật dài 200–220 ms). */
 const LEAVE_FALLBACK_MS = 320;
@@ -308,7 +315,14 @@ export function ConceptsTab({
   // -------------------------------------------------------------------- thao tác với một khái niệm
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set());
   const [cardErrors, setCardErrors] = useState<ReadonlyMap<string, CardError>>(new Map());
-  const [bulk, dispatchBulk] = useReducer(bulkReducer, IDLE_BULK);
+  // Chọn nhiều cặp đề xuất để nhận hoặc từ chối tuần tự (T2.3).
+  const [selection, dispatchSelection] = useReducer(selectionReducer, EMPTY_SELECTION);
+  const [termDrafts, setTermDrafts] = useState<ReadonlyMap<string, string>>(new Map());
+  const [batch, setBatch] = useState<{ op: BatchOp; progress: string } | null>(null);
+  const [batchResult, setBatchResult] = useState<string | null>(null);
+  // Cặp đã ghi xong trong lượt gửi: rời danh sách đề xuất ngay, không chờ lượt tải lại.
+  const [settled, setSettled] = useState<ReadonlySet<string>>(new Set());
+  const [viewed, setViewed] = useState<{ pairId: string; chunkId: string; quote: string } | null>(null);
   const bulkActive = useRef(false);
   // Thẻ đề xuất đang mở khung sửa tên (thẻ tự báo qua `EditingConceptsContext`): "Nhận tất cả" bỏ qua các thẻ này.
   const editingIds = useRef(new Set<string>());
@@ -337,6 +351,18 @@ export function ConceptsTab({
 
   const pairs = listState.kind === "ready" ? listState.pairs : [];
   const groups = useMemo(() => groupPairs(pairs), [pairs]);
+
+  // Mỗi lần danh sách đọc lại: bỏ chọn và tên nháp của cặp đã rời đề xuất; cặp mới chỉ tích sẵn khi `pre_selected`.
+  useEffect(() => {
+    if (listState.kind !== "ready") return;
+    const proposed = groupPairs(listState.pairs).proposed;
+    dispatchSelection({ type: "sync", pairs: proposed });
+    const present = new Set(proposed.map((pair) => pair.pair_id));
+    setTermDrafts((previous) => {
+      const kept = [...previous].filter(([id]) => present.has(id));
+      return kept.length === previous.size ? previous : new Map(kept);
+    });
+  }, [listState]);
   const mapStatus = mapState.status;
   const map = mapState.status === "loading" ? EMPTY_MAP : mapState.map;
 
@@ -359,7 +385,6 @@ export function ConceptsTab({
     if (busyIds.has(pair.pair_id) || bulkActive.current || stale.has(pair.pair_id)) return;
     setBusy(pair.pair_id, true);
     setCardError(pair.pair_id, null);
-    dispatchBulk({ type: "dismiss", pairId: pair.pair_id });
     try {
       if (operation === "reject") await api.rejectConceptPair(pair.pair_id, pair.version);
       else await api.confirmConceptPair(pair.pair_id, pair.version, term === null ? {} : { term });
@@ -403,37 +428,55 @@ export function ConceptsTab({
     void run(pair, error?.operation ?? "accept", error?.term ?? null);
   }
 
-  function acceptAll(): void {
-    if (bulkActive.current || bulk.running || !allGate.enabled) return;
-    // Thẻ đang mở khung sửa tên bị bỏ qua kèm lý do: không nhận hộ dưới tên cũ, nháp đang gõ không mất.
-    const candidates: BulkCandidate[] = groups.proposed
-      .filter((pair) => !busyIds.has(pair.pair_id))
-      .map((pair) => bulkCandidateOf(pair, proposalView(pair).actions.confirm, editingIds.current.has(pair.pair_id)));
-    const skippedText = editingSkippedToast(candidates);
-    if (skippedText !== null) toastRef.current.show(skippedText);
-    const started = bulkReducer(bulk, { type: "start", candidates });
-    dispatchBulk({ type: "start", candidates });
-    if (!started.running) return;
-    bulkActive.current = true;
-    setCardErrors(new Map());
-    const acceptedIds: string[] = [];
-    void sendQueued(
-      started,
-      async (pairId, version) => {
-        await api.confirmConceptPair(pairId, version, {});
-        acceptedIds.push(pairId);
-        dispatchStale({ type: "written", ids: [pairId] });
-        if (!reduced) setLeaving((previous) => new Map(previous).set(pairId, "accept"));
-      },
-      dispatchBulk,
-    ).then(() => {
-      bulkActive.current = false;
-      loadPairs(
-        true,
-        { accepted: acceptedIds.length, messages: [], focus: { kind: "proposals" } },
-        { left: reduced ? [] : acceptedIds, done: acceptedIds },
-      );
+  /**
+   * "Chấp nhận & ôn tập" và "Từ chối đã chọn": gửi tuần tự từng cặp đã chọn (không có endpoint theo lô). Cặp ghi xong rời
+   * danh sách ngay; 409 chỉ bỏ qua cặp đó rồi tải lại; lỗi khác dừng hàng đợi, các cặp chưa gửi vẫn được chọn.
+   */
+  async function runSelected(op: BatchOp, chosen: readonly string[]): Promise<void> {
+    if (bulkActive.current || chosen.length === 0) return;
+    if (editingAmong(chosen, editingIds.current).length > 0) {
+      setBatchResult(BATCH_EDITING_VI);
+      return;
+    }
+    const items: BatchItem[] = chosen.flatMap((pairId) => {
+      const pair = groups.proposed.find((item) => item.pair_id === pairId);
+      if (pair === undefined) return [];
+      return [{ pairId, version: pair.version, term: op === "accept" ? (termDrafts.get(pairId) ?? null) : null }];
     });
+    bulkActive.current = true;
+    setBatchResult(null);
+    setCardErrors(new Map());
+    setBatch({ op, progress: progressText(op, { current: 1, total: items.length }) });
+    const outcome = await runBatch(
+      items,
+      async (item) => {
+        if (op === "accept") {
+          await api.confirmConceptPair(item.pairId, item.version, item.term === null ? {} : { term: item.term });
+        } else {
+          await api.rejectConceptPair(item.pairId, item.version);
+        }
+        setSettled((previous) => new Set(previous).add(item.pairId));
+        dispatchStale({ type: "written", ids: [item.pairId] });
+      },
+      (progress) => setBatch({ op, progress: progressText(op, progress) }),
+    );
+    bulkActive.current = false;
+    setBatch(null);
+    dispatchSelection({ type: "remove", pairIds: deselectAfter(outcome) });
+    setBatchResult(batchSummary(op, outcome));
+    if (shouldOpenPractice(op, outcome)) {
+      // Tab này sắp rời đi: báo trang môn tải lại bầu trời trước, rồi sang tab Ôn tập qua helper của route cũ.
+      changedRef.current();
+      router.push(practiceTarget(subjectCode));
+      return;
+    }
+    loadPairs(
+      true,
+      outcome.done.length > 0
+        ? { accepted: op === "accept" ? outcome.done.length : 0, messages: [], focus: { kind: "proposals" } }
+        : null,
+      { done: outcome.done },
+    );
   }
 
   const onCreated = useCallback(() => loadPairs(true, { accepted: 0, messages: [], focus: null }), [loadPairs]);
@@ -441,6 +484,15 @@ export function ConceptsTab({
     (chunkId: string) => router.replace(hrefFor({ chunk: chunkId }), { scroll: false }),
     [router, hrefFor],
   );
+  const onShowSource = useCallback(
+    (pair: ConceptPair) => {
+      setViewed({ pairId: pair.pair_id, chunkId: pair.chunk_id, quote: pair.definition_quote });
+      onOpenChunk(pair.chunk_id);
+    },
+    [onOpenChunk],
+  );
+  const onClearHighlight = useCallback(() => setViewed(null), []);
+  const onJobFinished = useCallback(() => loadPairs(true, null), [loadPairs]);
 
   // -------------------------------------------------------------------- hiển thị
   const screen = conceptsScreen(listState.kind, pairs.length, mapStatus, map.size);
@@ -465,32 +517,34 @@ export function ConceptsTab({
     );
   }
 
+  const running = batch !== null;
   function cardBusy(pairId: string): boolean {
-    if (busyIds.has(pairId)) return true;
-    const item = bulk.items.find((entry) => entry.pairId === pairId);
-    return bulk.running && (item?.status === "queued" || item?.status === "sending");
-  }
-
-  function cardError(pairId: string): string | null {
-    const own = cardErrors.get(pairId);
-    if (own !== undefined) return own.text;
-    const item = bulk.items.find((entry) => entry.pairId === pairId);
-    return item?.status === "conflict" || item?.status === "failed" ? bulkMessageOf(bulk, pairId) : null;
+    return busyIds.has(pairId) || (running && selection.selected.has(pairId));
   }
 
   const titleOf = (view: ConceptView): string | null =>
     view.chunk === null ? null : (docTitles.get(view.chunk.docId) ?? null);
-  const proposalEntries: ProposalEntry[] = groups.proposed.map((pair) => {
+  const proposalEntries: ProposalEntry[] = withoutSettled(groups.proposed, settled).map((pair) => {
     const view = proposalView(pair);
+    const busy = cardBusy(pair.pair_id);
+    const confirm = view.actions.confirm;
     return {
       pair,
       view,
       docTitle: titleOf(view),
-      busy: cardBusy(pair.pair_id),
+      busy,
       leaving: leaving.get(pair.pair_id) ?? null,
-      error: cardError(pair.pair_id),
+      error: cardErrors.get(pair.pair_id)?.text ?? null,
+      selected: selection.selected.has(pair.pair_id),
+      selectable: confirm.shown && confirm.enabled && !busy && !stale.has(pair.pair_id),
+      termDraft: termDrafts.get(pair.pair_id) ?? null,
+      checkReason: needsCheckReason(pair),
     };
   });
+  const selectableIds = proposalEntries.filter((entry) => entry.selectable).map((entry) => entry.pair.pair_id);
+  const chosen = chosenIds(selectableIds, selection.selected);
+  // Khung sửa tên đang mở chỉ được kiểm lúc bấm (`runSelected`): cờ nằm trong ref nên không kích hoạt vẽ lại.
+  const buttons = batchButtons({ chosen: chosen.length, running, editing: false });
   const toAccepted = (pair: ConceptPair): AcceptedEntry => {
     const base = conceptView(pair, mapStatus, map);
     const view = stale.has(pair.pair_id) ? staleView(base, retryHinted) : base;
@@ -504,11 +558,13 @@ export function ConceptsTab({
       errorIsRename: cardErrors.get(pair.pair_id)?.operation === "rename",
     };
   };
-  const allGate = acceptAllGate(
-    proposalEntries.map((entry) => ({ view: entry.view, busy: entry.busy, stale: stale.has(entry.pair.pair_id) })),
-    retryHinted,
-  );
-  const entrances = visibleConceptEntrances({ autoProposalAvailable: AUTO_PROPOSAL_AVAILABLE });
+  const llmState = capabilityOf(freshRuntime(runtime), "concept_pair_llm_proposal").state;
+  const entrances = visibleConceptEntrances({ autoProposalAvailable: llmState === "available" });
+  const jobDocuments = [...docTitles].map(([docId, title]) => ({ docId, title }));
+  const viewedPair =
+    viewed === null ? undefined : proposalEntries.find((entry) => entry.pair.pair_id === viewed.pairId);
+  const highlight =
+    viewed !== null && viewedPair !== undefined ? { chunkId: viewed.chunkId, quote: viewed.quote } : null;
   const searchAvailable = !isCapabilityBlocked(freshRuntime(runtime), "vault_search");
 
   return (
@@ -534,14 +590,34 @@ export function ConceptsTab({
       )}
       <div className={styles.grid}>
         <div className={styles.main}>
+          <ProposalJobPanel
+            subjectCode={subjectCode}
+            capability={llmState}
+            documents={jobDocuments}
+            onFinished={onJobFinished}
+          />
           {proposalEntries.length > 0 && (
             <EditingConceptsContext value={reportEditing}>
               <ProposalList
                 entries={proposalEntries}
                 headingRef={proposalsHeading}
-                bulkRunning={bulk.running}
-                acceptAllReason={!bulk.running && !allGate.enabled ? allGate.reason : null}
-                onAcceptAll={acceptAll}
+                selectAll={selectAllState(selectableIds, selection.selected)}
+                chosenCount={chosen.length}
+                buttons={buttons}
+                progress={batch?.progress ?? null}
+                result={batchResult}
+                acceptRunning={batch?.op === "accept"}
+                rejectRunning={batch?.op === "reject"}
+                onToggleAll={() => dispatchSelection(selectAllEvent(selectableIds, selection.selected))}
+                onToggle={(pair) => dispatchSelection({ type: "toggle", pairId: pair.pair_id })}
+                onSaveTerm={(pair, term) =>
+                  setTermDrafts((previous) =>
+                    term === pair.term ? withoutKey(previous, pair.pair_id) : new Map(previous).set(pair.pair_id, term),
+                  )
+                }
+                onShowSource={onShowSource}
+                onAcceptSelected={() => void runSelected("accept", chosen)}
+                onRejectSelected={() => void runSelected("reject", chosen)}
                 onAccept={(pair, term) => void run(pair, "accept", term)}
                 onReject={(pair) => void run(pair, "reject", null)}
                 onRetry={retry}
@@ -569,6 +645,8 @@ export function ConceptsTab({
               onRetryMap={loadMap}
               searchAvailable={searchAvailable}
               onCreated={onCreated}
+              highlight={highlight}
+              onClearHighlight={onClearHighlight}
             />
           )}
         </div>
@@ -584,6 +662,12 @@ export function ConceptsTab({
       </div>
     </div>
   );
+}
+
+function withoutKey(map: ReadonlyMap<string, string>, key: string): ReadonlyMap<string, string> {
+  const next = new Map(map);
+  next.delete(key);
+  return next;
 }
 
 function ConceptsLoading() {

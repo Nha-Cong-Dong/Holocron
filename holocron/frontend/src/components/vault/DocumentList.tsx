@@ -9,6 +9,7 @@ import { Modal } from "@/components/common/Modal";
 import { api, toUiError } from "@/lib/api";
 import { DOCUMENT_STATUS_LABEL_VI, pageWarnings, sourceKindLabel } from "@/lib/documents";
 import type { DocumentStatusView, DocumentSummaryView, DocumentView, PageSummaryView } from "@/lib/documents-data";
+import { documentCountsLine, isDropped } from "@/lib/dropped-pages";
 import type { UiError } from "@/lib/errors";
 import { readingLines } from "@/lib/home-cards";
 import { createLatestCounter } from "@/lib/latest";
@@ -101,9 +102,7 @@ function DocumentItem({ summary, progress, onChanged, hrefFor }: DocumentItemPro
           {progress !== null && <PageStrip pages={progress.pages} />}
         </div>
       ) : (
-        <p className={styles.muted}>
-          {summary.pagesConfirmed}/{summary.pageCount} trang đã xác nhận · {summary.pagesFailed} trang đọc lỗi
-        </p>
+        <p className={styles.muted}>{documentCountsLine(summary)}</p>
       )}
       {summary.status === "failed" && (
         <p className={styles.warningNote}>
@@ -204,7 +203,8 @@ function PageWarningsPanel({
 
   if (state.kind === "loading") return <Loading label="Đang tải cảnh báo theo trang…" />;
   if (state.kind === "error") return <ErrorNotice error={state.error} onRetry={load} onReload={load} />;
-  const flagged = state.document.pages.filter((page) => pageWarnings(page).length > 0);
+  // Trang bỏ mềm không cần xem hay xác nhận (§5.7): cảnh báo của chúng không hiện ở đây.
+  const flagged = state.document.pages.filter((page) => !isDropped(page) && pageWarnings(page).length > 0);
   if (flagged.length === 0) {
     return <p className={styles.successNote}>Không trang nào có cảnh báo. Bạn có thể xác nhận cả tài liệu.</p>;
   }

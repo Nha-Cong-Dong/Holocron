@@ -16,6 +16,7 @@ from pydantic import Field, StringConstraints, field_validator, model_validator
 from .ingestion import ExtractedTable
 from .limits import MAX_LINE_CHARS
 from .schemas import DocumentMeta, StrictModel
+from .vault import ProposalJob
 
 LineEngine = Literal["text_layer", "tesseract", "vlm", "human"]
 TierUsed = Literal["text_layer", "ocr", "layout", "vlm"]
@@ -31,8 +32,10 @@ LineFlag = Literal[
 # Cờ dòng của GĐ0: chỉ dòng lớp chữ mang được (validator của `ExtractedLine`).
 TEXT_LAYER_LINE_FLAGS: frozenset[LineFlag] = frozenset({"LOW_TEXT_CONTRAST", "TEXT_OCCLUDED", "FONT_ENCODING_SUSPECT"})
 PageRole = Literal["content", "cover_or_course_nav", "chapter_nav", "build_step", "parallel_visual_series", "exercise"]
-# Vai trò cho phép bỏ mềm (0D); `parallel_visual_series` có bằng chứng nhưng luôn giữ.
-DROPPABLE_ROLES: frozenset[PageRole] = frozenset({"cover_or_course_nav", "chapter_nav", "build_step"})
+# Vai trò cho phép bỏ mềm (0D); `parallel_visual_series` có bằng chứng nhưng luôn giữ. Thứ tự khai báo theo `PageRole`.
+DroppableRole = Literal["cover_or_course_nav", "chapter_nav", "build_step"]
+DROPPABLE_ROLE_ORDER: tuple[DroppableRole, ...] = get_args(DroppableRole)
+DROPPABLE_ROLES: frozenset[PageRole] = frozenset(DROPPABLE_ROLE_ORDER)
 EVIDENCE_ROLES: frozenset[PageRole] = DROPPABLE_ROLES | {"parallel_visual_series"}
 RoleRule = Literal["cover_or_course_nav", "chapter_nav", "build_step", "parallel_visual_series", "build_step_uncertain"]
 MAX_PAGE_IMAGES = 256
@@ -354,6 +357,76 @@ def count_kept_unconfirmed(pages: list[PageSummary]) -> int:
     return sum(page.status == "ok" and not page.dropped and not page.confirmed for page in pages)
 
 
+def count_failed(pages: list[PageSummary]) -> int:
+    """Số trang đọc lỗi (T1e): `status = "failed"`, cùng định nghĩa `DocumentSummary.pages_failed`."""
+    return sum(page.status == "failed" for page in pages)
+
+
+def _check_page_list(count: int, pages: list[int]) -> None:
+    if pages != sorted(set(pages)):
+        raise ValueError("pages phải tăng dần và không trùng")
+    if count != len(pages):
+        raise ValueError("count phải bằng số phần tử của pages")
+
+
+class ReviewReasonCount(StrictModel):
+    """Số trang "cần xem" mang một lý do (T1e, §5.7); `pages` tăng dần, không trùng, `count = len(pages)`."""
+
+    reason: ReviewReason
+    count: int = Field(ge=1)
+    pages: list[int]
+
+    @model_validator(mode="after")
+    def _count_matches_pages(self) -> ReviewReasonCount:
+        _check_page_list(self.count, self.pages)
+        return self
+
+
+class DroppedRoleCount(StrictModel):
+    """Số trang bỏ mềm theo vai trò (T1e, §5.7); `pages` tăng dần, không trùng, `count = len(pages)`."""
+
+    reason: DroppableRole
+    count: int = Field(ge=1)
+    pages: list[int]
+
+    @model_validator(mode="after")
+    def _count_matches_pages(self) -> DroppedRoleCount:
+        _check_page_list(self.count, self.pages)
+        return self
+
+
+ProposalJobAbsentReason = Literal["not_confirmed", "past_exam", "no_chunks", "llm_unavailable", "not_retained"]
+"""Lý do `DocumentImport` không có `proposal_job` (T1e, §5.7); xét theo đúng thứ tự khai báo."""
+
+
+def review_reason_counts(pages: list[PageSummary]) -> list[ReviewReasonCount]:
+    """Số trang theo từng `ReviewReason`, chỉ xét trang thuộc `pages_needs_review` (`needs_review`, không bỏ mềm,
+    chưa xác nhận); trang nhiều lý do được đếm ở mỗi lý do. Chỉ lý do có ≥ 1 trang, theo thứ tự khai báo."""
+    by_reason: dict[ReviewReason, list[int]] = {}
+    for page in pages:
+        if page.status == "needs_review" and not page.dropped and not page.confirmed:
+            for reason in set(page.review_reasons):
+                by_reason.setdefault(reason, []).append(page.page_number)
+    return [
+        ReviewReasonCount(reason=reason, count=len(numbers), pages=sorted(numbers))
+        for reason in REVIEW_REASON_ORDER
+        if (numbers := by_reason.get(reason))
+    ]
+
+
+def dropped_role_counts(pages: list[PageSummary]) -> list[DroppedRoleCount]:
+    """Số trang bỏ mềm theo `page_role` (chỉ trang `dropped`). Chỉ vai trò có ≥ 1 trang, theo thứ tự khai báo."""
+    by_role: dict[str, list[int]] = {}
+    for page in pages:
+        if page.dropped:
+            by_role.setdefault(page.page_role, []).append(page.page_number)
+    return [
+        DroppedRoleCount(reason=role, count=len(numbers), pages=sorted(numbers))
+        for role in DROPPABLE_ROLE_ORDER
+        if (numbers := by_role.get(role))
+    ]
+
+
 class DocumentImport(StrictModel):
     """Tài liệu nhập qua §6.5 kèm tóm tắt từng trang; dùng để client hỏi trạng thái (§5.7)."""
 
@@ -375,6 +448,21 @@ class DocumentImport(StrictModel):
     auto_confirm: bool = True
     pages_auto_confirmed: int = Field(ge=0)
     pages_kept_unconfirmed: int = Field(ge=0)
+    # thêm 2026-11-01 (T1e, màn kết quả nhập; §5.7): tính lúc dựng response, không lưu; frontend chỉ hiển thị (I1)
+    pages_failed: int = Field(default=0, ge=0)
+    review_reason_counts: list[ReviewReasonCount] = Field(default_factory=list)
+    dropped_role_counts: list[DroppedRoleCount] = Field(default_factory=list)
+    proposal_job: ProposalJob | None = None
+    proposal_job_absent_reason: ProposalJobAbsentReason | None = None
+
+    @model_validator(mode="after")
+    def _proposal_job_or_reason(self) -> DocumentImport:
+        """§5.7: `proposal_job` và `proposal_job_absent_reason` không cùng khác null; job thuộc đúng tài liệu này."""
+        if self.proposal_job is not None and self.proposal_job_absent_reason is not None:
+            raise ValueError("proposal_job và proposal_job_absent_reason không được cùng khác null")
+        if self.proposal_job is not None and self.proposal_job.document_id != self.meta.doc_id:
+            raise ValueError("proposal_job.document_id phải bằng meta.doc_id")
+        return self
 
     @model_validator(mode="after")
     def _chapter_title_has_a_source(self) -> DocumentImport:

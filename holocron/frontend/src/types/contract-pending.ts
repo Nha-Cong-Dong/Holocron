@@ -86,15 +86,14 @@ export interface PageExtractionPending extends Omit<PageExtraction, "review_reas
 
 // ------------------------------------------------------- §5.7, §5.8, §6.5 màn kết quả nhập (T1e, T1b)
 
+// Các field T1e của `DocumentImport` (§5.7) đã có ở backend (#116) và ở `holocron.ts`; xuất lại ở đây cho nơi còn import
+// từ file này. `ReviewReasonCount.reason` là `ReviewReason` của backend (không có `LOW_TEXT_SCORE`).
+export type { DroppedRoleCount, ProposalJobAbsentReason, ReviewReasonCount } from "@/types/holocron";
 /**
  * `ProposalJob`, `ProposalJobStatus`, `ProposalRejectReason` và `BatchErrorKind` (§5.8) đã có ở backend và ở `holocron.ts`
  * (T1b); xuất lại ở đây cho nơi còn import từ file này. `DocumentImportPending` dùng đúng kiểu đó.
  */
 export type { BatchErrorKind, ProposalJob, ProposalJobStatus, ProposalRejectReason };
-
-// Các field T1e của `DocumentImport` (§5.7) đã có ở backend (#116) và ở `holocron.ts`; xuất lại ở đây cho nơi còn import
-// từ file này. `ReviewReasonCount.reason` là `ReviewReason` của backend (không có `LOW_TEXT_SCORE`).
-export type { DroppedRoleCount, ProposalJobAbsentReason, ReviewReasonCount } from "@/types/holocron";
 
 /** Bí danh giữ cho nơi còn import từ file này: `DocumentImport` của `holocron.ts` đã có đủ field T1e. */
 export type DocumentImportPending = DocumentImport;

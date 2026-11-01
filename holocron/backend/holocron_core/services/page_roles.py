@@ -20,7 +20,7 @@ import statistics
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from ..domain.documents import (
     DROPPABLE_ROLES,
@@ -63,6 +63,13 @@ def readable(page: PageExtraction) -> bool:
 def changeable(page: PageExtraction) -> bool:
     """Trang mà 0D được đổi vai trò: đã đọc, chưa xác nhận, chưa hoàn tác (§5.7 0D "Khi nào")."""
     return readable(page) and not page.confirmed and not page.restored
+
+
+def reassessable(page: PageExtraction) -> bool:
+    """Trang của tài liệu nhập TRƯỚC mà `reassess_cover` được đánh giá lại: như `changeable`, và cả trang do MÁY tự xác
+    nhận (`confirmed_by = "auto"`; khi bỏ mềm, tự xác nhận bị bỏ theo). Trang do người dùng xác nhận (kể cả trang cũ
+    `confirmed_by = null`) không đổi (§5.7 0D "Thứ tự nhập")."""
+    return readable(page) and not page.restored and (not page.confirmed or page.confirmed_by == "auto")
 
 
 def page_tokens(page: PageExtraction) -> frozenset[str]:
@@ -316,12 +323,13 @@ def reassess_cover(
 ) -> dict[int, RoleDecision]:
     """Đánh giá lại trang bìa của tài liệu nhập TRƯỚC (`earlier`) khi tài liệu sau (`later`) đọc xong (0D "Thứ tự
     nhập"): trang `q` đổi được của tài liệu trước khớp trang `p` của tài liệu sau theo cùng luật (chiều `q` so với
-    `p`) ⇒ `q` thành `cover_or_course_nav`, bỏ mềm. `q` đã là cover thì thêm trang liên quan; `q` đã là chapter_nav
-    hay build_step thì giữ. Chỉ trả trang có thay đổi."""
+    `p`) ⇒ `q` thành `cover_or_course_nav`, bỏ mềm (`q` tự xác nhận thì bỏ luôn tự
+    xác nhận, xem `apply_decision`). `q` đã là cover thì thêm trang liên quan; `q` đã là chapter_nav hay build_step thì
+    giữ. Chỉ trả trang có thay đổi."""
     later_tokens = {(page.document_id, page.page_number): page_tokens(page) for page in later}
     decisions: dict[int, RoleDecision] = {}
     for page in earlier:
-        if not changeable(page) or (page.dropped and page.page_role != "cover_or_course_nav"):
+        if not reassessable(page) or (page.dropped and page.page_role != "cover_or_course_nav"):
             continue
         matches, best = _cover_matches(page, page_tokens(page), later, later_tokens, config)
         if not matches:
@@ -345,7 +353,9 @@ def reassess_cover(
 
 def apply_decision(page: PageExtraction, decision: RoleDecision) -> PageExtraction | None:
     """Trang sau khi áp `decision` (version + 1), hoặc None khi không có gì đổi. `review_reasons` chỉ thêm/bỏ
-    `PAGE_ROLE_UNCERTAIN`; `status` tính lại theo validator (rỗng ⇒ `ok`)."""
+    `PAGE_ROLE_UNCERTAIN`; `status` tính lại theo validator (rỗng ⇒ `ok`). Trang tự xác nhận (`confirmed_by = "auto"`)
+    bị bỏ mềm thì mất luôn tự xác nhận (`confirmed`, `confirmed_at`, `confirmed_by`, `confirm_rule`); không đụng
+    `auto_confirm_undone` (đó là việc của người dùng)."""
     reasons: list[ReviewReason] = [reason for reason in page.review_reasons if reason != UNCERTAIN_REASON]
     if decision.uncertain:
         reasons.append(UNCERTAIN_REASON)
@@ -359,9 +369,13 @@ def apply_decision(page: PageExtraction, decision: RoleDecision) -> PageExtracti
         return None
     if decision.dropped and decision.page_role not in DROPPABLE_ROLES:
         raise ValueError("chỉ cover_or_course_nav, chapter_nav, build_step được bỏ mềm")
+    cleared: dict[str, Any] = {}
+    if decision.dropped and page.confirmed_by == "auto":
+        cleared = {"confirmed": False, "confirmed_at": None, "confirmed_by": None, "confirm_rule": None}
     return PageExtraction.model_validate(
         {
             **page.model_dump(),
+            **cleared,
             "version": page.version + 1,
             "page_role": decision.page_role,
             "role_evidence": None if decision.evidence is None else decision.evidence.model_dump(),

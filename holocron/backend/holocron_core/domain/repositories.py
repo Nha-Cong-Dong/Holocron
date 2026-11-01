@@ -359,7 +359,8 @@ class DocumentRepository(Protocol):
         """Tóm tắt từng trang (`DocumentImport.pages`), theo `page_number` tăng dần, KHÔNG dựng lại các dòng.
 
         Dùng cho các `GET` hỏi trạng thái (client hỏi 1–2 s một lần, §6.5): chỉ đọc cột `status`, `confirmed` và các
-        field `tier_used`, `review_reasons` của JSON trang, không validate danh sách dòng của mọi trang.
+        field `tier_used`, `review_reasons`, `page_role`, `dropped`, `confirmed_by` của JSON trang, không validate
+        danh sách dòng của mọi trang.
         """
         ...
 

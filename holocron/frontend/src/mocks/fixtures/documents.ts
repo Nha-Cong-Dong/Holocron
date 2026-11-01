@@ -91,6 +91,9 @@ const PAGE_1: PageExtractionPending = {
   role_evidence: null,
   dropped: false,
   restored: false,
+  confirmed_by: null,
+  confirm_rule: null,
+  auto_confirm_undone: false,
 };
 
 const PAGE_2: PageExtractionPending = {
@@ -130,6 +133,9 @@ const PAGE_2: PageExtractionPending = {
   role_evidence: null,
   dropped: false,
   restored: false,
+  confirmed_by: null,
+  confirm_rule: null,
+  auto_confirm_undone: false,
 };
 
 /**
@@ -183,6 +189,9 @@ const PAGE_3: PageExtractionPending = {
   role_evidence: null,
   dropped: false,
   restored: false,
+  confirmed_by: "user",
+  confirm_rule: null,
+  auto_confirm_undone: false,
 };
 
 const PAGE_4: PageExtractionPending = {
@@ -214,6 +223,9 @@ const PAGE_4: PageExtractionPending = {
   role_evidence: null,
   dropped: false,
   restored: false,
+  confirmed_by: null,
+  confirm_rule: null,
+  auto_confirm_undone: false,
 };
 
 export const INITIAL_PAGES: readonly PageExtractionPending[] = [PAGE_1, PAGE_2, PAGE_3, PAGE_4];
@@ -225,7 +237,7 @@ export const EDITED_PAGES: Readonly<Record<number, PageExtractionPending>> = {
 
 /** Bản đã xác nhận của một trang: chỉ đặt `confirmed` và mốc thời gian cố định, không đổi field nào khác. */
 export function confirmedPage(page: PageExtractionPending): PageExtractionPending {
-  return { ...structuredClone(page), confirmed: true, confirmed_at: MOCK_CONFIRMED_AT };
+  return { ...structuredClone(page), confirmed: true, confirmed_at: MOCK_CONFIRMED_AT, confirmed_by: "user" };
 }
 
 /** Tóm tắt một trang (`PageSummary`): chép field, không tính gì. */
@@ -238,14 +250,24 @@ export function pageSummaryOf(page: PageExtractionPending): PageSummaryPending {
     confirmed: page.confirmed,
     page_role: page.page_role,
     dropped: page.dropped,
+    confirmed_by: page.confirmed_by,
   };
 }
 
 /** `DocumentImport` của tài liệu mẫu dựng từ các trang và `status` dựng sẵn của một bước kịch bản. */
-type ImportCounts = Pick<DocumentImport, "pages_kept" | "pages_dropped" | "pages_needs_review">;
+type ImportCounts = Pick<
+  DocumentImport,
+  "pages_kept" | "pages_dropped" | "pages_needs_review" | "pages_auto_confirmed" | "pages_kept_unconfirmed"
+>;
 
 /** Số đếm tóm tắt GĐ0 dựng sẵn của bước đầu (backend đếm; mock chỉ giữ giá trị cố định, không tính). */
-const INITIAL_IMPORT_COUNTS: ImportCounts = { pages_kept: 3, pages_dropped: 0, pages_needs_review: 1 };
+const INITIAL_IMPORT_COUNTS: ImportCounts = {
+  pages_kept: 3,
+  pages_dropped: 0,
+  pages_needs_review: 1,
+  pages_auto_confirmed: 0,
+  pages_kept_unconfirmed: 1,
+};
 
 export function mockDocumentImport(
   pages: readonly PageExtractionPending[],
@@ -315,7 +337,7 @@ export const MOCK_DOCUMENT_SCENARIO: Readonly<Record<MockDocumentStep, MockDocum
       pages_failed: 1,
       pages_confirmed: 1,
     },
-    { pages_kept: 3, pages_dropped: 0, pages_needs_review: 0 },
+    { pages_kept: 3, pages_dropped: 0, pages_needs_review: 0, pages_auto_confirmed: 0, pages_kept_unconfirmed: 2 },
   ),
   confirmed: snapshot(
     [confirmedPage(PAGE_1), confirmedPage(PAGE_2_EDITED), PAGE_3, PAGE_4],
@@ -326,7 +348,7 @@ export const MOCK_DOCUMENT_SCENARIO: Readonly<Record<MockDocumentStep, MockDocum
       pages_failed: 1,
       pages_confirmed: 3,
     },
-    { pages_kept: 3, pages_dropped: 0, pages_needs_review: 0 },
+    { pages_kept: 3, pages_dropped: 0, pages_needs_review: 0, pages_auto_confirmed: 0, pages_kept_unconfirmed: 0 },
   ),
 };
 

@@ -59,6 +59,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from scripts.layout_metrics import CHROME_TYPES as NEUTRAL_CHROME_TYPES
+from scripts.layout_metrics import (
+    GT_HEADING_LEVEL,
+    LayoutTally,
+    LBlock,
+    LedgerPage,
+    NeutralDoc,
+    PredictionFormatError,
+    map_gt_type,
+    page_tally,
+    parse_predictions_file,
+    summarize_layout,
+)
+
 BLOCK_TYPES = frozenset({"title", "list", "figure", "code", "paragraph", "table", "caption", "header", "page_number"})
 CHROME_TYPES = frozenset({"header", "page_number"})
 DEFAULT_IOU = 0.5
@@ -474,6 +488,192 @@ def oracle_prediction(truth: dict[str, dict[int, Page]]) -> dict[str, Any]:
     }
 
 
+# --------------------------------------------------------------------------- #
+# Đo cấu trúc bóc tách: loại khối, cây tiêu đề, code, CER trang, "sai không báo", ledger, ô bảng; cột offline và ai.
+# --------------------------------------------------------------------------- #
+
+BASELINE_NOTE = "đường nền: mỗi dòng của bộ đọc PDF là một khối paragraph (dòng header/footer theo cờ)"
+Metrics = dict[str, float | int | str | None]
+
+
+def gt_lblocks(page: Page) -> tuple[list[LBlock], int]:
+    """Khối ground truth theo BlockType; loại không ánh xạ được ⇒ đếm `unmapped`, không đoán. Cấp tiêu đề cố định."""
+    blocks: list[LBlock] = []
+    unmapped = 0
+    for index, block in enumerate(page.blocks):
+        kind = map_gt_type(block.type)
+        if kind is None:
+            unmapped += 1
+            continue
+        level = GT_HEADING_LEVEL if kind == "heading" else None
+        blocks.append(LBlock(f"gt{page.page}.{index}", page.page, kind, block.text, block.order, level))
+    return blocks, unmapped
+
+
+def _as_blocks(blocks: Sequence[LBlock]) -> list[Block]:
+    return [Block(b.type, b.text, b.order) for b in blocks]
+
+
+def _filter(blocks: Sequence[LBlock], mode: str) -> list[LBlock]:
+    return [b for b in blocks if mode == "all" or b.type not in NEUTRAL_CHROME_TYPES]
+
+
+def evaluate_layout_chapter(
+    truth: dict[int, Page], doc: NeutralDoc | None, mode: str, iou: float
+) -> tuple[LayoutTally, int]:
+    """Đếm một chương; `doc is None` ⇒ mọi trang thiếu. Trả (số đếm, số khối ground truth `unmapped`)."""
+    total = LayoutTally()
+    unmapped = 0
+    by_page: dict[int, list[LBlock]] = {}
+    ledger_of: dict[int, LedgerPage] = {}
+    if doc is not None:
+        for block in doc.blocks:
+            by_page.setdefault(block.page, []).append(block)
+        ledger_of = {entry.page: entry for entry in doc.ledger or ()}
+    has_ledger = doc is not None and doc.ledger is not None
+    for number in sorted(truth):
+        gt_all, skipped = gt_lblocks(truth[number])
+        unmapped += skipped
+        gt = _filter(gt_all, mode)
+        if doc is None or (number not in by_page and number not in doc.pages):
+            total.merge(page_tally(gt, None, (), ledger_of.get(number), has_ledger=has_ledger))
+            continue
+        pred = _filter(by_page.get(number, []), mode)
+        page_text, gt_intervals = gt_spans(_as_blocks(gt))
+        pairs = greedy_match(gt_intervals, locate_all(page_text, _as_blocks(pred)), iou)
+        tally = page_tally(gt, pred, pairs, ledger_of.get(number), has_ledger=has_ledger)
+        tau = kendall_tau([(gt[g].order, pred[p].order) for g, p in pairs])
+        if tau is not None:
+            tally.taus.append(tau)
+        total.merge(tally)
+    if doc is not None:
+        extra = _filter([b for b in doc.blocks if b.page not in truth], mode)
+        total.pred_blocks += len(extra)
+        total.type_pred.update(b.type for b in extra)
+    return total, unmapped
+
+
+def evaluate_layout(
+    truth: dict[str, dict[int, Page]],
+    docs: dict[str, NeutralDoc],
+    iou: float = DEFAULT_IOU,
+    dev: Sequence[str] = ("ch2",),
+) -> dict[str, dict[str, Metrics]]:
+    """`{mode: {chương | "dev" | "blind": chỉ số}}` cho một nguồn dự đoán."""
+    unknown = sorted(set(docs) - set(truth))
+    if unknown:
+        raise EvalLayoutError(f"dự đoán có chương không có trong ground truth: {', '.join(unknown)}")
+    report: dict[str, dict[str, Metrics]] = {}
+    for mode in MODES:
+        per: dict[str, Metrics] = {}
+        dev_tally, blind_tally = LayoutTally(), LayoutTally()
+        for chapter in sorted(truth):
+            tally, unmapped = evaluate_layout_chapter(truth[chapter], docs.get(chapter), mode, iou)
+            per[chapter] = {**summarize_layout(tally), "unmapped": unmapped}
+            (dev_tally if chapter in dev else blind_tally).merge(tally)
+        per["dev"] = dict(summarize_layout(dev_tally))
+        per["blind"] = dict(summarize_layout(blind_tally))
+        report[mode] = per
+    return report
+
+
+def lines_to_blocks(pages: Sequence[Any]) -> NeutralDoc:
+    """Đường nền: mỗi dòng của `PageExtraction` là một khối; dòng header/footer theo cờ; cờ = cờ dòng hoặc trang cần xem."""
+    blocks: list[LBlock] = []
+    for page in pages:
+        page_flagged = bool(page.review_reasons) or page.status in ("needs_review", "failed")
+        for index, line in enumerate(page.lines):
+            kind = "header_footer" if line.is_header_footer else "paragraph"
+            flags = ("PAGE_NEEDS_REVIEW",) * page_flagged + tuple(str(f) for f in line.flags)
+            source = "text_layer" if line.engine == "text_layer" else "ocr"
+            blocks.append(
+                LBlock(f"p{page.page_number}.l{index}", page.page_number, kind, line.text, index, None, flags, source)
+            )
+    return NeutralDoc(tuple(blocks), None, frozenset(p.page_number for p in pages))
+
+
+def baseline_docs(eval_data: Path, chapters: Sequence[str], *, use_ocr: bool) -> dict[str, NeutralDoc]:
+    """Chạy bộ đọc PDF như app (worker, OCR theo biến môi trường) trên PDF đầu tiên của mỗi `arm_<chương>/`."""
+    import hashlib
+
+    from holocron_core.infrastructure.document_readers.config import (
+        PdfReaderConfig,
+        load_ocr_settings,
+    )
+    from holocron_core.infrastructure.document_readers.pdf_reader import WorkerPdfReader
+
+    docs: dict[str, NeutralDoc] = {}
+    for chapter in chapters:
+        pdfs = sorted((eval_data / f"arm_{chapter}").glob("*.pdf"))
+        if not pdfs:
+            continue
+        reader = WorkerPdfReader(PdfReaderConfig(), load_ocr_settings() if use_ocr else None)
+        document_id = "doc_" + hashlib.sha256(pdfs[0].read_bytes()).hexdigest()[:16]
+        docs[chapter] = lines_to_blocks(list(reader.read_pages(pdfs[0], document_id)))
+    return docs
+
+
+def load_predictions(path: Path) -> dict[str, NeutralDoc]:
+    try:
+        return parse_predictions_file(path)
+    except PredictionFormatError as exc:
+        raise EvalLayoutError(str(exc)) from exc
+
+
+def no_ground_truth_sets(eval_data: Path, chapters: Sequence[str]) -> list[str]:
+    """Bộ có PDF nhưng không có ground truth (ví dụ đề cương): báo, bỏ qua."""
+    known = {f"arm_{c}" for c in chapters}
+    return [f.name for f in sorted(eval_data.iterdir()) if f.is_dir() and f.name not in known and any(f.glob("*.pdf"))]
+
+
+def format_layout_md(results: dict[str, Any]) -> str:
+    def cell(value: float | str | None) -> str:
+        if value is None:
+            return ""
+        return value if isinstance(value, str) else str(value) if isinstance(value, int) else f"{value:.3f}"
+
+    lines = [f"# Đo cấu trúc bóc tách (iou={results['iou']}, dev={','.join(results['dev'])})", ""]
+    lines.append(f"Nguồn offline: {results['offline_source']}. Cột ai trống khi không có dự đoán AI.")
+    if results["no_ground_truth"]:
+        lines.append(f"Không có ground truth (bỏ qua): {', '.join(results['no_ground_truth'])}.")
+    for mode, per_source in results["results"].items():
+        offline = per_source["offline"]
+        ai = per_source.get("ai")
+        for group in offline:
+            lines += ["", f"## chế độ {mode} / {group}", "", "| chỉ số | offline | ai |", "|---|---|---|"]
+            for name, value in offline[group].items():
+                other = None if ai is None else ai[group].get(name)
+                lines.append(f"| {name} | {cell(value)} | {cell(other)} |")
+    return "\n".join(lines) + "\n"
+
+
+def run_layout(args: argparse.Namespace) -> int:
+    if args.results_dir is None:
+        raise EvalLayoutError("cần <thư mục kết quả> sau <eval_data>")
+    require_outside_repo(args.results_dir, "<thư mục kết quả>")
+    truth = load_ground_truth(args.eval_data)
+    dev = tuple(args.dev or ["ch2"])
+    if args.pred is not None:
+        offline_docs, source_note = load_predictions(args.pred), "--pred"
+    else:
+        offline_docs, source_note = baseline_docs(args.eval_data, sorted(truth), use_ocr=not args.no_ocr), BASELINE_NOTE
+    per_source = {"offline": evaluate_layout(truth, offline_docs, args.iou, dev)}
+    if args.ai_pred is not None:
+        per_source["ai"] = evaluate_layout(truth, load_predictions(args.ai_pred), args.iou, dev)
+    results = {
+        "iou": args.iou,
+        "dev": list(dev),
+        "offline_source": source_note,
+        "no_ground_truth": no_ground_truth_sets(args.eval_data, sorted(truth)),
+        "results": {mode: {name: per_source[name][mode] for name in per_source} for mode in MODES},
+    }
+    args.results_dir.mkdir(parents=True, exist_ok=True)
+    (args.results_dir / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+    (args.results_dir / "results.md").write_text(format_layout_md(results), encoding="utf-8")
+    print(f"đã ghi: {args.results_dir}")
+    return 0
+
+
 def repo_root() -> Path:
     here = Path(__file__).resolve().parent
     try:
@@ -514,8 +714,14 @@ def format_report(report: dict[str, dict[str, dict[str, float | int | None]]]) -
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Đo bố cục trang so với ground truth (khung cho GĐ2).")
-    parser.add_argument("--gt-root", type=Path, required=True, help="thư mục chứa arm_ch*/*.json (ground truth)")
-    parser.add_argument("--pred", type=Path, help="file dự đoán JSON (schema trong docstring)")
+    parser.add_argument("eval_data", nargs="?", type=Path, help="thư mục eval_data: chạy chế độ đo cấu trúc bóc tách")
+    parser.add_argument("results_dir", nargs="?", type=Path, help="thư mục ghi results.json và results.md (ngoài repo)")
+    parser.add_argument("--ai-pred", "--ai-predictions", dest="ai_pred", type=Path, help="dự đoán có VLM/LLM (cột ai)")
+    parser.add_argument("--no-ocr", action="store_true", help="đường nền: tắt OCR")
+    parser.add_argument("--gt-root", type=Path, help="thư mục chứa arm_ch*/*.json (ground truth)")
+    parser.add_argument(
+        "--pred", "--predictions", dest="pred", type=Path, help="file dự đoán JSON (schema trong docstring)"
+    )
     parser.add_argument("--iou", type=float, default=DEFAULT_IOU, help="ngưỡng IoU khoảng ký tự (mặc định 0.5)")
     parser.add_argument("--dev", action="append", help="chương thuộc tập dev (lặp được; mặc định ch2)")
     parser.add_argument("--output", type=Path, help="ghi kết quả (chỉ số) ra JSON, ngoài repo")
@@ -526,6 +732,10 @@ def build_parser() -> argparse.ArgumentParser:
 def run(args: argparse.Namespace) -> int:
     if not 0.0 < args.iou <= 1.0:
         raise EvalLayoutError("--iou phải trong (0, 1]")
+    if args.eval_data is not None:
+        return run_layout(args)
+    if args.gt_root is None:
+        raise EvalLayoutError("cần <eval_data> <thư mục kết quả> hoặc --gt-root")
     truth = load_ground_truth(args.gt_root)
     if args.write_oracle is not None:
         require_outside_repo(args.write_oracle, "--write-oracle")

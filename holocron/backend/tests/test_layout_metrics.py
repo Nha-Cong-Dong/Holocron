@@ -1,0 +1,223 @@
+"""Test phần đo cấu trúc bóc tách của `scripts/eval_layout.py` và `scripts/layout_metrics.py` (dữ liệu tổng hợp)."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from holocron_core.infrastructure.document_readers.config import PdfReaderConfig
+from holocron_core.infrastructure.document_readers.pdf_reader import WorkerPdfReader
+from scripts import eval_layout as el
+from scripts import layout_metrics as lm
+from tests.pdf_samples import Page as PdfPage
+from tests.pdf_samples import text_lines, write_pdf
+
+
+def _gt_page(number: int, blocks: list[tuple[str, str]]) -> el.Page:
+    return el.Page(number, tuple(el.Block(k, t, i) for i, (k, t) in enumerate(blocks)), "t")
+
+
+def _pred(blocks: list[dict[str, object]], ledger: dict[str, object] | None = None) -> dict[str, object]:
+    page: dict[str, object] = {"page": 1, "blocks": blocks}
+    if ledger is not None:
+        page["ledger"] = ledger
+    return {"chapters": {"ch2": {"pages": [page]}}}
+
+
+def _load(tmp_path: Path, data: dict[str, object]) -> dict[str, lm.NeutralDoc]:
+    path = tmp_path / "p.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return el.load_predictions(path)
+
+
+def _eval(
+    gt: list[tuple[str, str]], docs: dict[str, lm.NeutralDoc], mode: str = "all"
+) -> dict[str, float | int | str | None]:
+    return el.evaluate_layout({"ch2": {1: _gt_page(1, gt)}}, docs)[mode]["ch2"]
+
+
+def test_gt_type_mapping_covers_every_gt_type() -> None:
+    assert set(lm.GT_TYPE_MAP) == set(el.BLOCK_TYPES)
+    assert set(lm.GT_TYPE_MAP.values()) <= set(lm.BLOCK_TYPES)
+    assert lm.map_gt_type("title") == "heading" and lm.map_gt_type("list") == "list_item"
+    assert lm.map_gt_type("header") == "header_footer"
+    assert lm.map_gt_type("formula") is None
+    blocks, unmapped = el.gt_lblocks(_gt_page(1, [("title", "A"), ("list", "b")]))
+    assert [b.type for b in blocks] == ["heading", "list_item"] and unmapped == 0
+    assert blocks[0].level == lm.GT_HEADING_LEVEL and blocks[1].level is None
+
+
+def test_unmapped_gt_block_is_counted_not_guessed() -> None:
+    page = el.Page(1, (el.Block("paragraph", "a", 0), el.Block("formula", "b", 1)), "t")
+    blocks, unmapped = el.gt_lblocks(page)
+    assert len(blocks) == 1 and unmapped == 1
+
+
+def test_predictions_json_optional_fields(tmp_path: Path) -> None:
+    docs = _load(
+        tmp_path,
+        _pred(
+            [
+                {"type": "heading", "text": "A", "level": 2, "flags": ["X"], "source": "ocr", "reading_order": 3},
+                {"type": "table", "text": "t", "cells": [["a", "b"]]},
+                {"type": "paragraph", "text": "p"},
+            ],
+            {"total_chars": 10, "assigned_chars": 6, "dropped_by_reason": {"template": 4}},
+        ),
+    )
+    doc = docs["ch2"]
+    heading, table, para = doc.blocks
+    assert (heading.level, heading.flags, heading.source, heading.order) == (2, ("X",), "ocr", 3)
+    assert table.cells == (("a", "b"),) and para.flags == () and para.source is None and para.order == 2
+    assert doc.ledger is not None and doc.ledger[0].accounted == 10
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"type": "title", "text": "x"},
+        {"type": "paragraph", "text": "x", "level": 1},
+        {"type": "heading", "text": "x", "level": 0},
+        {"type": "paragraph", "text": "x", "cells": [["a"]]},
+        {"type": "paragraph", "text": "x", "flags": "X"},
+        {"type": "paragraph", "text": "x", "source": "magic"},
+        {"type": "paragraph"},
+    ],
+)
+def test_predictions_json_rejects_bad_shapes(tmp_path: Path, block: dict[str, object]) -> None:
+    with pytest.raises(el.EvalLayoutError):
+        _load(tmp_path, _pred([block]))
+
+
+def test_type_f1_and_boundary_f1(tmp_path: Path) -> None:
+    gt = [("title", "Tiêu đề"), ("paragraph", "Đoạn một"), ("list", "mục a")]
+    docs = _load(
+        tmp_path,
+        _pred(
+            [
+                {"type": "heading", "text": "Tiêu đề", "level": 1},
+                {"type": "paragraph", "text": "Đoạn một"},
+                {"type": "paragraph", "text": "mục a"},
+            ]
+        ),
+    )
+    metrics = _eval(gt, docs)
+    assert metrics["boundary_f1"] == 1.0
+    assert metrics["type_f1"] == pytest.approx(2 * 2 / 6)
+    assert metrics["kendall_tau_mean"] == 1.0
+    assert metrics["page_cer"] == 0.0
+
+
+def test_tree_f1_requires_level_and_text(tmp_path: Path) -> None:
+    gt = [("title", "A"), ("title", "B")]
+    docs = _load(
+        tmp_path,
+        _pred([{"type": "heading", "text": "A", "level": 1}, {"type": "heading", "text": "B", "level": 2}]),
+    )
+    assert _eval(gt, docs)["tree_f1"] == pytest.approx(0.5)
+    no_level = _load(tmp_path, _pred([{"type": "heading", "text": "A"}]))
+    assert _eval(gt, no_level)["tree_f1"] == 0.0
+
+
+def test_code_line_match_keeps_leading_whitespace(tmp_path: Path) -> None:
+    gt = [("code", "MOV R0, #1\n    ADD R1, R0\nB end")]
+    exact = _load(tmp_path, _pred([{"type": "code", "text": "MOV R0, #1\n    ADD R1, R0\nB end"}]))
+    stripped = _load(tmp_path, _pred([{"type": "code", "text": "MOV R0, #1\nADD R1, R0\nB end"}]))
+    assert _eval(gt, exact)["code_line_match"] == 1.0
+    assert _eval(gt, stripped)["code_line_match"] == pytest.approx(2 / 3)
+    assert _eval([("paragraph", "a")], exact)["code_line_match"] is None
+
+
+def test_silent_wrong_counts_unmatched_unflagged_text(tmp_path: Path) -> None:
+    gt = [("paragraph", "một đoạn đủ dài để định vị")]
+    docs = _load(
+        tmp_path,
+        _pred(
+            [
+                {"type": "paragraph", "text": "một đoạn đủ dài để định vị"},
+                {"type": "paragraph", "text": "zzzz qqqq"},
+                {"type": "paragraph", "text": "yyyy wwww", "flags": ["LOW_CONF"]},
+                {"type": "figure", "text": "ảnh"},
+            ]
+        ),
+    )
+    metrics = _eval(gt, docs)
+    assert metrics["silent_wrong"] == 1 and metrics["text_blocks_pred"] == 3
+
+
+def test_ledger_coverage_only_with_ledger(tmp_path: Path) -> None:
+    gt = [("paragraph", "abc")]
+    block = [{"type": "paragraph", "text": "abc"}]
+    without = _eval(gt, _load(tmp_path, _pred(block)))
+    assert without["ledger_coverage"] is None and without["ledger_pages"] is None
+    full = _load(tmp_path, _pred(block, {"total_chars": 10, "assigned_chars": 7, "dropped_by_reason": {"a": 3}}))
+    assert _eval(gt, full)["ledger_coverage"] == 1.0 and _eval(gt, full)["ledger_pages_exact"] == 1
+    short = _load(tmp_path, _pred(block, {"total_chars": 10, "assigned_chars": 7}))
+    metrics = _eval(gt, short)
+    assert metrics["ledger_coverage"] == pytest.approx(0.7) and metrics["ledger_pages_exact"] == 0
+
+
+def test_table_cells_not_measured_without_gt_cells(tmp_path: Path) -> None:
+    docs = _load(tmp_path, _pred([{"type": "table", "text": "| a | b |", "cells": [["a", "b"]]}]))
+    assert _eval([("table", "| a | b |")], docs)["table_cell_accuracy"] == lm.NOT_MEASURED
+
+
+def test_table_cell_accuracy_when_gt_has_cells() -> None:
+    gt = [lm.LBlock("g", 1, "table", "t", 0, cells=(("a", "b"), ("c", "d")))]
+    pred = [lm.LBlock("p", 1, "table", "t", 0, cells=(("a", "b"), ("c", "x")))]
+    tally = lm.page_tally(gt, pred, [(0, 0)])
+    assert lm.summarize_layout(tally)["table_cell_accuracy"] == pytest.approx(0.75)
+
+
+def test_missing_page_counts_all_gt_as_missing(tmp_path: Path) -> None:
+    docs = _load(tmp_path, {"chapters": {"ch2": {"pages": []}}})
+    metrics = _eval([("paragraph", "abc")], docs)
+    assert metrics["missing_pages"] == 1 and metrics["page_cer"] == 1.0 and metrics["boundary_f1"] == 0.0
+
+
+def test_dev_blind_split_and_results_files(tmp_path: Path) -> None:
+    truth = {"ch2": {1: _gt_page(1, [("paragraph", "abc")])}, "ch3": {1: _gt_page(1, [("paragraph", "xyz")])}}
+    docs = {
+        "ch2": lm.NeutralDoc((lm.LBlock("a", 1, "paragraph", "abc", 0),), None, frozenset({1})),
+        "ch3": lm.NeutralDoc((lm.LBlock("b", 1, "paragraph", "xyz", 0),), None, frozenset({1})),
+    }
+    report = el.evaluate_layout(truth, docs, dev=("ch2",))["all"]
+    assert report["dev"]["gt_blocks"] == 1 and report["blind"]["gt_blocks"] == 1
+    assert report["dev"]["boundary_f1"] == 1.0 and report["blind"]["boundary_f1"] == 1.0
+
+
+def test_cli_writes_results_outside_repo_and_refuses_inside(tmp_path: Path) -> None:
+    root = tmp_path / "eval_data" / "arm_ch2"
+    root.mkdir(parents=True)
+    gt = {
+        "document": "x.pdf",
+        "page_count": 1,
+        "pages": [{"page": 1, "topic": "t", "blocks": [{"order": 0, "type": "paragraph", "text": "abc"}]}],
+    }
+    (root / "x.json").write_text(json.dumps(gt), encoding="utf-8")
+    other = tmp_path / "eval_data" / "de_cuong"
+    other.mkdir()
+    (other / "d.pdf").write_bytes(b"%PDF")
+    pred = tmp_path / "pred.json"
+    pred.write_text(json.dumps(_pred([{"type": "paragraph", "text": "abc"}])), encoding="utf-8")
+    out = tmp_path / "out"
+    code = el.main([str(tmp_path / "eval_data"), str(out), "--predictions", str(pred), "--ai-pred", str(pred)])
+    assert code == 0
+    results = json.loads((out / "results.json").read_text(encoding="utf-8"))
+    assert results["no_ground_truth"] == ["de_cuong"]
+    assert results["results"]["all"]["ai"]["ch2"]["boundary_f1"] == 1.0
+    assert "offline" in (out / "results.md").read_text(encoding="utf-8")
+    assert el.main([str(tmp_path / "eval_data"), str(Path(__file__).parent / "out"), "--pred", str(pred)]) == 2
+
+
+def test_baseline_line_blocks_from_real_pdf(tmp_path: Path) -> None:
+    path = write_pdf(tmp_path / "a.pdf", [PdfPage(texts=text_lines(["Dong mot", "Dong hai"]))])
+    pages = list(WorkerPdfReader(PdfReaderConfig()).read_pages(path, "doc_" + "0" * 16))
+    doc = el.lines_to_blocks(pages)
+    assert doc.pages == frozenset({1})
+    assert [b.text for b in doc.blocks] == ["Dong mot", "Dong hai"]
+    assert {b.type for b in doc.blocks} == {"paragraph"} and all(b.source == "text_layer" for b in doc.blocks)
+    metrics = _eval([("paragraph", "Dong mot Dong hai")], {"ch2": doc})
+    assert metrics["pred_blocks"] == 2 and metrics["page_cer"] == 0.0

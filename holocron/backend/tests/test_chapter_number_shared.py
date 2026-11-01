@@ -177,3 +177,11 @@ def test_old_sqlite_row_with_taken_is_read_and_kept(tmp_path: Path) -> None:
         assert [document.chapter_flags for document in listed] == [["CHAPTER_NUMBER_TAKEN"]]
     finally:
         reopened.close()
+
+
+def test_api_returns_an_old_document_with_taken_unchanged(env: ImportEnv) -> None:
+    """GET /v1/documents/{id} phải trả nguyên cờ cũ `CHAPTER_NUMBER_TAKEN` (response model nhận cờ kho cũ)."""
+    legacy = _legacy_document().model_copy(update={"chapter_flags": ["CHAPTER_NUMBER_TAKEN"]})
+    env.store.create_imported_document(legacy, [pending_page(LEGACY_ID, 1)])
+    body = _get(env, LEGACY_ID)
+    assert _chapter(body) == ("ch1", "next_free", ["CHAPTER_NUMBER_TAKEN"]), "cờ cũ giữ nguyên qua API"

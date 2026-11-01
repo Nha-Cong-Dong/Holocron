@@ -24,6 +24,13 @@ export interface PageSummaryView {
   tierUsed: string | null;
   reviewReasons: string[];
   confirmed: boolean;
+  /**
+   * Vai trò trang (`PageRole`, §5.7) hoặc mã lạ; vắng khi backend không trả (backend cũ). Chỉ để hiển thị: frontend
+   * không suy luật.
+   */
+  pageRole?: string;
+  /** Trang bỏ mềm (GĐ0 0D): không vào chunk, không tính "cần xem"; vắng nghĩa là không bỏ mềm. */
+  dropped?: boolean;
 }
 
 /** Thông tin chung của tài liệu (`DocumentMeta`, §5.8). */
@@ -52,9 +59,12 @@ export interface DocumentView extends DocumentMetaView {
 export interface DocumentSummaryView extends DocumentMetaView {
   status: DocumentStatusView;
   pagesPending: number;
+  /** `pages_needs_review` do backend đếm (cần xem, không bỏ mềm, chưa xác nhận, §6.5). */
   pagesNeedsReview: number;
   pagesFailed: number;
   pagesConfirmed: number;
+  /** `pages_dropped` do backend đếm (trang bỏ mềm); vắng khi backend không trả số hợp lệ. Giao diện chỉ hiển thị. */
+  pagesDropped?: number;
 }
 
 export interface LineView {
@@ -76,6 +86,19 @@ export interface CrossCheckView {
   status: string;
   secondaryEngine: string | null;
   mismatches: MismatchView[];
+}
+
+/** Một trang được nhắc tới trong lý do bỏ mềm (`PageRef`, §5.7). */
+export interface PageRefView {
+  documentId: string;
+  pageNumber: number;
+}
+
+/** `PageRoleEvidence` (§5.7): luật máy đã dùng và các trang liên quan; chỉ hiển thị, không số đo. */
+export interface RoleEvidenceView {
+  /** Mã luật (`PageRoleEvidence.rule`) hoặc mã lạ. */
+  rule: string;
+  relatedPages: PageRefView[];
 }
 
 /** `PageExtraction` (§5.7). */
@@ -100,6 +123,13 @@ export interface PageView {
   failureReason: string | null;
   confirmed: boolean;
   confirmedAt: string | null;
+  /** Mã vai trò trang (`PageRole`) hoặc mã lạ; thiếu thì `content`. */
+  pageRole: string;
+  roleEvidence: RoleEvidenceView | null;
+  /** Trang bỏ mềm (GĐ0 0D): chưa vào chunk, không sửa hay xác nhận được cho tới khi khôi phục. */
+  dropped: boolean;
+  /** Đã khôi phục sau khi bị bỏ mềm. */
+  restored: boolean;
 }
 
 /** Kết quả của `POST /v1/documents`: `created = false` khi backend trả 200 (cùng nội dung đã nhập cho cùng môn). */
@@ -174,6 +204,9 @@ function parsePageSummary(value: unknown): PageSummaryView | null {
     tierUsed: textOrNull(value.tier_used),
     reviewReasons: codeList(value.review_reasons),
     confirmed: value.confirmed === true,
+    // Field GĐ0 chỉ có khi backend trả (backend cũ không có): vắng nghĩa là trang thường.
+    ...(isText(value.page_role) ? { pageRole: value.page_role } : {}),
+    ...(typeof value.dropped === "boolean" ? { dropped: value.dropped } : {}),
   };
 }
 
@@ -218,6 +251,7 @@ function parseSummary(value: unknown): DocumentSummaryView | null {
     pagesNeedsReview: pages_needs_review,
     pagesFailed: pages_failed,
     pagesConfirmed: pages_confirmed,
+    ...(isInteger(value.pages_dropped, 0) ? { pagesDropped: value.pages_dropped } : {}),
   };
 }
 
@@ -272,6 +306,24 @@ function parseCrossCheck(value: unknown): CrossCheckView | null {
   return { status: value.status, secondaryEngine: textOrNull(value.secondary_engine), mismatches };
 }
 
+function parsePageRef(value: unknown): PageRefView | null {
+  if (!isRecord(value) || !isText(value.document_id) || !isInteger(value.page_number, 1)) return null;
+  return { documentId: value.document_id, pageNumber: value.page_number };
+}
+
+/** `PageRoleEvidence` (§5.7); `null` khi vắng hoặc thiếu `rule`. Trang liên quan hỏng bị bỏ; không đọc số đo nào. */
+function parseRoleEvidence(value: unknown): RoleEvidenceView | null {
+  if (!isRecord(value) || !isText(value.rule)) return null;
+  const relatedPages: PageRefView[] = [];
+  if (Array.isArray(value.related_pages)) {
+    for (const raw of value.related_pages) {
+      const ref = parsePageRef(raw);
+      if (ref !== null) relatedPages.push(ref);
+    }
+  }
+  return { rule: value.rule, relatedPages };
+}
+
 /** `PageExtraction` (§5.7); `null` khi thiếu field định danh, `version`, danh sách `lines` hay `cross_check`. */
 export function parsePageExtraction(value: unknown): PageView | null {
   if (!isRecord(value)) return null;
@@ -309,5 +361,9 @@ export function parsePageExtraction(value: unknown): PageView | null {
     failureReason: textOrNull(value.failure_reason),
     confirmed: value.confirmed === true,
     confirmedAt: typeof value.confirmed_at === "string" ? value.confirmed_at : null,
+    pageRole: textOrNull(value.page_role) ?? "content",
+    roleEvidence: parseRoleEvidence(value.role_evidence),
+    dropped: value.dropped === true,
+    restored: value.restored === true,
   };
 }

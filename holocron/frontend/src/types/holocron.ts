@@ -675,8 +675,12 @@ export interface DocumentConfirmRequest {
 
 // Chương tự động (SPECIFICATION §5.7 "Chương tự động", §6.5; GĐ1 1A)
 
-/** Cờ chương: chỉ để hiển thị, không chặn xác nhận. */
-export type ChapterFlag = "CHAPTER_NUMBER_NOT_IN_FILENAME" | "CHAPTER_NUMBER_TAKEN";
+/**
+ * Cờ chương: chỉ để hiển thị, không chặn xác nhận. `CHAPTER_NUMBER_SHARED`: số trong tên file trùng chương đã có của
+ * môn, số được giữ. `CHAPTER_NUMBER_TAKEN` chỉ còn ở tài liệu nhập trước 2026-11-01 (khi đó số trùng ⇒ chương trống
+ * nhỏ nhất); backend không ghi mới cờ này nhưng vẫn trả khi bản ghi cũ còn.
+ */
+export type ChapterFlag = "CHAPTER_NUMBER_NOT_IN_FILENAME" | "CHAPTER_NUMBER_SHARED" | "CHAPTER_NUMBER_TAKEN";
 export type ChapterCodeSource = "user" | "file_name" | "next_free";
 export type ChapterTitleSource = "user" | "repeated_header" | "file_name" | "llm";
 

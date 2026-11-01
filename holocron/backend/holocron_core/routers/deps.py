@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from functools import cache
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 
 from ..domain.repositories import AppStore, VaultRepository
 from ..infrastructure.llm_config import RuntimeConfig, load_runtime_config_lenient
@@ -55,6 +55,19 @@ def get_proposal_jobs(request: Request) -> ProposalJobRuntime:
     if isinstance(jobs, ProposalJobRuntime):
         return jobs
     raise HTTPException(status_code=500, detail=PROPOSAL_JOBS_UNAVAILABLE_DETAIL)
+
+
+def find_proposal_jobs(application: FastAPI) -> ProposalJobRuntime | None:
+    """Runtime job của app nếu `lifespan` đã tạo (và chưa gỡ); không có ⇒ `None` (không lỗi)."""
+    jobs = getattr(application.state, PROPOSAL_JOBS_STATE_ATTR, None)
+    return jobs if isinstance(jobs, ProposalJobRuntime) else None
+
+
+def get_optional_proposal_jobs(request: Request) -> ProposalJobRuntime | None:
+    """Runtime job cho bộ nhập tài liệu (T1b, T1e): khác `get_proposal_jobs`, app chạy không qua `lifespan` nhận `None`
+    thay vì 500, vì xác nhận và xem tài liệu không được hỏng khi chưa có runtime job (khi đó không tạo job, và
+    `DocumentImport` báo lý do vắng job)."""
+    return find_proposal_jobs(request.app)
 
 
 def get_extractor() -> DocumentExtractor:
@@ -122,3 +135,4 @@ AuthorDep = Annotated[TemplateAuthor, Depends(get_template_author)]
 CitationDep = Annotated[CitationProvider, Depends(get_citation_provider)]
 ClockDep = Annotated[Callable[[], datetime], Depends(get_clock)]
 ProposalJobsDep = Annotated[ProposalJobRuntime, Depends(get_proposal_jobs)]
+OptionalProposalJobsDep = Annotated[ProposalJobRuntime | None, Depends(get_optional_proposal_jobs)]

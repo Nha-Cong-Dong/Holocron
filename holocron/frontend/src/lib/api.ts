@@ -70,6 +70,7 @@ import type {
   NonCloneableRequest,
   PageConfirmRequest,
   PageLinesPatch,
+  PageRestoreRequest,
   Subject,
   SubjectCreate,
   TablePatchRequest,
@@ -236,6 +237,11 @@ export interface HolocronApi {
   ) => Promise<PageView>;
   /** `POST /v1/documents/{document_id}/pages/{page_number}/confirm` (§6.5; chưa có ở backend của nhánh). */
   confirmPage: (documentId: string, pageNumber: number, expectedVersion: number) => Promise<PageView>;
+  /**
+   * `POST /v1/documents/{document_id}/pages/{page_number}/restore` (§6.5, GĐ0 0D; đường dẫn là đề xuất suy ra, chờ
+   * duyệt): hoàn tác bỏ mềm, trả trang mới (`version` + 1). Gọi trên trang không bỏ mềm trả 200, không đổi gì.
+   */
+  restorePage: (documentId: string, pageNumber: number, expectedVersion: number) => Promise<PageView>;
   /** `POST /v1/documents/{document_id}/confirm` (§6.5; chưa có ở backend của nhánh): chỉ xác nhận trang `ok`. */
   confirmDocument: (documentId: string) => Promise<DocumentView>;
   /** `DELETE /v1/documents/{document_id}` (§6.5): 204. */
@@ -432,6 +438,16 @@ export const realApi: HolocronApi = {
     return validated(parsePageExtraction(raw));
   },
 
+  restorePage: async (documentId, pageNumber, expectedVersion) => {
+    const payload: PageRestoreRequest = { editor_id: LOCAL_EDITOR_ID, expected_version: expectedVersion };
+    const raw = await request<unknown>(
+      `/v1/documents/${segment(documentId)}/pages/${pageNumber}/restore`,
+      jsonSpec("POST", payload),
+      { versioned: true, context: "document_review" },
+    );
+    return validated(parsePageExtraction(raw));
+  },
+
   confirmDocument: async (documentId) => {
     const payload: DocumentConfirmRequest = { editor_id: LOCAL_EDITOR_ID };
     const raw = await request<unknown>(`/v1/documents/${segment(documentId)}/confirm`, jsonSpec("POST", payload), {
@@ -549,6 +565,8 @@ export function createApi(useMocks: boolean): HolocronApi {
         : realApi.patchPageLines(id, page, version, edits, appended),
     confirmPage: (id, page, version) =>
       isMockDocument(id) ? documents.confirmPage(id, page, version) : realApi.confirmPage(id, page, version),
+    restorePage: (id, page, version) =>
+      isMockDocument(id) ? documents.restorePage(id, page, version) : realApi.restorePage(id, page, version),
     confirmDocument: (id) => (isMockDocument(id) ? documents.confirmDocument(id) : realApi.confirmDocument(id)),
   };
 }

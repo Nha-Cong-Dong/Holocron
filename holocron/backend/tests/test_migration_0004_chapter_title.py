@@ -245,7 +245,12 @@ def test_chapter_columns_round_trip_through_create_get_list_and_update(
         "chapter_code_source": "next_free",
         "chapter_title": "Chương 2 Bộ nhớ",
         "chapter_title_source": "file_name",
-        "chapter_flags": ["CHAPTER_NUMBER_TAKEN", "CHAPTER_NUMBER_NOT_IN_FILENAME", "CHAPTER_NUMBER_TAKEN"],
+        "chapter_flags": [
+            "CHAPTER_NUMBER_TAKEN",
+            "CHAPTER_NUMBER_SHARED",
+            "CHAPTER_NUMBER_NOT_IN_FILENAME",
+            "CHAPTER_NUMBER_TAKEN",
+        ],
         "auto_confirm": False,
     }
     for store in open_store(kind, tmp_path, monkeypatch):

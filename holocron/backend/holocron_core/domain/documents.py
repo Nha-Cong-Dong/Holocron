@@ -266,11 +266,20 @@ CHAPTER_CODE_PATTERN = r"^ch[0-9]{1,2}(\.[0-9]{1,2})?$"  # cùng mẫu với `Kn
 
 # Chương tự động (§5.7 "Chương tự động", §6.5; GĐ1 1A, duyệt 2026-10-31)
 
+# Cờ code được GHI cho tài liệu mới (contract §5.7)
 ChapterFlag = Literal[
     "CHAPTER_NUMBER_NOT_IN_FILENAME",  # tên file không có số nguyên 1–2 chữ số ⇒ dùng chương trống nhỏ nhất
-    "CHAPTER_NUMBER_TAKEN",  # số trong tên file trùng chương đã có của môn ⇒ dùng chương trống nhỏ nhất
+    "CHAPTER_NUMBER_SHARED",  # THÔNG TIN: số trong tên file trùng chương đã có của môn ⇒ GIỮ số đó
 ]
-CHAPTER_FLAG_ORDER: tuple[ChapterFlag, ...] = get_args(ChapterFlag)
+# Cờ có thể gặp trong bản ghi và response: cờ mới rồi cờ cũ, theo thứ tự này. `CHAPTER_NUMBER_TAKEN` chỉ còn ĐỌC
+# được ở bản ghi cũ (trước 2026-11-01: khi đó số trùng ⇒ chương trống nhỏ nhất, `next_free`); giữ nguyên khi đọc, không
+# ánh xạ sang `CHAPTER_NUMBER_SHARED` vì nghĩa khác; code mới không ghi cờ này (kiểu `ChapterFlag` không có nó).
+StoredChapterFlag = Literal[
+    "CHAPTER_NUMBER_NOT_IN_FILENAME",
+    "CHAPTER_NUMBER_SHARED",
+    "CHAPTER_NUMBER_TAKEN",
+]
+CHAPTER_FLAG_ORDER: tuple[StoredChapterFlag, ...] = get_args(StoredChapterFlag)
 ChapterCodeSource = Literal["user", "file_name", "next_free"]
 ChapterTitleSource = Literal["user", "repeated_header", "file_name", "llm"]
 MAX_CHAPTER_TITLE_CHARS = 300
@@ -362,7 +371,7 @@ class DocumentImport(StrictModel):
     # thêm 2026-10-31 (GĐ1 1A, 1B; §5.7 "Chương tự động", §6.5)
     chapter_title: str | None = Field(default=None, min_length=1, max_length=MAX_CHAPTER_TITLE_CHARS)
     chapter_source: ChapterSource
-    chapter_flags: list[ChapterFlag] = Field(default_factory=list)
+    chapter_flags: list[StoredChapterFlag] = Field(default_factory=list)
     auto_confirm: bool = True
     pages_auto_confirmed: int = Field(ge=0)
     pages_kept_unconfirmed: int = Field(ge=0)

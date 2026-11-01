@@ -50,7 +50,7 @@ from typing import Literal, NamedTuple, Protocol, Self
 
 from pydantic import ValidationError
 
-from ...domain.documents import FailureReason, PageExtraction
+from ...domain.documents import FailureReason, PageExtraction, PageGeometry
 from .config import OcrSettings, PdfReaderConfig
 from .protocol import (
     OcrStartedMessage,
@@ -67,7 +67,7 @@ from .protocol import (
     WorkerRequest,
     decode_message,
 )
-from .tiers import assemble_text_layer_page, failed_page
+from .tiers import assemble_text_layer_page, failed_page, page_geometry
 
 PDF_MAGIC = b"%PDF-"
 WORKER_MODULE = "holocron_core.infrastructure.document_readers._pdf_worker"
@@ -138,6 +138,28 @@ class PdfReader(Protocol):
         được worker, hay hết hạn tổng của tài liệu) chỉ làm trang đó và các trang chưa đọc thành `failed`
         (ADR-008 mục 4).
         """
+        ...
+
+
+# Nơi nhận `PageGeometry` của từng trang (ADR-010 mục 5): `(page_number 1-based, geometry hoặc None)`.
+GeometrySink = Callable[[int, PageGeometry | None], None]
+
+
+class PageGeometrySource(Protocol):
+    """Bộ đọc trả thêm `PageGeometry` cho bộ dựng khối (ADR-010 mục 5, 20); tách khỏi `PdfReader` để `PdfReader`
+    không đổi. Service nhận nó qua tham số/`Depends`, không `isinstance`/`cast`."""
+
+    def read_pages(
+        self,
+        path: Path,
+        document_id: str,
+        page_numbers: Sequence[int] | None = None,
+        *,
+        geometry_sink: GeometrySink,
+    ) -> Iterator[PageExtraction]:
+        """Như `PdfReader.read_pages`; `geometry_sink` được gọi cho MỌI trang, với `page_number` 1-based, TRƯỚC khi
+        trang được yield (trang `failed`, trang OCR hay trang không dựng được geometry: `None`); lỗi trong
+        `geometry_sink` lan ra nơi gọi."""
         ...
 
 
@@ -361,6 +383,7 @@ class _PageOutcome(NamedTuple):
     template_scan: TemplateScan | None = None
     scan_wait_s: float = 0.0
     rerun: bool = False
+    geometry: PageGeometry | None = None
 
 
 class WorkerPdfReader:
@@ -487,8 +510,9 @@ class WorkerPdfReader:
             try:
                 page = assemble_text_layer_page(message.page, document_id, self.config)
             except ValidationError:
-                page = failed_page(document_id, page_number, "PAGE_ERROR")
-            return _PageOutcome(page, True, None, scan, scan_wait_s)
+                return _PageOutcome(failed_page(document_id, page_number, "PAGE_ERROR"), True, None, scan, scan_wait_s)
+            geometry = page_geometry(message.page, page, self.config)
+            return _PageOutcome(page, True, None, scan, scan_wait_s, geometry=geometry)
         if isinstance(message, PageErrorMessage) and message.page_index == index:
             return _PageOutcome(failed_page(document_id, page_number, "PAGE_ERROR"), True, None, scan, scan_wait_s)
         session.kill()
@@ -527,8 +551,19 @@ class WorkerPdfReader:
         return False
 
     def read_pages(
-        self, path: Path, document_id: str, page_numbers: Sequence[int] | None = None
+        self,
+        path: Path,
+        document_id: str,
+        page_numbers: Sequence[int] | None = None,
+        *,
+        geometry_sink: GeometrySink | None = None,
     ) -> Iterator[PageExtraction]:
+        """`PdfReader.read_pages`; có `geometry_sink` thì thoả cả `PageGeometrySource` (ADR-010 mục 5).
+
+        `geometry_sink` (keyword-only, tuỳ chọn) được gọi cho MỌI trang với `page_number` 1-based TRƯỚC khi yield
+        trang: `PageGeometry` của trang lớp chữ không `failed`, `None` cho trang `failed`, trang OCR hay khi không dựng
+        được geometry. Lỗi trong `geometry_sink` lan ra nơi gọi. Thời gian chạy `geometry_sink` không tính vào hạn tổng.
+        """
         check_pdf_input(path, self.config)
         if page_numbers is not None and any(n < 1 for n in page_numbers):
             raise ValueError("page_numbers bắt đầu từ 1")
@@ -553,6 +588,7 @@ class WorkerPdfReader:
                 # đồng hồ chưa nhích, và phần hạn còn lại không bao giờ được vượt chính hạn tổng.
                 remaining = min(self.config.document_timeout_s, deadline - time.monotonic())
                 healthy = True
+                geometry: PageGeometry | None = None
                 if document_expired or remaining <= 0:
                     page = failed_page(document_id, index + 1, "PAGE_TIMEOUT")
                 elif session is None:
@@ -562,7 +598,7 @@ class WorkerPdfReader:
                     ocr_timeout = min(self.config.ocr_page_timeout_s, remaining)
                     outcome = self._read_page(session, index, document_id, page_timeout, ocr_timeout, scan_expected)
                     scan_expected = False
-                    page, healthy = outcome.page, outcome.healthy
+                    page, healthy, geometry = outcome.page, outcome.healthy, outcome.geometry
                     # Lượt quét có hạn riêng, không ăn vào hạn tổng. Chỉ khác 0 khi lượt quét được nhận, mà khi đó
                     # kết quả được giữ ngay dưới đây và không lượt quét nào được nhận nữa: cộng tối đa một lần.
                     deadline += outcome.scan_wait_s
@@ -584,6 +620,8 @@ class WorkerPdfReader:
                     # Lượt chờ hết hạn bị giới hạn bởi hạn tổng ⇒ hạn tổng đã hết (ADR-008 mục 4), không đọc lại đồng hồ.
                     document_expired = self._wait_capped_by_deadline(outcome.expired_wait, remaining)
                 yielded_at = time.monotonic()
+                if geometry_sink is not None:
+                    geometry_sink(index + 1, geometry)
                 yield page
                 deadline += time.monotonic() - yielded_at  # thời gian nơi gọi xử lý trang không tính vào hạn
                 if not healthy and session is not None:

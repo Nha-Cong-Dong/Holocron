@@ -16,6 +16,10 @@ GĐ0 (sửa đổi 2026-10-31, spec §5.7 "Khử nhiễu trang"): đối tượn
 mọi ma trận form, thứ tự vẽ là thứ tự duyệt sâu. Trang được render màu ở `hidden_text_render_dpi` sau khi tắt mọi đối
 tượng chữ TRONG BỘ NHỚ (`FPDFPageObj_SetIsActive`, không ghi file, không sinh lại nội dung) để đo nền thật của chữ và
 dHash của ảnh nội dung. Quyết định (nền, chữ ẩn, chữ bị che, lớp OCR của scan) là hàm thuần ở `page_objects`.
+
+Font (ADR-010 mục 5): chỉ đường đọc trang lớp chữ (`read_page`) đọc font của đối tượng chữ chứa từng ký tự
+(`_FontReader`, cache theo đối tượng chữ và theo đối tượng font, tên đọc bằng bộ đệm cố định `FONT_NAME_BUFFER_BYTES`);
+lượt quét template không đọc font. Lỗi khi đọc font chỉ làm ký tự không có font hay cỡ chữ, không bao giờ ném ra.
 """
 
 from __future__ import annotations
@@ -24,8 +28,8 @@ import ctypes
 import hashlib
 import importlib
 import itertools
-from collections.abc import Iterable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field, replace
 from types import ModuleType
 from typing import Literal, Self
 
@@ -51,10 +55,23 @@ from .page_objects import (
     transform_box,
     union_box,
 )
-from .protocol import MAX_OWN_IMAGES, ImageKey, PathKey, RawLineFlag, RawPageImage, RawPdfPage, Rgba
+from .protocol import MAX_OWN_IMAGES, ImageKey, PathKey, RawFont, RawLineFlag, RawPageImage, RawPdfPage, Rgba
 from .raster import POINTS_PER_INCH, GrayImage, pack_rows, render_scale
 from .template_images import READ_ERRORS, PageImageKeys, TemplateFilter, image_key, path_key, text_key
-from .text_layer import PdfBox, PdfChar, group_lines, mark_header_footer, merge_spaced_chars, normalize_box
+from .text_layer import (
+    PdfBox,
+    PdfChar,
+    assign_font_ids,
+    cap_boxless_words,
+    classify_font,
+    clean_font_name,
+    effective_font_size,
+    group_lines,
+    independent_nonws_counts,
+    mark_header_footer,
+    merge_spaced_chars,
+    normalize_box,
+)
 
 OpenFailure = Literal["PASSWORD_REQUIRED", "OPEN_FAILED"]
 
@@ -62,6 +79,12 @@ OpenFailure = Literal["PASSWORD_REQUIRED", "OPEN_FAILED"]
 # Vượt trần thì dùng cận trên là tổng diện tích, nghiêng về OCR (có người xem lại). Trang scan cắt thành dải vẫn đúng
 # vì các dải không chồng nhau (tổng = hợp).
 MAX_UNION_BOXES = 256
+
+# Bộ đệm cố định đọc tên font (ADR-010 mục 5): không cấp phát theo độ dài tên PDF khai báo; tên dài hơn không vừa bộ
+# đệm thì không có tên (PDFium không ghi vào bộ đệm khi nó quá nhỏ).
+FONT_NAME_BUFFER_BYTES = 256
+# Lỗi khi đọc font của một đối tượng chữ: ký tự không có font/cỡ chữ, trang vẫn đọc bình thường.
+FONT_ERRORS = (*READ_ERRORS, ctypes.ArgumentError)
 
 _HIGH_SURROGATES = range(0xD800, 0xDC00)
 _LOW_SURROGATES = range(0xDC00, 0xE000)
@@ -206,7 +229,7 @@ class PdfiumDocument:
                 raise PdfiumDataError("get_size phải trả (width, height)")
             width_pt, height_pt = _as_float(size[0]), _as_float(size[1])
             walked = self._walk(page, settings)
-            chars = self._read_chars(page)
+            chars = self._read_chars(page, _FontReader(backend, walked, settings))
             analysis = _PageAnalysis(walked, chars, page_box, rotation, settings, templates)
             analysis.classify(self)
             image = analysis.render_if_needed(self, page)
@@ -214,9 +237,12 @@ class PdfiumDocument:
             own_images = analysis.own_images(self, image)
         finally:
             backend.call(page, "close")
-        lines = group_lines(merge_spaced_chars(analysis.kept_chars(), settings), page_box, rotation)
+        nonws_total, hidden_nonws = independent_nonws_counts(chars, analysis.is_dropped_owner)
+        fonts, kept = assign_font_ids(analysis.kept_chars())
+        lines = group_lines(merge_spaced_chars(kept, settings), page_box, rotation)
         if templates is not None:
             lines = mark_header_footer(lines, templates.text_keys, templates.bbox_step)
+        lines, boxless_dropped = cap_boxless_words(lines)
         all_images = [obj.box for obj in walked.images]
         content_ratio = None
         if templates is not None:
@@ -234,6 +260,10 @@ class PdfiumDocument:
             hidden_chars_dropped=analysis.hidden_chars_dropped,
             scan_text_layer=analysis.scan_text_layer,
             objects_over_cap=walked.over_cap,
+            fonts=fonts,
+            boxless_words_dropped=boxless_dropped,
+            pdfium_nonws_total=nonws_total,
+            hidden_nonws_dropped=hidden_nonws,
         )
 
     def page_image_keys(self, index: int, config: PdfReaderConfig) -> PageImageKeys | None:
@@ -310,8 +340,11 @@ class PdfiumDocument:
             for handle in handles:
                 backend.set_active(handle, active=True)
 
-    def _read_chars(self, page: object) -> list[tuple[PdfChar, int | None]]:
-        """Ký tự của lớp chữ kèm địa chỉ đối tượng chữ chứa nó (None: ký tự tự sinh hoặc không xác định)."""
+    def _read_chars(self, page: object, fonts: _FontReader | None = None) -> list[tuple[PdfChar, int | None]]:
+        """Ký tự của lớp chữ kèm địa chỉ đối tượng chữ chứa nó (None: ký tự tự sinh hoặc không xác định).
+
+        `fonts` (chỉ đường đọc trang lớp chữ; mặc định tắt) gắn font và cỡ chữ của đối tượng chữ chứa ký tự.
+        """
         backend = self._backend
         textpage = backend.call(page, "get_textpage")
         try:
@@ -321,10 +354,14 @@ class PdfiumDocument:
             boxes = [backend.charbox(raw_textpage, i) for i in range(count)]
             generated = [backend.is_generated(raw_textpage, i) for i in range(count)]
             owners = [backend.text_object_at(raw_textpage, i) for i in range(count)]
-            return [
-                (PdfChar(text=text, box=boxes[first], generated=generated[first]), owners[first])
-                for text, first in decode_code_units(codes)
-            ]
+            result: list[tuple[PdfChar, int | None]] = []
+            for text, first in decode_code_units(codes):
+                char = PdfChar(text=text, box=boxes[first], generated=generated[first])
+                if fonts is not None and not char.generated:
+                    font, size = fonts.char_font(raw_textpage, first, owners[first])
+                    char = replace(char, font=font, font_size_pt=size)
+                result.append((char, owners[first]))
+            return result
         finally:
             backend.call(textpage, "close")
 
@@ -369,6 +406,7 @@ class PdfiumDocument:
                 )
                 record = PageObject(kind=kind, z=z, box=box, render_mode=mode, color=color)
                 walk.text_z[backend.address(raw_obj)] = z
+                walk.form_matrix[z] = matrix
             walk.objects.append(record)
             walk.handles[z] = obj
         return walk
@@ -412,6 +450,7 @@ class _Walk:
     objects: list[PageObject] = field(default_factory=list)
     handles: dict[int, object] = field(default_factory=dict)  # z ⇒ đối tượng pypdfium2 (chỉ dùng khi trang còn mở)
     text_z: dict[int, int] = field(default_factory=dict)  # địa chỉ đối tượng chữ ⇒ z
+    form_matrix: dict[int, Matrix] = field(default_factory=dict)  # z của đối tượng chữ ⇒ tích ma trận các form chứa nó
     over_cap: bool = False
 
     @property
@@ -461,6 +500,11 @@ class _PageAnalysis:
 
     def _char_z(self, owner: int | None) -> int | None:
         return None if owner is None else self.walked.text_z.get(owner)
+
+    def is_dropped_owner(self, owner: int | None) -> bool:
+        """Ký tự của đối tượng chữ `owner` bị loại vì chữ ẩn (0B(1)); gọi sau `judge_text`."""
+        z = self._char_z(owner)
+        return z is not None and z in self.dropped_z
 
     def classify(self, document: PdfiumDocument) -> None:
         """Ảnh và đường vẽ template, nền, lớp OCR của PDF scan (0A, 0B(1)). Trang vượt trần: mọi ảnh và đường vẽ là
@@ -572,7 +616,7 @@ class _PageAnalysis:
                     self.hidden_chars_dropped += 1
                 continue
             flags = self.flags_by_z.get(z) if z is not None else None
-            kept.append(char if not flags else PdfChar(char.text, char.box, char.generated, frozenset(flags)))
+            kept.append(char if not flags else replace(char, flags=frozenset(flags)))
         return kept
 
     def own_images(self, document: PdfiumDocument, image: RgbImage | None) -> list[RawPageImage]:
@@ -589,6 +633,79 @@ class _PageAnalysis:
             area = None if image is None else pixel_box(unit, image.width, image.height)
             fingerprint = None if image is None or area is None else dhash(image, area)
             result.append(RawPageImage(bbox=unit, sha256=None if digest is None else digest[0], dhash=fingerprint))
+        return result
+
+
+def _determinant(matrix: Matrix) -> float:
+    a, b, c, d, _, _ = matrix
+    return a * d - b * c
+
+
+def _attempt[T](read: Callable[[], T]) -> T | None:
+    """Kết quả của một lời gọi đọc font; lỗi ⇒ None (lỗi đọc font không bao giờ làm hỏng trang)."""
+    try:
+        return read()
+    except FONT_ERRORS:
+        return None
+
+
+class _FontReader:
+    """Đọc font và cỡ chữ hiệu dụng của đối tượng chữ chứa ký tự, khi dựng ký tự của trang lớp chữ (ADR-010 mục 5).
+
+    Cache theo đối tượng chữ chủ (mỗi đối tượng chữ được đọc tối đa một lượt, kể cả khi có hàng nghìn ký tự) và theo
+    đối tượng font (thuộc tính font đọc một lần cho mỗi font của trang). Ký tự mà đối tượng chữ chủ không có trong cây
+    đối tượng đã duyệt (trang vượt trần đối tượng) không có font hay cỡ chữ.
+    """
+
+    def __init__(self, backend: PdfiumBackend, walked: _Walk, config: PdfReaderConfig) -> None:
+        self._backend = backend
+        self._walked = walked
+        self._config = config
+        self._by_owner: dict[int, tuple[RawFont | None, float | None]] = {}
+        self._by_font: dict[int, RawFont | None] = {}
+
+    def char_font(self, raw_textpage: object, index: int, owner: int | None) -> tuple[RawFont | None, float | None]:
+        if owner is None:
+            return None, None
+        cached = self._by_owner.get(owner)
+        if cached is None:
+            cached = self._by_owner[owner] = self._read(raw_textpage, index, owner)
+        return cached
+
+    def _read(self, raw_textpage: object, index: int, owner: int) -> tuple[RawFont | None, float | None]:
+        z = self._walked.text_z.get(owner)
+        if z is None:
+            return None, None
+        raw_obj: object = getattr(self._walked.handles[z], "raw", None)
+        form_matrix = self._walked.form_matrix.get(z)
+        size = _attempt(lambda: self._size(raw_textpage, index, raw_obj, form_matrix))
+        font = _attempt(lambda: self._backend.text_font(raw_obj))
+        return (None if font is None else self._font(font)), size
+
+    def _size(self, raw_textpage: object, index: int, raw_obj: object, form_matrix: Matrix | None) -> float | None:
+        if form_matrix is None:
+            return None
+        backend = self._backend
+        determinants = (_determinant(backend.object_matrix(raw_obj)), _determinant(form_matrix))
+        return effective_font_size(backend.font_size_at(raw_textpage, index), determinants)
+
+    def _font(self, font: object) -> RawFont | None:
+        key = _attempt(lambda: PdfiumBackend.address(font))
+        if key is not None and key in self._by_font:
+            return self._by_font[key]
+        backend = self._backend
+        name = _attempt(lambda: clean_font_name(backend.font_name(font)))
+        result = _attempt(
+            lambda: classify_font(
+                name,
+                _attempt(lambda: backend.font_weight(font)),
+                _attempt(lambda: backend.font_flags(font)),
+                _attempt(lambda: backend.font_italic_angle(font)),
+                self._config,
+            )
+        )
+        if key is not None:
+            self._by_font[key] = result
         return result
 
 
@@ -729,6 +846,42 @@ class PdfiumBackend:
 
     def text_render_mode(self, raw_obj: object) -> int:
         return _as_int(self._raw.FPDFTextObj_GetTextRenderMode(raw_obj))
+
+    def text_font(self, raw_obj: object) -> object | None:
+        """Đối tượng font của đối tượng chữ (`FPDFTextObj_GetFont`); không có ⇒ None."""
+        font: object = self._raw.FPDFTextObj_GetFont(raw_obj)
+        return font if font else None
+
+    def font_name(self, font: object) -> bytes:
+        """Tên gốc của font (UTF-8, có thể có tiền tố subset), đọc bằng bộ đệm CỐ ĐỊNH `FONT_NAME_BUFFER_BYTES`.
+
+        PDFium trả độ dài cần (kể cả NUL) và không ghi gì khi bộ đệm nhỏ hơn; khi đó hay khi lỗi ⇒ `b""`.
+        """
+        buffer = (ctypes.c_char * FONT_NAME_BUFFER_BYTES)()
+        needed = _as_int(self._raw.FPDFFont_GetBaseFontName(font, buffer, FONT_NAME_BUFFER_BYTES))
+        if needed < 1 or needed > FONT_NAME_BUFFER_BYTES:
+            return b""
+        return bytes(buffer)[:needed]
+
+    def font_weight(self, font: object) -> int | None:
+        """Weight của font (`FPDFFont_GetWeight`); lỗi (-1) hay âm ⇒ None."""
+        weight = _as_int(self._raw.FPDFFont_GetWeight(font))
+        return weight if weight >= 0 else None
+
+    def font_flags(self, font: object) -> int | None:
+        """Cờ font của PDF (`FPDFFont_GetFlags`); lỗi (-1) ⇒ None."""
+        flags = _as_int(self._raw.FPDFFont_GetFlags(font))
+        return flags if flags >= 0 else None
+
+    def font_italic_angle(self, font: object) -> int | None:
+        angle = ctypes.c_int()
+        if not self._raw.FPDFFont_GetItalicAngle(font, ctypes.byref(angle)):
+            return None
+        return int(angle.value)
+
+    def font_size_at(self, raw_textpage: object, index: int) -> float:
+        """Cỡ chữ PDFium của ký tự `index` (`FPDFText_GetFontSize`, chưa nhân ma trận)."""
+        return _as_float(self._raw.FPDFText_GetFontSize(raw_textpage, index))
 
     def set_active(self, handle: object, *, active: bool) -> None:
         raw_obj: object = getattr(handle, "raw", None)

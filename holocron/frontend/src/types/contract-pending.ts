@@ -134,36 +134,12 @@ export interface ProposalJob {
   finished_at: string | null;
 }
 
-/** `ProposalJobAbsentReason` (§5.7, T1e; đề xuất suy ra): vì sao `DocumentImport` không có `proposal_job`. */
-export type ProposalJobAbsentReason = "not_confirmed" | "past_exam" | "no_chunks" | "llm_unavailable" | "not_retained";
+// Các field T1e của `DocumentImport` (§5.7) đã có ở backend (#116) và ở `holocron.ts`; xuất lại ở đây cho nơi còn import
+// từ file này. `ReviewReasonCount.reason` là `ReviewReason` của backend (không có `LOW_TEXT_SCORE`).
+export type { DroppedRoleCount, ProposalJobAbsentReason, ReviewReasonCount } from "@/types/holocron";
 
-/** `ReviewReasonCount` (§5.7, T1e): số trang cần xem theo từng lý do; `pages` tăng dần, không trùng. */
-export interface ReviewReasonCount {
-  reason: ReviewReasonPending;
-  count: number;
-  pages: number[];
-}
-
-/** `DroppedRoleCount` (§5.7, T1e): số trang bỏ mềm theo vai trò trang. */
-export interface DroppedRoleCount {
-  reason: "cover_or_course_nav" | "chapter_nav" | "build_step";
-  count: number;
-  pages: number[];
-}
-
-/**
- * `DocumentImport` với các field T1e (số đếm, lý do, job); backend chưa trả ở nhánh này, `lib/import-result.ts` parse
- * với mặc định an toàn. Gỡ khi `holocron.ts` có field thật.
- */
-export type DocumentImportPending = DocumentImport & {
-  pages_auto_confirmed: number;
-  pages_kept_unconfirmed: number;
-  pages_failed: number;
-  review_reason_counts: ReviewReasonCount[];
-  dropped_role_counts: DroppedRoleCount[];
-  proposal_job: ProposalJob | null;
-  proposal_job_absent_reason: ProposalJobAbsentReason | null;
-};
+/** Bí danh giữ cho nơi còn import từ file này: `DocumentImport` của `holocron.ts` đã có đủ field T1e. */
+export type DocumentImportPending = DocumentImport;
 
 /** Body của `POST /v1/vault/concept-pairs/jobs` (§6.6): đúng một trong `document_id` và `chunk_ids`. */
 export interface ProposalJobCreate {

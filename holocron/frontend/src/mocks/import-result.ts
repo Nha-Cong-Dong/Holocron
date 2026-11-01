@@ -279,6 +279,8 @@ function isNeedsReview(item: PageExtractionPending): boolean {
 function reasonCounts(pages: readonly PageExtractionPending[]): ReviewReasonCount[] {
   const counts: ReviewReasonCount[] = [];
   for (const reason of REVIEW_REASONS) {
+    // Backend chưa có `LOW_TEXT_SCORE` nên `review_reason_counts` không mang mã này.
+    if (reason === "LOW_TEXT_SCORE") continue;
     const matching = pages.filter((item) => isNeedsReview(item) && item.review_reasons.some((code) => code === reason));
     if (matching.length > 0) {
       counts.push({ reason, count: matching.length, pages: matching.map((item) => item.page_number) });

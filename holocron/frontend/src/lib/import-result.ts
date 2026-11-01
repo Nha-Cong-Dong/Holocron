@@ -230,8 +230,13 @@ export function droppedGroups(result: ImportResultView): DroppedGroupView[] {
 export function firstNeedsReviewPage(result: ImportResultView): number | null {
   const fromQueue = reviewQueue(result.document)[0];
   if (fromQueue !== undefined) return fromQueue;
-  const all = result.reviewReasons.flatMap((group) => group.pages);
-  return all.length === 0 ? null : Math.min(...all);
+  let first: number | null = null;
+  for (const group of result.reviewReasons) {
+    for (const page of group.pages) {
+      if (first === null || page < first) first = page;
+    }
+  }
+  return first;
 }
 
 // ------------------------------------------------------------------------------------- nút "Chấp nhận tài liệu"

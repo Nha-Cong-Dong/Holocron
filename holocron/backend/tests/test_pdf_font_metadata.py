@@ -9,7 +9,10 @@ from __future__ import annotations
 import ctypes
 import hashlib
 import json
+import os
 import sqlite3
+import subprocess
+import sys
 import unicodedata
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -17,6 +20,7 @@ from pathlib import Path
 
 import pypdfium2.raw as pdfium_raw
 import pytest
+from pydantic import ValidationError
 
 from holocron_core.domain.documents import PageExtraction
 from holocron_core.infrastructure.document_readers import _pdf_worker
@@ -29,6 +33,7 @@ from holocron_core.infrastructure.document_readers.pdfium_adapter import (
 from holocron_core.infrastructure.document_readers.protocol import (
     FONT_NAME_MAX_CHARS,
     MAX_PAGE_FONTS,
+    MAX_PAGE_WORDS,
     PageErrorMessage,
     PageMessage,
     RawFont,
@@ -41,6 +46,7 @@ from holocron_core.infrastructure.document_readers.protocol import (
 from holocron_core.infrastructure.document_readers.text_layer import (
     PdfChar,
     assign_font_ids,
+    cap_boxless_words,
     classify_font,
     clean_font_name,
     effective_font_size,
@@ -616,3 +622,159 @@ def _all_keys(value: object) -> set[str]:
     if isinstance(value, list):
         return {key for item in value for key in _all_keys(item)}
     return set()
+
+
+# --------------------------------------------------------------------------- #
+# Vòng sửa 2: ca biên cho các đột biến sống của vòng review (X04)
+# --------------------------------------------------------------------------- #
+
+
+def test_whitespace_does_not_vote_for_line_font_size() -> None:
+    spec: list[tuple[str, int | None, float | None]] = [
+        ("a", 0, 10.0),
+        (" ", None, 20.0),
+        ("b", 0, 10.0),
+        (" ", None, 20.0),
+        ("c", 0, 10.0),
+        (" ", None, 20.0),
+        (" ", None, 20.0),
+    ]
+    line = group_lines(_chars(spec), PAGE_BOX, 0)[0]
+    assert line.font_size_pt == 10.0 and line.font_id == 0
+    assert [w.font_size_pt for w in line.words] == [10.0, 10.0, 10.0]
+
+
+def test_cap_boxless_words_keeps_page_exactly_at_cap() -> None:
+    box = (0.1, 0.1, 0.5, 0.12)
+    per_line = 2500
+    boxed = [
+        RawTextLine(text=" ".join(["a"] * per_line), bbox=box, words=[RawWord(text="a", bbox=box)] * per_line)
+        for _ in range(19)
+    ]
+    short = RawTextLine(text="b", bbox=box, words=[RawWord(text="b", bbox=box)] * (per_line - 1))
+    boxless = RawTextLine(text="z", bbox=None, words=[RawWord(text="z", bbox=None)])
+    lines = [*boxed, short, boxless]
+    assert sum(len(line.words) for line in lines) == MAX_PAGE_WORDS
+    assert cap_boxless_words(lines) == (lines, False)
+
+
+def test_clean_font_name_keeps_only_printable_ascii_up_to_tilde() -> None:
+    assert clean_font_name(b"Ari\x7fal") == "Arial"
+    assert clean_font_name(b"Ari~al") == "Ari~al"
+    assert clean_font_name(b"Ari\x1fal") == "Arial"
+
+
+def test_clean_font_name_strips_only_six_letter_subset_prefix() -> None:
+    assert clean_font_name(b"ABCDEF+Foo") == "Foo"
+    assert clean_font_name(b"ABCDE+Foo") == "ABCDE+Foo"
+    assert clean_font_name(b"ABCDEFG+Foo") == "ABCDEFG+Foo"
+
+
+def test_effective_font_size_uses_absolute_determinant_for_flipped_matrix() -> None:
+    assert effective_font_size(12.0, [-1.0]) == 12.0
+    assert effective_font_size(10.0, [-4.0]) == 20.0
+
+
+def test_font_table_keeps_fonts_differing_only_in_style_apart() -> None:
+    plain = RawFont(font_name="Same")
+    bold = RawFont(font_name="Same", bold=True, bold_source="name")
+    italic = RawFont(font_name="Same", italic=True, italic_source="flag")
+    mono = RawFont(font_name="Same", monospace=True, monospace_source="flag")
+    chars = [PdfChar(text="a", box=None, font=f) for f in (plain, bold, italic, mono, bold, plain)]
+    fonts, assigned = assign_font_ids(chars)
+    assert fonts == [plain, bold, italic, mono]
+    assert [c.font_id for c in assigned] == [0, 1, 2, 3, 1, 0]
+
+
+def test_raw_font_source_iff_value() -> None:
+    with pytest.raises(ValidationError, match="nguồn"):
+        RawFont(font_name="A", bold=True, bold_source=None)
+    with pytest.raises(ValidationError, match="nguồn"):
+        RawFont(font_name="A", bold=False, bold_source="name")
+    with pytest.raises(ValidationError, match="nguồn"):
+        RawFont(font_name="A", italic=True)
+    with pytest.raises(ValidationError, match="nguồn"):
+        RawFont(font_name="A", monospace=False, monospace_source="flag")
+    assert RawFont(font_name="A", bold=True, bold_source="weight").bold_source == "weight"
+
+
+def test_font_id_upper_bound_is_exclusive() -> None:
+    assert RawWord(text="a", bbox=None, font_id=MAX_PAGE_FONTS - 1).font_id == MAX_PAGE_FONTS - 1
+    with pytest.raises(ValidationError):
+        RawWord(text="a", bbox=None, font_id=MAX_PAGE_FONTS)
+    with pytest.raises(ValidationError):
+        RawTextLine(text="a", bbox=None, words=[], font_id=MAX_PAGE_FONTS)
+
+
+def test_raw_font_name_is_never_empty() -> None:
+    # SPEC §5.7 chỉ ghi max_length; `min_length=1` là chặt hơn có chủ ý (tên rỗng phải là null)
+    with pytest.raises(ValidationError):
+        RawFont(font_name="")
+    assert RawFont(font_name=None).font_name is None
+    assert RawFont(font_name="x" * FONT_NAME_MAX_CHARS).font_name is not None
+
+
+def test_raw_page_hidden_count_consistency() -> None:
+    base: dict[str, object] = {
+        "page_index": 0,
+        "width_pt": 600,
+        "height_pt": 800,
+        "lines": [],
+        "image_area_ratio": 0.0,
+        "path_area_ratio": 0.0,
+    }
+    ok = RawPdfPage.model_validate({**base, "pdfium_nonws_total": 5, "hidden_nonws_dropped": 5})
+    assert ok.hidden_nonws_dropped == 5
+    with pytest.raises(ValidationError, match="hidden_nonws_dropped"):
+        RawPdfPage.model_validate({**base, "pdfium_nonws_total": 5, "hidden_nonws_dropped": 10**9})
+    with pytest.raises(ValidationError, match="hidden_nonws_dropped"):
+        RawPdfPage.model_validate({**base, "hidden_nonws_dropped": 1})
+    assert RawPdfPage.model_validate(base).hidden_nonws_dropped == 0
+
+
+def test_form_matrix_scales_font_size() -> None:
+    # `cm` đặt trước `Do` là ma trận của đối tượng form (det 4); `/Matrix` của form là phần còn lại (det 9)
+    scaled_by_cm = PdfDoc(
+        content=b"q 2 0 0 2 0 0 cm /X1 Do Q\n",
+        forms={"X1": ((1, 0, 0, 1, 0, 0), bt("F1", 10, 20, 30, "InForm"))},
+    )
+    assert line_of(read(scaled_by_cm), "InForm").font_size_pt == 20.0
+    both = PdfDoc(
+        content=b"q 2 0 0 2 0 0 cm /X1 Do Q\n",
+        forms={"X1": ((3, 0, 0, 3, 0, 0), bt("F1", 10, 20, 30, "InForm"))},
+    )
+    assert line_of(read(both), "InForm").font_size_pt == 60.0
+
+
+def test_boxless_words_over_cap_in_pdf_are_dropped_not_page_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def many_chars(self: PdfiumDocument, page: object, fonts: object = None) -> list[tuple[PdfChar, int | None]]:
+        out: list[tuple[PdfChar, int | None]] = []
+        for _ in range(MAX_PAGE_WORDS // 10):
+            for _ in range(10):
+                out += [(PdfChar(text="a", box=(10.0, 10.0, 18.0, 20.0)), None), (PdfChar(text=" ", box=None), None)]
+            out.append((PdfChar(text="\n", box=None), None))
+        out += [(PdfChar(text="z", box=None), None), (PdfChar(text="\n", box=None), None)]
+        return out
+
+    monkeypatch.setattr(PdfiumDocument, "_read_chars", many_chars)
+    raw = read(PdfDoc(content=bt("F1", 12, 50, 700, "x")))
+    assert raw.boxless_words_dropped is True
+    assert sum(len(line.words) for line in raw.lines) == MAX_PAGE_WORDS
+    assert raw.lines[-1].text == "z" and raw.lines[-1].words == []
+
+
+def test_reader_settings_hash_is_stable_across_hash_seeds() -> None:
+    code = (
+        "from holocron_core.infrastructure.document_readers.config import PdfReaderConfig;"
+        "from holocron_core.infrastructure.document_readers.tiers import reader_settings_sha256;"
+        "print(reader_settings_sha256(PdfReaderConfig()))"
+    )
+    backend_dir = Path(__file__).resolve().parents[1]
+    digests = set()
+    for seed in ("1", "2", "3", "4", "5", "6"):
+        env = {**os.environ, "PYTHONHASHSEED": seed, "PYTHONUTF8": "1"}
+        out = subprocess.run(
+            [sys.executable, "-c", code], cwd=backend_dir, env=env, capture_output=True, text=True, check=True
+        )
+        digests.add(out.stdout.strip())
+    assert len(digests) == 1

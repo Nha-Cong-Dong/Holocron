@@ -24,6 +24,7 @@ from holocron_core.domain.documents import (
     PageRead,
 )
 from holocron_core.domain.limits import MAX_GEOMETRY_JSON_BYTES
+from holocron_core.infrastructure.document_readers import config as reader_config
 from holocron_core.infrastructure.document_readers import tiers
 from holocron_core.infrastructure.document_readers.config import PdfReaderConfig
 from holocron_core.infrastructure.document_readers.pdf_reader import (
@@ -337,3 +338,54 @@ def test_geometry_sink_error_propagates(tmp_path: Path) -> None:
         for page in WorkerPdfReader().read_pages(_two_page_pdf(tmp_path), DOC_ID, geometry_sink=typed):
             yielded.append(page.page_number)
     assert yielded == []
+
+
+# --------------------------------------------------------------------------- #
+# Vòng sửa 2: số đếm độc lập, trần từ, token tên font trong hash
+# --------------------------------------------------------------------------- #
+
+
+def test_geometry_carries_hidden_nonws_dropped_from_raw_page() -> None:
+    raw = _page([_line("Mot dong")], hidden_nonws_dropped=5)
+    geometry = assemble_text_layer_page_read(raw, DOC_ID, CONFIG).geometry
+    assert geometry is not None
+    assert geometry.hidden_nonws_dropped == 5
+    assert geometry.pdfium_nonws_total == raw.pdfium_nonws_total
+
+
+def test_geometry_hidden_count_validator() -> None:
+    assert _geometry(pdfium_nonws_total=5, hidden_nonws_dropped=5).hidden_nonws_dropped == 5
+    with pytest.raises(ValidationError, match="hidden_nonws_dropped"):
+        _geometry(pdfium_nonws_total=5, hidden_nonws_dropped=10**9)
+    with pytest.raises(ValidationError, match="hidden_nonws_dropped"):
+        _geometry(hidden_nonws_dropped=1)
+    assert _geometry().hidden_nonws_dropped == 0
+    assert _geometry(pdfium_nonws_total=0).hidden_nonws_dropped == 0
+
+
+def test_raw_page_hidden_count_over_total_is_rejected_so_geometry_is_not_built() -> None:
+    with pytest.raises(ValidationError, match="hidden_nonws_dropped"):
+        _page([_line("Mot dong")], pdfium_nonws_total=5, hidden_nonws_dropped=10**9)
+    with pytest.raises(ValidationError, match="hidden_nonws_dropped"):
+        _page([_line("Mot dong")], pdfium_nonws_total=None, hidden_nonws_dropped=1)
+
+
+def test_geometry_word_cap_is_inclusive() -> None:
+    def line_of_words(count: int) -> GeoLine:
+        return GeoLine(words=[GeoWord(text="a", bbox=None)] * count, bbox=None, extracted_line_indices=[])
+
+    assert len(_geometry(lines=[line_of_words(MAX_PAGE_WORDS)]).lines[0].words) == MAX_PAGE_WORDS
+    with pytest.raises(ValidationError, match=str(MAX_PAGE_WORDS)):
+        _geometry(lines=[line_of_words(MAX_PAGE_WORDS + 1)])
+    with pytest.raises(ValidationError, match=str(MAX_PAGE_WORDS)):
+        _geometry(lines=[line_of_words(MAX_PAGE_WORDS)], ocr_lines=[line_of_words(1)])
+
+
+def test_reader_settings_sha256_tracks_font_name_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    base = reader_settings_sha256(CONFIG)
+    for name in ("BOLD_NAME_TOKENS", "ITALIC_NAME_TOKENS", "MONOSPACE_NAME_TOKENS"):
+        monkeypatch.setattr(reader_config, name, getattr(reader_config, name) | {"demi"})
+        changed = reader_settings_sha256(CONFIG)
+        assert changed != base
+        monkeypatch.undo()
+        assert reader_settings_sha256(CONFIG) == base

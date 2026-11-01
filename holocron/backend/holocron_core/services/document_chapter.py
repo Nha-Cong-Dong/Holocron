@@ -17,6 +17,7 @@ from typing import Any
 
 from ..domain.documents import DocumentChapterPatch, DocumentImport
 from ..domain.repositories import DocumentRepository, ImportedDocument, VaultRepository, VersionConflictError
+from .concept_proposal_job import DocumentProposals
 from .document_import import (
     SETTLE_ATTEMPTS,
     DocumentChapterMissingError,
@@ -52,8 +53,10 @@ def update_document_chapter(
     runtime: ImportRuntime,
     document_id: str,
     patch: DocumentChapterPatch,
+    *,
+    proposals: DocumentProposals | None = None,
 ) -> DocumentImport:
-    """Áp `patch` rồi trả `DocumentImport` đang lưu.
+    """Áp `patch` rồi trả `DocumentImport` đang lưu (job đề xuất mới nhất hoặc lý do vắng job theo `proposals`, T1e).
 
     Lỗi, kiểm TRƯỚC khi ghi: `DocumentNotFoundError` (404); `DocumentChapterMissingError` (409, tài liệu nhập trước
     khi có `chapter_code`); `ChapterCodeLockedError` (409). Version vẫn lệch sau `SETTLE_ATTEMPTS` lần ⇒
@@ -77,4 +80,4 @@ def update_document_chapter(
                     raise
                 continue
             break
-        return get_document_view(store, document_id)
+        return get_document_view(store, document_id, vault=vault, proposals=proposals)

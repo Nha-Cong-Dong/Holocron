@@ -1,0 +1,83 @@
+/*
+ * Màn kết quả nhập (T2.2): khung tóm tắt, khối lý do, dải trang đã ẩn và khối job. Màu và cỡ chữ lấy từ biến của
+ * `app/globals.css` (có dark mode theo hệ điều hành). Không có chuyển động, nên không cần nhánh
+ * `prefers-reduced-motion`; thanh tiến độ là `<progress>` gốc, không hoạt hình.
+ */
+
+.result {
+  display: grid;
+  gap: var(--space-4);
+  margin-top: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-sunken);
+}
+
+.summary {
+  margin: 0;
+  font-size: var(--text-body);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.block {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.blockTitle {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.reasonList {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reasonItem {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--border);
+  background: var(--surface);
+  font-size: var(--text-md);
+}
+
+.pageLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+}
+
+.restoreItem {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.accept {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.progress {
+  width: 100%;
+  max-width: 420px;
+  height: 10px;
+  accent-color: var(--accent);
+}
+
+.jobLines {
+  margin: var(--space-1) 0;
+  padding-left: var(--space-5);
+  font-size: var(--text-md);
+}

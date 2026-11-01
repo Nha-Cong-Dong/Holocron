@@ -93,21 +93,21 @@ def next_free_chapter(taken: Collection[str]) -> str | None:
 def choose_chapter_code(filename: str, taken: Collection[str]) -> ChapterChoice:
     """Chương của tài liệu mới theo §5.7; `taken` là `chapter_code` của các tài liệu KHÁC cùng môn.
 
-    Số trong tên file chưa dùng ⇒ `file_name`; không có số ⇒ `next_free` + `CHAPTER_NUMBER_NOT_IN_FILENAME`; số đã
-    dùng ⇒ `next_free` + `CHAPTER_NUMBER_TAKEN`. Cả 99 chương đã dùng (spec không nói) ⇒ `ch99`, vẫn nguồn
-    `next_free` kèm cờ tương ứng, để luôn có mã hợp lệ.
+    Tên file có số ⇒ GIỮ số đó (`file_name`); số trùng chương đã có của môn ⇒ thêm cờ thông tin
+    `CHAPTER_NUMBER_SHARED` (slide và giáo trình cùng chương hợp lệ; người dùng duyệt 2026-11-01). Tên file không có
+    số ⇒ `next_free` + `CHAPTER_NUMBER_NOT_IN_FILENAME`. Cả 99 chương đã dùng mà tên file không có số (spec không nói)
+    ⇒ `ch99`, vẫn nguồn `next_free` kèm cờ, để luôn có mã hợp lệ.
     """
     number = chapter_number_from_filename(filename)
     if number is not None:
         code = f"ch{number}"
-        if code not in taken:
-            return ChapterChoice(chapter_code=code, source="file_name", flags=())
-        flag: ChapterFlag = "CHAPTER_NUMBER_TAKEN"
-    else:
-        flag = "CHAPTER_NUMBER_NOT_IN_FILENAME"
+        shared: tuple[ChapterFlag, ...] = ("CHAPTER_NUMBER_SHARED",) if code in taken else ()
+        return ChapterChoice(chapter_code=code, source="file_name", flags=shared)
     free = next_free_chapter(taken)
     return ChapterChoice(
-        chapter_code=free if free is not None else f"ch{MAX_CHAPTER_NUMBER}", source="next_free", flags=(flag,)
+        chapter_code=free if free is not None else f"ch{MAX_CHAPTER_NUMBER}",
+        source="next_free",
+        flags=("CHAPTER_NUMBER_NOT_IN_FILENAME",),
     )
 
 

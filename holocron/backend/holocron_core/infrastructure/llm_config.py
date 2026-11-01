@@ -104,7 +104,7 @@ class LlmHttpLimits(BaseModel):
     read_chunk_bytes: int = Field(default=64 * 1024, ge=1)
 
 
-PROPOSAL_JOB_BATCH_CHUNKS = 20
+PROPOSAL_JOB_BATCH_CHUNKS = 5
 PROPOSAL_JOB_MAX_PARALLEL = 2
 PAIR_PRESELECT_ENABLED = False
 PROPOSAL_JOB_KEEP_FINISHED = 100

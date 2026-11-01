@@ -389,3 +389,10 @@ def test_reader_settings_sha256_tracks_font_name_tokens(monkeypatch: pytest.Monk
         assert changed != base
         monkeypatch.undo()
         assert reader_settings_sha256(CONFIG) == base
+
+
+def test_geometry_hidden_count_one_over_total_is_rejected() -> None:
+    """Biên chặt: dropped = total + 1 bị từ chối, dropped = total hợp lệ."""
+    assert _geometry(pdfium_nonws_total=5, hidden_nonws_dropped=5).hidden_nonws_dropped == 5
+    with pytest.raises(ValidationError, match="hidden_nonws_dropped"):
+        _geometry(pdfium_nonws_total=5, hidden_nonws_dropped=6)

@@ -778,3 +778,21 @@ def test_reader_settings_hash_is_stable_across_hash_seeds() -> None:
         )
         digests.add(out.stdout.strip())
     assert len(digests) == 1
+
+
+def test_raw_page_hidden_count_one_over_total_is_rejected() -> None:
+    """Biên chặt: dropped = total + 1 bị từ chối, dropped = total hợp lệ."""
+    base: dict[str, object] = {
+        "page_index": 0,
+        "width_pt": 600,
+        "height_pt": 800,
+        "lines": [],
+        "image_area_ratio": 0.0,
+        "path_area_ratio": 0.0,
+    }
+    assert (
+        RawPdfPage.model_validate({**base, "pdfium_nonws_total": 5, "hidden_nonws_dropped": 5}).hidden_nonws_dropped
+        == 5
+    )
+    with pytest.raises(ValidationError, match="hidden_nonws_dropped"):
+        RawPdfPage.model_validate({**base, "pdfium_nonws_total": 5, "hidden_nonws_dropped": 6})

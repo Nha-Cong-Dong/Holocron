@@ -9,6 +9,7 @@ import { Modal } from "@/components/common/Modal";
 import { api, toUiError } from "@/lib/api";
 import { DOCUMENT_STATUS_LABEL_VI, pageWarnings, sourceKindLabel } from "@/lib/documents";
 import type { DocumentStatusView, DocumentSummaryView, DocumentView, PageSummaryView } from "@/lib/documents-data";
+import { documentCountsLine, isDropped } from "@/lib/dropped-pages";
 import type { UiError } from "@/lib/errors";
 import { readingLines } from "@/lib/home-cards";
 import { createLatestCounter } from "@/lib/latest";
@@ -16,6 +17,7 @@ import { vaultLocationTarget } from "@/lib/legacy-routes";
 import type { VaultHrefFor } from "@/lib/vault";
 
 import type { DocumentsSnapshot } from "./DocumentsPanel";
+import { ImportResult } from "./ImportResult";
 import { PageStrip } from "./PageStrip";
 import styles from "./Vault.module.css";
 
@@ -69,6 +71,7 @@ interface DocumentItemProps {
 function DocumentItem({ summary, progress, onChanged, hrefFor }: DocumentItemProps) {
   const ids = useId();
   const [warningsOpen, setWarningsOpen] = useState(false);
+  const [resultOpen, setResultOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const processing = summary.status === "processing";
   // Tài liệu còn việc xác nhận (chờ xác nhận, hoặc không đọc được nhưng còn trang xác nhận được) ⇒ "Xem lại".
@@ -101,9 +104,7 @@ function DocumentItem({ summary, progress, onChanged, hrefFor }: DocumentItemPro
           {progress !== null && <PageStrip pages={progress.pages} />}
         </div>
       ) : (
-        <p className={styles.muted}>
-          {summary.pagesConfirmed}/{summary.pageCount} trang đã xác nhận · {summary.pagesFailed} trang đọc lỗi
-        </p>
+        <p className={styles.muted}>{documentCountsLine(summary)}</p>
       )}
       {summary.status === "failed" && (
         <p className={styles.warningNote}>
@@ -125,6 +126,17 @@ function DocumentItem({ summary, progress, onChanged, hrefFor }: DocumentItemPro
           <button
             type="button"
             className={`${styles.secondary} ${styles.small}`}
+            aria-expanded={resultOpen}
+            aria-controls={`${ids}-result`}
+            onClick={() => setResultOpen((open) => !open)}
+          >
+            {resultOpen ? "Ẩn kết quả nhập" : "Kết quả nhập"}
+          </button>
+        )}
+        {!processing && (
+          <button
+            type="button"
+            className={`${styles.secondary} ${styles.small}`}
             aria-expanded={warningsOpen}
             aria-controls={`${ids}-warnings`}
             onClick={() => setWarningsOpen((open) => !open)}
@@ -141,6 +153,16 @@ function DocumentItem({ summary, progress, onChanged, hrefFor }: DocumentItemPro
         >
           Xoá tài liệu
         </button>
+      </div>
+      <div id={`${ids}-result`}>
+        {resultOpen && (
+          <ImportResult
+            documentId={summary.docId}
+            subjectCode={summary.subjectCode}
+            hrefFor={hrefFor}
+            onChanged={onChanged}
+          />
+        )}
       </div>
       <div id={`${ids}-warnings`}>
         {warningsOpen && (
@@ -204,7 +226,8 @@ function PageWarningsPanel({
 
   if (state.kind === "loading") return <Loading label="Đang tải cảnh báo theo trang…" />;
   if (state.kind === "error") return <ErrorNotice error={state.error} onRetry={load} onReload={load} />;
-  const flagged = state.document.pages.filter((page) => pageWarnings(page).length > 0);
+  // Trang bỏ mềm không cần xem hay xác nhận (§5.7): cảnh báo của chúng không hiện ở đây.
+  const flagged = state.document.pages.filter((page) => !isDropped(page) && pageWarnings(page).length > 0);
   if (flagged.length === 0) {
     return <p className={styles.successNote}>Không trang nào có cảnh báo. Bạn có thể xác nhận cả tài liệu.</p>;
   }

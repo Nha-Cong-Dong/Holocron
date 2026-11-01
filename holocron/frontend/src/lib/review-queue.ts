@@ -3,16 +3,22 @@
  * `GET /v1/documents/{id}`: trang `needs_review` chưa xác nhận. KHÔNG dùng `pages_needs_review` của danh sách tài liệu
  * vì backend đếm cả trang đã xác nhận.
  *
+ * Trang bỏ mềm (`dropped`) bị loại khỏi hàng đợi, tiến độ và việc còn lại; chúng hiện ở nhóm "Đã ẩn tự động".
+ *
  * "Xong" chỉ khi `DocumentImport.status === "confirmed"` (backend chốt trạng thái, §5.7): còn trang đọc tốt chưa xác
  * nhận, trang đang đọc hay tài liệu chưa chốt thì là việc còn lại, không chúc mừng. Chỉ đếm phần tử backend trả.
  */
 
 import type { DocumentView, PageSummaryView } from "@/lib/documents-data";
+import { isDropped } from "@/lib/dropped-pages";
 
 type PagesInput = Pick<DocumentView, "pages">;
 
-function needsReview(page: Pick<PageSummaryView, "status" | "confirmed">): boolean {
-  return page.status === "needs_review" && !page.confirmed;
+// Trang bỏ mềm (§5.7, `isDropped` dùng chung với `lib/dropped-pages.ts`) không tính vào hàng đợi, tiến độ hay việc còn
+// lại: không xác nhận được và không chặn việc chốt.
+
+function needsReview(page: Pick<PageSummaryView, "status" | "confirmed" | "dropped">): boolean {
+  return page.status === "needs_review" && !page.confirmed && !isDropped(page);
 }
 
 /** Số trang cần xem lại (chưa xác nhận), theo thứ tự backend trả. */
@@ -29,7 +35,7 @@ export interface ReviewProgress {
 
 /** Tiến độ xem lại: đếm trang `needs_review` đã xác nhận trên mọi trang `needs_review`. */
 export function reviewProgress(document: PagesInput): ReviewProgress {
-  const flagged = document.pages.filter((page) => page.status === "needs_review");
+  const flagged = document.pages.filter((page) => page.status === "needs_review" && !isDropped(page));
   return { done: flagged.filter((page) => page.confirmed).length, total: flagged.length };
 }
 
@@ -82,6 +88,7 @@ export function reviewOutcome(document: Pick<DocumentView, "status" | "pages">):
   if (document.status === "confirmed") return { kind: "done" };
   const work: RemainingWork = { needsReview: 0, okUnconfirmed: 0, pending: 0, failed: 0, unknown: 0 };
   for (const page of document.pages) {
+    if (isDropped(page)) continue;
     if (page.status === "pending") work.pending += 1;
     else if (page.status === "failed") work.failed += 1;
     else if (page.status === "unknown") work.unknown += 1;
@@ -119,5 +126,5 @@ export const NOT_SETTLED_VI = "Các trang đã xác nhận nhưng tài liệu ch
 export function awaitingSettle(document: Pick<DocumentView, "status" | "pages">): boolean {
   if (document.status === "confirmed") return false;
   const someConfirmed = document.pages.some((page) => page.confirmed);
-  return someConfirmed && document.pages.every((page) => page.confirmed || page.status === "failed");
+  return someConfirmed && document.pages.every((page) => page.confirmed || page.status === "failed" || isDropped(page));
 }

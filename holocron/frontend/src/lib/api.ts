@@ -9,6 +9,7 @@
  * - Thân `/v1/runtime` được kiểm dạng ở đây (`normalizeRuntimeInfo`) trước khi tới component.
  */
 
+import { parseProposalJobList } from "@/lib/concept-proposals";
 import { apiBase, authHeaders, USE_MOCKS } from "@/lib/config";
 import {
   type DocumentImportOutcome,
@@ -54,6 +55,7 @@ import {
   searchQueryString,
 } from "@/lib/vault";
 import { fillRuntimeGaps, mockApi, mockDocumentApi } from "@/mocks";
+import { isConceptProposalMock, isConceptProposalPair, mockConceptProposalApi } from "@/mocks/concept-proposals";
 import { isImportResultMock, mockImportResultApi } from "@/mocks/import-result";
 import { isMockDocument } from "@/mocks/store";
 import type { EssayGradeRequest, ProposalJobCreate } from "@/types/contract-pending";
@@ -258,6 +260,8 @@ export interface HolocronApi {
   confirmImport: (documentId: string) => Promise<ImportResultView>;
   /** `POST /v1/vault/concept-pairs/jobs` (§6.6): 202 `ProposalJob` (`trigger = "manual"`), đã kiểm dạng. */
   startProposalJob: (subjectCode: string, documentId: string) => Promise<ProposalJobView>;
+  /** `GET /v1/vault/concept-pairs/jobs?subject_code=` (§6.6): job của môn, mới nhất trước; phần tử sai dạng bị bỏ. */
+  listProposalJobs: (subjectCode: string) => Promise<ProposalJobView[]>;
   /** `DELETE /v1/documents/{document_id}` (§6.5): 204. */
   deleteDocument: (documentId: string) => Promise<void>;
   /** `GET /v1/vault/chunks` (§6.6) cho màn Vault, đã kiểm dạng. */
@@ -493,6 +497,16 @@ export const realApi: HolocronApi = {
     return validated(parseProposalJob(raw));
   },
 
+  listProposalJobs: async (subjectCode) => {
+    const params = new URLSearchParams({ subject_code: subjectCode });
+    const raw = await request<unknown>(
+      `/v1/vault/concept-pairs/jobs?${params.toString()}`,
+      { method: "GET" },
+      { context: "pairs_list" },
+    );
+    return validated(parseProposalJobList(raw));
+  },
+
   deleteDocument: async (documentId) => {
     await send(`/v1/documents/${segment(documentId)}`, { method: "DELETE" }, { context: "document_delete" });
   },
@@ -580,6 +594,7 @@ export function createApi(useMocks: boolean): HolocronApi {
   if (!useMocks) return realApi;
   const documents = mockDocumentApi;
   const result = mockImportResultApi;
+  const proposals = mockConceptProposalApi;
   return {
     ...realApi,
     ...mockApi,
@@ -591,6 +606,7 @@ export function createApi(useMocks: boolean): HolocronApi {
       ...(await realApi.listDocuments(subjectCode)),
       ...documents.listDocuments(subjectCode),
       ...result.listDocuments(subjectCode),
+      ...proposals.listDocuments(subjectCode),
     ],
     getDocument: (id) =>
       isImportResultMock(id)
@@ -641,7 +657,32 @@ export function createApi(useMocks: boolean): HolocronApi {
     getImportResult: (id) => (isImportResultMock(id) ? result.getImportResult(id) : realApi.getImportResult(id)),
     confirmImport: (id) => (isImportResultMock(id) ? result.confirmImport(id) : realApi.confirmImport(id)),
     startProposalJob: (subjectCode, id) =>
-      isImportResultMock(id) ? result.startProposalJob(subjectCode, id) : realApi.startProposalJob(subjectCode, id),
+      isImportResultMock(id)
+        ? result.startProposalJob(subjectCode, id)
+        : isConceptProposalMock(subjectCode)
+          ? proposals.startProposalJob(subjectCode)
+          : realApi.startProposalJob(subjectCode, id),
+    // Màn khái niệm với cặp đề xuất (T2.3): chỉ môn mẫu riêng dùng nhà giả; mọi môn khác gọi backend thật.
+    listProposalJobs: (subjectCode) =>
+      isConceptProposalMock(subjectCode)
+        ? proposals.listProposalJobs(subjectCode)
+        : realApi.listProposalJobs(subjectCode),
+    browseVaultChunks: (filter) =>
+      isConceptProposalMock(filter.subjectCode)
+        ? proposals.browseVaultChunks(filter)
+        : realApi.browseVaultChunks(filter),
+    listConceptPairs: (query) =>
+      isConceptProposalMock(query.subjectCode)
+        ? proposals.listConceptPairs(query.subjectCode)
+        : realApi.listConceptPairs(query),
+    confirmConceptPair: (pairId, version, edits) =>
+      isConceptProposalPair(pairId)
+        ? proposals.confirmConceptPair(pairId, version, edits)
+        : realApi.confirmConceptPair(pairId, version, edits),
+    rejectConceptPair: (pairId, version) =>
+      isConceptProposalPair(pairId)
+        ? proposals.rejectConceptPair(pairId, version)
+        : realApi.rejectConceptPair(pairId, version),
   };
 }
 

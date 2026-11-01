@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import { selectionRange, selectionToQuote } from "@/lib/pairs";
+import { canHighlight, findQuoteRange, QUOTE_HIGHLIGHT_NAME } from "@/lib/quote-highlight";
 import { chapterLabel } from "@/lib/sky";
 import { type ChunkView, pageRangeLabel } from "@/lib/vault";
 
@@ -10,6 +11,12 @@ import styles from "./ConceptsTab.module.css";
 
 /** Câu báo khi vùng bôi không nằm trọn trong văn bản của đoạn. */
 export const SELECTION_OUTSIDE_VI = "Chỉ bôi trong văn bản của đoạn này.";
+/** Câu báo khi trích dẫn của cặp không tìm thấy trong đoạn: không tô và không coi là đã kiểm chứng (I3). */
+export const HIGHLIGHT_NOT_FOUND_VI =
+  "Không tìm thấy đoạn trích này trong văn bản của đoạn nên chưa tô được. Chưa coi là đã kiểm chứng.";
+/** Câu báo khi trình duyệt chưa tô được trên văn bản: đoạn trích hiện riêng bên dưới. */
+export const HIGHLIGHT_UNSUPPORTED_VI =
+  "Trình duyệt này chưa tô sáng được trên văn bản. Đoạn trích hiện riêng bên dưới.";
 
 interface PassageTextProps {
   passage: ChunkView;
@@ -17,6 +24,8 @@ interface PassageTextProps {
   onSelect: (quote: string) => void;
   /** Vùng bôi tràn ra ngoài văn bản của đoạn. */
   onInvalid: (message: string) => void;
+  /** Trích dẫn của cặp đang xem: tô sáng trên văn bản (không đổi DOM chữ). `null` ⇒ không tô. */
+  highlightQuote?: string | null;
 }
 
 /**
@@ -24,10 +33,31 @@ interface PassageTextProps {
  * (`white-space: pre-wrap`), nên vị trí của `Selection` là vị trí trong `raw_text`; không tô gì bên trong để giữ một
  * text node. Thả chuột sau khi bôi (kể cả khi thả ngoài khung) thì lấy đoạn; vùng bôi không chạm văn bản thì bỏ qua.
  * Không dùng chuột thì dùng các chip chọn câu bên dưới. Chú thích chỉ có trang và chương, không có mã tài liệu.
+ *
+ * Tô sáng trích dẫn của một cặp bằng CSS Custom Highlight API (`CSS.highlights` + `::highlight()`): vùng tô là một
+ * `Range` trên chính text node đó, không chèn `<mark>`, nên offset của `Selection` vẫn là offset trong `raw_text`.
+ * Thiếu API hoặc không tìm thấy vị trí thì không tô; trích dẫn hiện riêng kèm câu giải thích, không như đã kiểm chứng.
  */
-export function PassageText({ passage, onSelect, onInvalid }: PassageTextProps) {
+export function PassageText({ passage, onSelect, onInvalid, highlightQuote = null }: PassageTextProps) {
   const textRef = useRef<HTMLPreElement>(null);
   const rawText = passage.rawText;
+  const range = useMemo(
+    () => (highlightQuote === null ? null : findQuoteRange(rawText, highlightQuote)),
+    [rawText, highlightQuote],
+  );
+  const supported = typeof window !== "undefined" && canHighlight(window);
+
+  useEffect(() => {
+    const node = textRef.current?.firstChild;
+    if (range === null || !supported || !(node instanceof Text)) return;
+    const domRange = new Range();
+    domRange.setStart(node, range.start);
+    domRange.setEnd(node, range.end);
+    CSS.highlights.set(QUOTE_HIGHLIGHT_NAME, new Highlight(domRange));
+    return () => {
+      CSS.highlights.delete(QUOTE_HIGHLIGHT_NAME);
+    };
+  }, [range, supported]);
 
   useEffect(() => {
     function capture(event: MouseEvent): void {
@@ -63,6 +93,12 @@ export function PassageText({ passage, onSelect, onInvalid }: PassageTextProps) 
       <pre ref={textRef} className={styles.passageText}>
         {rawText}
       </pre>
+      {highlightQuote !== null && (range === null || !supported) && (
+        <div className={styles.quoteAside}>
+          <p className={styles.unverified}>{range === null ? HIGHLIGHT_NOT_FOUND_VI : HIGHLIGHT_UNSUPPORTED_VI}</p>
+          <p className={styles.plainQuote}>{highlightQuote}</p>
+        </div>
+      )}
     </div>
   );
 }

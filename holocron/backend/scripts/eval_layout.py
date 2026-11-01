@@ -818,7 +818,9 @@ def repo_root() -> Path:
 
 
 def require_outside_repo(path: Path, flag: str) -> None:
-    if path.resolve().is_relative_to(repo_root()):
+    # Hai cách nhận diện độc lập (git có thể sai khi chạy dưới hook với GIT_DIR/cwd khác): cây git và vị trí file này.
+    roots = {repo_root(), Path(__file__).resolve().parents[3]}
+    if any(path.resolve().is_relative_to(root) for root in roots):
         raise EvalLayoutError(f"{flag} phải nằm ngoài cây repo (không ghi dữ liệu đánh giá vào repo)")
 
 

@@ -209,7 +209,18 @@ def test_cli_writes_results_outside_repo_and_refuses_inside(tmp_path: Path) -> N
     assert results["no_ground_truth"] == ["de_cuong"]
     assert results["results"]["all"]["ai"]["ch2"]["boundary_f1"] == 1.0
     assert "offline" in (out / "results.md").read_text(encoding="utf-8")
-    assert el.main([str(tmp_path / "eval_data"), str(Path(__file__).parent / "out"), "--pred", str(pred)]) == 2
+    assert (
+        el.main(
+            [
+                str(tmp_path / "eval_data"),
+                str(Path(__file__).resolve().parent / "out_must_not_exist"),
+                "--pred",
+                str(pred),
+            ]
+        )
+        == 2
+    )
+    assert not (Path(__file__).resolve().parent / "out_must_not_exist").exists()
 
 
 def test_baseline_line_blocks_from_real_pdf(tmp_path: Path) -> None:

@@ -24,7 +24,6 @@ from holocron_core.domain.documents import (
     PageRead,
 )
 from holocron_core.domain.limits import MAX_GEOMETRY_JSON_BYTES
-from holocron_core.infrastructure.document_readers import config as reader_config
 from holocron_core.infrastructure.document_readers import tiers
 from holocron_core.infrastructure.document_readers.config import PdfReaderConfig
 from holocron_core.infrastructure.document_readers.pdf_reader import (
@@ -46,7 +45,7 @@ from holocron_core.infrastructure.document_readers.protocol import (
     RawTextLine,
     RawWord,
 )
-from holocron_core.infrastructure.document_readers.text_layer import cap_boxless_words
+from holocron_core.infrastructure.document_readers.text_layer import cap_boxless_words, classify_font
 from holocron_core.infrastructure.document_readers.tiers import (
     assemble_text_layer_page,
     assemble_text_layer_page_read,
@@ -381,14 +380,28 @@ def test_geometry_word_cap_is_inclusive() -> None:
         _geometry(lines=[line_of_words(MAX_PAGE_WORDS)], ocr_lines=[line_of_words(1)])
 
 
-def test_reader_settings_sha256_tracks_font_name_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_reader_settings_sha256_tracks_font_name_tokens() -> None:
+    """Token tên font là field của `PdfReaderConfig` (hash = TOÀN BỘ cấu hình, ADR-010 mục 3): thêm token đổi hash."""
     base = reader_settings_sha256(CONFIG)
-    for name in ("BOLD_NAME_TOKENS", "ITALIC_NAME_TOKENS", "MONOSPACE_NAME_TOKENS"):
-        monkeypatch.setattr(reader_config, name, getattr(reader_config, name) | {"demi"})
-        changed = reader_settings_sha256(CONFIG)
-        assert changed != base
-        monkeypatch.undo()
-        assert reader_settings_sha256(CONFIG) == base
+    for name in ("bold_name_tokens", "italic_name_tokens", "monospace_name_tokens"):
+        changed = CONFIG.model_copy(update={name: getattr(CONFIG, name) | {"demi"}})
+        assert reader_settings_sha256(changed) != base
+    assert reader_settings_sha256(CONFIG) == base
+
+
+def test_classify_font_reads_name_tokens_from_config() -> None:
+    """Gán đậm, nghiêng, đơn cách theo tên dùng tập token của cấu hình được truyền vào, không dùng hằng module."""
+    custom = CONFIG.model_copy(
+        update={
+            "bold_name_tokens": frozenset({"demi"}),
+            "italic_name_tokens": frozenset({"slant"}),
+            "monospace_name_tokens": frozenset({"fixed"}),
+        }
+    )
+    font = classify_font("Foo-Demi-Slant-Fixed", None, None, None, custom)
+    assert (font.bold, font.italic, font.monospace) == (True, True, True)
+    plain = classify_font("Foo-Demi-Slant-Fixed", None, None, None, CONFIG)
+    assert (plain.bold, plain.italic, plain.monospace) == (False, False, False)
 
 
 def test_geometry_hidden_count_one_over_total_is_rejected() -> None:

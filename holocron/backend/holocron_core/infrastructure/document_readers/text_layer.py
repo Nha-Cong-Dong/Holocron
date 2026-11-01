@@ -20,7 +20,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Literal, NamedTuple
 
-from .config import BOLD_NAME_TOKENS, ITALIC_NAME_TOKENS, MONOSPACE_NAME_TOKENS, PdfReaderConfig
+from .config import PdfReaderConfig
 from .protocol import (
     FONT_NAME_MAX_CHARS,
     FONT_SIZE_MAX_PT,
@@ -286,18 +286,18 @@ def classify_font(
     bold_source: Literal["weight", "name"] | None = None
     if weight is not None and weight >= config.bold_min_weight:
         bold_source = "weight"
-    elif tokens & BOLD_NAME_TOKENS:
+    elif tokens & config.bold_name_tokens:
         bold_source = "name"
     font_flags = flags if flags is not None and flags >= 0 else 0
     italic_source: Literal["flag", "name"] | None = None
     if font_flags & FONT_FLAG_ITALIC or italic_angle not in (None, 0):
         italic_source = "flag"
-    elif tokens & ITALIC_NAME_TOKENS:
+    elif tokens & config.italic_name_tokens:
         italic_source = "name"
     monospace_source: Literal["flag", "name"] | None = None
     if font_flags & FONT_FLAG_FIXED_PITCH:
         monospace_source = "flag"
-    elif tokens & MONOSPACE_NAME_TOKENS:
+    elif tokens & config.monospace_name_tokens:
         monospace_source = "name"
     return RawFont(
         font_name=name,

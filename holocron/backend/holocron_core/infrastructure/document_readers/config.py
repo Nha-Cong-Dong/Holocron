@@ -74,16 +74,6 @@ MONOSPACE_NAME_TOKENS: frozenset[str] = frozenset(
 )
 
 
-def font_name_token_settings() -> dict[str, list[str]]:
-    """Ba tập token tên font (đã sắp) để đưa vào `reader_settings_sha256`: đổi token đổi cách gán đậm, nghiêng, đơn
-    cách nên PHẢI đổi hash (ADR-010 mục 15, I4). Đọc hằng module ở lúc gọi."""
-    return {
-        "bold_name_tokens": sorted(BOLD_NAME_TOKENS),
-        "italic_name_tokens": sorted(ITALIC_NAME_TOKENS),
-        "monospace_name_tokens": sorted(MONOSPACE_NAME_TOKENS),
-    }
-
-
 class PdfReaderConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
@@ -269,8 +259,12 @@ class PdfReaderConfig(BaseModel):
     table_col_tolerance: float = Field(default=0.02, gt=0.0, le=1.0)
 
     # Font (ADR-010 mục 5): font đậm khi weight PDFium `≥ bold_min_weight` (font nhúng thường trả 400) hoặc tên font
-    # chứa một token của `BOLD_NAME_TOKENS`.
+    # chứa một token của `bold_name_tokens`. Ba tập token là field của cấu hình nên đổi token đổi
+    # `reader_settings_sha256` (ADR-010 mục 3, mục 15; I4).
     bold_min_weight: int = Field(default=600, ge=100, le=1000)
+    bold_name_tokens: frozenset[str] = BOLD_NAME_TOKENS
+    italic_name_tokens: frozenset[str] = ITALIC_NAME_TOKENS
+    monospace_name_tokens: frozenset[str] = MONOSPACE_NAME_TOKENS
 
     @model_validator(mode="after")
     def _tesseract_fits_in_page(self) -> PdfReaderConfig:

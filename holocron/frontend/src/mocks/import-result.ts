@@ -107,6 +107,9 @@ function page(pageNumber: number, overrides: Partial<PageExtractionPending>): Pa
     role_evidence: null,
     dropped: false,
     restored: false,
+    confirmed_by: null,
+    confirm_rule: null,
+    auto_confirm_undone: false,
     ...overrides,
   };
 }
@@ -124,8 +127,8 @@ const OCR_PAGE: Partial<PageExtractionPending> = {
 /** Trang ban đầu của tài liệu mẫu (đã đọc xong, tự xác nhận đã chạy). */
 function initialPages(): PageExtractionPending[] {
   return [
-    page(1, { confirmed: true, confirmed_at: MOCK_CONFIRMED_AT }),
-    page(2, { confirmed: true, confirmed_at: MOCK_CONFIRMED_AT }),
+    page(1, { confirmed: true, confirmed_at: MOCK_CONFIRMED_AT, confirmed_by: "auto", confirm_rule: "page_clean_v1" }),
+    page(2, { confirmed: true, confirmed_at: MOCK_CONFIRMED_AT, confirmed_by: "auto", confirm_rule: "page_clean_v1" }),
     page(3, {
       page_role: "parallel_visual_series",
       role_evidence: {
@@ -265,6 +268,7 @@ function summaryOf(item: PageExtractionPending): PageSummaryPending {
     confirmed: item.confirmed,
     page_role: item.page_role,
     dropped: item.dropped,
+    confirmed_by: item.confirmed_by,
   };
 }
 
@@ -416,7 +420,14 @@ function confirmPage(documentId: string, pageNumber: number, expectedVersion: nu
     return reject(409, "trang không xác nhận được", CONFIRM_PAGE);
   }
   if (found.version !== expectedVersion) return reject(409, `version lệch: hiện tại ${found.version}`, CONFIRM_PAGE);
-  state.pages[index] = { ...found, confirmed: true, confirmed_at: MOCK_CONFIRMED_AT, version: found.version + 1 };
+  state.pages[index] = {
+    ...found,
+    confirmed: true,
+    confirmed_at: MOCK_CONFIRMED_AT,
+    confirmed_by: "user",
+    confirm_rule: null,
+    version: found.version + 1,
+  };
   return getDocumentPage(documentId, pageNumber);
 }
 
@@ -428,10 +439,18 @@ function confirmImport(documentId: string): Promise<ImportResultView> {
   const state = live(documentId);
   if (state === null) return reject(404, "không tìm thấy tài liệu", CONFIRM_DOCUMENT);
   if (!state.confirmed) {
-    state.pages = state.pages.map((item) =>
-      item.status === "ok" && !item.confirmed && !item.dropped
-        ? { ...item, confirmed: true, confirmed_at: MOCK_CONFIRMED_AT, version: item.version + 1 }
-        : item,
+    state.pages = state.pages.map(
+      (item): PageExtractionPending =>
+        item.status === "ok" && !item.confirmed && !item.dropped
+          ? {
+              ...item,
+              confirmed: true,
+              confirmed_at: MOCK_CONFIRMED_AT,
+              confirmed_by: "user",
+              confirm_rule: null,
+              version: item.version + 1,
+            }
+          : item,
     );
     if (!state.pages.some(isNeedsReview)) {
       state.confirmed = true;

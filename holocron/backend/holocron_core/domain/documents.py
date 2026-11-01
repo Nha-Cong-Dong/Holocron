@@ -59,6 +59,7 @@ ReviewReason = Literal[
 ]
 FailureReason = Literal["PAGE_TIMEOUT", "PAGE_ERROR", "OCR_ENGINE_MISSING", "TOO_MANY_LINES"]
 PageStatus = Literal["pending", "ok", "needs_review", "failed"]
+ConfirmedBy = Literal["user", "auto"]  # GĐ1 1B: người xác nhận trang ("auto" = luật `page_clean_v1`, §5.7)
 CrossCheckStatus = Literal["ok", "mismatch", "unavailable", "not_applicable"]
 
 REVIEW_REASON_ORDER: tuple[ReviewReason, ...] = get_args(ReviewReason)
@@ -189,6 +190,11 @@ class PageExtraction(StrictModel):
     role_evidence: PageRoleEvidence | None = None
     dropped: bool = False
     restored: bool = False
+    # GĐ1 1B (thêm 2026-10-31, §5.7 "Tự xác nhận cấp trang"): audit của lần xác nhận; có mặc định nên JSON trang lưu
+    # trước GĐ1 vẫn đọc được (`confirmed = true` với `confirmed_by = null` coi như "user").
+    confirmed_by: ConfirmedBy | None = None
+    confirm_rule: str | None = Field(default=None, pattern=r"^[a-z0-9_]+_v[0-9]+$")
+    auto_confirm_undone: bool = False
 
     @field_validator("review_reasons")
     @classmethod
@@ -235,6 +241,19 @@ class PageExtraction(StrictModel):
             raise ValueError("role_evidence chỉ có khi page_role có bằng chứng hoặc có PAGE_ROLE_UNCERTAIN")
         return self
 
+    @model_validator(mode="after")
+    def _consistent_confirmation(self) -> PageExtraction:
+        """Ràng buộc GĐ1 1B giữa xác nhận, người xác nhận và luật tự xác nhận (§5.7)."""
+        if not self.confirmed and self.confirmed_by is not None:
+            raise ValueError("confirmed = false thì confirmed_by phải là null")
+        if (self.confirmed_by == "auto") != (self.confirm_rule is not None):
+            raise ValueError("confirmed_by = 'auto' khi và chỉ khi confirm_rule khác null")
+        if self.confirmed_by == "auto" and (self.review_reasons or self.page_role != "content" or self.dropped):
+            raise ValueError("trang tự xác nhận phải không còn review_reasons, page_role = 'content', không bỏ mềm")
+        if self.auto_confirm_undone and self.confirmed_by == "auto":
+            raise ValueError("auto_confirm_undone = true thì confirmed_by không được là 'auto'")
+        return self
+
 
 # --------------------------------------------------------------------------- #
 # Tài liệu đã nhập (SPECIFICATION §5.7, §6.5) và lịch sử sửa trang
@@ -247,11 +266,20 @@ CHAPTER_CODE_PATTERN = r"^ch[0-9]{1,2}(\.[0-9]{1,2})?$"  # cùng mẫu với `Kn
 
 # Chương tự động (§5.7 "Chương tự động", §6.5; GĐ1 1A, duyệt 2026-10-31)
 
+# Cờ code được GHI cho tài liệu mới (contract §5.7)
 ChapterFlag = Literal[
     "CHAPTER_NUMBER_NOT_IN_FILENAME",  # tên file không có số nguyên 1–2 chữ số ⇒ dùng chương trống nhỏ nhất
-    "CHAPTER_NUMBER_TAKEN",  # số trong tên file trùng chương đã có của môn ⇒ dùng chương trống nhỏ nhất
+    "CHAPTER_NUMBER_SHARED",  # THÔNG TIN: số trong tên file trùng chương đã có của môn ⇒ GIỮ số đó
 ]
-CHAPTER_FLAG_ORDER: tuple[ChapterFlag, ...] = get_args(ChapterFlag)
+# Cờ có thể gặp trong bản ghi và response: cờ mới rồi cờ cũ, theo thứ tự này. `CHAPTER_NUMBER_TAKEN` chỉ còn ĐỌC
+# được ở bản ghi cũ (trước 2026-11-01: khi đó số trùng ⇒ chương trống nhỏ nhất, `next_free`); giữ nguyên khi đọc, không
+# ánh xạ sang `CHAPTER_NUMBER_SHARED` vì nghĩa khác; code mới không ghi cờ này (kiểu `ChapterFlag` không có nó).
+StoredChapterFlag = Literal[
+    "CHAPTER_NUMBER_NOT_IN_FILENAME",
+    "CHAPTER_NUMBER_SHARED",
+    "CHAPTER_NUMBER_TAKEN",
+]
+CHAPTER_FLAG_ORDER: tuple[StoredChapterFlag, ...] = get_args(StoredChapterFlag)
 ChapterCodeSource = Literal["user", "file_name", "next_free"]
 ChapterTitleSource = Literal["user", "repeated_header", "file_name", "llm"]
 MAX_CHAPTER_TITLE_CHARS = 300
@@ -284,6 +312,7 @@ class PageSummary(StrictModel):
     confirmed: bool
     page_role: PageRole = "content"
     dropped: bool = False
+    confirmed_by: ConfirmedBy | None = None
 
     @classmethod
     def from_page(cls, page: PageExtraction) -> PageSummary:
@@ -295,6 +324,7 @@ class PageSummary(StrictModel):
             confirmed=page.confirmed,
             page_role=page.page_role,
             dropped=page.dropped,
+            confirmed_by=page.confirmed_by,
         )
 
 
@@ -311,6 +341,17 @@ def count_dropped(pages: list[PageSummary]) -> int:
 def count_needs_review(pages: list[PageSummary]) -> int:
     """Số trang "cần xem" (GĐ0, sửa đổi 2026-10-31): `needs_review`, không bỏ mềm, chưa xác nhận."""
     return sum(page.status == "needs_review" and not page.dropped and not page.confirmed for page in pages)
+
+
+def count_auto_confirmed(pages: list[PageSummary]) -> int:
+    """Số trang tự xác nhận (GĐ1 1B): `confirmed_by = "auto"`."""
+    return sum(page.confirmed_by == "auto" for page in pages)
+
+
+def count_kept_unconfirmed(pages: list[PageSummary]) -> int:
+    """Số trang giữ nhưng chưa xác nhận và không thuộc `pages_needs_review` (GĐ1 1B): không pending, failed hay bỏ
+    mềm, chưa xác nhận, `status = "ok"`; đây là các trang nút "Chấp nhận" sẽ xác nhận theo lô."""
+    return sum(page.status == "ok" and not page.dropped and not page.confirmed for page in pages)
 
 
 class DocumentImport(StrictModel):
@@ -330,8 +371,10 @@ class DocumentImport(StrictModel):
     # thêm 2026-10-31 (GĐ1 1A, 1B; §5.7 "Chương tự động", §6.5)
     chapter_title: str | None = Field(default=None, min_length=1, max_length=MAX_CHAPTER_TITLE_CHARS)
     chapter_source: ChapterSource
-    chapter_flags: list[ChapterFlag] = Field(default_factory=list)
+    chapter_flags: list[StoredChapterFlag] = Field(default_factory=list)
     auto_confirm: bool = True
+    pages_auto_confirmed: int = Field(ge=0)
+    pages_kept_unconfirmed: int = Field(ge=0)
 
     @model_validator(mode="after")
     def _chapter_title_has_a_source(self) -> DocumentImport:
@@ -438,6 +481,13 @@ class PageLinesPatch(StrictModel):
 
 class PageConfirmRequest(StrictModel):
     """Body của `POST /v1/documents/{document_id}/pages/{page_number}/confirm` (§6.5)."""
+
+    editor_id: str = Field(min_length=1, max_length=MAX_EDITOR_ID_CHARS)
+    expected_version: int = Field(ge=1)
+
+
+class PageUnconfirmRequest(StrictModel):
+    """Body của `POST /v1/documents/{document_id}/pages/{page_number}/unconfirm` (§6.5, GĐ1 1B)."""
 
     editor_id: str = Field(min_length=1, max_length=MAX_EDITOR_ID_CHARS)
     expected_version: int = Field(ge=1)

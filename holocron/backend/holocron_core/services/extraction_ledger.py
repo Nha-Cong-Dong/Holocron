@@ -32,7 +32,6 @@ from ..domain.blocks import (
 )
 from ..domain.documents import (
     DROPPABLE_ROLE_ORDER,
-    BBox,
     DroppableRole,
     ExtractedLine,
     GeoLine,
@@ -119,13 +118,6 @@ class SourceIndex:
 
     def units(self, ref: SourceRef) -> int:
         return nonws_units(self.text(ref))
-
-    def bbox(self, ref: SourceRef) -> BBox | None:
-        if isinstance(ref, ConfirmedLineRef):
-            line = self._confirmed(ref)
-            return line.bbox if ref.line_index in self.owner else None
-        self._word_text(ref)
-        return self._geo_lines(ref)[ref.line_idx].words[ref.word_idx].bbox
 
     def flow_key(self, ref: SourceRef) -> FlowKey:
         if isinstance(ref, ConfirmedLineRef):

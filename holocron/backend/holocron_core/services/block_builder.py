@@ -20,11 +20,12 @@ Các bước (hàm thuần, tất định):
 
 from __future__ import annotations
 
+import bisect
 import re
 import statistics
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from itertools import pairwise
+from itertools import accumulate, pairwise
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -177,13 +178,8 @@ def _weighted_median(pairs: Sequence[tuple[float | None, int]]) -> float | None:
     items = sorted((value, max(weight, 1)) for value, weight in pairs if value is not None)
     if not items:
         return None
-    half = sum(weight for _, weight in items) / 2
-    running = 0
-    for value, weight in items:
-        running += weight
-        if running >= half:
-            return value
-    return items[-1][0]
+    cumulative = list(accumulate(weight for _, weight in items))
+    return items[bisect.bisect_left(cumulative, cumulative[-1] / 2)][0]
 
 
 class _PageBuilder:
@@ -227,9 +223,8 @@ class _PageBuilder:
         lines = self.context.extraction.lines
         for geo_idx, line in enumerate(self.geometry.lines):
             if geo_idx in self.index.edited_geo_lines:
+                # Dòng thô có mảnh đã sửa luôn có ít nhất một mảnh (`SourceIndex.edited_geo_lines`).
                 refs: list[SourceRef] = [ConfirmedLineRef(line_index=i) for i in line.extracted_line_indices]
-                if not refs:
-                    continue
                 boxes = [b for i in line.extracted_line_indices if (b := lines[i].bbox) is not None]
                 bbox = _union(boxes)
                 size, bold = self._style(line.words, line.font_id, line.font_size_pt)
@@ -291,16 +286,17 @@ class _PageBuilder:
             ]
         # Neo: từ có hộp kèm các từ không hộp theo sau nó trong luồng; từ không hộp đứng đầu dòng đứng trước mọi neo.
         leading: list[int] = []
-        anchors: list[list[int]] = []
+        anchored: list[tuple[BBox, list[int]]] = []
         for i, word in enumerate(words):
             if word.bbox is not None:
-                anchors.append([i])
-            elif anchors:
-                anchors[-1].append(i)
+                anchored.append((word.bbox, [i]))
+            elif anchored:
+                anchored[-1][1].append(i)
             else:
                 leading.append(i)
-        anchors.sort(key=lambda group: (self._box(geo_idx, group[0])[0], group[0]))
-        boxed = [self._box(geo_idx, group[0]) for group in anchors]
+        anchored.sort(key=lambda item: (item[0][0], item[1][0]))
+        anchors = [group for _, group in anchored]
+        boxed = [box for box, _ in anchored]
         height = max(b[3] for b in boxed) - min(b[1] for b in boxed)
         threshold = self.settings.segment_gap_ratio * height
         parts: list[list[list[int]]] = [[anchors[0]]]
@@ -341,12 +337,6 @@ class _PageBuilder:
                 )
             )
         return segs
-
-    def _box(self, geo_idx: int, word_idx: int) -> BBox:
-        box = self.geometry.lines[geo_idx].words[word_idx].bbox
-        if box is None:
-            raise LayoutBuildError("neo của đoạn dòng phải có hộp")
-        return box
 
     # ------------------------------------------------------------------ phân loại
 

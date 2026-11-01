@@ -398,3 +398,133 @@ def test_bold_font_table_lookup_is_used() -> None:
     geo = geometry([geo_line("Strong", 0.1, 0.1, font_id=1), *_column(0.1, 0.13, ["plain body one", "plain two"])])
     assert geo.fonts[1] == BOLD
     assert [b.type for b in _ordered(_build(geo))] == ["heading", "paragraph"]
+
+
+# --------------------------------------------------------------------------- #
+# Ca biên của đoạn dòng
+# --------------------------------------------------------------------------- #
+
+
+def test_leading_boxless_word_stays_first_and_bullet_glyph_joins_its_text() -> None:
+    lead = geo_line("pre alpha beta", 0.1, 0.1, boxless={0})
+    bullet = geo_line("• far text", 0.1, 0.2)
+    # Ký hiệu đầu dòng cách chữ một khe lớn: vẫn cùng một đoạn (mục danh sách).
+    spaced = bullet.model_copy(
+        update={
+            "words": [
+                bullet.words[0],
+                *(
+                    w.model_copy(update={"bbox": (0.2 + 0.05 * i, 0.2, 0.24 + 0.05 * i, 0.212)})
+                    for i, w in enumerate(bullet.words[1:])
+                ),
+            ]
+        }
+    )
+    blocks = _ordered(_build(geometry([lead, spaced])))
+    assert [(b.type, b.text) for b in blocks] == [("paragraph", "pre alpha beta"), ("list_item", "• far text")]
+    assert "reading_order_uncertain" in blocks[0].flags
+
+
+def test_overlap_leaf_over_cap_is_one_uncertain_figure() -> None:
+    lines = [geo_line(f"w{i}", 0.3 + 0.001 * i, 0.3 + 0.0005 * i) for i in range(5)]
+    geo = geometry(lines)
+    stages = (BaseBlockStage(BaseBlockSettings(overlap_leaf_cap=2)), ReadingOrderStage())
+    result = build_page_blocks(
+        document_id=DOC_ID, page_number=1, geometry=geo, extraction=extraction_for(geo), lang=LANG, stages=stages
+    )
+    blocks = _ordered(result)
+    assert [b.type for b in blocks] == ["figure"] and len(blocks[0].labels) == 5
+
+
+def test_edited_boxless_line_is_uncertain_and_human_edited() -> None:
+    geo = geometry([geo_line("floating words", None, 0.0), geo_line("boxed line", 0.1, 0.3)])
+    extraction = _patched(extraction_for(geo), {0: "floating fixed"}, [])
+    blocks = _ordered(_build(geo, extraction))
+    assert blocks[0].text == "floating fixed" and blocks[0].bbox is None
+    assert {"human_edited", "reading_order_uncertain"} <= set(blocks[0].flags)
+
+
+# --------------------------------------------------------------------------- #
+# Validator của model (spec §5.15)
+# --------------------------------------------------------------------------- #
+
+_BASE: dict[str, object] = {
+    "block_id": "blk_0000000000000000",
+    "document_id": DOC_ID,
+    "page_number": 1,
+    "type": "paragraph",
+    "bbox": (0.1, 0.1, 0.2, 0.2),
+    "text": "x",
+    "source": "text_layer",
+    "reading_order": 0,
+}
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"bbox": (0.3, 0.1, 0.2, 0.2)},
+        {"level": 1},
+        {"type": "heading"},
+        {"list_depth": 0},
+        {"cells": []},
+        {"labels": ["a"]},
+        {
+            "type": "figure",
+            "text": None,
+            "flags": ["crop_pending"],
+            "line_refs": [{"kind": "word", "line_idx": 0, "word_idx": 0}],
+        },
+        {"caption_of": "blk_0000000000000001"},
+        {"ocr_text": "x"},
+        {"type": "figure", "flags": ["crop_pending"]},
+        {"type": "formula"},
+        {"flags": ["table_token_mismatch"]},
+    ],
+)
+def test_block_validator_rejects(extra: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        Block.model_validate({**_BASE, **extra})
+
+
+def test_block_flags_sorted_unique_and_section_crop_models() -> None:
+    from holocron_core.domain.blocks import CropImage, Section
+
+    block = Block.model_validate({**_BASE, "flags": ["human_edited", "boxed", "human_edited"]})
+    assert block.flags == ["boxed", "human_edited"]
+    section = {
+        "section_id": "sec_0000000000000000",
+        "document_id": DOC_ID,
+        "parent_id": None,
+        "kind": "chapter",
+        "level": 0,
+        "title": "Chương 1",
+        "ordinal": 0,
+        "page_start": 1,
+        "page_end": 2,
+    }
+    assert Section.model_validate(section).title == "Chương 1"
+    for bad in (
+        {"parent_id": "sec_0000000000000001"},
+        {"kind": "section", "chapter_code": "ch1"},
+        {"page_end": 0},
+        {"page_start": 3},
+        {"title": None},
+    ):
+        with pytest.raises(ValidationError):
+            Section.model_validate({**section, **bad})
+    crop = {
+        "document_id": DOC_ID,
+        "block_id": "blk_0000000000000000",
+        "crop_ref": "a" * 64,
+        "page_number": 1,
+        "bbox": (0.1, 0.1, 0.2, 0.2),
+        "width_px": 10,
+        "height_px": 10,
+        "size_bytes": 100,
+    }
+    assert CropImage.model_validate(crop).media_type == "image/png"
+    with pytest.raises(ValidationError):
+        CropImage.model_validate({**crop, "bbox": (0.3, 0.1, 0.2, 0.2)})
+    with pytest.raises(ValidationError):
+        CropImage.model_validate({**crop, "width_px": 1025})

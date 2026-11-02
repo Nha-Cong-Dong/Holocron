@@ -1,0 +1,22 @@
+.form {
+  display: grid;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+
+.error {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--err-soft);
+  color: var(--ink);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  overflow-wrap: anywhere;
+}

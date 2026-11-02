@@ -15,6 +15,7 @@ from holocron_core.infrastructure.llm_config import (
     load_runtime_config,
 )
 from holocron_core.routers.api import app, get_extractor, get_runtime_config
+from holocron_core.routers.deps import get_build_info, get_log_dir
 from holocron_core.services.extraction import (
     DocumentExtractor,
     DualPassExtraction,
@@ -39,6 +40,50 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
     for name in [n for n in os.environ if n.startswith(("HOLOCRON_LLM_", "HOLOCRON_VLM_"))]:
         monkeypatch.delenv(name)
+
+
+# Giá trị mong đợi viết cứng, đủ 12 phần tử đúng thứ tự §5.12 (câu 15 duyệt sửa test, ngày 2026-10-29; tên khả năng: đề xuất, chờ duyệt); không tính từ code.
+_NOT_IMPL_DETAIL = "Bản đang chạy chưa có khả năng này."
+_LLM_DETAIL = (
+    "Chưa cấu hình LLM: đặt đủ ba biến môi trường HOLOCRON_LLM_BASE_URL, HOLOCRON_LLM_API_KEY và "
+    "HOLOCRON_LLM_MODEL_EXTRACT cho backend rồi khởi động lại."
+)
+
+CAPS_LLM_ONLY: list[dict[str, str | bool | None]] = [
+    {"name": "ocr", "available": True, "reason": None, "detail_vi": None},
+    {"name": "ocr_cross_check", "available": True, "reason": None, "detail_vi": None},
+    {"name": "vault_search", "available": True, "reason": None, "detail_vi": None},
+    {"name": "theory_generation", "available": True, "reason": None, "detail_vi": None},
+    {"name": "concept_pair_llm_proposal", "available": True, "reason": None, "detail_vi": None},
+    {"name": "essay_grading_offline", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "essay_grading_llm", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "template_authoring_llm", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "vlm", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "concept_auto_proposal", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "line_review_queue", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "page_progress_eta", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+]
+
+CAPS_VLM_ONLY: list[dict[str, str | bool | None]] = [
+    {"name": "ocr", "available": True, "reason": None, "detail_vi": None},
+    {"name": "ocr_cross_check", "available": True, "reason": None, "detail_vi": None},
+    {"name": "vault_search", "available": True, "reason": None, "detail_vi": None},
+    {"name": "theory_generation", "available": True, "reason": None, "detail_vi": None},
+    {"name": "concept_pair_llm_proposal", "available": False, "reason": "llm_not_configured", "detail_vi": _LLM_DETAIL},
+    {"name": "essay_grading_offline", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "essay_grading_llm", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "template_authoring_llm", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "vlm", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "concept_auto_proposal", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "line_review_queue", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+    {"name": "page_progress_eta", "available": False, "reason": "not_implemented", "detail_vi": _NOT_IMPL_DETAIL},
+]
+
+
+def _build_fields() -> dict[str, str | None]:
+    """Ba field build/log của `RuntimeInfo` (câu 7, duyệt 2026-10-28); giá trị kiểm riêng ở `test_runtime_build_info.py`."""
+    info = get_build_info()
+    return {"app_version": info.version, "commit": info.commit, "log_dir": get_log_dir()}
 
 
 def test_defaults_when_nothing_is_configured() -> None:
@@ -124,7 +169,13 @@ def test_runtime_endpoint_reports_demo_mode_without_leaking_anything(monkeypatch
     monkeypatch.setenv("HOLOCRON_LLM_MODEL_AUTHOR", "secret-model-name")
     response = TestClient(app).get("/v1/runtime")
     assert response.status_code == 200
-    assert response.json() == {"demo_mode": True, "llm_configured": True, "vlm_configured": False}
+    assert response.json() == {
+        "demo_mode": True,
+        "llm_configured": True,
+        "vlm_configured": False,
+        **_build_fields(),
+        "capabilities": CAPS_LLM_ONLY,
+    }
     assert SECRET not in response.text and "secret-model-name" not in response.text
 
 
@@ -143,7 +194,13 @@ def test_runtime_endpoint_reflects_the_extractor_in_use_not_only_the_environment
         assert isinstance(get_extractor(), MockDualPassExtractor)
         app.dependency_overrides[get_extractor] = lambda: real
         body = TestClient(app).get("/v1/runtime").json()
-        assert body == {"demo_mode": False, "llm_configured": False, "vlm_configured": True}
+        assert body == {
+            "demo_mode": False,
+            "llm_configured": False,
+            "vlm_configured": True,
+            **_build_fields(),
+            "capabilities": CAPS_VLM_ONLY,
+        }
     finally:
         app.dependency_overrides.clear()
 

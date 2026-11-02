@@ -6,11 +6,23 @@ Chạy NGOÀI pytest, không chạy trong CI hay pre-commit; cần Tesseract `vi
     cd holocron/backend
     python -m scripts.eval_pdf_ocr <thư mục PDF> <thư mục kết quả> [--max-pages 10]
 
-Với mỗi trang PDF có lớp chữ tốt (`text_score ≥ TEXT_LAYER_MIN`): lớp chữ làm đáp án; trang được render 300 DPI,
-làm mờ và thêm nhiễu (scan giả lập), rồi OCR bằng đúng đường của worker (Tesseract qua stdin/stdout, RapidOCR chỉ
-lấy token số và mã) và dựng `PageExtraction`. Chỉ số: CER sau chuẩn hoá NFC (gộp khoảng trắng), tỉ lệ chữ số đúng
-(khoảng cách sửa trên dãy chữ số), `ocr_score`, `coverage_ratio`, kết quả đối chiếu chéo, lý do xem lại và thời
-gian. Script cũng chạy kiểm bộ chữ (`missing_vietnamese_letters`) trên `vie.traineddata` thật.
+Với mỗi trang PDF mà app dùng lớp chữ (`text_layer.ocr_reason` là None) và lớp chữ có ít nhất `--min-truth-chars`
+ký tự không trắng (mặc định 170, để tập trang gần với tập của công thức chọn tầng cũ `min(1, non_ws/200) × clean ×
+valid ≥ 0.85` và số liệu so được với các lần đo trước. Hai tập chỉ trùng nhau trên trang có lớp chữ sạch hoàn toàn
+(`clean × valid = 1`, khi đó công thức cũ cũng đòi `non_ws ≥ 170`); trang có `clean × valid` trong [0.85, 1) và
+`170 ≤ non_ws < 170 / (clean × valid)` nay được tính thêm, cũng như trang mà heuristic TCVN3/VNI sửa ngày
+2026-10-29 không còn bắt nhầm (ký hiệu nhãn hiệu cuối tên Latin, từ nước ngoài có chữ Latin-1)): lớp chữ làm đáp
+án; trang được render 300 DPI, làm mờ và thêm nhiễu (scan giả lập), rồi OCR bằng đúng đường của worker (Tesseract
+qua stdin/stdout, RapidOCR chỉ lấy token số và mã) và dựng `PageExtraction`. Chỉ số: CER sau chuẩn hoá NFC (gộp
+khoảng trắng), tỉ lệ chữ số đúng, `ocr_score`, `coverage_ratio`, kết quả đối chiếu chéo, lý do xem lại và thời gian.
+
+Chữ số đúng: mỗi trang lấy dãy chữ số của đáp án và của kết quả OCR (theo thứ tự đọc), `digit_errors` là khoảng cách
+sửa giữa hai dãy; số chữ số đúng của trang là `max(0, truth_digits − digit_errors)` (`digit_correct`). Chỉ số tổng
+`digit_accuracy_micro` = tổng chữ số đúng / tổng chữ số của đáp án. Trước 2026-10-29 chỉ số tổng là
+`1 − Σ digit_errors / Σ truth_digits`, không kẹp từng trang: trang mà OCR đọc thêm nhiều chữ số không có trong lớp
+chữ (chữ số trong ảnh chụp màn hình, sơ đồ) kéo cả tài liệu về gần 0. Lưu ý: dãy chữ số so theo thứ tự đọc, nên thứ
+tự đọc khác lớp chữ (nhiều cột, bảng) cũng bị tính là lỗi; chữ số OCR đọc thêm từ ảnh cũng là lỗi chèn. Script cũng
+chạy kiểm bộ chữ (`missing_vietnamese_letters`) trên `vie.traineddata` thật.
 
 Kết quả chỉ gồm số liệu (không chép văn bản tài liệu), ghi ra `results.json` và `results.md` trong thư mục kết
 quả; script từ chối ghi vào trong repo. Script đọc PDF ngay trong tiến trình này, nên chỉ dùng cho tài liệu đánh giá
@@ -27,6 +39,7 @@ import statistics
 import sys
 import time
 import unicodedata
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -51,7 +64,12 @@ from holocron_core.infrastructure.document_readers.tesseract import (
     TesseractError,
     missing_vietnamese_letters,
 )
-from holocron_core.infrastructure.document_readers.text_layer import page_text, text_score
+from holocron_core.infrastructure.document_readers.text_layer import (
+    non_whitespace_count,
+    ocr_reason,
+    page_text,
+    text_score,
+)
 from holocron_core.infrastructure.document_readers.tiers import assemble_ocr_page
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -115,6 +133,26 @@ def digits(text: str) -> str:
     return "".join(c for c in text if "0" <= c <= "9")
 
 
+def digit_correct(truth_digits: int, digit_errors: int) -> int:
+    """Số chữ số đúng của một trang: số chữ số của đáp án trừ khoảng cách sửa, kẹp về 0.
+
+    Khoảng cách sửa lớn hơn số chữ số của đáp án khi OCR đọc thêm chữ số (lỗi chèn); phần vượt không được trừ sang
+    các trang khác.
+    """
+    return max(0, truth_digits - digit_errors)
+
+
+def digit_accuracy_micro(pages: Sequence[tuple[int, int]]) -> float | None:
+    """Tổng chữ số đúng / tổng chữ số của đáp án trên các trang `(truth_digits, digit_errors)`.
+
+    Không có chữ số nào ⇒ None.
+    """
+    total = sum(truth for truth, _ in pages)
+    if total == 0:
+        return None
+    return sum(digit_correct(truth, errors) for truth, errors in pages) / total
+
+
 def simulate_scan(image: GrayImage, blur_sigma: float, noise_sigma: float, rng: np.random.Generator) -> GrayImage:
     """Scan giả lập: làm mờ Gauss rồi cộng nhiễu Gauss, cắt về [0, 255]."""
     pixels = np.frombuffer(image.pixels, dtype=np.uint8).reshape(image.height, image.width)
@@ -150,8 +188,12 @@ def evaluate_page(
     raw = document.read_page(index)
     truth = normalize(page_text(raw.lines))
     score = text_score(page_text(raw.lines), config)
-    if score < config.text_layer_min:
-        return f"text_score {score:.2f} < {config.text_layer_min}: lớp chữ không đủ tốt để làm đáp án"
+    reason = ocr_reason(raw, config)
+    if reason is not None:
+        return f"app OCR trang này ({reason}): lớp chữ không dùng làm đáp án"
+    non_ws = non_whitespace_count(truth)
+    if non_ws < args.min_truth_chars:
+        return f"lớp chữ có {non_ws} < {args.min_truth_chars} ký tự: quá ít để làm đáp án"
     image = simulate_scan(
         document.render_gray(index, config.ocr_dpi, config.ocr_max_pixels), args.blur, args.noise, rng
     )
@@ -182,7 +224,7 @@ def evaluate_page(
         edit_distance=distance,
         truth_digits=len(truth_digits),
         digit_errors=digit_errors,
-        digit_accuracy=max(0.0, 1 - digit_errors / len(truth_digits)) if truth_digits else None,
+        digit_accuracy=digit_correct(len(truth_digits), digit_errors) / len(truth_digits) if truth_digits else None,
         text_score=score,
         ocr_score=page.ocr_score,
         coverage_ratio=page.coverage_ratio,
@@ -213,7 +255,10 @@ def summary(report: Report) -> dict[str, object]:
         "skipped": len(report.skipped),
         "cer_micro": sum(p.edit_distance for p in pages) / chars if chars else None,
         "cer_median": statistics.median(p.cer for p in pages) if pages else None,
-        "digit_accuracy_micro": 1 - sum(p.digit_errors for p in pages) / digit_total if digit_total else None,
+        "digit_accuracy_micro": digit_accuracy_micro([(p.truth_digits, p.digit_errors) for p in pages]),
+        "digit_total": digit_total,
+        "digit_correct": sum(digit_correct(p.truth_digits, p.digit_errors) for p in pages),
+        "digit_pages_errors_exceed_truth": sum(1 for p in pages if p.digit_errors > p.truth_digits),
         "tesseract_s_median": statistics.median(p.tesseract_s for p in pages) if pages else None,
         "secondary_s_median": (
             statistics.median(p.secondary_s for p in pages if p.secondary_s is not None)
@@ -276,6 +321,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--blur", type=float, default=1.2, help="σ của làm mờ Gauss (điểm ảnh)")
     parser.add_argument("--noise", type=float, default=12.0, help="σ của nhiễu Gauss (mức xám)")
     parser.add_argument("--seed", type=int, default=20261025)
+    parser.add_argument(
+        "--min-truth-chars", type=int, default=170, help="số ký tự không trắng tối thiểu của lớp chữ làm đáp án"
+    )
     args = parser.parse_args(argv)
 
     out_dir = args.out_dir.resolve()

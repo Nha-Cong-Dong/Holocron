@@ -73,6 +73,8 @@ def _accept(
             declared_type="application/pdf",
             subject_code="ET4010",
             source_kind=SourceKind.TEXTBOOK,
+            chapter_code="ch3",
+            auto_confirm=False,  # GĐ1 1B: các test ở đây kiểm luồng xác nhận thủ công, trang `ok` chưa xác nhận
         ),
         store=store,
         runtime=ImportRuntime(files=files, queue=jobs),
@@ -308,7 +310,7 @@ def test_real_pdf_is_probed_and_read_by_the_real_worker(tmp_path: Path) -> None:
         client = TestClient(app)
         response = client.post(
             "/v1/documents",
-            data={"subject_code": "ET4010", "source_kind": "lecture_slides"},
+            data={"subject_code": "ET4010", "source_kind": "lecture_slides", "chapter_code": "ch3"},
             files={"file": ("sample.pdf", content, "application/pdf")},
         )
         assert response.status_code == 202, response.text

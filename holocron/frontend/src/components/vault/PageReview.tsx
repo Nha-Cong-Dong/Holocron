@@ -7,13 +7,14 @@ import { type FormEvent, type KeyboardEvent, useCallback, useEffect, useId, useR
 import { ErrorNotice } from "@/components/common/ErrorNotice";
 import { Loading } from "@/components/common/LoadState";
 import { TesseractHelp } from "@/components/common/TesseractHelp";
+import { ReviewBanner, ReviewCelebration } from "@/components/documents/ReadingList";
+import { useShell } from "@/components/shell/ShellContext";
 import { api, toUiError } from "@/lib/api";
 import {
   buildLineEdits,
   CONFIRM_DOCUMENT_BLOCK_MESSAGE_VI,
   CONFIRM_PAGE_BLOCK_MESSAGE_VI,
   checkLineText,
-  confirmDocumentBlock,
   confirmPageBlock,
   createPendingPagePoller,
   createSingleFlight,
@@ -30,13 +31,66 @@ import {
   sourceKindLabel,
   tierLabel,
 } from "@/lib/documents";
-import type { DocumentView, LineView, PageStatusView, PageView } from "@/lib/documents-data";
+import type { DocumentStatusView, DocumentView, LineView, PageStatusView, PageView } from "@/lib/documents-data";
+import {
+  explainRestoreFailure,
+  isDropped,
+  RESTORE_DONE_VI,
+  restoreStatusText,
+  splitDroppedPages,
+  type WriteOutcome,
+  withoutDropped,
+} from "@/lib/dropped-pages";
 import type { UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
+import { vaultLocationTarget } from "@/lib/legacy-routes";
 import type { Poller } from "@/lib/poll";
-import { vaultHref } from "@/lib/vault";
+import {
+  type ActiveOnShow,
+  canConfirmNow,
+  confirmButtonBlock,
+  confirmClick,
+  focusOnShow,
+  nextReviewTarget,
+  unsavedDrafts,
+} from "@/lib/review-confirm";
+import {
+  type Announcement,
+  bulkConfirmBlock,
+  closeLineEdit,
+  DRAFT_PAGE_LABEL_VI,
+  draftFor,
+  draftPagesNote,
+  lineEditDenial,
+  lineEditLock,
+  lineEditState,
+  lockedDraftNotice,
+  NO_ANNOUNCEMENT,
+  NO_DRAFTS,
+  nextAnnouncement,
+  type PageDraft,
+  pageDraftStatusMessage,
+  pagesWithDrafts,
+  type ReviewDrafts,
+  setAppendText,
+  setLineEditText,
+  startLineEdit,
+} from "@/lib/review-drafts";
+import { classifyReviewFocus, lineToEdit, reviewKeyAction } from "@/lib/review-keys";
+import { awaitingSettle, queueNeighbors, reviewOutcome, reviewProgress, reviewQueue } from "@/lib/review-queue";
+import {
+  endSend,
+  guardRemainingMs,
+  msSinceShown,
+  type ReviewSession,
+  reviewPageKey,
+  reviewSessionFor,
+} from "@/lib/review-session";
+import type { VaultHrefFor } from "@/lib/vault";
 
 import { DeleteDialog } from "./DocumentList";
+import { DroppedPageNav, DroppedPagePanel } from "./DroppedPages";
+import pageStyles from "./PageReview.module.css";
 import styles from "./Vault.module.css";
 
 type Loadable<T> = { kind: "loading" } | { kind: "error"; error: UiError } | { kind: "ready"; value: T };
@@ -56,43 +110,113 @@ function rawNumber(value: number | null): string {
 
 interface PageReviewProps {
   documentId: string;
-  pageNumber: number;
+  /** Trang đang xem; `null` ⇒ mở trang cần xem lại đầu tiên (không có thì trang đầu). */
+  pageNumber: number | null;
+  /**
+   * Dựng địa chỉ trang khác, danh sách tài liệu của môn và nơi quay lại; mặc định là tab Tài liệu của trang môn
+   * (`vaultLocationTarget`). Trang môn truyền hàm giữ mọi liên kết trong phần Tài liệu của `/subject`.
+   */
+  hrefFor?: VaultHrefFor;
+  /** Môn của trang đang mở (`/subject?code=`): tài liệu thuộc môn khác thì không hiện dưới tiêu đề môn này. */
+  expectedSubjectCode?: string;
+  /**
+   * Xem lại xong (tài liệu vừa chuyển sang `confirmed` trong lúc màn mở): trang môn sang tab Khái niệm. Không truyền
+   * (màn `/vault`) thì chỉ hiện lời chúc mừng.
+   */
+  onFinished?: () => void;
 }
 
 /**
- * Xem lại một trang (`/vault?doc=…&page=…`; §5.7, §6.5): danh sách trang bên trái, văn bản theo dòng bên phải. Dòng
- * có cờ conf thấp hoặc token lệch được tô theo dữ liệu backend; sửa dòng gửi `expected_version`, 409 lệch phiên bản
- * thì có nút tải lại bản mới nhất; xác nhận từng trang (`ok`, `needs_review`) và xác nhận cả tài liệu (chỉ trang `ok`).
+ * Xem lại một trang (`/vault?doc=…&page=…` hoặc phần Tài liệu của `/subject`; §5.7, §6.5; design-handoff màn 6):
+ * banner "Có N trang cần xem lại" (hàng đợi tính từ `pages[]` của tài liệu), danh sách trang bên trái, văn bản theo dòng
+ * bên phải; phím E/←/→ trong vùng xem lại (`lib/review-keys.ts`). Trang chỉ được xác nhận bằng nút (I5,
+ * `lib/review-confirm.ts`); xác nhận xong thì trang ở lại, cạnh tiêu đề hiện nút "Sang trang cần xem kế tiếp" khi còn
+ * trang cần xem khác (tính từ tài liệu đọc lại sau khi xác nhận). Tài liệu chuyển sang `confirmed` thì chúc mừng rồi
+ * sang tab Khái niệm. Dòng có cờ conf thấp hoặc
+ * token lệch được tô theo dữ liệu backend; sửa dòng gửi `expected_version`, 409 lệch phiên bản thì có nút tải lại bản
+ * mới nhất; xác nhận từng trang (`ok`, `needs_review`) và xác nhận cả tài liệu (chỉ trang `ok`).
  * Chưa có ảnh trang vì chưa có cách lấy file gốc (kế hoạch UI M12).
  */
-export function PageReview({ documentId, pageNumber }: PageReviewProps) {
+export function PageReview({
+  documentId,
+  pageNumber,
+  hrefFor = vaultLocationTarget,
+  expectedSubjectCode,
+  onFinished,
+}: PageReviewProps) {
   const router = useRouter();
   const [document, setDocument] = useState<Loadable<DocumentView>>({ kind: "loading" });
+  // Trạng thái của tài liệu lần đầu đọc được: chỉ chúc mừng khi tài liệu chuyển sang `confirmed` trong lúc màn mở.
+  const [firstStatus, setFirstStatus] = useState<DocumentStatusView | null>(null);
   const [page, setPage] = useState<Loadable<PageView>>({ kind: "loading" });
   const [actionError, setActionError] = useState<UiError | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Đang chạy đúng thao tác "Khôi phục trang" (khác `busy`: có thể là thao tác ghi khác), để nút đổi chữ đúng lúc.
+  const [restoring, setRestoring] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [pollError, setPollError] = useState<UiError | null>(null);
   const pagePoller = useRef<Poller | null>(null);
   const docCalls = useRef(createLatestCounter());
   const pageCalls = useRef(createLatestCounter());
-  // Cờ đổi ngay (không chờ render) để Enter rồi bấm "Lưu" liền tay chỉ gửi một thao tác ghi.
+  // Cờ đổi ngay (không chờ render) để hai thao tác ghi bấm liền tay (Enter ở ô sửa dòng rồi "Lưu") chỉ gửi một lần.
   const writes = useRef(createSingleFlight());
+  // Trang vừa xác nhận thành công trên màn này, sau khi đã đọc lại tài liệu: hiện nút "Sang trang cần xem kế tiếp".
+  const [confirmedHere, setConfirmedHere] = useState<number | null>(null);
+  // Kết quả khôi phục trang cho trình đọc màn hình: vùng `role="status"` luôn có mặt (vùng gắn muộn thường không được
+  // đọc), chữ chỉ đổi khi có kết quả; sang trang khác thì xoá.
+  const [restoreStatus, setRestoreStatus] = useState("");
+  // Trang hiện lần trước, để biết trang mới hiện là đổi trang hay vẽ lại cùng trang (đặt focus, `focusOnShow`).
+  const lastShownPage = useRef<number | null>(null);
+  // Nháp chưa lưu theo số trang (`lib/review-drafts.ts`): giữ ở đây, không ở `PagePanel`, để vùng trang vẽ lại (lưu dòng
+  // khác làm `version` tăng) hay đổi trang rồi quay lại không làm mất nháp (I5).
+  const [drafts, setDrafts] = useState<ReviewDrafts>(NO_DRAFTS);
+  // Vùng thông báo cố định của màn (`role="status"`): đặt ở đây, không ở `PagePanel`, vì vùng trang mount lại theo
+  // `pageNumber:version` sau mỗi lần ghi hay tải lại. Chữ chỉ đổi khi câu báo của trang đang hiện đổi
+  // (`nextAnnouncement`), nên xung đột cũ không bị đọc lại sau một lần ghi không liên quan; sang trang khác thì chữ của
+  // trang cũ bị bỏ ngay cả khi trang mới còn đang tải. Không di chuyển focus.
+  const shownPage = page.kind === "ready" ? page.value.pageNumber : pageNumber;
+  const shownMessage =
+    page.kind === "ready" ? pageDraftStatusMessage(page.value, draftFor(drafts, page.value.pageNumber)) : null;
+  const [announced, setAnnounced] = useState<Announcement>(NO_ANNOUNCEMENT);
+  useEffect(() => {
+    setAnnounced((previous) => nextAnnouncement(previous, { pageNumber: shownPage, message: shownMessage }));
+  }, [shownPage, shownMessage]);
 
-  const loadDocument = useCallback(() => {
+  /** Đóng ô "Sửa" của đúng dòng trên đúng trang; ổn định giữa các lần vẽ (dùng trong effect của `PagePanel`). */
+  const closeEdit = useCallback((target: number, lineIndex: number) => {
+    setDrafts((previous) => closeLineEdit(previous, target, lineIndex));
+  }, []);
+
+  /** Đọc lại tài liệu; trả bản vừa áp, `null` khi lỗi hoặc đã có lần đọc mới hơn. */
+  const fetchDocument = useCallback((): Promise<DocumentView | null> => {
     const ticket = docCalls.current.begin();
-    api
+    return api
       .getDocument(documentId)
       .then((value) => {
-        if (docCalls.current.isLatest(ticket)) setDocument({ kind: "ready", value });
+        if (!docCalls.current.isLatest(ticket)) return null;
+        setDocument({ kind: "ready", value });
+        setFirstStatus((previous) => previous ?? value.status);
+        return value;
       })
       .catch((error: unknown) => {
         if (docCalls.current.isLatest(ticket)) setDocument({ kind: "error", error: toUiError(error) });
+        return null;
       });
   }, [documentId]);
 
+  const loadDocument = useCallback(() => {
+    void fetchDocument();
+  }, [fetchDocument]);
+
+  const markShown = useCallback((shown: number): number | null => {
+    const previous = lastShownPage.current;
+    lastShownPage.current = shown;
+    return previous;
+  }, []);
+
   const loadPage = useCallback(() => {
+    if (pageNumber === null) return;
     const ticket = pageCalls.current.begin();
     setPage({ kind: "loading" });
     api
@@ -114,6 +238,8 @@ export function PageReview({ documentId, pageNumber }: PageReviewProps) {
   useEffect(() => {
     setActionError(null);
     setNotice(null);
+    setConfirmedHere(null);
+    setRestoreStatus("");
     loadPage();
     const counter = pageCalls.current;
     return () => counter.invalidate();
@@ -124,7 +250,7 @@ export function PageReview({ documentId, pageNumber }: PageReviewProps) {
   // Trang đang đọc: tự hỏi lại 1–2 s một lần (§6.5). Dừng khi trang rời `pending` (đổi giá trị này), đổi trang hay tài
   // liệu (`loadPage` đặt lại về đang tải) hoặc rời màn.
   useEffect(() => {
-    if (!pendingPage) return;
+    if (!pendingPage || pageNumber === null) return;
     setPollError(null);
     const poller = createPendingPagePoller({
       load: () => api.getDocumentPage(documentId, pageNumber),
@@ -158,10 +284,22 @@ export function PageReview({ documentId, pageNumber }: PageReviewProps) {
     loadPage();
   }, [loadDocument, loadPage]);
 
-  /** Chạy một thao tác ghi; thành công thì áp trang trả về và đọc lại tài liệu để cập nhật danh sách trang. */
-  const runWrite = useCallback(
-    async (write: () => Promise<PageView>, done: string): Promise<boolean> => {
-      if (!writes.current.tryEnter()) return false;
+  /**
+   * Chạy một thao tác ghi; thành công thì áp trang trả về và đọc lại tài liệu để cập nhật danh sách trang.
+   * `onDocumentReloaded` chạy khi bản đọc lại đó đã áp (không chạy nếu đọc lỗi hoặc có lần đọc mới hơn). `explain`
+   * (nếu có) đổi lỗi bắt được thành lỗi hiển thị; mặc định là `toUiError`.
+   *
+   * Trả `"blocked"` khi lần bấm bị cờ gửi một lần chặn (đang có thao tác ghi khác): đó KHÔNG phải lỗi, nên không đặt
+   * thông báo lỗi hay trạng thái thất bại; thao tác đang chạy sẽ tự báo kết quả của nó.
+   */
+  const runWriteOutcome = useCallback(
+    async (
+      write: () => Promise<PageView>,
+      done: string,
+      onDocumentReloaded?: () => void,
+      explain?: (caught: unknown) => Promise<UiError>,
+    ): Promise<WriteOutcome> => {
+      if (!writes.current.tryEnter()) return "blocked";
       setBusy(true);
       setActionError(null);
       setNotice(null);
@@ -170,17 +308,61 @@ export function PageReview({ documentId, pageNumber }: PageReviewProps) {
         pageCalls.current.invalidate();
         setPage({ kind: "ready", value: updated });
         setNotice(done);
-        loadDocument();
-        return true;
+        void fetchDocument().then((fresh) => {
+          if (fresh !== null) onDocumentReloaded?.();
+        });
+        return "done";
       } catch (caught) {
-        setActionError(toUiError(caught));
-        return false;
+        setActionError(explain === undefined ? toUiError(caught) : await explain(caught));
+        return "failed";
       } finally {
         writes.current.leave();
         setBusy(false);
       }
     },
-    [loadDocument],
+    [fetchDocument],
+  );
+
+  /** Như `runWriteOutcome` nhưng chỉ báo thành công hay không (lần bấm bị chặn tính là chưa thành công). */
+  const runWrite = useCallback(
+    async (
+      write: () => Promise<PageView>,
+      done: string,
+      onDocumentReloaded?: () => void,
+      explain?: (caught: unknown) => Promise<UiError>,
+    ): Promise<boolean> => (await runWriteOutcome(write, done, onDocumentReloaded, explain)) === "done",
+    [runWriteOutcome],
+  );
+
+  /**
+   * "Khôi phục trang" (§6.5 `POST …/restore`): gửi `expected_version` của bản đang hiển thị. Cờ gửi một lần của
+   * `runWriteOutcome` chặn bấm đúp (lần bị chặn không đặt thông báo lỗi). Thành công thì trang trả về thay vùng trang
+   * (đổi `key`) và tài liệu được đọc lại để cập nhật số đếm; lỗi 409 được phân loại bằng cách đọc lại trang
+   * (`classifyRestoreConflict`), không đọc chữ `detail`. `restoring` chỉ bật khi chính thao tác khôi phục đang chạy.
+   */
+  const restorePage = useCallback(
+    async (target: PageView): Promise<void> => {
+      const outcome = await runWriteOutcome(
+        async () => {
+          setRestoring(true);
+          try {
+            return await api.restorePage(documentId, target.pageNumber, target.version);
+          } finally {
+            setRestoring(false);
+          }
+        },
+        RESTORE_DONE_VI,
+        undefined,
+        (caught) =>
+          explainRestoreFailure(caught, {
+            load: () => api.getDocumentPage(documentId, target.pageNumber),
+            expectedVersion: target.version,
+          }),
+      );
+      const text = restoreStatusText(outcome);
+      if (text !== null) setRestoreStatus(text);
+    },
+    [documentId, runWriteOutcome],
   );
 
   const confirmAll = useCallback(async () => {
@@ -192,6 +374,7 @@ export function PageReview({ documentId, pageNumber }: PageReviewProps) {
       const updated = await api.confirmDocument(documentId);
       docCalls.current.invalidate();
       setDocument({ kind: "ready", value: updated });
+      setFirstStatus((previous) => previous ?? updated.status);
       setNotice("Đã xác nhận các trang đọc tốt. Trang cần xem kỹ vẫn chờ bạn xác nhận từng trang.");
       loadPage();
     } catch (caught) {
@@ -202,20 +385,71 @@ export function PageReview({ documentId, pageNumber }: PageReviewProps) {
     }
   }, [documentId, loadPage]);
 
+  const readyDocument = document.kind === "ready" ? document.value : null;
+  const wrongSubject =
+    readyDocument !== null && expectedSubjectCode !== undefined && readyDocument.subjectCode !== expectedSubjectCode;
+
+  // Mở tài liệu không kèm số trang: chuyển tới trang cần xem lại đầu tiên (không có thì trang đầu tiên).
+  useEffect(() => {
+    if (pageNumber !== null || readyDocument === null || wrongSubject) return;
+    const firstKept = readyDocument.pages.find((item) => !isDropped(item));
+    const first = reviewQueue(readyDocument)[0] ?? firstKept?.pageNumber ?? readyDocument.pages[0]?.pageNumber ?? 1;
+    router.replace(hrefFor({ subject: readyDocument.subjectCode, doc: readyDocument.docId, page: first }));
+  }, [pageNumber, readyDocument, wrongSubject, router, hrefFor]);
+
   if (document.kind === "loading") return <Loading label="Đang tải tài liệu…" />;
   if (document.kind === "error") {
     return (
       <div className={styles.page}>
         <ErrorNotice error={document.error} onRetry={loadDocument} onReload={loadDocument} />
         <p>
-          <Link href="/vault">Về danh sách môn</Link>
+          <Link href={hrefFor({})}>Quay lại danh sách</Link>
         </p>
       </div>
     );
   }
   const doc = document.value;
-  const docBlock = confirmDocumentBlock(doc);
-  const subjectHref = vaultHref({ subject: doc.subjectCode });
+  if (wrongSubject) {
+    return (
+      <div className={styles.page}>
+        <p role="alert">
+          Tài liệu này thuộc môn {doc.subjectCode}, không thuộc môn {expectedSubjectCode}. Mở lại từ danh sách tài liệu
+          của môn để xem đúng tài liệu.
+        </p>
+        <p>
+          <Link href={hrefFor({})}>Quay lại danh sách</Link>
+        </p>
+      </div>
+    );
+  }
+  // Trang bỏ mềm không xác nhận được và không chặn việc chốt (§5.7): các điều kiện xác nhận cả tài liệu bỏ qua chúng.
+  const confirmable = withoutDropped(doc);
+  const { kept: keptPages, dropped: droppedPages } = splitDroppedPages(doc.pages);
+  const docBlock = bulkConfirmBlock(confirmable, drafts);
+  // Trang còn nháp (mọi trang của tài liệu còn hiện nháp, kể cả trang đã khoá sửa, như điều kiện khoá nút): nhãn chữ
+  // trong danh sách trang và câu liệt kê dưới dòng nhắc khi nút "Xác nhận các trang đọc tốt" khoá vì nháp.
+  const draftPages = pagesWithDrafts(drafts, confirmable.pages);
+  const draftPageSet = new Set(draftPages);
+  const draftNote = docBlock === "unsaved_lines" ? draftPagesNote(draftPages) : null;
+  const subjectHref = hrefFor({ subject: doc.subjectCode });
+  const queue = reviewQueue(doc);
+  const outcome = reviewOutcome(doc);
+  const celebrating = outcome.kind === "done" && firstStatus !== null && firstStatus !== "confirmed";
+  const neighbors = pageNumber === null ? { previous: null, next: null } : queueNeighbors(queue, pageNumber);
+  const pageHref = (target: number) => hrefFor({ subject: doc.subjectCode, doc: doc.docId, page: target });
+  // Đích tính từ `doc` hiện tại: `confirmedHere` chỉ được đặt sau khi bản đọc lại sau xác nhận đã áp.
+  const nextTarget = pageNumber !== null && confirmedHere === pageNumber ? nextReviewTarget(doc, pageNumber) : null;
+
+  if (celebrating) {
+    return (
+      <div className={styles.page}>
+        <p>
+          <Link href={subjectHref}>← Tài liệu của môn {doc.subjectCode}</Link>
+        </p>
+        <ReviewCelebration title={doc.title} onContinue={onFinished} />
+      </div>
+    );
+  }
 
   return (
     <div className={styles.page}>
@@ -237,9 +471,15 @@ export function PageReview({ documentId, pageNumber }: PageReviewProps) {
           <button
             type="button"
             className={styles.secondary}
-            onClick={() => void confirmAll()}
+            onClick={() => {
+              // Kiểm lại đúng điều kiện của `disabled` lúc bấm; còn nháp ở trang nào thì không gửi, không lưu hộ.
+              if (busy || bulkConfirmBlock(confirmable, drafts) !== null) return;
+              void confirmAll();
+            }}
             disabled={busy || docBlock !== null}
-            aria-describedby="review-doc-confirm-hint"
+            aria-describedby={
+              draftNote === null ? "review-doc-confirm-hint" : "review-doc-confirm-hint review-doc-draft-pages"
+            }
           >
             Xác nhận các trang đọc tốt
           </button>
@@ -247,38 +487,69 @@ export function PageReview({ documentId, pageNumber }: PageReviewProps) {
             Xoá tài liệu
           </button>
         </div>
-        <p id="review-doc-confirm-hint" className={styles.hint}>
+        <p id="review-doc-confirm-hint" className={docBlock === "unsaved_lines" ? pageStyles.unsavedNote : styles.hint}>
           {docBlock === null
             ? "Chỉ xác nhận các trang không có cảnh báo; trang cần xem kỹ phải xác nhận từng trang."
-            : CONFIRM_DOCUMENT_BLOCK_MESSAGE_VI[docBlock]}
+            : docBlock === "unsaved_lines"
+              ? CONFIRM_PAGE_BLOCK_MESSAGE_VI.unsaved_lines
+              : CONFIRM_DOCUMENT_BLOCK_MESSAGE_VI[docBlock]}
         </p>
+        {draftNote !== null && (
+          <p id="review-doc-draft-pages" className={styles.hint}>
+            {draftNote}
+          </p>
+        )}
+        <ReviewBanner
+          queueLength={queue.length}
+          progress={reviewProgress(doc)}
+          outcome={outcome}
+          awaitingSettle={awaitingSettle(doc)}
+        />
       </section>
 
       <div className={styles.review}>
         <nav aria-label="Các trang của tài liệu">
           <ol className={styles.pageNav}>
-            {doc.pages.map((item) => (
+            {keptPages.map((item) => (
               <li key={item.pageNumber}>
                 <Link
                   className={styles.pageLink}
                   data-status={item.status}
-                  href={vaultHref({ subject: doc.subjectCode, doc: doc.docId, page: item.pageNumber })}
+                  href={hrefFor({ subject: doc.subjectCode, doc: doc.docId, page: item.pageNumber })}
                   aria-current={item.pageNumber === pageNumber ? "page" : undefined}
                 >
                   <span>Trang {item.pageNumber}</span>
                   <span className={styles.pageLinkStatus}>
                     {item.confirmed ? "Đã xác nhận" : PAGE_STATUS_LABEL_VI[item.status]}
                   </span>
+                  {draftPageSet.has(item.pageNumber) && (
+                    <span className={pageStyles.unsavedNote}>{DRAFT_PAGE_LABEL_VI}</span>
+                  )}
                 </Link>
               </li>
             ))}
           </ol>
+          <DroppedPageNav
+            pages={droppedPages}
+            currentPage={pageNumber}
+            subjectCode={doc.subjectCode}
+            documentId={doc.docId}
+            hrefFor={hrefFor}
+          />
         </nav>
 
         <div className={styles.reviewMain}>
+          <div className="visually-hidden" role="status">
+            {announced.text}
+          </div>
+          <div className="visually-hidden" role="status">
+            {restoreStatus}
+          </div>
           {notice !== null && <output className={styles.successNote}>{notice}</output>}
           {actionError !== null && <ErrorNotice error={actionError} onRetry={reloadAll} onReload={reloadAll} />}
-          {page.kind === "loading" && <Loading label={`Đang tải trang ${pageNumber}…`} />}
+          {page.kind === "loading" && (
+            <Loading label={pageNumber === null ? "Đang mở trang cần xem lại…" : `Đang tải trang ${pageNumber}…`} />
+          )}
           {page.kind === "error" && <ErrorNotice error={page.error} onRetry={loadPage} onReload={loadPage} />}
           {pendingPage && pollError !== null && (
             <div className={styles.form}>
@@ -295,25 +566,66 @@ export function PageReview({ documentId, pageNumber }: PageReviewProps) {
               )}
             </div>
           )}
-          {page.kind === "ready" && (
+          {page.kind === "ready" && page.value.dropped && (
+            <DroppedPagePanel
+              key={`${page.value.pageNumber}:${page.value.version}`}
+              page={page.value}
+              documentId={doc.docId}
+              subjectCode={doc.subjectCode}
+              hrefFor={hrefFor}
+              busy={busy}
+              restoring={restoring}
+              onShown={markShown}
+              onRestore={() => void restorePage(page.value)}
+            />
+          )}
+          {page.kind === "ready" && !page.value.dropped && (
             <PagePanel
               key={`${page.value.pageNumber}:${page.value.version}`}
               page={page.value}
+              draft={draftFor(drafts, page.value.pageNumber)}
+              onAppendTextChange={(text) =>
+                setDrafts((previous) => setAppendText(previous, page.value.pageNumber, text))
+              }
+              onStartEdit={(lineIndex, text) =>
+                setDrafts((previous) => startLineEdit(previous, page.value.pageNumber, lineIndex, text))
+              }
+              onEditTextChange={(text) =>
+                setDrafts((previous) => setLineEditText(previous, page.value.pageNumber, text))
+              }
+              onCloseEdit={closeEdit}
               busy={busy}
+              hasPrevious={neighbors.previous !== null}
+              hasNext={neighbors.next !== null}
+              nextTarget={nextTarget}
+              onGoNext={() => {
+                if (nextTarget !== null) router.push(pageHref(nextTarget));
+              }}
+              onShown={markShown}
+              onStep={(direction) => {
+                const target = direction === "previous" ? neighbors.previous : neighbors.next;
+                if (target !== null) router.push(pageHref(target));
+              }}
               onDelete={() => setDeleting(true)}
               onReload={reloadAll}
               onSaveLines={(edits, appended) =>
                 runWrite(
-                  () => api.patchPageLines(documentId, pageNumber, page.value.version, edits, appended),
+                  () => api.patchPageLines(documentId, page.value.pageNumber, page.value.version, edits, appended),
                   "Đã lưu dòng vừa sửa.",
                 )
               }
-              onConfirm={() =>
-                runWrite(() => api.confirmPage(documentId, pageNumber, page.value.version), "Đã xác nhận trang.")
-              }
+              onConfirm={() => {
+                const current = page.value.pageNumber;
+                // Không tự chuyển trang: trang ở lại; nút "Sang trang cần xem kế tiếp" hiện khi tài liệu đã đọc lại.
+                return runWrite(
+                  () => api.confirmPage(documentId, current, page.value.version),
+                  "Đã xác nhận trang.",
+                  () => setConfirmedHere(current),
+                );
+              }}
             />
           )}
-          <PageSteps doc={doc} pageNumber={pageNumber} />
+          {pageNumber !== null && <PageSteps doc={doc} pageNumber={pageNumber} hrefFor={hrefFor} />}
         </div>
       </div>
 
@@ -335,19 +647,19 @@ export function PageReview({ documentId, pageNumber }: PageReviewProps) {
   );
 }
 
-function PageSteps({ doc, pageNumber }: { doc: DocumentView; pageNumber: number }) {
+function PageSteps({ doc, pageNumber, hrefFor }: { doc: DocumentView; pageNumber: number; hrefFor: VaultHrefFor }) {
   const index = doc.pages.findIndex((item) => item.pageNumber === pageNumber);
   const previous = index > 0 ? doc.pages[index - 1] : undefined;
   const next = index >= 0 ? doc.pages[index + 1] : undefined;
   return (
     <nav className={styles.pager} aria-label="Chuyển trang">
       {previous !== undefined && (
-        <Link href={vaultHref({ subject: doc.subjectCode, doc: doc.docId, page: previous.pageNumber })}>
+        <Link href={hrefFor({ subject: doc.subjectCode, doc: doc.docId, page: previous.pageNumber })}>
           ← Trang {previous.pageNumber}
         </Link>
       )}
       {next !== undefined && (
-        <Link href={vaultHref({ subject: doc.subjectCode, doc: doc.docId, page: next.pageNumber })}>
+        <Link href={hrefFor({ subject: doc.subjectCode, doc: doc.docId, page: next.pageNumber })}>
           Trang {next.pageNumber} →
         </Link>
       )}
@@ -357,29 +669,231 @@ function PageSteps({ doc, pageNumber }: { doc: DocumentView; pageNumber: number 
 
 interface PagePanelProps {
   page: PageView;
+  /** Nháp chưa lưu của trang, do `PageReview` giữ theo số trang (không mất khi vùng này vẽ lại hay đổi trang). */
+  draft: PageDraft;
+  onAppendTextChange: (text: string) => void;
+  /** Mở ô "Sửa" cho dòng `lineIndex`, chữ ban đầu là chữ hiện tại của dòng. */
+  onStartEdit: (lineIndex: number, text: string) => void;
+  onEditTextChange: (text: string) => void;
+  /** Đóng ô "Sửa" của đúng dòng `lineIndex` trên trang `pageNumber`; hàm ổn định giữa các lần vẽ. */
+  onCloseEdit: (pageNumber: number, lineIndex: number) => void;
   busy: boolean;
+  /** Có trang cần xem lại ở phía trước/sau (phím ←/→). */
+  hasPrevious: boolean;
+  hasNext: boolean;
+  /** Đích của nút "Sang trang cần xem kế tiếp"; `null` thì không hiện nút. */
+  nextTarget: number | null;
+  onGoNext: () => void;
+  /** Báo trang vừa hiện; trả trang hiện lần trước (để biết có phải đổi trang không). */
+  onShown: (pageNumber: number) => number | null;
+  onStep: (direction: "previous" | "next") => void;
   onSaveLines: (edits: ReturnType<typeof buildLineEdits>, appended: string[]) => Promise<boolean>;
   onConfirm: () => Promise<boolean>;
   onDelete: () => void;
   onReload: () => void;
 }
 
-function PagePanel({ page, busy, onSaveLines, onConfirm, onDelete, onReload }: PagePanelProps) {
+/**
+ * Vùng xem lại một trang. `tabIndex=-1`: bấm chuột vào nội dung trang đưa focus vào vùng; Tab đi tới các nút, ô nhập
+ * trong vùng (`tabIndex=0` trên `section` bị rule a11y `noNoninteractiveTabindex` chặn). Phím tắt chỉ chạy khi focus ở
+ * trong vùng: E sửa dòng nghi ngờ đầu tiên, ←/→ sang trang cần xem trước/sau (`lib/review-keys.ts`); không phím nào
+ * xác nhận trang. Trang chỉ được xác nhận bằng nút, theo `canConfirmNow` (`lib/review-confirm.ts`): mỗi trang (theo
+ * `pageNumber:version`) là một phiên (`lib/review-session.ts`), nút bỏ qua mọi kích hoạt (chuột, chạm, Enter/Space khi
+ * nút đang focus) trong `CONFIRM_GUARD_MS` đầu, khoá khi đang gửi hoặc còn dòng chưa lưu (I5). Trang mới hiện thì focus
+ * vào tiêu đề trang theo `focusOnShow`, không bao giờ vào nút xác nhận.
+ */
+function PagePanel({
+  page,
+  draft,
+  onAppendTextChange,
+  onStartEdit,
+  onEditTextChange,
+  onCloseEdit,
+  busy,
+  hasPrevious,
+  hasNext,
+  nextTarget,
+  onGoNext,
+  onShown,
+  onStep,
+  onSaveLines,
+  onConfirm,
+  onDelete,
+  onReload,
+}: PagePanelProps) {
   const ids = useId();
+  const { overlayOpen } = useShell();
+  const region = useRef<HTMLElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const confirmButton = useRef<HTMLButtonElement>(null);
+  // Phiên xem trang: mốc lúc trang hiện ra và khoá đang gửi, đổi ngay khi bấm (không chờ vẽ lại).
+  const pageKey = reviewPageKey(page.pageNumber, page.version);
+  const session = useRef<ReviewSession | null>(null);
   const editBlock = lineEditBlock(page);
   const confirmBlock = confirmPageBlock(page);
   const mismatches = mismatchesByLine(page.crossCheck.mismatches);
   const warnings = pageWarnings({ ...page, failureReason: page.failureReason });
-  const [editing, setEditing] = useState<number | null>(null);
+  // Ô sửa đối chiếu với bản trang đang hiện: trang bị khoá sửa, dòng đã đổi hoặc biến mất ở nơi khác thì ô đóng, hiện
+  // câu báo tại chỗ; dòng đã mang đúng chữ đang gõ thì nháp đã khớp server và ô đóng. Xung đột vẫn là nháp chưa lưu
+  // (khoá nút xác nhận) cho tới khi người dùng sửa lại hoặc bỏ chữ đã gõ.
+  const editState = draft.editing === null ? null : lineEditState(draft.editing, page.lines, editBlock);
+  const editing = editState?.kind === "open" ? (draft.editing?.lineIndex ?? null) : null;
+  const matchedLine = editState?.kind === "matched" ? (draft.editing?.lineIndex ?? null) : null;
+  const lockedNotice = lockedDraftNotice(draft, editBlock);
+  // Một trang chỉ có một ô sửa: ô đang mở hay còn chữ chưa lưu sau xung đột thì nút "Sửa" của mọi dòng khác khoá kèm lý
+  // do, để mở ô mới không làm mất nháp im lặng (và chỉ một dòng đổi trạng thái sửa, không có hai dòng giành focus).
+  const editLock = lineEditLock(draft, page.lines, editBlock);
+  const drafts = unsavedDrafts({ appendText: draft.appendText, editingLine: draft.editing?.lineIndex ?? null });
+  // Câu báo xung đột/khoá cho trình đọc màn hình nằm ở vùng thông báo cố định của `PageReview` (không mount lại cùng
+  // vùng này).
+
+  // Nháp đã khớp server: đóng ô sửa của đúng dòng đó. Mọi phụ thuộc là giá trị ổn định (số, hàm `useCallback`).
+  useEffect(() => {
+    if (matchedLine !== null) onCloseEdit(page.pageNumber, matchedLine);
+  }, [matchedLine, onCloseEdit, page.pageNumber]);
+
+  /** Đóng ô "Sửa" của dòng `lineIndex` trên trang này. */
+  function closeEdit(lineIndex: number): void {
+    onCloseEdit(page.pageNumber, lineIndex);
+  }
+
+  /** "Bỏ chữ đã gõ" ở câu báo cấp trang: nút biến mất, focus về tiêu đề trang (cùng đích của `focusOnShow`). */
+  function discardAndFocusHeading(discard: () => void): void {
+    discard();
+    heading.current?.focus();
+  }
+  const [sending, setSending] = useState(false);
+  // Số ms đã qua kể từ lúc trang hiện, đo khi hết `CONFIRM_GUARD_MS` để vẽ lại nút (chỉ cho `disabled`; `onClick` đo lại).
+  const [shownElapsed, setShownElapsed] = useState<{ pageKey: string; ms: number } | null>(null);
+
+  useEffect(() => {
+    session.current = reviewSessionFor(session.current, pageKey, performance.now());
+    let timer: number | undefined;
+    const check = () => {
+      const now = performance.now();
+      const current = reviewSessionFor(session.current, pageKey, now);
+      const remaining = guardRemainingMs(current, now);
+      if (remaining === 0) setShownElapsed({ pageKey, ms: msSinceShown(current, now) });
+      else timer = window.setTimeout(check, remaining);
+    };
+    check();
+    return () => window.clearTimeout(timer);
+  }, [pageKey]);
+
+  useEffect(() => {
+    const previous = onShown(page.pageNumber);
+    const active = window.document.activeElement;
+    const where: ActiveOnShow =
+      active === null || active === window.document.body
+        ? "none"
+        : active === confirmButton.current
+          ? "confirm"
+          : "other";
+    if (focusOnShow({ pageChanged: previous !== page.pageNumber, active: where }) === "heading") {
+      heading.current?.focus();
+    }
+  }, [onShown, page.pageNumber]);
+
+  const confirmInput = {
+    pageBlock: confirmBlock,
+    hasSkippedLines: page.hasSkippedLines,
+    ...drafts,
+  };
+  const buttonBlock = confirmButtonBlock(confirmInput);
+  const confirmEnabled = canConfirmNow({
+    ...confirmInput,
+    sending: sending || busy,
+    msSinceShown: shownElapsed?.pageKey === pageKey ? shownElapsed.ms : 0,
+  });
+
+  /** Mọi cách kích hoạt nút (chuột, chạm, Enter/Space khi nút đang focus) đều qua đây: đo lại điều kiện lúc bấm. */
+  function onConfirmClick(): void {
+    const now = performance.now();
+    const { accepted, session: next } = confirmClick(
+      reviewSessionFor(session.current, pageKey, now),
+      { ...confirmInput, busy },
+      now,
+    );
+    session.current = next;
+    if (!accepted) return;
+    setSending(true);
+    void onConfirm().finally(() => {
+      if (session.current !== null) session.current = endSend(session.current);
+      setSending(false);
+    });
+  }
+
+  function onKeyDown(event: KeyboardEvent<HTMLElement>): void {
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    const root = region.current;
+    const focus = classifyReviewFocus({
+      insideRegion: target !== null && (root?.contains(target) ?? false),
+      isRegion: target !== null && target === root,
+      tagName: target?.tagName ?? "",
+      isContentEditable: target?.isContentEditable ?? false,
+      role: target?.getAttribute("role") ?? null,
+    });
+    const action = reviewKeyAction({
+      key: event.key,
+      repeat: event.repeat,
+      altKey: event.altKey,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      focus,
+      overlayOpen,
+      busy,
+      hasDraft: drafts.editing || drafts.appendDraft,
+      canEdit: editBlock === null && page.lines.length > 0,
+      hasPrevious,
+      hasNext,
+    });
+    if (action === null) return;
+    event.preventDefault();
+    if (action.type === "edit") {
+      const index = lineToEdit(
+        page.lines.map((line) => {
+          const highlight = lineHighlight(line, mismatches);
+          return { lineIndex: line.lineIndex, flagged: highlight.lowConf || highlight.mismatch };
+        }),
+      );
+      const target = page.lines.find((line) => line.lineIndex === index);
+      if (target !== undefined) onStartEdit(target.lineIndex, target.text);
+    } else {
+      onStep(action.type);
+    }
+  }
 
   return (
-    <section className={styles.panel} aria-labelledby={`${ids}-title`}>
+    <section
+      ref={region}
+      className={styles.panel}
+      aria-labelledby={`${ids}-title`}
+      aria-describedby={`${ids}-keys`}
+      tabIndex={-1}
+      onKeyDown={onKeyDown}
+    >
       <div className={styles.panelHeader}>
-        <h2 id={`${ids}-title`}>Trang {page.pageNumber}</h2>
-        <span className={styles.badge} data-tone={PAGE_TONE[page.status]}>
-          {page.confirmed ? `${PAGE_STATUS_LABEL_VI[page.status]} · đã xác nhận` : PAGE_STATUS_LABEL_VI[page.status]}
-        </span>
+        <div className={pageStyles.titleGroup}>
+          <h2 id={`${ids}-title`} ref={heading} tabIndex={-1}>
+            Trang {page.pageNumber}
+          </h2>
+          <span className={styles.badge} data-tone={PAGE_TONE[page.status]}>
+            {page.confirmed ? `${PAGE_STATUS_LABEL_VI[page.status]} · đã xác nhận` : PAGE_STATUS_LABEL_VI[page.status]}
+          </span>
+        </div>
+        {nextTarget !== null && (
+          <div className={pageStyles.nextSlot}>
+            <button type="button" className={styles.secondary} onClick={onGoNext}>
+              Sang trang cần xem kế tiếp
+              <span className={pageStyles.nextTarget}>(trang {nextTarget})</span>
+            </button>
+          </div>
+        )}
       </div>
+      <p id={`${ids}-keys`} className={styles.hint}>
+        Phím tắt trong trang này: E sửa dòng nghi ngờ đầu tiên · ← → trang cần xem lại trước, sau. Không có phím tắt xác
+        nhận trang: đọc hết trang rồi bấm nút xác nhận ở cuối trang (nút chỉ nhận sau khi trang hiện được một lúc).
+      </p>
 
       <dl className={styles.facts}>
         <dt>Cách đọc</dt>
@@ -463,6 +977,11 @@ function PagePanel({ page, busy, onSaveLines, onConfirm, onDelete, onReload }: P
         </table>
       )}
 
+      {editLock !== null && editBlock === null && (
+        <p id={`${ids}-edit-lock`} className={pageStyles.unsavedNote}>
+          {editLock.reason}
+        </p>
+      )}
       {page.lines.length > 0 && (
         <ol className={styles.lines} aria-label="Các dòng của trang">
           {page.lines.map((line) => (
@@ -473,49 +992,133 @@ function PagePanel({ page, busy, onSaveLines, onConfirm, onDelete, onReload }: P
               editable={editBlock === null && !busy}
               busy={busy}
               editing={editing === line.lineIndex}
-              onStartEdit={() => setEditing(line.lineIndex)}
-              onCancel={() => setEditing(null)}
+              editDenied={lineEditDenial(editLock, line.lineIndex) !== null}
+              editDenialId={`${ids}-edit-lock`}
+              conflictText={
+                editState?.kind === "changed" && draft.editing?.lineIndex === line.lineIndex ? draft.editing.text : null
+              }
+              draft={editing === line.lineIndex && draft.editing !== null ? draft.editing.text : line.text}
+              onDraftChange={onEditTextChange}
+              onStartEdit={() => {
+                if (lineEditDenial(editLock, line.lineIndex) === null) onStartEdit(line.lineIndex, line.text);
+              }}
+              onCancel={() => closeEdit(line.lineIndex)}
               onSave={async (text) => {
                 const edits = buildLineEdits(page.lines, new Map([[line.lineIndex, text]]));
                 if (edits.length === 0) {
-                  setEditing(null);
+                  closeEdit(line.lineIndex);
                   return;
                 }
-                if (await onSaveLines(edits, [])) setEditing(null);
+                if (await onSaveLines(edits, [])) closeEdit(line.lineIndex);
               }}
             />
           ))}
         </ol>
+      )}
+      {editState?.kind === "removed" && draft.editing !== null && (
+        <div className={styles.warningNote}>
+          <p>
+            Dòng {draft.editing.lineIndex} không còn trên trang này: trang vừa được sửa ở nơi khác. Chữ bạn đang gõ chưa
+            lưu: “{typedTextLabel(draft.editing.text)}”
+          </p>
+          <div className={styles.actions}>
+            <button
+              type="button"
+              className={`${styles.secondary} ${styles.small}`}
+              onClick={() => {
+                const lineIndex = draft.editing?.lineIndex;
+                if (lineIndex !== undefined) discardAndFocusHeading(() => closeEdit(lineIndex));
+              }}
+            >
+              Bỏ chữ đã gõ
+            </button>
+          </div>
+        </div>
+      )}
+      {lockedNotice !== null && (
+        <div className={styles.warningNote}>
+          <p>Trang này không sửa được nữa nên chữ bạn đã gõ không lưu được. Chép lại nếu cần, rồi bỏ chữ đã gõ.</p>
+          {lockedNotice.editing !== null && (
+            <div className={styles.actions}>
+              <p>
+                Chữ bạn đang gõ ở dòng {lockedNotice.editing.lineIndex} chưa lưu: “
+                {typedTextLabel(lockedNotice.editing.text)}”
+              </p>
+              <button
+                type="button"
+                className={`${styles.secondary} ${styles.small}`}
+                aria-label={`Bỏ chữ đã gõ ở dòng ${lockedNotice.editing.lineIndex}`}
+                onClick={() => {
+                  const lineIndex = lockedNotice.editing?.lineIndex;
+                  if (lineIndex !== undefined) discardAndFocusHeading(() => closeEdit(lineIndex));
+                }}
+              >
+                Bỏ chữ đã gõ
+              </button>
+            </div>
+          )}
+          {lockedNotice.appendText !== null && (
+            <div className={styles.actions}>
+              <p>Chữ bạn gõ ở ô thêm dòng chưa lưu: “{lockedNotice.appendText}”</p>
+              <button
+                type="button"
+                className={`${styles.secondary} ${styles.small}`}
+                aria-label="Bỏ chữ đã gõ ở ô thêm dòng"
+                onClick={() => discardAndFocusHeading(() => onAppendTextChange(""))}
+              >
+                Bỏ chữ đã gõ
+              </button>
+            </div>
+          )}
+        </div>
       )}
       {page.lines.length === 0 && page.status !== "failed" && page.status !== "pending" && (
         <p className={styles.muted}>Trang không có dòng chữ nào.</p>
       )}
       {editBlock === "confirmed" && <p className={styles.hint}>{EDIT_BLOCK_MESSAGE_VI.confirmed}</p>}
 
-      {editBlock === null && <AppendLine busy={busy} onAppend={(text) => onSaveLines([], [text])} />}
+      {editBlock === null && (
+        <AppendLine
+          busy={busy}
+          text={draft.appendText}
+          onTextChange={onAppendTextChange}
+          onAppend={(text) => onSaveLines([], [text])}
+        />
+      )}
 
       {page.status !== "failed" && page.status !== "pending" && (
         <div className={styles.actions}>
           <button
+            ref={confirmButton}
             type="button"
             className={styles.primary}
-            onClick={() => void onConfirm()}
-            disabled={busy || confirmBlock !== null || editing !== null || page.hasSkippedLines}
+            onClick={onConfirmClick}
+            disabled={!confirmEnabled}
             aria-describedby={`${ids}-confirm-hint`}
           >
-            {page.status === "needs_review" ? "Tôi đã xem lại, xác nhận trang" : "Xác nhận trang"}
+            {sending
+              ? "Đang xác nhận…"
+              : page.status === "needs_review"
+                ? "Tôi đã xem lại, xác nhận trang"
+                : "Xác nhận trang"}
           </button>
-          <span id={`${ids}-confirm-hint`} className={styles.hint}>
-            {editing !== null
-              ? "Lưu hoặc huỷ dòng đang sửa trước khi xác nhận."
-              : confirmBlock === null
-                ? "Sau khi xác nhận, văn bản của trang không sửa được nữa."
-                : CONFIRM_PAGE_BLOCK_MESSAGE_VI[confirmBlock]}
+          <span
+            id={`${ids}-confirm-hint`}
+            className={buttonBlock === "unsaved_lines" ? pageStyles.unsavedNote : styles.hint}
+          >
+            {buttonBlock === null
+              ? "Sau khi xác nhận, văn bản của trang không sửa được nữa."
+              : CONFIRM_PAGE_BLOCK_MESSAGE_VI[buttonBlock]}
           </span>
         </div>
       )}
     </section>
   );
+}
+
+/** Chữ người dùng đã gõ, hiện trong câu báo xung đột; chỉ khoảng trắng thì nói rõ là để trống. */
+function typedTextLabel(text: string): string {
+  return text.trim() === "" ? "(để trống)" : text;
 }
 
 interface LineRowProps {
@@ -525,29 +1128,69 @@ interface LineRowProps {
   /** Đang có thao tác ghi: Enter và nút "Lưu" không gửi thêm. */
   busy: boolean;
   editing: boolean;
+  /**
+   * Nút "Sửa" khoá vì dòng khác đang giữ ô sửa (`lineEditDenial`); lý do bằng chữ nằm ở phần tử `editDenialId` của
+   * `PagePanel`, nút trỏ tới qua `aria-describedby`.
+   */
+  editDenied: boolean;
+  editDenialId: string;
+  /**
+   * Dòng vừa đổi ở nơi khác trong lúc ô sửa của nó đang mở (`lineEditState` là `changed`): chữ người dùng đã gõ, hiện
+   * kèm nút "Sửa lại từ bản mới" và "Bỏ chữ đã gõ"; `null` khi không xung đột.
+   */
+  conflictText: string | null;
+  /** Chữ đang gõ trong ô sửa, do `PageReview` giữ theo trang (`lib/review-drafts.ts`). */
+  draft: string;
+  onDraftChange: (text: string) => void;
   onStartEdit: () => void;
   onCancel: () => void;
   onSave: (text: string) => Promise<void>;
 }
 
 /** Một dòng: chữ backend trả, cờ thành nhãn tiếng Việt; sửa tại chỗ (`Enter` lưu, `Esc` huỷ). */
-function LineRow({ line, highlight, editable, busy, editing, onStartEdit, onCancel, onSave }: LineRowProps) {
-  const [draft, setDraft] = useState(line.text);
+function LineRow({
+  line,
+  highlight,
+  editable,
+  busy,
+  editing,
+  editDenied,
+  editDenialId,
+  conflictText,
+  draft,
+  onDraftChange,
+  onStartEdit,
+  onCancel,
+  onSave,
+}: LineRowProps) {
   const [error, setError] = useState<string | null>(null);
   const input = useRef<HTMLInputElement>(null);
   const editButton = useRef<HTMLButtonElement>(null);
-  const wasEditing = useRef(false);
+  // Bắt đầu bằng giá trị lúc mount: dòng vẽ lại khi ô sửa vẫn mở (nháp giữ ở `PageReview`) thì không giành focus.
+  const wasEditing = useRef(editing);
 
+  // Ô sửa đóng ngay trên dòng này (Huỷ, Esc, hoặc "Lưu" mà chữ không đổi nên không gửi gì) thì focus về nút "Sửa" của
+  // dòng. Lưu thật xong, hay dữ liệu trang đổi ở nơi khác (xung đột), thì trang có `version` mới: `PagePanel` mount lại
+  // theo `pageNumber:version`, dòng này mount lại với ô đóng nên nhánh dưới không chạy; focus về tiêu đề trang theo
+  // `focusOnShow` (nút vừa bấm đã bị gỡ), xung đột báo qua vùng thông báo cố định của `PageReview`. Dòng khác không thể
+  // mở ô sửa khi ô này còn mở hay còn xung đột (`lineEditDenial`), nên mỗi lần chỉ một dòng chạy nhánh dưới: không có
+  // hai dòng giành focus.
   useEffect(() => {
-    if (editing) {
-      setDraft(line.text);
+    if (editing && !wasEditing.current) {
       setError(null);
       input.current?.focus();
-    } else if (wasEditing.current) {
+    } else if (!editing && wasEditing.current) {
       editButton.current?.focus();
     }
     wasEditing.current = editing;
-  }, [editing, line.text]);
+  }, [editing]);
+
+  // "Bỏ chữ đã gõ" khi xung đột: nút vừa bấm biến mất, đưa focus về nút "Sửa" của dòng thay vì để rơi ra ngoài trang.
+  const hadConflict = useRef(conflictText !== null);
+  useEffect(() => {
+    if (hadConflict.current && conflictText === null && !editing) editButton.current?.focus();
+    hadConflict.current = conflictText !== null;
+  }, [conflictText, editing]);
 
   function save(): void {
     const decision = lineSaveDecision(draft, busy);
@@ -583,7 +1226,7 @@ function LineRow({ line, highlight, editable, busy, editing, onStartEdit, onCanc
               ref={input}
               className={styles.lineEditor}
               value={draft}
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={(event) => onDraftChange(event.target.value)}
               onKeyDown={onKeyDown}
               aria-label={`Sửa dòng ${line.lineIndex}`}
               aria-invalid={error !== null}
@@ -598,9 +1241,36 @@ function LineRow({ line, highlight, editable, busy, editing, onStartEdit, onCanc
           </span>
         )}
         {details.length > 0 && <span className={styles.lineFlags}>{details.join(" · ")}</span>}
+        {conflictText !== null && (
+          <span className={pageStyles.unsavedNote}>
+            Dòng này vừa được sửa ở nơi khác. Chữ bạn đang gõ chưa lưu: “{typedTextLabel(conflictText)}”
+          </span>
+        )}
       </div>
       <div className={styles.actions}>
-        {editing ? (
+        {conflictText !== null ? (
+          <>
+            {editable && (
+              <button
+                ref={editButton}
+                type="button"
+                className={`${styles.secondary} ${styles.small}`}
+                onClick={onStartEdit}
+                aria-label={`Sửa lại dòng ${line.lineIndex} từ bản mới`}
+              >
+                Sửa lại từ bản mới
+              </button>
+            )}
+            <button
+              type="button"
+              className={`${styles.secondary} ${styles.small}`}
+              onClick={onCancel}
+              aria-label={`Bỏ chữ đã gõ ở dòng ${line.lineIndex}`}
+            >
+              Bỏ chữ đã gõ
+            </button>
+          </>
+        ) : editing ? (
           <>
             <button type="button" className={`${styles.primary} ${styles.small}`} onClick={save} disabled={busy}>
               {busy ? "Đang lưu…" : "Lưu"}
@@ -616,6 +1286,8 @@ function LineRow({ line, highlight, editable, busy, editing, onStartEdit, onCanc
               type="button"
               className={`${styles.secondary} ${styles.small}`}
               onClick={onStartEdit}
+              disabled={editDenied}
+              aria-describedby={editDenied ? editDenialId : undefined}
               aria-label={`Sửa dòng ${line.lineIndex}`}
             >
               Sửa
@@ -627,10 +1299,20 @@ function LineRow({ line, highlight, editable, busy, editing, onStartEdit, onCanc
   );
 }
 
+interface AppendLineProps {
+  busy: boolean;
+  /**
+   * Chữ trong ô, do `PageReview` giữ theo trang (`lib/review-drafts.ts`): còn chữ chưa lưu thì nút xác nhận trang và nút
+   * "Xác nhận các trang đọc tốt" khoá cho tới khi lưu hoặc xoá chữ.
+   */
+  text: string;
+  onTextChange: (text: string) => void;
+  onAppend: (text: string) => Promise<boolean>;
+}
+
 /** Gõ thêm một dòng vào cuối trang (`appended_lines`, §6.5), cho chữ mà bộ đọc bỏ sót. */
-function AppendLine({ busy, onAppend }: { busy: boolean; onAppend: (text: string) => Promise<boolean> }) {
+function AppendLine({ busy, text, onTextChange, onAppend }: AppendLineProps) {
   const ids = useId();
-  const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -642,7 +1324,7 @@ function AppendLine({ busy, onAppend }: { busy: boolean; onAppend: (text: string
     const problem = checkLineText(text);
     setError(problem);
     if (problem !== null) return;
-    if (await onAppend(text.normalize("NFC"))) setText("");
+    if (await onAppend(text.normalize("NFC"))) onTextChange("");
   }
 
   return (
@@ -652,7 +1334,7 @@ function AppendLine({ busy, onAppend }: { busy: boolean; onAppend: (text: string
         <input
           className={`${styles.input} ${styles.wideInput}`}
           value={text}
-          onChange={(event) => setText(event.target.value)}
+          onChange={(event) => onTextChange(event.target.value)}
           aria-invalid={error !== null}
           aria-describedby={`${ids}-hint`}
           disabled={busy}

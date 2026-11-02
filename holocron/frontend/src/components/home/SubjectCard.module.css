@@ -1,0 +1,139 @@
+.card {
+  display: flex;
+  min-height: 280px;
+  padding: 18px;
+}
+
+.body {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.skySkeleton {
+  border-radius: 10px;
+}
+
+/* Lỗi tải số liệu: ô trời trống, cùng chiều cao với bầu trời mini. */
+.skyPlaceholder {
+  height: 72px;
+  border-radius: 10px;
+  background: var(--sky);
+}
+
+.name {
+  font-size: 20px;
+  font-weight: var(--fw-semibold);
+  line-height: 28px;
+  overflow-wrap: anywhere;
+}
+
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 0;
+  padding: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+  list-style: none;
+}
+
+.stats b {
+  color: var(--ink);
+  font-weight: var(--fw-semibold);
+}
+
+.updated {
+  color: var(--ink-2);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+}
+
+.cardError {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+  color: var(--ink);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.retry {
+  min-height: 36px;
+}
+
+.reading {
+  display: grid;
+  gap: var(--sp-2);
+  padding: 8px 12px;
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  color: var(--on-accent-soft);
+}
+
+.readingLine {
+  display: grid;
+  gap: 4px;
+}
+
+.readingText {
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+  font-weight: var(--fw-medium);
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: auto;
+}
+
+/* Link mang kiểu nút (cùng hình dáng với Button của bộ thành phần dùng chung; chuyển động ở motion.css). */
+.actionPrimary,
+.actionSecondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: var(--tap-min);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.actionPrimary {
+  padding: 0 var(--sp-6);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.actionPrimary:hover {
+  background: var(--accent-hover);
+}
+
+.actionSecondary {
+  padding: 0 22px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1.5px var(--line-strong);
+  color: var(--ink);
+}
+
+.arrow {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}

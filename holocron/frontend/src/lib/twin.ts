@@ -1,4 +1,5 @@
 import type {
+  BatchTwin,
   GanttSegment,
   MisconceptionRef,
   NumericalAnswer,
@@ -6,6 +7,8 @@ import type {
   ReviewStatus,
   ReviewTicket,
   TemplateProvenance,
+  TheoryQuestionForm,
+  TheoryTwin,
   TwinBatch,
   TwinQuestion,
 } from "@/types/holocron";
@@ -30,6 +33,12 @@ export const REVIEW_STATUS_LABELS: Record<ReviewStatus, string> = {
   NEEDS_REVIEW: "Cần xem lại",
   APPROVED: "Đã duyệt",
   REJECTED: "Bị từ chối",
+};
+
+export const THEORY_FORM_LABELS: Record<TheoryQuestionForm, string> = {
+  concept_match: "Ghép khái niệm",
+  fill_blank: "Điền khuyết",
+  definition_choice: "Chọn định nghĩa đúng",
 };
 
 export const PROVENANCE_LABELS: Record<TemplateProvenance, string> = {
@@ -102,7 +111,13 @@ export interface OptionView {
   misconception: MisconceptionRef | null;
 }
 
-export function optionViews(twin: TwinQuestion): OptionView[] {
+/** Phần phương án của một câu: `TwinQuestion` (câu tính toán) hoặc `TheoryQuestion` (câu lý thuyết). */
+export type OptionSource = Pick<TwinQuestion, "distractor_to_misconception_map"> & {
+  options: TwinQuestion["options"];
+  correct_key: TwinQuestion["correct_key"];
+};
+
+export function optionViews(twin: OptionSource): OptionView[] {
   const options = twin.options;
   if (options === null) {
     return [];
@@ -121,9 +136,14 @@ export function formatNumericalAnswer(answer: NumericalAnswer): string {
   return answer.unit === null ? text : `${text} ${answer.unit}`;
 }
 
+/** Câu lý thuyết của `TwinBatch.twins` (quyết định 14(b)): có `question`; câu tính toán thì không. */
+export function isTheoryTwin(twin: BatchTwin): twin is TheoryTwin {
+  return "question" in twin;
+}
+
 export interface SlotGroup {
   slotIndex: number;
-  twins: TwinQuestion[];
+  twins: BatchTwin[];
   ticket: ReviewTicket | null;
 }
 

@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+
 import { actionLabel, keyedMessages, type UiError } from "@/lib/errors";
 
 import styles from "./ErrorNotice.module.css";
@@ -14,7 +16,8 @@ interface ErrorNoticeProps {
 
 /**
  * Lỗi đã phân loại (lib/errors.ts): thông điệp ngắn tiếng Việt và nút theo loại lỗi, không tự thử lại. Mỗi loại nút
- * có hàm riêng, để nút "Tải lại" không thể vô tình gửi lại một thao tác ghi.
+ * có hàm riêng, để nút "Tải lại" không thể vô tình gửi lại một thao tác ghi. Mã lỗi để báo (nếu có) nằm trong khối
+ * riêng, tách khỏi thông điệp.
  */
 export function ErrorNotice({ error, onRetry, onReload }: ErrorNoticeProps) {
   const label = actionLabel(error.action);
@@ -35,6 +38,40 @@ export function ErrorNotice({ error, onRetry, onReload }: ErrorNoticeProps) {
           {label}
         </button>
       )}
+      {error.diagnostic !== undefined && <DiagnosticCode code={error.diagnostic} />}
+    </div>
+  );
+}
+
+type CopyState = "idle" | "copied" | "failed";
+
+/** Khối "Mã lỗi để báo": chọn được bằng chuột hoặc chép bằng nút (khi trình duyệt cho dùng bộ nhớ tạm). */
+function DiagnosticCode({ code }: { code: string }) {
+  const [copy, setCopy] = useState<CopyState>("idle");
+
+  function handleCopy(): void {
+    const clipboard = typeof navigator === "undefined" ? undefined : navigator.clipboard;
+    if (clipboard === undefined) {
+      setCopy("failed");
+      return;
+    }
+    clipboard.writeText(code).then(
+      () => setCopy("copied"),
+      () => setCopy("failed"),
+    );
+  }
+
+  return (
+    <div className={styles.diagnostic}>
+      <span className={styles.diagnosticLabel}>Mã lỗi để báo</span>
+      <code className={styles.diagnosticCode}>{code}</code>
+      <button type="button" className={styles.action} onClick={handleCopy}>
+        Chép mã
+      </button>
+      <span className={styles.diagnosticStatus} aria-live="polite">
+        {copy === "copied" && "Đã chép."}
+        {copy === "failed" && "Không chép tự động được; bôi đen mã ở trên để chép."}
+      </span>
     </div>
   );
 }

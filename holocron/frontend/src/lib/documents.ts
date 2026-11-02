@@ -29,8 +29,16 @@ import {
   SUBJECT_CODE_PATTERN,
 } from "@/lib/limits";
 import { createPoller, defaultSchedule, POLL_INTERVAL_MS, type Poller, type Schedule } from "@/lib/poll";
-import type { LineEdit, ReviewReasonPending } from "@/types/contract-pending";
-import type { CrossCheckStatus, FailureReason, LineEngine, LineFlag, SourceKind, TierUsed } from "@/types/holocron";
+import type { ReviewReasonPending } from "@/types/contract-pending";
+import type {
+  CrossCheckStatus,
+  FailureReason,
+  LineEdit,
+  LineEngine,
+  LineFlag,
+  SourceKind,
+  TierUsed,
+} from "@/types/holocron";
 
 // ------------------------------------------------------------------------------------------ nhãn
 
@@ -47,6 +55,12 @@ export const REVIEW_REASON_LABEL_VI: Record<ReviewReasonPending, string> = {
   CROSS_CHECK_UNAVAILABLE: "Không có lượt đọc thứ hai để đối chiếu số",
   HIGH_PAGE_CER: "Hai lượt đọc ra văn bản khác nhau nhiều",
   OCR_ENGINE_MISSING: "Máy chưa có Tesseract nên trang được đọc bằng mô hình đọc ảnh",
+  LOW_TEXT_CONTRAST: "Có dòng chữ gần trùng màu nền, có thể là chữ ẩn",
+  TEXT_OCCLUDED: "Có dòng chữ bị hình hoặc khối màu vẽ đè lên che khuất",
+  FONT_ENCODING_SUSPECT: "Có dòng nghi lỗi phông chữ (ký tự lạ dính liền chữ cái)",
+  IMAGE_NEEDS_READING: "Trang ít chữ mà có hình lớn; nội dung trong hình cần được đọc",
+  PAGE_ROLE_UNCERTAIN: "Trang gần giống trang kế tiếp nhưng hình hơi khác; hãy xem có phải bước trình chiếu trùng lặp",
+  DENOISE_UNAVAILABLE: "Chưa lọc được phần khung lặp của tài liệu nên trang có hình cần xem kỹ",
 };
 
 export const UNKNOWN_REVIEW_REASON_VI = "Trang cần xem kỹ vì một lý do giao diện này chưa nhận ra";
@@ -55,6 +69,8 @@ export const FAILURE_REASON_LABEL_VI: Record<FailureReason, string> = {
   PAGE_TIMEOUT: "Đọc trang này quá thời gian cho phép",
   PAGE_ERROR: "Bộ đọc gặp lỗi ở trang này",
   OCR_ENGINE_MISSING: "Trang là ảnh scan nhưng máy chưa có Tesseract (hoặc thiếu dữ liệu tiếng Việt) để đọc",
+  TOO_MANY_LINES:
+    "Trang có quá nhiều dòng chữ (hơn 5000 dòng) nên chưa nhập được; các trang khác vẫn xác nhận bình thường",
 };
 
 export const UNKNOWN_FAILURE_REASON_VI = "Trang đọc lỗi vì một lý do giao diện này chưa nhận ra";
@@ -63,6 +79,9 @@ export const LINE_FLAG_LABEL_VI: Record<LineFlag, string> = {
   LOW_LINE_CONF: "độ tin cậy thấp",
   TOKEN_MISMATCH: "số hoặc mã lệch giữa hai lượt đọc",
   HIGH_LINE_CER: "hai lượt đọc khác nhau nhiều",
+  LOW_TEXT_CONTRAST: "chữ gần trùng màu nền",
+  TEXT_OCCLUDED: "chữ bị che khuất",
+  FONT_ENCODING_SUSPECT: "nghi lỗi phông chữ",
 };
 
 export const UNKNOWN_LINE_FLAG_VI = "cờ cảnh báo khác";
@@ -309,7 +328,11 @@ export function hasTextLine(lines: readonly LineView[]): boolean {
   return lines.some((line) => line.text.trim() !== "");
 }
 
-export type ConfirmPageBlock = EditBlock | "no_text";
+/**
+ * Lý do chưa xác nhận trang được. `unsaved_lines` (ô thêm dòng còn chữ hoặc ô sửa dòng đang mở) không suy từ dữ liệu
+ * trang nên `confirmPageBlock` không trả; nút xác nhận tính lý do này ở `lib/review-confirm.ts`.
+ */
+export type ConfirmPageBlock = EditBlock | "no_text" | "unsaved_lines";
 
 /** Vì sao chưa xác nhận trang được; `null` khi xác nhận được (trang `ok` hoặc `needs_review`, chưa xác nhận, có chữ). */
 export function confirmPageBlock(page: PageStateInput): ConfirmPageBlock | null {
@@ -326,6 +349,7 @@ export const CONFIRM_PAGE_BLOCK_MESSAGE_VI: Record<ConfirmPageBlock, string> = {
   ...EDIT_BLOCK_MESSAGE_VI,
   confirmed: "Trang đã được xác nhận.",
   no_text: "Trang chưa có dòng nào có chữ nên chưa xác nhận được. Thêm dòng ở dưới nếu trang có nội dung.",
+  unsaved_lines: "Còn dòng chưa lưu. Lưu hoặc xoá trước khi xác nhận",
 };
 
 export type ConfirmDocumentBlock = "processing" | "nothing_to_confirm";

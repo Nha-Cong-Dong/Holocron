@@ -166,6 +166,8 @@ describe("formatNumericalAnswer", () => {
 describe("groupTwinsBySlot", () => {
   it("gom twin theo slot, sắp theo slot_index và gắn ticket vào đúng slot", () => {
     const batch: TwinBatch = {
+      batch_id: "batch_1",
+      created_at: "2026-10-28T00:00:00Z",
       blueprint_id: "bp_1",
       base_seed: 1,
       twins: [
@@ -185,7 +187,16 @@ describe("groupTwinsBySlot", () => {
   });
 
   it("trả rỗng cho batch rỗng", () => {
-    expect(groupTwinsBySlot({ blueprint_id: "bp", base_seed: 0, twins: [], review_tickets: [] })).toEqual([]);
+    expect(
+      groupTwinsBySlot({
+        batch_id: "batch_0",
+        created_at: "2026-10-28T00:00:00Z",
+        blueprint_id: "bp",
+        base_seed: 0,
+        twins: [],
+        review_tickets: [],
+      }),
+    ).toEqual([]);
   });
 });
 

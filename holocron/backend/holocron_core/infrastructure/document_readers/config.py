@@ -5,13 +5,15 @@ Các ngưỡng tên viết hoa trong ADR (`TEXT_LAYER_MIN`…) giữ đúng giá
 tầng 1 (ký hiệu toán, bảng, hình) là giá trị khởi đầu chưa hiệu chỉnh bằng phép đo.
 
 Engine OCR (tầng 2) cấu hình bằng biến môi trường `HOLOCRON_PDF_OCR_*`, `HOLOCRON_TESSERACT_CMD`,
-`HOLOCRON_TESSDATA_DIR` (spec §11.2), đọc bằng `load_ocr_settings` thành `OcrSettings`. Bộ đọc không có
+`HOLOCRON_TESSDATA_DIR` (spec §11.2), đọc bằng `load_ocr_settings` thành `OcrSettings`. `TESSDATA_PREFIX` KHÔNG được
+đọc: worker chạy Tesseract với môi trường tối thiểu nên engine không thấy biến này (duyệt 2026-10-30). Bộ đọc không có
 `OcrSettings` thì coi như không có engine OCR: trang cần OCR thành `failed` (`OCR_ENGINE_MISSING`).
 """
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from collections.abc import Callable, Mapping
 from typing import Literal
@@ -47,6 +49,29 @@ DEFAULT_CROSS_CHECK_MAX_LINES = 5000
 DEFAULT_CROSS_CHECK_MAX_LINE_TOKENS = 512
 DEFAULT_CROSS_CHECK_MAX_LINE_PAIRS = 200_000
 DEFAULT_CROSS_CHECK_MAX_TOKEN_CELLS = 250_000
+
+# Chữ tiếng Việt hiếm đã duyệt (2026-10-25, ADR-008 mục 14) được phép thiếu trong unicharset của engine chính:
+# `vie.traineddata` bản best thiếu đúng hai chữ này. Mở rộng tập này cần người dùng duyệt riêng, nên field
+# `ocr_charset_allowed_missing` chỉ nhận tập con của nó.
+OCR_CHARSET_APPROVED_MISSING: frozenset[str] = frozenset({"Ỵ", "ỵ"})
+
+# Thư mục tessdata mặc định của các bản cài Tesseract thường gặp trên Linux (gói 5.x, gói 4.x, bản dựng chung): đường
+# lùi khi kiểm bộ chữ mà app không truyền `--tessdata-dir` và `--list-langs` không ghi thư mục (Tesseract 4.x, duyệt
+# 2026-10-30). Trên Windows còn dò thêm `tessdata` cạnh file chạy Tesseract (bộ cài thường đặt ở đó).
+TESSDATA_DEFAULT_DIRS: tuple[str, ...] = (
+    "/usr/share/tesseract-ocr/5/tessdata",
+    "/usr/share/tesseract-ocr/4.00/tessdata",
+    "/usr/share/tessdata",
+)
+
+# Token tên font (ADR-010 mục 5): tên font tách thành token tại `-`, `_`, `,`, dấu cách và ranh giới CamelCase, so
+# NGUYÊN token không phân biệt hoa thường (`SemiBold` ⇒ `semi`, `bold`; `Blackadder`, `Monotype` không khớp). Đơn
+# cách theo tên chỉ là tín hiệu phụ (cờ FixedPitch xét trước).
+BOLD_NAME_TOKENS: frozenset[str] = frozenset({"bold", "black", "heavy", "semibold"})
+ITALIC_NAME_TOKENS: frozenset[str] = frozenset({"italic", "oblique"})
+MONOSPACE_NAME_TOKENS: frozenset[str] = frozenset(
+    {"mono", "courier", "consolas", "menlo", "monaco", "inconsolata", "typewriter", "console"}
+)
 
 
 class PdfReaderConfig(BaseModel):
@@ -90,6 +115,15 @@ class PdfReaderConfig(BaseModel):
     # Sau khi kill Tesseract (quá hạn, đầu ra quá lớn), thời gian chờ tối đa để pipe đóng và tiến trình thoát hẳn;
     # quá mức này thì worker thôi chờ (luồng đọc là daemon), nên một tiến trình con treo không giữ worker mãi.
     ocr_kill_grace_s: float = Field(default=DEFAULT_OCR_KILL_GRACE_S, gt=0)
+    # `OCR_CHARSET_ALLOWED_MISSING` (spec §5.7; ADR-008 mục 14): chữ được phép thiếu trong unicharset của
+    # `vie.traineddata`, kèm cảnh báo; thiếu chữ ngoài tập này thì coi như thiếu gói `vie`.
+    ocr_charset_allowed_missing: frozenset[str] = OCR_CHARSET_APPROVED_MISSING
+    # Trần byte khi đọc `vie.traineddata` để kiểm unicharset lúc khởi động (bản best khoảng 12 MiB); file lớn hơn
+    # coi như không đọc được.
+    ocr_traineddata_max_bytes: int = Field(default=64 * MIB, ge=1024)
+    # Thư mục tessdata mặc định, chỉ dò khi không xác định được thư mục engine dùng (`tesseract.resolve_tessdata_dir`);
+    # test thay bằng thư mục tạm để không phụ thuộc máy chạy test.
+    ocr_tessdata_default_dirs: tuple[str, ...] = TESSDATA_DEFAULT_DIRS
     # Hệ số giảm dần tỉ lệ render khi ảnh làm tròn lên vẫn vượt `ocr_max_pixels` (mục 4).
     render_shrink_factor: float = Field(default=DEFAULT_RENDER_SHRINK_FACTOR, gt=0.0, lt=1.0)
     # Nhị phân hoá ảnh xám để đếm điểm ảnh mực (`ink_outside_text_ratio`, mục 9): điểm ảnh tối hơn ngưỡng là mực.
@@ -117,16 +151,105 @@ class PdfReaderConfig(BaseModel):
     figure_ink_min: float = Field(default=0.10, ge=0.0, le=1.0)
     cross_line_cer_warn: float = Field(default=0.05, ge=0.0, le=1.0)
 
-    # `text_score` (ADR-008 mục 6): độ đủ chữ = min(1, số ký tự không trắng / text_full_chars).
-    text_full_chars: int = Field(default=200, ge=1)
+    # Chọn tầng (ADR-008 mục 6; sửa đổi 2026-10-29): `text_score` chỉ đo lớp chữ có rác hay không, ít chữ không phải
+    # lý do bỏ lớp chữ. Ngoại lệ là trang ảnh: lớp chữ sạch nhưng có dưới `text_sparse_chars` ký tự không trắng
+    # (thường chỉ còn tiêu đề khung slide và số trang) trong khi ảnh nhúng phủ ít nhất `text_sparse_image_min` diện
+    # tích trang (diện tích hợp) ⇒ OCR cả trang; "dưới" là so sánh `<`. Đo trên 3 chương slide thật (ADR-008 mục 6):
+    # trang ảnh có 2–31 ký tự, ảnh phủ 0,434–0,86 (ch2 tr.32: 31 ký tự / 0,558; tr.46: 2 ký tự / 0,434); trang giữ
+    # lớp chữ gần biên nhất có 34 ký tự / 0,542. Giá trị khởi đầu, hiệu chỉnh tiếp bằng `scripts/eval_pdf_tiers`.
+    text_sparse_chars: int = Field(default=32, ge=1)
+    text_sparse_image_min: float = Field(default=0.40, gt=0.0, le=1.0)
+    # Trang ảnh phủ gần kín (sửa đổi 2026-10-30): lớp chữ sạch, có dưới `text_full_image_max_chars` ký tự không trắng
+    # (so sánh `<`) trong khi ảnh nhúng phủ ít nhất `text_full_image_min` diện tích trang (diện tích hợp) ⇒ OCR cả
+    # trang, vì phần chữ còn lại chỉ là tiêu đề, header, số trang nằm dưới ảnh. Trần ký tự giữ lớp chữ cho PDF scan đã
+    # có lớp chữ đầy đủ (ảnh phủ cả trang, chữ ẩn bên trên). Đo trên 3 chương slide thật: ch4 tr.22 (sơ đồ là ảnh) có
+    # 64 ký tự / ảnh 0,98; trang giữ lớp chữ có ảnh lớn nhất là 0,74. `text_full_image_min` phải ≥
+    # `text_sparse_image_min` (luật này chỉ nới luật trang ảnh ít chữ, không thay nó).
+    text_full_image_min: float = Field(default=0.90, gt=0.0, le=1.0)
+    text_full_image_max_chars: int = Field(default=200, ge=1)
 
     # `has_formula` (mục 6, 9): tỉ lệ ký hiệu toán trên số ký tự không trắng, kèm số ký hiệu tối thiểu.
     formula_density_min: float = Field(default=0.03, gt=0.0, le=1.0)
     formula_min_symbols: int = Field(default=3, ge=1)
 
-    # `has_figure` trên PDF số (mục 9): diện tích ảnh nhúng đủ lớn; diện tích đường vẽ chỉ tính khi trang có ảnh.
+    # Template (sửa đổi 2026-10-30; mở rộng GĐ0 2026-10-31 sang đường vẽ và dòng chữ): ảnh nhúng cùng nội dung
+    # (SHA-256 dữ liệu thô của luồng ảnh + kích thước điểm ảnh, bộ lọc), đường vẽ cùng màu và số đoạn, cùng vị trí trên
+    # trang (hộp chuẩn hoá theo khổ trang đã xoay, làm tròn theo bước `template_image_bbox_step`) xuất hiện trên ít nhất
+    # `template_image_min_pages` trang VÀ ít nhất `template_min_page_ratio` tổng số trang của tài liệu (so sánh `≥`;
+    # `TEMPLATE_MIN_PAGE_RATIO`, đổi tên 2026-10-31 từ `template_image_min_page_ratio`). Ảnh template không được tính
+    # vào độ phủ ảnh của mọi luật dựa trên độ phủ (trang ảnh ít chữ, ảnh phủ gần kín, cờ hình). Tài liệu dưới
+    # `template_image_min_pages` trang không có template; trần dưới là 3 để tài liệu 1–2 trang luôn như vậy. Dòng chữ
+    # lặp (header/footer) dùng ngưỡng riêng `header_footer_min_page_ratio`, `header_footer_min_spread` (dưới).
+    # Mặc định 0.40 chọn bằng phép đo GĐ0 trên tập dev (ch2, 2026-10-31): ở 0.40 không ảnh NỘI DUNG nào bị nhận nhầm là
+    # template (hai ảnh thêm vào là dải trang trí của tiêu đề) và recall trang điều hướng tốt hơn 0.60; tập mù chỉ báo số.
+    template_min_page_ratio: float = Field(default=0.40, gt=0.0, le=1.0)
+    template_image_min_pages: int = Field(default=3, ge=3)
+    template_image_bbox_step: float = Field(default=0.01, ge=1e-4, le=0.1)
+    # Lượt quét ảnh cấp tài liệu trong worker, trước trang đầu, không render: hạn riêng `template_scan_timeout_s`,
+    # không tính vào `open_timeout_s` hay hạn trang; thời gian chờ lượt quét được cộng vào hạn tổng của tài liệu, và
+    # `ceil(template_scan_timeout_s)` giây CPU được cộng vào giới hạn CPU của worker có quét. Trần số ảnh mỗi trang và
+    # cả tài liệu, số byte đem băm mỗi ảnh và cả tài liệu. Vượt trần của trang hay của tài liệu, quá hạn hoặc lỗi ⇒
+    # không ảnh nào là template (hành vi cũ). Ảnh lớn hơn `template_scan_max_image_bytes` không có khoá nên không bao
+    # giờ là template.
+    template_scan_timeout_s: float = Field(default=20.0, gt=0)
+    template_scan_max_images_per_page: int = Field(default=256, ge=1)
+    template_scan_max_images: int = Field(default=20_000, ge=1)
+    template_scan_max_image_bytes: int = Field(default=16 * MIB, ge=1)
+    template_scan_max_bytes: int = Field(default=512 * MIB, ge=1)
+    # Trang có nhiều đường vẽ hơn mức này: đường vẽ của trang không có khoá (không bao giờ là template).
+    template_scan_max_paths_per_page: int = Field(default=4096, ge=1)
+
+    # GĐ0 0A (sửa đổi 2026-10-31): duyệt đệ quy form XObject tới độ sâu `pdf_form_max_depth`; trang có quá
+    # `page_objects_max` đối tượng sau khi duyệt (`>`), hoặc form sâu hơn, là trang vượt trần: không lọc chữ ẩn, không
+    # xét chữ bị che, không nhận nền, mọi ảnh và đường vẽ là nội dung. Nền là đường vẽ tô đặc phủ `≥
+    # background_path_min_area` diện tích trang và vẽ trước mọi chữ giao với nó, hoặc ảnh template.
+    pdf_form_max_depth: int = Field(default=16, ge=1)
+    page_objects_max: int = Field(default=20_000, ge=1)
+    background_path_min_area: float = Field(default=0.50, gt=0.0, le=1.0)
+
+    # `has_figure` trên PDF số (mục 9; sửa đổi 2026-10-31, GĐ0): chỉ tính đối tượng không-template, không-nền: độ phủ
+    # ảnh nội dung `≥ figure_image_area_min`, hoặc có ảnh nội dung VÀ diện tích đường vẽ nội dung
+    # `≥ figure_path_area_min`.
     figure_image_area_min: float = Field(default=0.10, gt=0.0, le=1.0)
     figure_path_area_min: float = Field(default=0.25, gt=0.0, le=1.0)
+
+    # GĐ0 0B (chất lượng chữ, chỉ dòng lớp chữ). Chữ ẩn: tương phản WCAG giữa màu chữ và nền thật (trung vị điểm ảnh
+    # trong hộp chữ trên ảnh render `hidden_text_render_dpi` khi không vẽ chữ): `≤ hidden_text_drop_max` ⇒ loại,
+    # `≥ hidden_text_keep_min` ⇒ giữ, ở giữa ⇒ giữ + cờ. Lớp OCR của PDF scan: tỉ lệ ký tự render mode 3
+    # `> scan_text_layer_mode3_min` VÀ ảnh (mọi ảnh) phủ `≥ scan_text_layer_image_min` ⇒ giữ nguyên. Chữ bị che: ảnh
+    # hoặc đường vẽ tô đặc vẽ sau che `≥ occlusion_min_cover` hộp chữ. Ghép ký tự rời: chuỗi `≥ char_merge_min_chars`
+    # ký tự đứng riêng, lệch baseline `≤ char_merge_baseline_tol` và lệch khoảng cách so với trung vị
+    # `≤ char_merge_gap_tol` (× chiều cao ký tự). Header/footer: dòng lặp cùng chỗ trên `≥ header_footer_min_page_ratio`
+    # số trang VÀ `(p_max − p_min) / N ≥ header_footer_min_spread`.
+    hidden_text_render_dpi: int = Field(default=72, ge=18, le=300)
+    hidden_text_drop_max: float = Field(default=1.25, ge=1.0, le=21.0)
+    hidden_text_keep_min: float = Field(default=2.0, ge=1.0, le=21.0)
+    scan_text_layer_mode3_min: float = Field(default=0.50, ge=0.0, lt=1.0)
+    scan_text_layer_image_min: float = Field(default=0.90, gt=0.0, le=1.0)
+    occlusion_min_cover: float = Field(default=0.50, gt=0.0, le=1.0)
+    char_merge_min_chars: int = Field(default=3, ge=2)
+    char_merge_baseline_tol: float = Field(default=0.20, ge=0.0, le=2.0)
+    char_merge_gap_tol: float = Field(default=0.25, ge=0.0, le=2.0)
+    header_footer_min_page_ratio: float = Field(default=0.60, gt=0.0, le=1.0)
+    header_footer_min_spread: float = Field(default=0.60, ge=0.0, le=1.0)
+
+    # GĐ0 0C: lớp chữ (đã trừ header/footer) có `≥ figure_text_min_tokens` token ⇒ hình chỉ ghi vùng; `<` VÀ ảnh nội
+    # dung phủ `≥ image_read_area_min` ⇒ OCR cả trang kèm `IMAGE_NEEDS_READING`.
+    figure_text_min_tokens: int = Field(default=8, ge=1)
+    image_read_area_min: float = Field(default=0.30, gt=0.0, le=1.0)
+
+    # GĐ0 0D (vai trò trang, chạy ở service): xem `services/page_roles.py`.
+    page_role_min_tokens: int = Field(default=8, ge=1)
+    page_role_common_token_ratio: float = Field(default=0.60, gt=0.0, le=1.0)
+    cover_jaccard_min: float = Field(default=0.80, gt=0.0, le=1.0)
+    chapter_nav_jaccard_min: float = Field(default=0.85, gt=0.0, le=1.0)
+    chapter_nav_min_median_gap: float = Field(default=3.0, ge=1.0)
+    chapter_nav_max_line_chars: int = Field(default=90, ge=1)
+    chapter_nav_min_pages: int = Field(default=2, ge=2)
+    build_step_subset_min: float = Field(default=0.90, gt=0.0, le=1.0)
+    build_step_position_tol: float = Field(default=0.02, ge=0.0, le=1.0)
+    build_step_dhash_same_max: int = Field(default=4, ge=0, le=64)
+    parallel_series_dhash_min: int = Field(default=9, ge=0, le=64)
 
     # `has_table` theo lưới toạ độ chữ (mục 6): khoảng trống giữa hai ô tính theo chiều cao dòng; các dòng liền
     # nhau có cùng số ô và mép trái các ô thẳng hàng trong `table_col_tolerance` (tỉ lệ bề ngang trang).
@@ -135,11 +258,52 @@ class PdfReaderConfig(BaseModel):
     table_min_cols: int = Field(default=2, ge=2)
     table_col_tolerance: float = Field(default=0.02, gt=0.0, le=1.0)
 
+    # Font (ADR-010 mục 5): font đậm khi weight PDFium `≥ bold_min_weight` (font nhúng thường trả 400) hoặc tên font
+    # chứa một token của `bold_name_tokens`. Ba tập token là field của cấu hình nên đổi token đổi
+    # `reader_settings_sha256` (ADR-010 mục 3, mục 15; I4).
+    bold_min_weight: int = Field(default=600, ge=100, le=1000)
+    bold_name_tokens: frozenset[str] = BOLD_NAME_TOKENS
+    italic_name_tokens: frozenset[str] = ITALIC_NAME_TOKENS
+    monospace_name_tokens: frozenset[str] = MONOSPACE_NAME_TOKENS
+
     @model_validator(mode="after")
     def _tesseract_fits_in_page(self) -> PdfReaderConfig:
         """Hạn của một lần chạy Tesseract phải nhỏ hơn hạn của cả trang OCR, để còn thời gian cho lượt thứ hai."""
         if self.tesseract_timeout_s >= self.ocr_page_timeout_s:
             raise ValueError("tesseract_timeout_s phải nhỏ hơn ocr_page_timeout_s")
+        return self
+
+    @model_validator(mode="after")
+    def _only_approved_missing_letters(self) -> PdfReaderConfig:
+        """Danh sách chữ được phép thiếu chỉ gồm các chữ hiếm đã duyệt (spec §5.7)."""
+        if not self.ocr_charset_allowed_missing <= OCR_CHARSET_APPROVED_MISSING:
+            approved = ", ".join(sorted(OCR_CHARSET_APPROVED_MISSING))
+            raise ValueError(f"ocr_charset_allowed_missing chỉ được chứa các chữ đã duyệt ({approved})")
+        return self
+
+    @model_validator(mode="after")
+    def _full_image_not_below_sparse_image(self) -> PdfReaderConfig:
+        """Ngưỡng trang ảnh phủ gần kín không được thấp hơn ngưỡng ảnh của luật trang ảnh ít chữ."""
+        if self.text_full_image_min < self.text_sparse_image_min:
+            raise ValueError("text_full_image_min phải lớn hơn hoặc bằng text_sparse_image_min")
+        return self
+
+    @model_validator(mode="after")
+    def _denoise_bands_are_ordered(self) -> PdfReaderConfig:
+        """Vùng giữa của chữ ẩn và của dHash phải không rỗng (§5.7, bảng ngưỡng GĐ0)."""
+        if self.hidden_text_drop_max >= self.hidden_text_keep_min:
+            raise ValueError("hidden_text_drop_max phải nhỏ hơn hidden_text_keep_min")
+        if self.build_step_dhash_same_max >= self.parallel_series_dhash_min:
+            raise ValueError("build_step_dhash_same_max phải nhỏ hơn parallel_series_dhash_min")
+        return self
+
+    @model_validator(mode="after")
+    def _template_scan_caps_are_ordered(self) -> PdfReaderConfig:
+        """Trần mỗi trang (mỗi ảnh) không vượt trần cả tài liệu, cho số ảnh và số byte đem băm."""
+        if self.template_scan_max_images_per_page > self.template_scan_max_images:
+            raise ValueError("template_scan_max_images_per_page phải nhỏ hơn hoặc bằng template_scan_max_images")
+        if self.template_scan_max_image_bytes > self.template_scan_max_bytes:
+            raise ValueError("template_scan_max_image_bytes phải nhỏ hơn hoặc bằng template_scan_max_bytes")
         return self
 
 
@@ -150,7 +314,8 @@ class OcrSettings(BaseModel):
     """Engine OCR của tầng 2 (ADR-008 mục 8, 12). Chỉ chứa đường dẫn và tên engine, không chứa bí mật.
 
     `tesseract_cmd` là đường dẫn tuyệt đối khi tìm được trong PATH của tiến trình cha (worker chạy với môi trường
-    tối thiểu, không có PATH). `tessdata_dir` là None thì dùng thư mục mặc định của bản cài Tesseract.
+    tối thiểu, không có PATH). `tessdata_dir` (`HOLOCRON_TESSDATA_DIR`) khác rỗng thì được truyền cho Tesseract bằng
+    `--tessdata-dir`; None thì Tesseract dùng thư mục mặc định của bản cài.
     `secondary` là None thì không có lượt đọc thứ hai (`cross_check = unavailable`).
     """
 
@@ -167,6 +332,38 @@ def _read_env(env: Mapping[str, str], name: str) -> str | None:
     return value or None
 
 
+_WINDOWS_DRIVE_PATH = re.compile(r"[A-Za-z]:[\\/]")
+
+
+def _has_root(value: str, *, sep: str, altsep: str | None) -> bool:
+    """Dạng đường dẫn coi như đã có gốc: bắt đầu bằng `/` hoặc có ổ đĩa (`C:/x`, `C:\\x`) trên mọi nền tảng.
+
+    Dạng bắt đầu bằng gạch ngược (`\\x`) chỉ có gốc khi gạch ngược là dấu phân cách của nền tảng (`sep` hoặc
+    `altsep`, tức Windows); trên POSIX nó là tên tương đối. Hàm thuần nhận `sep`/`altsep` làm tham số để kiểm được
+    cả hai nhánh trên mọi máy.
+    """
+    if value[:1] == "/" or _WINDOWS_DRIVE_PATH.match(value):
+        return True
+    backslash_separates = sep == "\\" or (altsep is not None and "\\" in altsep)
+    return backslash_separates and value[:1] == "\\"
+
+
+def _absolute_path(value: str) -> str:
+    """Đường dẫn tương đối đổi sang tuyệt đối theo cwd hiện tại; đã tuyệt đối hay có gốc (`_has_root`) giữ nguyên.
+
+    Lần kiểm lúc khởi động (cwd của app) và worker (cwd tạm) phải thấy cùng một đường dẫn.
+    """
+    if os.path.isabs(value) or _has_root(value, sep=os.sep, altsep=os.altsep):
+        return value
+    return os.path.abspath(value)
+
+
+def _absolute_command(command: str) -> str:
+    """Lệnh có dấu phân cách đường dẫn mà tương đối ⇒ tuyệt đối; tên lệnh trần giữ nguyên để tra PATH."""
+    has_separator = "/" in command or "\\" in command
+    return _absolute_path(command) if has_separator else command
+
+
 def load_ocr_settings(
     env: Mapping[str, str] | None = None,
     which: Callable[[str], str | None] = shutil.which,
@@ -177,7 +374,9 @@ def load_ocr_settings(
     - `HOLOCRON_PDF_OCR_SECONDARY`: chưa đặt thì là `rapidocr`; ĐẶT RỖNG thì không có lượt thứ hai (spec §11.2 ghi
       riêng cho biến này, ưu tiên hơn quy tắc chung "rỗng coi như chưa đặt"); giá trị khác là `ConfigError`.
     - `HOLOCRON_TESSERACT_CMD`: mặc định `tesseract`, tìm trong PATH của tiến trình cha bằng `which`; không tìm
-      thấy thì giữ nguyên, worker sẽ không chạy được binary và coi như thiếu engine.
+      thấy thì giữ nguyên, worker sẽ không chạy được binary và coi như thiếu engine. Dạng đường dẫn tương đối (có dấu
+      phân cách) đổi sang tuyệt đối theo cwd lúc đọc; tên lệnh trần giữ nguyên.
+    - `HOLOCRON_TESSDATA_DIR`: dạng tương đối đổi sang tuyệt đối theo cwd lúc đọc.
     """
     source = os.environ if env is None else env
     primary = _read_env(source, ENV_PDF_OCR_PRIMARY) or "tesseract"
@@ -190,9 +389,10 @@ def load_ocr_settings(
             secondary = None
         elif raw_secondary != "rapidocr":
             raise ConfigError(f"{ENV_PDF_OCR_SECONDARY} không hợp lệ: chỉ nhận 'rapidocr' hoặc để rỗng")
-    command = _read_env(source, ENV_TESSERACT_CMD) or DEFAULT_TESSERACT_CMD
+    command = _absolute_command(_read_env(source, ENV_TESSERACT_CMD) or DEFAULT_TESSERACT_CMD)
+    tessdata_dir = _read_env(source, ENV_TESSDATA_DIR)
     return OcrSettings(
         tesseract_cmd=which(command) or command,
-        tessdata_dir=_read_env(source, ENV_TESSDATA_DIR),
+        tessdata_dir=None if tessdata_dir is None else _absolute_path(tessdata_dir),
         secondary=secondary,
     )

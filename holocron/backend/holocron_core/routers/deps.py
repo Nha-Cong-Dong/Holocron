@@ -5,17 +5,21 @@ Test thay phụ thuộc bằng `app.dependency_overrides[get_xxx]`; mọi router
 
 from __future__ import annotations
 
+import os
+import unicodedata
 from collections.abc import Callable
 from datetime import UTC, datetime
 from functools import cache
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, FastAPI, HTTPException, Request
 
 from ..domain.repositories import AppStore, VaultRepository
 from ..infrastructure.llm_config import RuntimeConfig, load_runtime_config_lenient
 from ..infrastructure.storage import open_store_from_env
 from ..infrastructure.template_library import InMemoryTemplateRegistry
+from ..launcher_logging import LOG_DIR_ENV, BuildInfo, read_build_info
+from ..services.concept_proposal_job import ProposalJobRuntime
 from ..services.extraction import DocumentExtractor, MockDualPassExtractor
 from ..services.pipeline import TemplateAuthor
 from ..services.twin_batch import CitationProvider, NoCitationProvider, UnconfiguredTemplateAuthor
@@ -35,6 +39,37 @@ def get_store() -> AppStore:
     return _default_store()
 
 
+PROPOSAL_JOBS_STATE_ATTR = "proposal_jobs"
+PROPOSAL_JOBS_UNAVAILABLE_DETAIL = "Job đề xuất cặp chưa sẵn sàng: ứng dụng đang khởi động hoặc đang tắt."
+
+
+def create_proposal_job_runtime(config: RuntimeConfig) -> ProposalJobRuntime:
+    """Runtime job đề xuất cặp của một app (§5.8): `lifespan` tạo khi khởi động, gắn vào `app.state`, đóng khi tắt
+    (trước khi đóng kho). Cấu hình lấy từ `config.llm.proposal`, cùng nguồn với từng request."""
+    return ProposalJobRuntime(config.llm.proposal)
+
+
+def get_proposal_jobs(request: Request) -> ProposalJobRuntime:
+    """Runtime job của app. Không có (`lifespan` chưa chạy hoặc đã gỡ khi tắt app) ⇒ 500 kèm `detail`, như bộ nhập."""
+    jobs = getattr(request.app.state, PROPOSAL_JOBS_STATE_ATTR, None)
+    if isinstance(jobs, ProposalJobRuntime):
+        return jobs
+    raise HTTPException(status_code=500, detail=PROPOSAL_JOBS_UNAVAILABLE_DETAIL)
+
+
+def find_proposal_jobs(application: FastAPI) -> ProposalJobRuntime | None:
+    """Runtime job của app nếu `lifespan` đã tạo (và chưa gỡ); không có ⇒ `None` (không lỗi)."""
+    jobs = getattr(application.state, PROPOSAL_JOBS_STATE_ATTR, None)
+    return jobs if isinstance(jobs, ProposalJobRuntime) else None
+
+
+def get_optional_proposal_jobs(request: Request) -> ProposalJobRuntime | None:
+    """Runtime job cho bộ nhập tài liệu (T1b, T1e): khác `get_proposal_jobs`, app chạy không qua `lifespan` nhận `None`
+    thay vì 500, vì xác nhận và xem tài liệu không được hỏng khi chưa có runtime job (khi đó không tạo job, và
+    `DocumentImport` báo lý do vắng job)."""
+    return find_proposal_jobs(request.app)
+
+
 def get_extractor() -> DocumentExtractor:
     # Adapter VLM thật thuộc T2-N5. Cho tới lúc đó mọi cấu hình đều dùng Mock; `RuntimeInfo.demo_mode` suy ra từ
     # extractor đang chạy nên vẫn đúng khi đã đặt biến VLM mà chưa có adapter.
@@ -47,6 +82,28 @@ def get_runtime_config() -> RuntimeConfig:
     `vlm_configured = false`, endpoint cần LLM trả 409 `CapabilityError` (`reason = "llm_not_configured"`). Không giá
     trị biến nào được lộ ra response hay log."""
     return load_runtime_config_lenient()
+
+
+@cache
+def _default_build_info() -> BuildInfo:
+    return read_build_info()
+
+
+def get_build_info() -> BuildInfo:
+    """Version và commit của bản đang chạy (đọc `holocron_build.json` một lần); thiếu/hỏng thì giá trị lùi."""
+    return _default_build_info()
+
+
+def get_log_dir() -> str | None:
+    """Thư mục log do launcher đặt qua `HOLOCRON_LOG_DIR`; không chạy qua launcher thì `None`.
+
+    Biến này do launcher quản lý (đặt khi mở được log, xoá khi không); đặt tay khi chạy uvicorn trực tiếp không được đảm bảo.
+    """
+    # Bỏ ký tự điều khiển/định dạng như `clean_field` nhưng không cắt độ dài: đường dẫn log có thể dài hơn 64 ký tự.
+    value = "".join(
+        ch for ch in os.environ.get(LOG_DIR_ENV, "") if not unicodedata.category(ch).startswith("C")
+    ).strip()
+    return value or None
 
 
 def get_template_author() -> TemplateAuthor:
@@ -72,6 +129,10 @@ def get_vault(store: StoreDep) -> VaultRepository:
 VaultDep = Annotated[VaultRepository, Depends(get_vault)]
 ExtractorDep = Annotated[DocumentExtractor, Depends(get_extractor)]
 RuntimeConfigDep = Annotated[RuntimeConfig, Depends(get_runtime_config)]
+BuildInfoDep = Annotated[BuildInfo, Depends(get_build_info)]
+LogDirDep = Annotated[str | None, Depends(get_log_dir)]
 AuthorDep = Annotated[TemplateAuthor, Depends(get_template_author)]
 CitationDep = Annotated[CitationProvider, Depends(get_citation_provider)]
 ClockDep = Annotated[Callable[[], datetime], Depends(get_clock)]
+ProposalJobsDep = Annotated[ProposalJobRuntime, Depends(get_proposal_jobs)]
+OptionalProposalJobsDep = Annotated[ProposalJobRuntime | None, Depends(get_optional_proposal_jobs)]

@@ -8,7 +8,16 @@
 
 export type OptionKey = "A" | "B" | "C" | "D";
 
-export type QuestionFormat = "MCQ4" | "NUMERICAL";
+/** Hình thức câu (§5.14): `ESSAY` chỉ slot lý thuyết mang được; chưa có câu ESSAY nào được sinh. */
+export type QuestionFormat = "MCQ4" | "NUMERICAL" | "ESSAY";
+
+/** `COMPUTATIONAL_FORMATS`: hình thức của câu tính toán và của `TwinBatchRequest.format` (§6.3: `ESSAY` ⇒ 422). */
+export type ComputationalFormat = "MCQ4" | "NUMERICAL";
+
+/** Hình thức thi của môn (§5.14); mặc định cho `TheorySlotSpec.format` khi null. */
+export type ExamFormat = "mcq" | "essay" | "mixed";
+
+export type CognitiveLevel = "remember" | "understand" | "apply" | "analyze";
 
 export type ReviewStatus = "AUTO_PASS" | "AUTO_FALLBACK" | "NEEDS_REVIEW" | "APPROVED" | "REJECTED";
 
@@ -60,6 +69,8 @@ export interface KnowledgeChunk {
   label_status: LabelStatus;
   mapping_confidence: number | null;
   version: number;
+  /** Nhãn "chunk là bài tập" do LLM gắn trong job đề xuất cặp (§5.8); `null` khi chưa có LLM gắn. */
+  is_exercise: boolean | null;
 }
 
 /** `SolverInputs` (extra="allow"): response luôn có `quantum`, có thể kèm khoá phụ theo topic. */
@@ -133,11 +144,13 @@ export interface AttemptLog {
 export interface ReviewTicket {
   blueprint_id: string;
   slot_index: number;
-  topic_key: string;
+  /** `null` với slot lý thuyết (§5.9). */
+  topic_key: string | null;
   reason: string;
   attempts: AttemptLog[];
 }
 
+/** Câu tính toán; JSON KHÔNG có `question_kind` (khoá phân biệt với `TheoryTwin` trong `TwinBatch.twins`). */
 export interface TwinQuestion {
   twin_id: string;
   blueprint_id: string;
@@ -145,7 +158,7 @@ export interface TwinQuestion {
   template_id: string;
   topic_key: string;
   seed: number;
-  format: QuestionFormat;
+  format: ComputationalFormat;
   stem: string;
   options: Record<OptionKey, string> | null;
   correct_key: OptionKey | null;
@@ -159,6 +172,161 @@ export interface TwinQuestion {
   /** Sắp theo `start`, không chồng lấn; khoảng CPU rảnh không có đoạn; không rỗng với topic CPU Scheduling. */
   gantt: GanttSegment[];
 }
+
+export interface DistractorArchetype {
+  misconception_code: string;
+  description: string;
+  observed_option_key: OptionKey | null;
+  observed_option_text: string | null;
+  reproduction_confidence: number;
+}
+
+/** Slot câu tính toán của blueprint (dựng từ đề đã duyệt). */
+export interface BlueprintSlot {
+  slot_index: number;
+  source_page_number: number;
+  format: QuestionFormat;
+  chapter_code: string;
+  topic_key: string;
+  cognitive_level: CognitiveLevel;
+  /**
+   * Pydantic khai báo `bool`. Phía TS khai literal `true` để thu hẹp `ExamBlueprintSlot`: slot tính toán do API hiện
+   * tại tạo luôn có `true`. Hạn chế: blueprint JSON cũ có slot tính toán `false` (không có `question_kind`) vẫn được
+   * backend đọc là `BlueprintSlot` và trả `false` ở đây; xem chú thích của `ExamBlueprintSlot`.
+   */
+  is_computational: true;
+  non_cloneable: boolean;
+  non_cloneable_reason: string | null;
+  distractor_archetypes: DistractorArchetype[];
+  self_solve: SelfSolveResult;
+  mapping_confidence: number;
+  review_status: ReviewStatus;
+}
+
+/**
+ * Slot lý thuyết của blueprint, dựng từ `TheorySlotSpec` (§5.9; quyết định 14(b), nợ ADR-004: model riêng thay cho
+ * `BlueprintSlot.question_kind = "theory"` của spec). `format` là MCQ4 hoặc ESSAY; `cognitive_level` là remember
+ * hoặc understand.
+ */
+export interface TheorySlot {
+  slot_index: number;
+  is_computational: false;
+  question_kind: "theory";
+  chapter_code: string;
+  source_chunk_id: string | null;
+  format: QuestionFormat;
+  topic_key: string | null;
+  cognitive_level: CognitiveLevel;
+  non_cloneable: false;
+  mapping_confidence: number;
+  review_status: ReviewStatus;
+}
+
+/**
+ * Phần tử của `ExamBlueprint.slots`. Backend phân biệt theo `question_kind`: `"theory"` ⇒ `TheorySlot`, còn lại ⇒
+ * `BlueprintSlot` (`_slot_kind` ở `domain/schemas.py`). Phía TS thu hẹp được nhờ `is_computational` literal: slot lý
+ * thuyết luôn `false`, slot tính toán do API hiện tại tạo luôn `true`. Hạn chế: slot tính toán cũ có
+ * `is_computational = false` mà không có `question_kind` vẫn là `BlueprintSlot` ở backend, nên thu hẹp theo
+ * `is_computational` sẽ xếp nhầm nó vào `TheorySlot`.
+ */
+export type ExamBlueprintSlot = BlueprintSlot | TheorySlot;
+
+/** `ExamBlueprint` (§5.9); bốn field cuối là `computed_field`, luôn có trong response và do backend tính. */
+export interface ExamBlueprint {
+  blueprint_id: string;
+  /** `null` chỉ khi blueprint không có slot tính toán. */
+  source_exam_doc_id: string | null;
+  subject_code: string;
+  total_questions: number;
+  duration_minutes: number | null;
+  slots: ExamBlueprintSlot[];
+  created_at: string;
+  chapter_distribution: Record<string, number>;
+  format_distribution: Partial<Record<QuestionFormat, number>>;
+  cloneable_ratio: number;
+  mean_mapping_confidence: number;
+}
+
+/** Một slot lý thuyết người dùng yêu cầu ở `POST /v1/blueprints` (§5.9); field bỏ trống thì backend lấy mặc định. */
+export interface TheorySlotSpec {
+  chapter_code: string;
+  cognitive_level?: "remember" | "understand";
+  source_chunk_id?: string | null;
+  /** `null` hoặc bỏ trống ⇒ mặc định theo `Subject.exam_format` (§5.14). */
+  format?: "MCQ4" | "ESSAY" | null;
+}
+
+/**
+ * Body của `POST /v1/blueprints` (§5.9, §6.7): ≤ 50 item, ≤ 50 slot lý thuyết, không cùng rỗng. Backend của bản này
+ * trả 422 khi `item_ids` khác rỗng (câu tính toán chưa hỗ trợ, quyết định 15).
+ */
+export interface BlueprintCreate {
+  subject_code: string;
+  item_ids?: string[];
+  theory_slots?: TheorySlotSpec[];
+  duration_minutes?: number | null;
+}
+
+/** Một dòng của `GET /v1/blueprints` (§6.7). */
+export interface BlueprintSummary {
+  blueprint_id: string;
+  subject_code: string;
+  total_questions: number;
+  created_at: string;
+  batch_count: number;
+}
+
+/** Môn học (§5.14); `version` cho optimistic locking (§6.8). */
+export interface Subject {
+  subject_code: string;
+  display_name: string;
+  exam_format: ExamFormat;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// ------------------------------------------------------------------ domain/theory.py
+
+export type TheoryQuestionForm = "concept_match" | "fill_blank" | "definition_choice";
+
+/**
+ * Câu lý thuyết MCQ4 do code ghép từ cặp khái niệm đã xác nhận (ADR-007). `distractor_to_misconception_map` và
+ * `distractor_citations` phủ đúng ba phương án sai; mọi trích dẫn là nguyên văn tài liệu (I3).
+ */
+export interface TheoryQuestion {
+  question_kind: "theory";
+  form: TheoryQuestionForm;
+  subject_code: string;
+  chapter_code: string;
+  seed: number;
+  generator_version: string;
+  pool_sha256: string;
+  stem: string;
+  options: Record<OptionKey, string>;
+  correct_key: OptionKey;
+  distractor_to_misconception_map: Partial<Record<OptionKey, MisconceptionRef>>;
+  distractor_citations: Partial<Record<OptionKey, Citation>>;
+  solution_explanation_vi: string;
+  citation: Citation;
+}
+
+// ------------------------------------------------------------------- domain/twins.py
+
+/** Một câu lý thuyết MCQ4 trong `TwinBatch` (quyết định 14(b), nợ ADR-004); bộ ba I4 nằm trong `question`. */
+export interface TheoryTwin {
+  question_kind: "theory";
+  twin_id: string;
+  blueprint_id: string;
+  slot_index: number;
+  format: "MCQ4";
+  question: TheoryQuestion;
+  review_status: ReviewStatus;
+  generated_at: string;
+}
+
+/** Phần tử của `TwinBatch.twins`: `question_kind === "theory"` ⇒ `TheoryTwin`, không có `question_kind` ⇒ `TwinQuestion`. */
+export type BatchTwin = TwinQuestion | TheoryTwin;
 
 // ---------------------------------------------------------- services/ingestion_gate.py
 
@@ -255,7 +423,23 @@ export type LineEngine = "text_layer" | "tesseract" | "vlm" | "human";
 
 export type TierUsed = "text_layer" | "ocr" | "layout" | "vlm";
 
-export type LineFlag = "LOW_LINE_CONF" | "TOKEN_MISMATCH" | "HIGH_LINE_CER";
+/** Cờ dòng; ba cờ GĐ0 (thêm 2026-10-31) chỉ có ở dòng `engine = "text_layer"`. */
+export type LineFlag =
+  | "LOW_LINE_CONF"
+  | "TOKEN_MISMATCH"
+  | "HIGH_LINE_CER"
+  | "LOW_TEXT_CONTRAST"
+  | "TEXT_OCCLUDED"
+  | "FONT_ENCODING_SUSPECT";
+
+/** Vai trò trang (GĐ0 0D, §5.7); `exercise` chỉ do LLM gắn (GĐ1). */
+export type PageRole =
+  | "content"
+  | "cover_or_course_nav"
+  | "chapter_nav"
+  | "build_step"
+  | "parallel_visual_series"
+  | "exercise";
 
 /** Lý do trang cần xem kỹ (§5.7), sắp theo thứ tự khai báo, không trùng. */
 export type ReviewReason =
@@ -269,9 +453,15 @@ export type ReviewReason =
   | "TOKEN_MISMATCH"
   | "CROSS_CHECK_UNAVAILABLE"
   | "HIGH_PAGE_CER"
-  | "OCR_ENGINE_MISSING";
+  | "OCR_ENGINE_MISSING"
+  | "LOW_TEXT_CONTRAST"
+  | "TEXT_OCCLUDED"
+  | "FONT_ENCODING_SUSPECT"
+  | "IMAGE_NEEDS_READING"
+  | "PAGE_ROLE_UNCERTAIN"
+  | "DENOISE_UNAVAILABLE";
 
-export type FailureReason = "PAGE_TIMEOUT" | "PAGE_ERROR" | "OCR_ENGINE_MISSING";
+export type FailureReason = "PAGE_TIMEOUT" | "PAGE_ERROR" | "OCR_ENGINE_MISSING" | "TOO_MANY_LINES";
 
 export type PageStatus = "pending" | "ok" | "needs_review" | "failed";
 
@@ -286,6 +476,28 @@ export interface ExtractedLine {
   engine: LineEngine;
   flags: LineFlag[];
   edited_by_human: boolean;
+  /** GĐ0 0B(5): dòng header/footer lặp; không vào văn bản xác nhận, không phải dòng có chữ. */
+  is_header_footer: boolean;
+}
+
+/** Một ảnh nội dung (không-template) của trang (GĐ0 0A); `bbox` chuẩn hoá [0, 1], gốc trên-trái. */
+export interface PageImage {
+  bbox: [number, number, number, number];
+  sha256: string | null;
+  dhash: string | null;
+}
+
+export interface PageRef {
+  document_id: string;
+  page_number: number;
+}
+
+/** Lý do của `page_role`, bỏ mềm hay cờ `PAGE_ROLE_UNCERTAIN` (GĐ0 0D); frontend chỉ hiển thị, không suy luật. */
+export interface PageRoleEvidence {
+  rule: "cover_or_course_nav" | "chapter_nav" | "build_step" | "parallel_visual_series" | "build_step_uncertain";
+  related_pages: PageRef[];
+  jaccard: number | null;
+  dhash_distance: number | null;
 }
 
 export interface TokenMismatch {
@@ -321,7 +533,25 @@ export interface PageExtraction {
   failure_reason: FailureReason | null;
   confirmed: boolean;
   confirmed_at: string | null;
+  own_images: PageImage[];
+  hidden_chars_dropped: number;
+  scan_text_layer: boolean;
+  content_token_count: number | null;
+  page_role: PageRole;
+  role_evidence: PageRoleEvidence | null;
+  /** GĐ0 0D: trang bỏ mềm (không vào chunk, không tính "cần xem"); hoàn tác qua `POST …/restore`. */
+  dropped: boolean;
+  restored: boolean;
+  /** GĐ1 1B: audit của lần xác nhận; "auto" = luật tự xác nhận cấp trang (§5.7), null khi chưa xác nhận (trang xác nhận trước GĐ1 cũng null). */
+  confirmed_by: ConfirmedBy | null;
+  /** Tên và phiên bản luật tự xác nhận đã áp (hiện "page_clean_v1"); khác null khi và chỉ khi `confirmed_by = "auto"`. */
+  confirm_rule: string | null;
+  /** True sau khi người dùng hoàn tác tự xác nhận (`POST …/unconfirm`); trang này không bao giờ tự xác nhận lại. */
+  auto_confirm_undone: boolean;
 }
+
+/** Người xác nhận một trang (GĐ1 1B). */
+export type ConfirmedBy = "user" | "auto";
 
 export type DocumentStatus = "processing" | "review" | "confirmed" | "failed";
 
@@ -333,17 +563,67 @@ export interface PageSummary {
   tier_used: TierUsed | null;
   review_reasons: ReviewReason[];
   confirmed: boolean;
+  page_role: PageRole;
+  dropped: boolean;
+  confirmed_by: ConfirmedBy | null;
 }
 
-/** `POST /v1/documents` (202 hoặc 200) và `GET /v1/documents/{document_id}`; `pages` đủ `page_count` phần tử. */
+/**
+ * `POST /v1/documents` (202 hoặc 200), `GET /v1/documents/{document_id}` và `POST /v1/documents/{document_id}/confirm`;
+ * `pages` đủ `page_count` phần tử. `chapter_code` luôn có giá trị (một file = một chương): field form tuỳ chọn khi
+ * nhập; không gửi thì backend chọn theo tên file hoặc chương trống nhỏ nhất (§5.7 "Chương tự động").
+ */
 export interface DocumentImport {
   meta: DocumentMeta;
   filename: string;
   size_bytes: number;
   output_language: OutputLanguage;
+  chapter_code: string;
   status: DocumentStatus;
   pages: PageSummary[];
+  /** Số đếm tóm tắt GĐ0 do backend đếm (lấy, bỏ, cần xem); frontend chỉ hiển thị. */
+  pages_kept: number;
+  pages_dropped: number;
+  pages_needs_review: number;
+  /** Tên chương (1–300 ký tự); null chỉ với tài liệu nhập trước khi có tên chương. */
+  chapter_title: string | null;
+  chapter_source: ChapterSource;
+  /** Cờ chương do code đặt (thứ tự khai báo, không trùng); chỉ để hiển thị. */
+  chapter_flags: ChapterFlag[];
+  /** Cài đặt "Tự xác nhận" gửi khi nhập (field form `auto_confirm`, mặc định bật). */
+  auto_confirm: boolean;
+  /** Số trang `confirmed_by = "auto"` (backend đếm; frontend chỉ hiển thị). */
+  pages_auto_confirmed: number;
+  /** Trang giữ nhưng chưa xác nhận và không thuộc "cần xem": nút "Chấp nhận" sẽ xác nhận theo lô. */
+  pages_kept_unconfirmed: number;
+  /** T1e: số trang `status = "failed"` (cùng định nghĩa `DocumentSummary.pages_failed`; backend đếm). */
+  pages_failed: number;
+  /** T1e: số trang "cần xem" theo từng lý do (trang nhiều lý do đếm ở mỗi lý do); thứ tự khai báo của `ReviewReason`. */
+  review_reason_counts: ReviewReasonCount[];
+  /** T1e: số trang bỏ mềm theo vai trò; tổng `count` = `pages_dropped`; thứ tự khai báo của `PageRole`. */
+  dropped_role_counts: DroppedRoleCount[];
+  /** T1e: job đề xuất cặp mới nhất của tài liệu (§5.8); null ⇔ `proposal_job_absent_reason` khác null. */
+  proposal_job: ProposalJob | null;
+  /** T1e: lý do không có `proposal_job`; null ⇔ `proposal_job` khác null. */
+  proposal_job_absent_reason: ProposalJobAbsentReason | null;
 }
+
+/** Số trang "cần xem" mang một lý do (T1e, §5.7); `count` = số phần tử của `pages` (tăng dần, không trùng). */
+export interface ReviewReasonCount {
+  reason: ReviewReason;
+  count: number;
+  pages: number[];
+}
+
+/** Số trang bỏ mềm theo một vai trò bỏ được (T1e, §5.7); `count` = số phần tử của `pages` (tăng dần, không trùng). */
+export interface DroppedRoleCount {
+  reason: "cover_or_course_nav" | "chapter_nav" | "build_step";
+  count: number;
+  pages: number[];
+}
+
+/** Lý do `DocumentImport` không có job đề xuất cặp (T1e, §5.7), xét theo đúng thứ tự khai báo. */
+export type ProposalJobAbsentReason = "not_confirmed" | "past_exam" | "no_chunks" | "llm_unavailable" | "not_retained";
 
 /** Một phần tử của `GET /v1/documents`, mới nhất trước. */
 export interface DocumentSummary {
@@ -353,11 +633,79 @@ export interface DocumentSummary {
   pages_needs_review: number;
   pages_failed: number;
   pages_confirmed: number;
+  pages_dropped: number;
+}
+
+/** Một dòng sửa; `text` rỗng nghĩa là dòng không vào văn bản xác nhận. */
+export interface LineEdit {
+  line_index: number;
+  text: string;
+}
+
+/** Body của `PATCH /v1/documents/{document_id}/pages/{page_number}/lines`; trả `PageExtraction`. */
+export interface PageLinesPatch {
+  editor_id: string;
+  expected_version: number;
+  edits?: LineEdit[];
+  appended_lines?: string[];
+}
+
+/** Body của `POST /v1/documents/{document_id}/pages/{page_number}/confirm`; trả `PageExtraction`. */
+export interface PageConfirmRequest {
+  editor_id: string;
+  expected_version: number;
+}
+
+/** Body của `POST /v1/documents/{document_id}/pages/{page_number}/restore` (GĐ0 0D); trả `PageExtraction`. */
+export interface PageRestoreRequest {
+  editor_id: string;
+  expected_version: number;
+}
+
+/** Body của `POST /v1/documents/{document_id}/pages/{page_number}/unconfirm` (GĐ1 1B); trả `PageExtraction`. */
+export interface PageUnconfirmRequest {
+  editor_id: string;
+  expected_version: number;
+}
+
+/** Body của `POST /v1/documents/{document_id}/confirm`; trả `DocumentImport`. */
+export interface DocumentConfirmRequest {
+  editor_id: string;
+}
+
+// Chương tự động (SPECIFICATION §5.7 "Chương tự động", §6.5; GĐ1 1A)
+
+/**
+ * Cờ chương: chỉ để hiển thị, không chặn xác nhận. `CHAPTER_NUMBER_SHARED`: số trong tên file trùng chương đã có của
+ * môn, số được giữ. `CHAPTER_NUMBER_TAKEN` chỉ còn ở tài liệu nhập trước 2026-11-01 (khi đó số trùng ⇒ chương trống
+ * nhỏ nhất); backend không ghi mới cờ này nhưng vẫn trả khi bản ghi cũ còn.
+ */
+export type ChapterFlag = "CHAPTER_NUMBER_NOT_IN_FILENAME" | "CHAPTER_NUMBER_SHARED" | "CHAPTER_NUMBER_TAKEN";
+export type ChapterCodeSource = "user" | "file_name" | "next_free";
+export type ChapterTitleSource = "user" | "repeated_header" | "file_name" | "llm";
+
+/** Nguồn của `chapter_code` và `chapter_title`; `title` null khi và chỉ khi `chapter_title` null. */
+export interface ChapterSource {
+  code: ChapterCodeSource;
+  title: ChapterTitleSource | null;
+}
+
+/**
+ * Body của `PATCH /v1/documents/{document_id}/chapter`; trả `DocumentImport`. `chapter_code` và `chapter_title`
+ * không cùng null; backend chuẩn hoá `chapter_title` (NFC, gộp khoảng trắng).
+ */
+export interface DocumentChapterPatch {
+  editor_id: string;
+  chapter_code?: string | null;
+  chapter_title?: string | null;
 }
 
 // ------------------------------------------------------------------ domain/vault.py
 
 export type ConceptPairStatus = "proposed" | "confirmed" | "rejected";
+
+/** Cổng tích sẵn của cặp (§5.8, ADR-007 mục 3); `failed_gates` sắp theo đúng thứ tự này. */
+export type PairGate = "G1_SOURCE" | "G2_GLYPH" | "G3_OCCLUDED" | "G4_COLUMN_MIX" | "G5_NUMBERS" | "EXERCISE";
 
 /** Cặp khái niệm – trích dẫn định nghĩa (§5.8, ADR-007). `term_spans` là vị trí `[start, end)` của `term` trong `definition_quote`. */
 export interface ConceptPair {
@@ -374,6 +722,53 @@ export interface ConceptPair {
   version: number;
   created_at: string;
   confirmed_at: string | null;
+  /** Máy tích sẵn ô Chấp nhận; KHÔNG phải xác nhận (`status` vẫn `proposed`). `true` chỉ khi `failed_gates` rỗng. */
+  pre_selected: boolean;
+  /** Cổng trượt; không rỗng ⇒ cặp thuộc nhóm "Cần kiểm tra". Frontend lọc theo field này, không tự tính cổng. */
+  failed_gates: PairGate[];
+}
+
+export type ProposalJobStatus = "queued" | "running" | "succeeded" | "partial" | "failed" | "cancelled";
+
+export type ProposalRejectReason =
+  | "quote_not_verbatim"
+  | "unknown_chunk"
+  | "invalid_term"
+  | "invalid_quote"
+  | "duplicate"
+  | "chunk_limit"
+  | "proposal_limit"
+  | "unknown_span"
+  | "span_cross_chunk"
+  | "term_span_cross_chunk"
+  | "term_not_in_span"
+  | "anchor_not_found"
+  | "anchor_ambiguous";
+
+export type BatchErrorKind = "llm_upstream" | "deadline" | "format";
+
+/** Job nền đề xuất cặp (§5.8, §6.6); mọi số đếm do backend tính, frontend chỉ hiển thị. */
+export interface ProposalJob {
+  job_id: string;
+  subject_code: string;
+  trigger: "document_confirmed" | "manual";
+  document_id: string | null;
+  status: ProposalJobStatus;
+  chunk_count: number;
+  batch_size: number;
+  batches_total: number;
+  batches_done: number;
+  batches_failed: number;
+  batch_errors: Partial<Record<BatchErrorKind, number>>;
+  proposed_count: number;
+  pre_selected_count: number;
+  rejected_count: number;
+  rejected_by_reason: Partial<Record<ProposalRejectReason, number>>;
+  exercise_chunks: number;
+  cancel_requested: boolean;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
 }
 
 export type SearchIndex = "primary" | "no_diacritics";
@@ -440,6 +835,17 @@ export interface ConceptPairProposeResponse {
   rejected_count: number;
 }
 
+/**
+ * Body của `POST /v1/vault/concept-pairs/jobs` (202 `ProposalJob`, header `Location`): đúng một trong `document_id`
+ * (mọi chunk của tài liệu) và `chunk_ids` (1–2000 chunk, cùng môn). Lỗi: 404, 409 (`CapabilityError` hoặc tài liệu
+ * chưa có chunk), 422.
+ */
+export interface ProposalJobCreate {
+  subject_code: string;
+  document_id?: string | null;
+  chunk_ids?: string[] | null;
+}
+
 // ----------------------------------------------------------- domain/capabilities.py
 
 export type CapabilityName =
@@ -451,7 +857,26 @@ export type CapabilityName =
   | "essay_grading_offline"
   | "essay_grading_llm"
   | "template_authoring_llm"
-  | "vlm";
+  | "vlm"
+  | "concept_auto_proposal"
+  | "line_review_queue"
+  | "page_progress_eta";
+
+/** Tên khả năng đúng thứ tự khai báo `CapabilityName` (§5.12; ba tên cuối: đề xuất, chờ duyệt (2026-10-29)). */
+export const CAPABILITY_NAMES = [
+  "ocr",
+  "ocr_cross_check",
+  "vault_search",
+  "theory_generation",
+  "concept_pair_llm_proposal",
+  "essay_grading_offline",
+  "essay_grading_llm",
+  "template_authoring_llm",
+  "vlm",
+  "concept_auto_proposal",
+  "line_review_queue",
+  "page_progress_eta",
+] as const satisfies readonly CapabilityName[];
 
 export type CapabilityReason =
   | "llm_not_configured"
@@ -459,7 +884,21 @@ export type CapabilityReason =
   | "ocr_engine_missing"
   | "ocr_language_missing"
   | "secondary_ocr_disabled"
-  | "not_implemented";
+  | "not_implemented"
+  | "secondary_ocr_unavailable"
+  | "local_check_pending";
+
+/** Mã lý do không khả dụng (§5.12). */
+export const CAPABILITY_REASONS = [
+  "llm_not_configured",
+  "vlm_not_configured",
+  "ocr_engine_missing",
+  "ocr_language_missing",
+  "secondary_ocr_disabled",
+  "not_implemented",
+  "secondary_ocr_unavailable",
+  "local_check_pending",
+] as const satisfies readonly CapabilityReason[];
 
 /** Một khả năng của app (spec §5.12, §11.4); `reason` là `null` khi và chỉ khi `available = true`. */
 export interface Capability {
@@ -512,20 +951,27 @@ export interface RuntimeInfo {
   demo_mode: boolean;
   llm_configured: boolean;
   vlm_configured: boolean;
+  app_version: string;
+  commit: string;
+  log_dir: string | null;
+  /** Đủ 12 phần tử theo thứ tự `CAPABILITY_NAMES` (§5.12). */
+  capabilities: Capability[];
 }
 
-/** Body của `POST /v1/blueprints/{id}/twins`; mọi field đều tuỳ chọn khi gửi. */
+/** Body của `POST /v1/blueprints/{id}/twins`; mọi field đều tuỳ chọn khi gửi. `format` chỉ ghi đè slot tính toán. */
 export interface TwinBatchRequest {
   count?: number;
-  format?: QuestionFormat;
+  format?: ComputationalFormat;
   base_seed?: number | null;
 }
 
 export interface TwinBatch {
+  batch_id: string;
   blueprint_id: string;
   base_seed: number;
-  twins: TwinQuestion[];
+  twins: BatchTwin[];
   review_tickets: ReviewTicket[];
+  created_at: string;
 }
 
 export interface UploadResponse {
@@ -547,6 +993,15 @@ export interface StemPatchRequest {
 export interface NonCloneableRequest {
   editor_id: string;
   reason: string;
+}
+
+// -------------------------------------------------------------- routers/subjects.py
+
+/** Body của `POST /v1/subjects` (§6.8). Thiếu `display_name` ⇒ dùng `subject_code`; thiếu `exam_format` ⇒ `mixed`. */
+export interface SubjectCreate {
+  subject_code: string;
+  display_name?: string | null;
+  exam_format?: ExamFormat;
 }
 
 /** Một phần tử lỗi validate (HTTP 422) do FastAPI sinh. */

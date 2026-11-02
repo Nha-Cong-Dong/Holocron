@@ -129,7 +129,8 @@ def test_reader_reads_text_layer_with_flags(tmp_path: Path) -> None:
     assert not result[0].has_table
 
     figure = result[3]
-    assert figure.has_figure and figure.review_reasons == ["TIER3_UNAVAILABLE"]
+    # GĐ0 0C (§5.7, 2026-10-31): hình trên PDF số chỉ ghi vùng, không còn TIER3_UNAVAILABLE.
+    assert figure.has_figure and figure.review_reasons == []
 
     formula = result[4]
     assert formula.has_formula and "∑" in " ".join(line.text for line in formula.lines)
@@ -291,7 +292,7 @@ def test_worker_loop_open_failures(tmp_path: Path) -> None:
 def test_worker_loop_turns_page_exception_into_page_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = write_pdf(tmp_path / "one.pdf", [Page(texts=text_lines(BODY))])
 
-    def boom(self: PdfiumDocument, index: int) -> RawPdfPage:
+    def boom(self: PdfiumDocument, index: int, *_: object) -> RawPdfPage:  # GĐ0: read_page nhận thêm cấu hình
         raise PdfiumDataError("hỏng")
 
     monkeypatch.setattr(PdfiumDocument, "read_page", boom)

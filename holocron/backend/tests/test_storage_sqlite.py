@@ -259,7 +259,7 @@ def test_migration_from_an_empty_database_creates_every_table_of_the_spec(
 ) -> None:
     assert SPEC_TABLES <= _tables(raw)
     rows = raw.execute("SELECT version FROM schema_version").fetchall()
-    assert [row[0] for row in rows] == [1]
+    assert sorted(row[0] for row in rows) == [m.version for m in load_migrations()]
     assert current_version(raw) == len(load_migrations())
     for table in ("documents", "pages", "chunks", "concept_pairs", "ingestion_items", "blueprints", "templates"):
         columns = {str(row[1]) for row in raw.execute(f"PRAGMA table_info({table})")}
@@ -271,7 +271,7 @@ def test_reopening_an_up_to_date_database_does_not_reapply_migrations(db_path: P
     SQLiteStore.open(db_path).close()
     conn = connect(db_path)
     try:
-        assert _count(conn, "SELECT COUNT(*) FROM schema_version") == 1
+        assert _count(conn, "SELECT COUNT(*) FROM schema_version") == len(load_migrations())
     finally:
         conn.close()
 
@@ -750,3 +750,15 @@ def test_app_starts_with_the_in_memory_store_when_no_data_dir(
     with TestClient(app) as client:
         assert client.get("/v1/runtime").status_code == 200
     assert isinstance(deps.get_store(), IngestionStore)
+
+
+def test_saving_the_same_batch_under_another_key_is_an_error_on_both_stores(
+    any_store: AppStore, rr_slot: BlueprintSlot
+) -> None:
+    any_store.save_blueprint(_blueprint(rr_slot))
+    first = _record(T0, "twin_a")
+    any_store.save_idempotent("bp_test_1", "k1", first)
+    with pytest.raises(StorageError, match="UNIQUE"):
+        any_store.save_idempotent("bp_test_1", "k2", first)
+    assert any_store.get_idempotent("bp_test_1", "k1", T0) == first
+    assert any_store.get_idempotent("bp_test_1", "k2", T0) is None

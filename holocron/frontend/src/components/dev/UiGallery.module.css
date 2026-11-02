@@ -1,0 +1,105 @@
+.page {
+  display: grid;
+  gap: var(--sp-8);
+  max-width: var(--content-max);
+  padding-bottom: var(--sp-16);
+}
+
+.intro {
+  max-width: 72ch;
+  color: var(--ink-2);
+}
+
+.section {
+  display: grid;
+  gap: var(--sp-4);
+  padding-bottom: var(--sp-6);
+  border-bottom: 1px dashed var(--line);
+}
+
+.heading {
+  font-size: var(--fs-h3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-h3);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4) var(--sp-6);
+}
+
+.group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.legend {
+  margin-bottom: var(--sp-2);
+  color: var(--ink-2);
+  font-size: var(--fs-caption);
+}
+
+.switchRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.pane {
+  color: var(--ink-2);
+}
+
+.icon {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
+.card {
+  width: 260px;
+}
+
+.muted {
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+}
+
+.accordion {
+  width: 320px;
+  padding: 0 var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--sh-1);
+}
+
+.progress {
+  display: grid;
+  gap: var(--sp-3);
+  width: 320px;
+}
+
+.skeleton {
+  display: flex;
+  gap: var(--sp-3);
+  width: 360px;
+}
+
+.skeletonLines {
+  display: grid;
+  flex: 1;
+  gap: var(--sp-2);
+}
+
+.wide {
+  width: min(640px, 100%);
+}

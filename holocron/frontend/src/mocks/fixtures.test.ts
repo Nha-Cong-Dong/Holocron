@@ -27,7 +27,7 @@ describe("RuntimeInfo (§5.12)", () => {
     const runtime = RUNTIME_FIXTURES[scenario];
 
     describe(scenario, () => {
-      it("capabilities đủ 9 phần tử theo đúng thứ tự khai báo", () => {
+      it("capabilities đủ 12 phần tử theo đúng thứ tự khai báo", () => {
         expect(runtime.capabilities?.map((c) => c.name)).toEqual([...CAPABILITY_NAMES]);
       });
 
@@ -121,14 +121,7 @@ describe("thân lỗi (§6.0)", () => {
 describe("handler giả", () => {
   it("chỉ thay endpoint chưa có ở backend; /v1/runtime và sinh câu tính toán không bị thay", () => {
     // M3 môn học, M7 tạo bộ đề, M9 chấm tự luận, chunk của Vault (§6.6) chưa có ở backend của nhánh này.
-    expect(Object.keys(mockApi).sort()).toEqual(["createBlueprint", "gradeEssay", "listSubjects", "listVaultChunks"]);
-  });
-
-  it("trả bản sao: sửa kết quả không làm hỏng fixture", async () => {
-    const subjects = await mockApi.listSubjects?.();
-    expect(subjects).toEqual(SUBJECT_FIXTURES);
-    subjects?.pop();
-    expect(SUBJECT_FIXTURES).toHaveLength(2);
+    expect(Object.keys(mockApi).sort()).toEqual(["gradeEssay"]);
   });
 
   it("chọn kịch bản theo query, sai giá trị thì về kịch bản dự phòng", () => {
@@ -181,6 +174,6 @@ describe("fillRuntimeGaps (M1)", () => {
     ) {
       filled.capabilities.pop();
     }
-    expect(RUNTIME_FIXTURES.offline.capabilities).toHaveLength(9);
+    expect(RUNTIME_FIXTURES.offline.capabilities).toHaveLength(12);
   });
 });

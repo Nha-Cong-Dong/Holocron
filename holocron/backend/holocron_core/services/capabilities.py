@@ -4,11 +4,12 @@ LLM "đã cấu hình" khi đủ ba biến `HOLOCRON_LLM_BASE_URL`, `HOLOCRON_LL
 (`RuntimeConfig.llm_configured`, spec v0.6 §11.2; không có nhà cung cấp mặc định). LLM đã cấu hình mà gateway đang lỗi
 vẫn là `available = true`; lỗi lúc gọi trả 502 (§6.0). Cấu hình có biến sai (khoá có khoảng trắng, base URL không phải
 https…) được `routers/deps.get_runtime_config` nạp như chưa cấu hình, nên khả năng tương ứng có lý do
-`llm_not_configured` / `vlm_not_configured` thay vì làm request lỗi 500. Chưa nối vào `GET /v1/runtime` (việc đó sửa
-`routers/runtime.py` và `tests/test_llm_config.py` theo §17 D12, làm ở một thay đổi riêng).
+`llm_not_configured` / `vlm_not_configured` thay vì làm request lỗi 500. Đã nối vào `GET /v1/runtime`
+(`routers/runtime.py`, trường `capabilities`).
 
 Thứ tự xét lý do cho mỗi khả năng: chưa có code trong bản đang chạy (`not_implemented`) → thiếu cấu hình LLM/VLM →
-lỗi kiểm cục bộ do tầng gọi cấp (binary Tesseract, unicharset, lượt đọc thứ hai) → khả dụng.
+lỗi kiểm cục bộ do tầng gọi cấp (binary Tesseract, gói `vie`, lượt đọc thứ hai tắt hoặc không nạp được; `services/capability_checks.py`;
+hoặc `local_check_pending` khi lần kiểm chạy nền sau khi mở cổng chưa xong) → khả dụng.
 """
 
 from __future__ import annotations
@@ -18,9 +19,12 @@ from collections.abc import Collection, Mapping
 from ..domain.capabilities import CAPABILITY_NAMES, Capability, CapabilityError, CapabilityName, CapabilityReason
 from ..infrastructure.llm_config import RuntimeConfig
 
-# Khả năng đã có code trên nhánh này. Bộ nhập PDF (OCR), chấm tự luận, `TemplateAuthor` thật và adapter VLM chưa có.
+# Khả năng đã có code trên nhánh này. OCR đã có: bộ nhập PDF đọc bằng Tesseract (`ocr`) và lượt đọc thứ hai RapidOCR
+# (`ocr_cross_check`); máy thiếu binary, thiếu `vie`, tắt lượt thứ hai hay không nạp được RapidOCR được báo qua
+# `local_failures` (`services/capability_checks.py`, kiểm một lần lúc khởi động). Chấm tự luận, `TemplateAuthor` thật và adapter VLM
+# chưa có.
 IMPLEMENTED_CAPABILITIES: frozenset[CapabilityName] = frozenset(
-    {"vault_search", "theory_generation", "concept_pair_llm_proposal"}
+    {"ocr", "ocr_cross_check", "vault_search", "theory_generation", "concept_pair_llm_proposal"}
 )
 LLM_CAPABILITIES: frozenset[CapabilityName] = frozenset(
     {"concept_pair_llm_proposal", "essay_grading_llm", "template_authoring_llm"}
@@ -43,6 +47,11 @@ REASON_DETAILS_VI: dict[CapabilityReason, str] = {
     ),
     "secondary_ocr_disabled": "Lượt đọc thứ hai đang tắt vì HOLOCRON_PDF_OCR_SECONDARY để trống.",
     "not_implemented": "Bản đang chạy chưa có khả năng này.",
+    "secondary_ocr_unavailable": (
+        "Không nạp được lượt đọc thứ hai (RapidOCR) trên máy này. Bản rút gọn không kèm RapidOCR: dùng bản đầy đủ. "
+        "Nếu đang dùng bản đầy đủ, cài lại ứng dụng."
+    ),
+    "local_check_pending": "Holocron đang kiểm tra OCR trên máy này. Đợi vài giây rồi xem lại.",
 }
 
 

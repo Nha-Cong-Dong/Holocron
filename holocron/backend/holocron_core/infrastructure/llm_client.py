@@ -279,6 +279,7 @@ class OpenAiChatClient:
         self._transport: Transport = transport or UrllibTransport()
         self._sleep = sleep
         self._monotonic = monotonic
+        self._total_budget_s = total_budget_s
         self._deadline = None if total_budget_s is None else monotonic() + total_budget_s
 
     @classmethod
@@ -329,8 +330,13 @@ class OpenAiChatClient:
         )
 
     def _remaining_s(self) -> float | None:
-        """Thời gian còn lại của cận tổng; `None` khi client không có cận tổng."""
-        return None if self._deadline is None else self._deadline - self._monotonic()
+        """Thời gian còn lại của cận tổng, không vượt cận tổng; `None` khi client không có cận tổng.
+
+        Kẹp bằng `min` vì `(t0 + cận) - t1` có thể lớn hơn cận vài ulp do làm tròn số thực khi `t1` gần `t0`.
+        """
+        if self._deadline is None or self._total_budget_s is None:
+            return None
+        return min(self._total_budget_s, self._deadline - self._monotonic())
 
     def complete(self, messages: Sequence[ChatMessage], *, max_tokens: int) -> ChatCompletionResult:
         # Lỗi được ghi lại thành chuỗi trong khối `except` rồi ném SAU khối đó, để exception mới không mang

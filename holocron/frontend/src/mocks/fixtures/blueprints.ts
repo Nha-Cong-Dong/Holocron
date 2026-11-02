@@ -4,7 +4,10 @@
  * Gỡ cùng thư mục `src/mocks/` khi backend có `POST /v1/blueprints`.
  */
 
-import type { BlueprintSlotPending, ExamBlueprintPending, TheorySlotFormat } from "@/types/contract-pending";
+import type { BlueprintSlotPending, ExamBlueprintPending } from "@/types/contract-pending";
+import type { TheorySlotSpec } from "@/types/holocron";
+
+type TheorySlotFormat = NonNullable<TheorySlotSpec["format"]>;
 
 export const MOCK_BLUEPRINT_ID = "bp_mau101_ch1_luyen_tap";
 

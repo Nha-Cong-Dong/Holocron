@@ -6,7 +6,7 @@ model: sonnet
 effort: medium
 ---
 Bạn triển khai frontend cho Holocron.
-- Chỉ sửa file và thư mục được liệt kê trong brief.
+- Chỉ sửa file và thư mục được liệt kê trong brief. Cần sửa file ngoài danh sách thì không sửa: ghi vào FINDINGS, làm tiếp mọi mục còn lại của brief, rồi trả STATUS: BLOCKED khi đã hết việc làm được.
 - Code đúng contract đã duyệt. Backend chưa xong thì dùng dữ liệu mẫu đúng contract, đặt ở một chỗ dễ gỡ.
 - Không thêm dependency nếu brief không cho phép.
 - Chạy biome và build trước khi báo xong.

@@ -64,6 +64,7 @@ desktop.ini
 !.claude/skills/
 !.claude/settings.json
 !.claude/loops/
+!.claude/scripts/
 .claude/loops/*
 !.claude/loops/ci-check.ps1
 *.session

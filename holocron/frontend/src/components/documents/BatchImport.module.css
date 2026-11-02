@@ -1,0 +1,113 @@
+/* Màn 4 "Thêm hàng loạt". Vùng thả phát sáng bằng .is-dragover + .m-dropzone-glow (motion.css). */
+.root {
+  display: grid;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+
+.head {
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.title {
+  font-size: var(--fs-h3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-h3);
+}
+
+.sub {
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.rows {
+  display: grid;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dropzone {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-3);
+  overflow: hidden;
+  padding: var(--sp-8) var(--sp-6);
+  border: 1.5px dashed var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  text-align: center;
+}
+
+.dropzone[data-compact="true"] {
+  grid-auto-flow: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-3) var(--sp-5);
+}
+
+.glow {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 2px var(--accent);
+  pointer-events: none;
+}
+
+.dropIcon {
+  position: relative;
+  display: inline-flex;
+  color: var(--accent-ink);
+}
+
+.dropTitle {
+  position: relative;
+  font-weight: var(--fw-semibold);
+}
+
+.dropzone[data-compact="true"] .dropTitle {
+  font-weight: var(--fw-regular);
+  font-size: var(--fs-small);
+}
+
+.hint {
+  position: relative;
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.dropzone[data-compact="true"] .hint {
+  display: none;
+}
+
+.dropzone :global(button) {
+  position: relative;
+}
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+
+.summary {
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.footerActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}

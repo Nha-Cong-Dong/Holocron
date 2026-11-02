@@ -2,7 +2,9 @@
 
 - Trạng thái: Chấp nhận (2026-10-23). Bổ sung mục 9 (so khớp I3 sau chuẩn hoá NFC), người dùng đồng ý ngày 2026-10-24. Sửa câu chữ nhà cung cấp LLM ở mục 2 và phần Hệ quả theo quyết định ngày 2026-10-25 (LLM tuỳ chọn, nhà cung cấp do cấu hình quyết định). Sửa câu chữ mục 2 về `chapter_code` theo quyết định ngày 2026-10-26 (chiều): `chapter_code` lấy từ field bắt buộc khi nhập tài liệu, LLM chỉ đề xuất đổi chương cho từng chunk. Trạng thái không đổi.
 - Sửa đổi 2026-10-27: bỏ nhà cung cấp mặc định DeepSeek, xem PR #61.
-- Ngày: 2026-10-23; cập nhật 2026-10-24, 2026-10-25, 2026-10-26, 2026-10-27
+- Sửa đổi 2026-10-31 (người dùng duyệt; GĐ1): mục 2 ghi `chapter_code` tuỳ chọn khi nhập (chương tự động theo tên file); thêm mục 10 (mẫu ngôn ngữ chỉ nằm ở `infrastructure/lang/vi.toml`, `en.toml`). Trạng thái không đổi.
+- Sửa đổi 2026-11-01 (ADR-010, bóc tách theo khối; duyệt 2026-11-01 (ADR-010)): mục 3 bị thay bởi ADR-010 mục 16 cho tài liệu có khối; mục 5 và mục 10 được bổ sung bởi ADR-010 mục 18 và mục 12, 16. Chỉ thêm ghi chú tại chỗ; trạng thái không đổi.
+- Ngày: 2026-10-23; cập nhật 2026-10-24, 2026-10-25, 2026-10-26, 2026-10-27, 2026-10-31, 2026-11-01
 
 ## Bối cảnh
 
@@ -18,12 +20,13 @@ Mục tiêu G1 (`SPECIFICATION.md` §1.5) yêu cầu mọi twin đều có tríc
 1. **Nguồn vào duy nhất là bộ nhập PDF đã qua xem lại** (ADR-008). Văn bản của chunk là văn bản người dùng đã xác nhận ở màn hình xem lại, không phải đầu ra thô của OCR hay VLM. Có thêm đường nhập văn bản thuần (dán hoặc file `.txt`) dùng cho test và tài liệu mẫu.
 2. **Nhãn do LLM đề xuất, người dùng xác nhận.** LLM là tuỳ chọn; nhà cung cấp do cấu hình quyết định, không có nhà cung cấp mặc định (duyệt 2026-10-25; hiện là gateway kiểu OpenAI của ban tổ chức, model `claude-haiku-5-5`). Contract hiện chỉ có adapter kiểu OpenAI Chat Completions sau `Protocol` `ChatCompletionClient` (tên đề xuất, spec §11.5); DeepSeek hay server local tương thích OpenAI dùng được qua adapter này; Anthropic gốc (API không theo giao thức OpenAI) cần một adapter riêng cài cùng `Protocol`, chưa có. Không có LLM thì người dùng tự nhập. Khi có LLM, trên văn bản đã tách, LLM đề xuất:
    - `subject_code`: mã học phần (khớp mẫu `^[A-Z]{2,6}[0-9]{2,4}$` sẵn có, ví dụ `IT3070`). Nếu tài liệu không ghi mã, người dùng nhập.
-   - Đổi `chapter_code` cho từng chunk (`ch3`, `ch3.2`). `chapter_code` ban đầu KHÔNG do LLM đề xuất: nó lấy từ field bắt buộc người dùng nhập khi nhập tài liệu, một file = một chương (duyệt 2026-10-26; spec §5.7, §6.5), và mọi chunk cắt từ file nhận giá trị đó. LLM (nếu có) chỉ đề xuất đổi chương cho từng chunk; người dùng xác nhận qua sửa nhãn chunk (spec §6.6) (sửa câu chữ, duyệt 2026-10-26 chiều; thay câu cũ "`chapter_code` theo heading").
+   - Đổi `chapter_code` cho từng chunk (`ch3`, `ch3.2`). `chapter_code` ban đầu KHÔNG do LLM đề xuất: nó lấy từ field người dùng nhập khi nhập tài liệu, một file = một chương (duyệt 2026-10-26; spec §5.7, §6.5), và mọi chunk cắt từ file nhận giá trị đó. Sửa đổi 2026-10-31 (người dùng duyệt, GĐ1 1A): field đó thành tuỳ chọn; không nhập thì code lấy số nguyên 1–2 chữ số đầu tiên trong tên file, không có hoặc trùng thì chương trống nhỏ nhất kèm cờ (spec §5.7 "Chương tự động"); LLM vẫn không đặt `chapter_code`, chỉ được chọn hoặc làm gọn tên chương trong danh sách ứng viên. LLM (nếu có) chỉ đề xuất đổi chương cho từng chunk; người dùng xác nhận qua sửa nhãn chunk (spec §6.6) (sửa câu chữ, duyệt 2026-10-26 chiều; thay câu cũ "`chapter_code` theo heading").
    - `category` `THEORY`/`PRACTICE`, `topic_keys`.
    - Các cặp **khái niệm – trích dẫn định nghĩa** dùng cho câu lý thuyết. Chỉ cặp đã được người dùng xác nhận mới được dùng để sinh câu (ADR-007 mục 1).
 
    Mọi nhãn chỉ là gợi ý, hiện trên màn hình xem lại kèm `mapping_confidence`. Trích dẫn do LLM chọn PHẢI là chuỗi con nguyên văn (đã chuẩn hoá NFC và khoảng trắng, mục 9) của văn bản chunk; không khớp thì bị loại, không sửa hộ (I3).
 3. **Cắt chunk tất định bằng code** theo spec §12.1 (heading, 450 token, chồng lấn 1 câu). LLM không cắt chunk. Cùng văn bản đầu vào thì cùng tập chunk.
+   **Thay bởi ADR-010 mục 16 (2026-11-01) cho tài liệu có khối** (`layout_version` khác null): chunk cắt theo khối và mục (Section), ≤ 450 token tại ranh giới khối, không chồng lấn, chỉ từ tập khối đủ điều kiện. Câu trên vẫn áp cho tài liệu nhập trước khi có khối, tài liệu không phải PDF và các trang chưa có khối (spec §12.1). LLM vẫn không cắt chunk.
 4. **Tìm chunk bằng từ khoá, không dùng embedding trong MVP.** Truy vấn lọc theo `subject_code` và `topic_keys`, xếp hạng bằng BM25: SQLite FTS5 khi chuyển sang SQLite, còn bản in-memory dùng BM25 tự cài trên cùng bộ token. Kết quả xếp hạng tất định: hoà điểm thì xếp theo `chunk_id`. Embedding chạy offline thuộc tầm nhìn sau MVP (spec §1.6), vì cần thêm model và làm nặng bộ cài.
 5. **Tách từ tiếng Việt cho BM25: theo âm tiết, chuẩn hoá dấu, không dùng thư viện tách từ.** Một hàm thuần chỉ dùng thư viện chuẩn (`unicodedata`, `re`), dùng chung cho văn bản chunk lúc lập chỉ mục và cho truy vấn:
    1. Chuẩn hoá Unicode NFC, vì PDF hay trả chữ có dấu ở dạng tổ hợp (NFD) và hai dạng phải so khớp được.
@@ -33,6 +36,8 @@ Mục tiêu G1 (`SPECIFICATION.md` §1.5) yêu cầu mọi twin đều có tríc
    5. Không bỏ dấu khi lập chỉ mục chính, vì `ma`, `mà`, `má`, `mã` là những từ khác nhau. SQLite FTS5 dùng tokenizer `unicode61 remove_diacritics 0` trên văn bản đã qua bước 1–3. Một chỉ mục phụ không dấu chỉ dùng khi chỉ mục chính không trả kết quả nào, và điểm của nó luôn xếp sau.
 
    Thư viện tách từ đã cân nhắc (giấy phép kiểm trên PyPI và file LICENSE ngày 2026-10-23): **VnCoreNLP** là **GPL-3.0** nên bị loại; `py_vncorenlp` (MIT) chỉ là lớp bọc gọi VnCoreNLP. `underthesea` 9.5.0 là Apache-2.0 nhưng kéo theo `huggingface-hub` và tải model khi chạy. `pyvi` 0.1.1 là MIT nhưng từ 2021-06 không ra bản mới. Tách theo âm tiết không cần `underthesea` hay `pyvi`, nên MVP không thêm dependency nào.
+
+   **Bổ sung bởi ADR-010 mục 18 (2026-11-01):** mục này (gồm bước 3 "giữ `đ`") vẫn là quy tắc DUY NHẤT của chỉ mục chunk (`chunks_fts`, `chunks_fts_nodiac`, `GET /v1/vault/search`), không đổi. Chỉ mục tra cứu KHỐI là bảng mới với hàm gấp dấu riêng (gấp `đ` thành `d`); luật đó chỉ được chốt ở ADR-010 mục 18, không lặp lại ở đây.
 6. **`VaultCitationProvider` thay `NoCitationProvider`.**
    - Slot tính toán: chọn chunk `THEORY` cùng `subject_code` có `topic_keys` chứa `topic_key` của slot; hoà điểm thì chọn trang nhỏ nhất rồi `chunk_id` nhỏ nhất. Không có chunk nào thì giữ hành vi hiện tại: `ReviewTicket` với lý do thiếu nguồn trích dẫn.
    - Slot lý thuyết: trích dẫn là `definition_quote` của cặp khái niệm đúng, đã xác nhận (ADR-007); không cần tìm thêm.
@@ -44,6 +49,8 @@ Mục tiêu G1 (`SPECIFICATION.md` §1.5) yêu cầu mọi twin đều có tríc
    - Chỉ hai chuỗi tương đương chính tắc (canonical equivalence) mới được coi là khớp. Không dùng NFKC, không bỏ dấu, không `casefold`, nên quy tắc không nới lỏng I3.
    - Áp dụng cho mọi chỗ kiểm trích dẫn nguyên văn: `KnowledgeChunk` (spec §0 I3, §5.8), cặp khái niệm (ADR-007 mục 1) và bằng chứng verdict của `AnswerJudge` sau MVP (ADR-007 mục 5, CLAUDE.md §2.1).
    - Test mới: `test_chunk_accepts_quote_in_nfd_against_nfc_text` trong `tests/test_schemas_and_gate.py`. `test_chunk_rejects_quote_not_in_text` vẫn phải xanh mà không sửa. Cả hai nằm ở dòng I3 của bảng CLAUDE.md §9.
+10. **Mẫu ngôn ngữ chỉ nằm trong tệp cấu hình theo ngôn ngữ (sửa đổi 2026-10-31, người dùng duyệt).** Mọi mẫu chuỗi phụ thuộc ngôn ngữ dùng để nhận diện cấu trúc văn bản (ví dụ dấu hiệu định nghĩa `" là "`, `" dùng để "`) chỉ nằm ở `holocron_core/infrastructure/lang/vi.toml` và `en.toml`, nạp theo `output_language` hay ngôn ngữ của tài liệu. Code trong `domain/`, `services/`, `routers/` và `frontend/` không chứa chuỗi theo môn hay theo ngôn ngữ (CLAUDE.md §1). Áp cho luật trích cặp offline (GĐ2), các luật nhận diện trang của bộ nhập (ADR-008 mục 6) và mọi luật sau này; GĐ0 và GĐ1 không dùng mẫu ngôn ngữ nào. Đọc tệp bằng `tomllib` của thư viện chuẩn, không thêm dependency.
+   **Bổ sung bởi ADR-010 mục 12, 16 (2026-11-01):** cùng hai tệp chứa mẫu số trang có chữ ("Trang n", "Page n of m"), hậu tố nối trang ("(tiếp)", "(cont.)"), từ khoá tiêu đề của bộ dựng cây mục, và từ khoá tiêu đề hiện nằm trong `HEADING_RE` của `services/vault_chunking.py` (chuyển sang khoá `heading_keywords`, không đổi hành vi; đề xuất suy ra, nợ VAULT-001 ở ADR-004 tới khi xong). Bộ nạp (`infrastructure/lang_patterns.py`) nạp HỢP các tệp ngôn ngữ, không đoán ngôn ngữ tài liệu. Mẫu không phụ thuộc ngôn ngữ (chữ số, số La Mã, đánh số `1.2.3`) nằm ở settings model của module dùng nó.
 
 ## Hệ quả
 

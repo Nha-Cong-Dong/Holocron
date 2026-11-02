@@ -3,7 +3,7 @@
 `FakePdfReader` không mở file nào (chỉ kiểm file tạm có thật); nội dung PDF trong test là byte tự tạo.
 """
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -18,7 +18,14 @@ from holocron_core.infrastructure.document_readers.tiers import failed_page
 from holocron_core.infrastructure.storage.original_files import OriginalFileStore
 from holocron_core.routers.api import app, get_clock, get_store
 from holocron_core.routers.documents import get_import_runtime, get_pdf_reader
-from holocron_core.services.document_import import ImportQueue, ImportRuntime, KeyedLocks, SynchronousImportQueue
+from holocron_core.services.document_import import (
+    QUEUE_CLOSE_TIMEOUT_S,
+    ImportQueue,
+    ImportRuntime,
+    KeyedLocks,
+    ReadJob,
+    SynchronousImportQueue,
+)
 from tests.vault_support import NOW
 
 
@@ -53,8 +60,10 @@ def ok_page(document_id: str, page_number: int) -> PageExtraction:
 class FakePdfReader:
     """`PdfReader` giả: `probe` trả `page_count` hoặc ném `probe_error` (hoặc `probe_exception`); `read_pages` trả trang `ok`.
 
-    Trang trong `failed_pages` thành `failed` (`PAGE_ERROR`); `read_error` ném ở lần lấy phần tử đầu tiên, như bộ đọc
-    thật khi không mở lại được tài liệu.
+    Trang trong `failed_pages` thành `failed` (`PAGE_ERROR`); trang có trong `custom_pages` lấy từ hàm dựng tương ứng
+    (nhận `document_id`). `read_error` ném ở lần lấy phần tử đầu tiên, như bộ đọc thật khi không mở lại được tài
+    liệu; `read_errors` (nếu có) ném lần lượt ở các lần đọc đầu, hết danh sách thì đọc bình thường. `max_pages`
+    giới hạn số trang trả về (giả lập bộ đọc trả thiếu trang).
     """
 
     page_count: int = 2
@@ -62,6 +71,9 @@ class FakePdfReader:
     probe_exception: Exception | None = None
     read_error: Exception | None = None
     failed_pages: frozenset[int] = frozenset()
+    custom_pages: dict[int, Callable[[str], PageExtraction]] = field(default_factory=dict)
+    read_errors: list[Exception] = field(default_factory=list)
+    max_pages: int | None = None
     probed: list[Path] = field(default_factory=list)
     reads: list[tuple[str, list[int]]] = field(default_factory=list)
 
@@ -81,12 +93,36 @@ class FakePdfReader:
         self.reads.append((document_id, numbers))
         if self.read_error is not None:
             raise self.read_error
-        for number in numbers:
-            yield (
-                failed_page(document_id, number, "PAGE_ERROR")
-                if number in self.failed_pages
-                else ok_page(document_id, number)
-            )
+        if self.read_errors:
+            raise self.read_errors.pop(0)
+        for number in numbers[: self.max_pages]:
+            if number in self.custom_pages:
+                yield self.custom_pages[number](document_id)
+            elif number in self.failed_pages:
+                yield failed_page(document_id, number, "PAGE_ERROR")
+            else:
+                yield ok_page(document_id, number)
+
+
+@dataclass
+class HoldingQueue:
+    """Hàng đợi giữ việc mà không chạy (như việc còn chờ luồng đọc nền); `is_active` đúng với việc đang giữ."""
+
+    held: list[ReadJob] = field(default_factory=list)
+
+    def submit(self, job: ReadJob) -> None:
+        self.held.append(job)
+
+    def close(self, timeout_s: float = QUEUE_CLOSE_TIMEOUT_S) -> bool:
+        return True
+
+    def is_active(self, document_id: str) -> bool:
+        return any(job.document_id == document_id for job in self.held)
+
+    def release(self) -> list[ReadJob]:
+        """Bỏ mọi việc đang giữ (như luồng đọc dừng giữa chừng mà không xếp lại) và trả chúng."""
+        jobs, self.held = self.held, []
+        return jobs
 
 
 @dataclass
@@ -117,15 +153,24 @@ class ImportEnv:
         *,
         subject_code: str = "ET4010",
         source_kind: str = "lecture_slides",
+        chapter_code: str | None = "ch3",
         filename: str = "vi_xu_ly.pdf",
         content_type: str = "application/pdf",
+        auto_confirm: str | None = "false",
         **form: str,
     ) -> Response:
-        return self.client.post(
-            "/v1/documents",
-            data={"subject_code": subject_code, "source_kind": source_kind, **form},
-            files={"file": (filename, content, content_type)},
-        )
+        """`chapter_code = None` ⇒ không gửi field (chương tự động, §5.7).
+
+        Từ GĐ1 1B field form `auto_confirm` mặc định bật và tự xác nhận trang sạch; các test của luồng xác nhận thủ
+        công (trước GĐ1) cần trang `ok` chưa xác nhận sau khi đọc, nên helper mặc định gửi `auto_confirm=false`. Test
+        của tính năng tự xác nhận truyền `auto_confirm="true"`; `auto_confirm=None` ⇒ không gửi field (mặc định bật).
+        """
+        data = {"subject_code": subject_code, "source_kind": source_kind, **form}
+        if auto_confirm is not None:
+            data["auto_confirm"] = auto_confirm
+        if chapter_code is not None:
+            data["chapter_code"] = chapter_code
+        return self.client.post("/v1/documents", data=data, files={"file": (filename, content, content_type)})
 
 
 def install(
@@ -136,6 +181,7 @@ def install(
     *,
     locks: KeyedLocks | None = None,
     runtime_queue: ImportQueue | None = None,
+    subject_locks: KeyedLocks | None = None,
 ) -> ImportEnv:
     """Thay kho, bộ nhập và đồng hồ của `app`; người gọi PHẢI `app.dependency_overrides.clear()` sau test.
 
@@ -146,6 +192,7 @@ def install(
         files=files,
         queue=queue if runtime_queue is None else runtime_queue,
         locks=KeyedLocks() if locks is None else locks,
+        subject_locks=KeyedLocks() if subject_locks is None else subject_locks,
     )
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_import_runtime] = lambda: runtime

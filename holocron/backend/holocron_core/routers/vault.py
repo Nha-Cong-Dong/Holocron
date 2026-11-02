@@ -22,12 +22,12 @@ import time
 from collections.abc import Callable
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from pydantic import BaseModel, Field, ValidationError
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from ..domain.capabilities import CapabilityError
 from ..domain.llm import ChatCompletionClient, LlmUpstreamError, LlmUpstreamErrorDetail
-from ..domain.repositories import RecordNotFoundError, VersionConflictError
+from ..domain.repositories import AppStore, RecordNotFoundError, VersionConflictError
 from ..domain.schemas import ChunkCategory, KnowledgeChunk, StrictModel
 from ..domain.vault import (
     CHAPTER_CODE_PATTERN,
@@ -36,6 +36,7 @@ from ..domain.vault import (
     SUBJECT_CODE_PATTERN,
     ConceptPair,
     ConceptPairStatus,
+    ProposalJob,
     QuoteMismatchError,
     SearchHit,
     TopicKey,
@@ -46,7 +47,9 @@ from ..infrastructure.llm_config import ConfigError
 from ..services import vault as vault_service
 from ..services.capabilities import compute_capabilities, unavailable_error
 from ..services.concept_proposal import MAX_PROPOSAL_CHUNKS, ChunkSubjectMismatchError, propose_concept_pairs
-from .deps import ClockDep, RuntimeConfigDep, VaultDep
+from ..services.concept_proposal_job import ClientFactory
+from .deps import ClockDep, ProposalJobsDep, RuntimeConfigDep, StoreDep, VaultDep
+from .runtime import NO_LOCAL_FAILURES, LocalFailuresDep
 
 router = APIRouter(prefix="/v1/vault")
 
@@ -63,14 +66,16 @@ LLM_UPSTREAM_MESSAGE = (
 )
 
 
-def get_chat_client(config: RuntimeConfigDep) -> ChatCompletionClient:
+def get_chat_client(
+    config: RuntimeConfigDep, local_failures: LocalFailuresDep = NO_LOCAL_FAILURES
+) -> ChatCompletionClient:
     """Client LLM cho đề xuất cặp khái niệm, dùng model `HOLOCRON_LLM_MODEL_EXTRACT` (§11.2).
 
     Khả năng `concept_pair_llm_proposal` không khả dụng, hoặc cấu hình LLM không dựng được client (`ConfigError`) ⇒
     409 `CapabilityError` (spec v0.6 §11.4). Không gửi gì ra mạng ở đây. Client dựng mỗi request nên cận tổng
     `LlmTaskLimits.deadline_s` của nó (tính từ lúc dựng) trùng với hạn của lần đề xuất.
     """
-    error = unavailable_error(compute_capabilities(config), "concept_pair_llm_proposal")
+    error = unavailable_error(compute_capabilities(config, local_failures=local_failures), "concept_pair_llm_proposal")
     if error is not None:
         raise HTTPException(status_code=409, detail=error.model_dump(mode="json"))
     failure: str | None = None
@@ -86,12 +91,25 @@ def get_chat_client(config: RuntimeConfigDep) -> ChatCompletionClient:
     raise HTTPException(status_code=409, detail=invalid.model_dump(mode="json"))
 
 
+def get_chat_client_factory(
+    config: RuntimeConfigDep, local_failures: LocalFailuresDep = NO_LOCAL_FAILURES
+) -> ClientFactory:
+    """Hàm dựng client LLM cho job nền: mỗi lô một client, để cận tổng `deadline_s` của client tính từ lúc lô bắt đầu.
+
+    Kiểm khả năng và cấu hình ngay khi tạo job như `get_chat_client` (409 `CapabilityError`); không gọi mạng.
+    """
+    get_chat_client(config, local_failures)
+    settings = config.llm
+    return lambda: OpenAiChatClient.from_settings(settings, model=settings.model_extract)
+
+
 def get_monotonic() -> Callable[[], float]:
     """Đồng hồ đơn điệu (giây) đo hạn thời gian tổng của một lần đề xuất; test thay bằng đồng hồ giả."""
     return time.monotonic
 
 
 ChatClientDep = Annotated[ChatCompletionClient, Depends(get_chat_client)]
+ChatClientFactoryDep = Annotated[ClientFactory, Depends(get_chat_client_factory)]
 MonotonicDep = Annotated[Callable[[], float], Depends(get_monotonic)]
 
 
@@ -135,6 +153,24 @@ class ConceptPairProposeRequest(StrictModel):
 class ConceptPairProposeResponse(BaseModel):
     pairs: list[ConceptPair]
     rejected_count: int
+
+
+MAX_JOB_CHUNKS = 2000
+JobIdPath = Annotated[str, Path(min_length=1, max_length=MAX_ID_CHARS)]
+
+
+class ProposalJobCreate(StrictModel):
+    """Đúng một trong `document_id` (mọi chunk của tài liệu) và `chunk_ids` (1–2000 chunk, cùng môn) (§6.6)."""
+
+    subject_code: str = Field(pattern=SUBJECT_CODE_PATTERN)
+    document_id: str | None = Field(default=None, min_length=1, max_length=MAX_ID_CHARS)
+    chunk_ids: list[ChunkIdField] | None = Field(default=None, min_length=1, max_length=MAX_JOB_CHUNKS)
+
+    @model_validator(mode="after")
+    def _exactly_one_source(self) -> ProposalJobCreate:
+        if (self.document_id is None) == (self.chunk_ids is None):
+            raise ValueError("cần đúng một trong document_id và chunk_ids")
+        return self
 
 
 def _not_found(exc: RecordNotFoundError) -> HTTPException:
@@ -280,7 +316,7 @@ def reject_concept_pair(vault: VaultDep, clock: ClockDep, pair_id: PairIdPath, b
 
 @router.post("/concept-pairs/propose", response_model=ConceptPairProposeResponse)
 def propose_pairs(
-    vault: VaultDep,
+    vault: StoreDep,
     clock: ClockDep,
     config: RuntimeConfigDep,
     client: ChatClientDep,
@@ -296,6 +332,8 @@ def propose_pairs(
             now=clock(),
             limits=config.llm.task_limits,
             monotonic=monotonic,
+            pages=vault,
+            preselect_enabled=config.llm.proposal.pair_preselect_enabled,
         )
     except RecordNotFoundError as exc:
         raise _not_found(exc) from exc
@@ -305,3 +343,76 @@ def propose_pairs(
         detail = LlmUpstreamErrorDetail(message=LLM_UPSTREAM_MESSAGE).model_dump(mode="json")
         raise HTTPException(status_code=502, detail=detail) from None
     return ConceptPairProposeResponse(pairs=result.pairs, rejected_count=result.rejected_count)
+
+
+# --------------------------------------------------------------------------- #
+# Job nền đề xuất cặp (§5.8, §6.6; ADR-007 mục 3)
+# --------------------------------------------------------------------------- #
+
+
+def _job_chunk_ids(store: AppStore, body: ProposalJobCreate) -> list[str]:
+    """`chunk_id` của job theo thứ tự, bỏ trùng; 404 tài liệu/chunk, 422 khác môn, 409 tài liệu chưa có chunk."""
+    if body.document_id is not None:
+        document = store.get_imported_document(body.document_id)
+        if document is None:
+            raise HTTPException(status_code=404, detail="không tìm thấy tài liệu")
+        if document.meta.subject_code != body.subject_code:
+            raise _invalid("document_id", f"tài liệu không thuộc môn {body.subject_code}")
+        ids = [chunk.chunk_id for chunk in store.list_chunks(body.subject_code) if chunk.doc_id == body.document_id]
+        if not ids:
+            raise HTTPException(status_code=409, detail="tài liệu chưa có chunk nào trong Vault")
+        return ids
+    ids = list(dict.fromkeys(body.chunk_ids or ()))
+    for chunk_id in ids:
+        chunk = store.get_chunk(chunk_id)
+        if chunk is None:
+            raise HTTPException(status_code=404, detail="không tìm thấy chunk")
+        if chunk.subject_code != body.subject_code:
+            raise _invalid("chunk_ids", str(ChunkSubjectMismatchError(chunk_id, body.subject_code)))
+    return ids
+
+
+@router.post("/concept-pairs/jobs", response_model=ProposalJob, status_code=202)
+def create_proposal_job(
+    store: StoreDep,
+    clock: ClockDep,
+    config: RuntimeConfigDep,
+    jobs: ProposalJobsDep,
+    client_factory: ChatClientFactoryDep,
+    body: ProposalJobCreate,
+    response: Response,
+) -> ProposalJob:
+    chunk_ids = _job_chunk_ids(store, body)
+    job = jobs.submit(
+        subject_code=body.subject_code,
+        chunk_ids=chunk_ids,
+        document_id=body.document_id,
+        store=store,
+        client_factory=client_factory,
+        limits=config.llm.task_limits,
+        now=clock(),
+        settings=config.llm.proposal,
+    )
+    response.headers["Location"] = f"/v1/vault/concept-pairs/jobs/{job.job_id}"
+    return job
+
+
+@router.get("/concept-pairs/jobs", response_model=list[ProposalJob])
+def list_proposal_jobs(jobs: ProposalJobsDep, subject_code: SubjectQuery) -> list[ProposalJob]:
+    return jobs.list_jobs(subject_code)
+
+
+@router.get("/concept-pairs/jobs/{job_id}", response_model=ProposalJob)
+def get_proposal_job(jobs: ProposalJobsDep, job_id: JobIdPath) -> ProposalJob:
+    job = jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="không tìm thấy job")
+    return job
+
+
+@router.post("/concept-pairs/jobs/{job_id}/cancel", response_model=ProposalJob)
+def cancel_proposal_job(jobs: ProposalJobsDep, job_id: JobIdPath) -> ProposalJob:
+    job = jobs.cancel(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="không tìm thấy job")
+    return job

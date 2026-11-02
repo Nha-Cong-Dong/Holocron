@@ -70,7 +70,7 @@
 .tab[aria-current="page"] {
   border-color: var(--border);
   background: var(--surface);
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 /* ------------------------------------------------------------------------------------ form */
@@ -163,7 +163,7 @@
 .danger {
   min-height: 36px;
   padding: var(--space-1) var(--space-4);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--accent-ink);
   border-radius: var(--radius);
   font-weight: 600;
   cursor: pointer;
@@ -176,7 +176,7 @@
 
 .secondary {
   background: var(--surface);
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .danger {
@@ -209,7 +209,7 @@ a.secondary {
   padding: 0;
   border: 0;
   background: none;
-  color: var(--accent);
+  color: var(--accent-ink);
   font-size: inherit;
   text-decoration: underline;
   cursor: pointer;
@@ -228,7 +228,7 @@ a.secondary {
 }
 
 .dropZone[data-active="true"] {
-  border-color: var(--accent);
+  border-color: var(--accent-ink);
   background: var(--accent-soft);
 }
 
@@ -432,7 +432,7 @@ a.secondary {
 .pageLink[aria-current="page"] {
   border-color: var(--border);
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-ink);
   font-weight: 600;
 }
 
@@ -537,7 +537,7 @@ a.secondary {
   width: 100%;
   min-height: 32px;
   padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--accent-ink);
   border-radius: var(--radius);
   background: var(--surface);
   line-height: 1.6;

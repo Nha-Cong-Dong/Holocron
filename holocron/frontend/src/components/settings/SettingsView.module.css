@@ -1,0 +1,92 @@
+.page {
+  display: grid;
+  gap: var(--sp-5);
+  max-width: 820px;
+}
+
+.title {
+  font-size: var(--fs-h1);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-h1);
+  letter-spacing: -0.02em;
+}
+
+.panel {
+  display: grid;
+  gap: var(--sp-4);
+  padding: var(--sp-5) var(--sp-6);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--sh-1);
+}
+
+.heading {
+  font-size: var(--fs-h3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-h3);
+}
+
+.caption {
+  margin-top: 4px;
+  color: var(--ink-2);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+}
+
+/* Ba chip chọn theme (Chip dạng radio của bộ thành phần dùng chung). */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+/* Dòng cài đặt (chữ bên trái, công tắc bên phải). */
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+}
+
+.rowTitle {
+  font-weight: var(--fw-semibold);
+}
+
+/* Thử nghiệm (thu gọn). */
+.lab {
+  padding: 4px var(--sp-6);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--sh-1);
+}
+
+.labList {
+  display: grid;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.labLink {
+  font-weight: var(--fw-semibold);
+}
+
+/* Câu hỏi tự nhiên hơn: trạng thái chỉ đọc (không có công tắc). */
+.state {
+  justify-self: start;
+  padding: 4px 12px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  font-weight: var(--fw-semibold);
+}
+
+.state[data-on="true"] {
+  background: var(--ok-soft);
+  color: var(--ok);
+}

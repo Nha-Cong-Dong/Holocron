@@ -42,6 +42,14 @@ TEMP_DIR_PREFIX = "holocron_files_"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _TEMP_DIR_NAME = re.compile(re.escape(TEMP_DIR_PREFIX) + r"p([0-9]+)_")
 _LOGGER = logging.getLogger(__name__)
+# Windows: `OpenProcess` lỗi với mã này khi không có tiến trình nào mang pid đó; mọi mã lỗi khác (từ chối quyền,
+# tiến trình được bảo vệ, thiếu tài nguyên…) không chứng minh được tiến trình đã chết.
+ERROR_INVALID_PARAMETER = 87
+
+
+def open_process_error_means_dead(error_code: int) -> bool:
+    """`OpenProcess` lỗi với `error_code`: chỉ `ERROR_INVALID_PARAMETER` (87) nghĩa là pid không còn tồn tại."""
+    return error_code == ERROR_INVALID_PARAMETER
 
 
 class OriginalFileError(ValueError):
@@ -62,14 +70,14 @@ if sys.platform == "win32":
     def process_alive(pid: int) -> bool:
         """Tiến trình `pid` còn chạy không (Windows: `OpenProcess` + `GetExitCodeProcess`).
 
-        KHÔNG dùng `os.kill(pid, 0)`: trên Windows lời gọi đó kết thúc tiến trình. Không xác định được ⇒ coi như còn
-        sống, để không bao giờ xoá thư mục của tiến trình đang chạy.
+        KHÔNG dùng `os.kill(pid, 0)`: trên Windows lời gọi đó kết thúc tiến trình. Chỉ coi là đã chết khi
+        `OpenProcess` lỗi `ERROR_INVALID_PARAMETER` (không có pid đó) hoặc mã thoát khác `STILL_ACTIVE`; mọi trường
+        hợp không xác định được ⇒ coi như còn sống, để không bao giờ xoá thư mục của tiến trình đang chạy.
         """
         import ctypes
         from ctypes import wintypes
 
         query_limited_information = 0x1000
-        error_access_denied = 5
         still_active = 259
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.OpenProcess.restype = wintypes.HANDLE
@@ -78,7 +86,7 @@ if sys.platform == "win32":
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         handle = kernel32.OpenProcess(query_limited_information, False, pid)
         if not handle:
-            return bool(ctypes.get_last_error() == error_access_denied)
+            return not open_process_error_means_dead(ctypes.get_last_error())
         try:
             code = wintypes.DWORD()
             if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):

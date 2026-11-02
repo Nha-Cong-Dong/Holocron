@@ -1,0 +1,225 @@
+/* Màn 5 "Đang đọc" và banner, màn chúc mừng của màn 6 "Xem lại". Chuyển động ở motion.css (m-done-pop, m-meteor). */
+.reading {
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-5);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--sh-1);
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.headTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  color: var(--accent-ink);
+}
+
+.title {
+  color: var(--ink);
+  font-size: var(--fs-h3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-h3);
+}
+
+.count {
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.caption {
+  color: var(--ink-2);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+}
+
+.list {
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+
+.itemIcon {
+  display: inline-flex;
+  color: var(--accent-ink);
+}
+
+.item[data-kind="failed"] .itemIcon {
+  color: var(--err);
+}
+
+.check {
+  display: inline-flex;
+  color: var(--ok);
+}
+
+.itemBody {
+  display: grid;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.itemHead {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.itemTitle {
+  overflow: hidden;
+  font-weight: var(--fw-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.itemMeta {
+  flex: none;
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+  white-space: nowrap;
+}
+
+.failed {
+  color: var(--ink);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+/* Link mang kiểu nút phụ (cùng hình dáng với Button). */
+.link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--tap-min);
+  padding: 0 22px;
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1.5px var(--line-strong);
+  color: var(--ink);
+  font-weight: var(--fw-semibold);
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+/* Banner màn Xem lại. */
+.banner {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-4) var(--sp-5);
+  border-radius: var(--r-lg);
+  background: var(--surface-2);
+}
+
+.banner[data-tone="warn"] {
+  background: var(--warn-soft);
+}
+
+.bannerHead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  color: var(--accent-ink);
+}
+
+.banner[data-tone="warn"] .bannerHead {
+  color: var(--warn);
+}
+
+.bannerTitle {
+  color: var(--ink);
+  font-size: var(--fs-h3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-h3);
+}
+
+.bannerLive {
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.counter {
+  color: var(--ink);
+  font-size: var(--fs-small);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-small);
+}
+
+.work {
+  display: grid;
+  gap: var(--sp-1);
+  margin: 0;
+  padding-left: var(--sp-5);
+  color: var(--ink);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+/* Chúc mừng khi xem lại xong. */
+.celebrate {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-3);
+  overflow: hidden;
+  padding: var(--sp-8) var(--sp-6);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--sh-2);
+  text-align: center;
+}
+
+.meteor {
+  top: 28%;
+  left: 18%;
+  width: 140px;
+}
+
+.meteor2 {
+  top: 52%;
+  left: 40%;
+  width: 96px;
+  animation-delay: 180ms;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--star);
+}
+
+.celebrateTitle {
+  font-size: var(--fs-h2);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-h2);
+  overflow-wrap: anywhere;
+}

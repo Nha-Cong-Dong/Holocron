@@ -1,0 +1,36 @@
+/* Hình dáng mục thu gọn; chuyển động ở motion.css (.m-accordion, .m-accordion-body, .m-chevron). */
+.accordion {
+  min-width: 0;
+}
+
+.summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--tap-min);
+  color: var(--ink);
+  font-weight: var(--fw-semibold);
+  cursor: pointer;
+  list-style: none;
+}
+
+.summary::-webkit-details-marker {
+  display: none;
+}
+
+.chevron {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.body {
+  display: grid;
+  gap: var(--sp-3);
+  padding-bottom: var(--sp-4);
+}

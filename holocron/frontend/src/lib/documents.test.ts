@@ -192,6 +192,13 @@ describe("điều kiện sửa dòng và xác nhận (§6.5)", () => {
     for (const message of Object.values(CONFIRM_PAGE_BLOCK_MESSAGE_VI)) expect(message.length).toBeGreaterThan(0);
   });
 
+  it("lý do 'còn dòng chưa lưu' có câu nhắc đúng chữ và không suy từ dữ liệu trang", () => {
+    expect(CONFIRM_PAGE_BLOCK_MESSAGE_VI.unsaved_lines).toBe("Còn dòng chưa lưu. Lưu hoặc xoá trước khi xác nhận");
+    expect(confirmPageBlock({ status: "needs_review", confirmed: false, lines })).toBeNull();
+    expect(CONFIRM_PAGE_BLOCK_MESSAGE_VI.no_text).toContain("chưa có dòng nào có chữ");
+    expect(CONFIRM_PAGE_BLOCK_MESSAGE_VI.confirmed).toBe("Trang đã được xác nhận.");
+  });
+
   it("xác nhận tài liệu: còn trang đang đọc thì chặn; chỉ bật khi còn trang ok chưa xác nhận", () => {
     const page = (status: PageSummaryView["status"], confirmed = false): PageSummaryView => ({
       pageNumber: 1,
@@ -260,5 +267,37 @@ describe("tô dòng theo dữ liệu backend", () => {
     const labels = lineHighlight(line(4, "x", ["HIGH_LINE_CER", "NEW_FLAG"]), byLine).labels;
     expect(labels).toHaveLength(2);
     for (const label of labels) expectNoRawCode(label);
+  });
+});
+
+describe("thứ tự lý do khoá khi trang đã xác nhận mà trạng thái lạ hoặc lỗi", () => {
+  const lines = [line(0, "Dòng một")];
+
+  it("lý do theo trạng thái trang đứng trước 'đã xác nhận'", () => {
+    expect(lineEditBlock({ status: "unknown", confirmed: true })).toBe("unknown");
+    expect(lineEditBlock({ status: "failed", confirmed: true })).toBe("failed");
+    expect(lineEditBlock({ status: "pending", confirmed: true })).toBe("pending");
+    expect(confirmPageBlock({ status: "unknown", confirmed: true, lines })).toBe("unknown");
+    expect(confirmPageBlock({ status: "failed", confirmed: true, lines })).toBe("failed");
+  });
+});
+
+describe("canConfirmPage và thông điệp khoá sửa", () => {
+  const lines = [line(0, "Dòng một")];
+
+  it("canConfirmPage false với trang failed, pending, unknown và trang ok đã xác nhận", () => {
+    for (const status of ["failed", "pending", "unknown"] as const) {
+      expect(canConfirmPage({ status, confirmed: false, lines })).toBe(false);
+    }
+    expect(canConfirmPage({ status: "ok", confirmed: true, lines })).toBe(false);
+    expect(canConfirmPage({ status: "ok", confirmed: false, lines: [] })).toBe(false);
+    expect(canConfirmPage({ status: "ok", confirmed: false, lines })).toBe(true);
+  });
+
+  it("EDIT_BLOCK_MESSAGE_VI: các thông điệp đôi một khác nhau; `confirmed` nói trang đã xác nhận", () => {
+    const messages = Object.values(EDIT_BLOCK_MESSAGE_VI);
+    expect(new Set(messages).size).toBe(messages.length);
+    for (const message of messages) expect(message.trim().length).toBeGreaterThan(0);
+    expect(EDIT_BLOCK_MESSAGE_VI.confirmed).toContain("Trang đã xác nhận");
   });
 });

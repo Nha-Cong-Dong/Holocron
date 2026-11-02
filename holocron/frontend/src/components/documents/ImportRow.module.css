@@ -1,0 +1,124 @@
+/* Một file trong hàng đợi nhập. Vào bằng m-file-in, ra bằng m-row-out (motion.css); các dòng còn lại trượt bằng useFlip. */
+.row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.row[data-status="invalid"] {
+  border-color: var(--warn);
+}
+
+.row[data-status="failed"],
+.row[data-status="conflict"] {
+  border-color: var(--err);
+}
+
+.icon {
+  display: inline-flex;
+  padding-top: 2px;
+  color: var(--accent-ink);
+}
+
+.body {
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.fileName {
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.title {
+  font-weight: var(--fw-semibold);
+  overflow-wrap: anywhere;
+}
+
+.meta {
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.selects {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--sp-3);
+}
+
+.chapter {
+  display: grid;
+  gap: var(--sp-1);
+  padding: var(--sp-1);
+  border-radius: var(--r-sm);
+}
+
+/* "Chưa rõ chương": tô vàng kèm câu chữ (không chỉ màu). */
+.chapter[data-unknown="true"] {
+  background: var(--warn-soft);
+}
+
+.warnText {
+  color: var(--ink);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+}
+
+.errText {
+  color: var(--err);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.status[data-tone="ok"] {
+  color: var(--ink);
+}
+
+.status[data-tone="ok"] svg {
+  color: var(--ok);
+}
+
+.done {
+  display: inline-flex;
+}
+
+.failure {
+  display: grid;
+  gap: var(--sp-1);
+  padding: var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--err-soft);
+  color: var(--ink);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.failureTitle {
+  font-weight: var(--fw-semibold);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}

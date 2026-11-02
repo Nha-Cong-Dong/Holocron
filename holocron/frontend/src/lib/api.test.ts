@@ -170,13 +170,6 @@ describe("getRuntime()", () => {
     expect(error.info.kind).toBe("network");
     expect(toUiError(error).kind).toBe("network");
   });
-
-  it("bật mock: endpoint backend chưa có lấy từ dữ liệu mẫu, không gọi fetch", async () => {
-    const calls = stubFetch(() => Promise.reject(new TypeError("không được gọi")));
-    const subjects = await createApi(true).listSubjects();
-    expect(subjects.length).toBeGreaterThan(0);
-    expect(calls).toEqual([]);
-  });
 });
 
 describe("màn luyện tập ở ranh giới", () => {
@@ -215,18 +208,6 @@ describe("màn luyện tập ở ranh giới", () => {
     expect(error.info.kind).toBe("server");
     expect(calls[0]?.url).toBe(`${DEFAULT_API_BASE}/v1/twins/twin%201/essay-grade`);
     expect(calls[0]?.init?.body).toBe(JSON.stringify({ answer_text: "câu trả lời" }));
-  });
-
-  it("bật mock: blueprint thật vẫn gọi backend để sinh câu; blueprint mẫu dùng batch mẫu", async () => {
-    const calls = stubFetch(() => Promise.resolve(jsonResponse(404, { detail: "không có blueprint" })));
-    const mocked = createApi(true);
-    const error = await captureError(mocked.generatePracticeBatch("bp_that", { count: 1 }, null));
-    expect(error.info.kind).toBe("not_found");
-    expect(calls).toHaveLength(1);
-    const blueprint = await mocked.createBlueprint({ subject_code: "MAU101", theory_slots: [] });
-    const batch = await mocked.generatePracticeBatch(blueprint.blueprintId, { count: 1 }, null);
-    expect(batch.questions.length).toBeGreaterThan(0);
-    expect(calls).toHaveLength(1);
   });
 });
 
@@ -389,6 +370,109 @@ describe("sửa nhãn chunk ở ranh giới", () => {
   });
 });
 
+describe("cặp khái niệm ở ranh giới (§6.6)", () => {
+  const PAIR = {
+    pair_id: "cp 1",
+    chunk_id: "chk_1",
+    subject_code: "MAU101",
+    chapter_code: "ch1",
+    term: "tiến trình",
+    definition_quote: "Tiến trình là chương trình đang chạy.",
+    term_spans: [[0, 10]],
+    status: "confirmed",
+    proposed_by: "user",
+    mapping_confidence: null,
+    version: 3,
+    created_at: "2026-10-28T00:00:00Z",
+    confirmed_at: "2026-10-28T00:00:00Z",
+  };
+
+  it("GET danh sách: query đúng, chỉ gửi bộ lọc có giá trị; giữ thứ tự backend, bỏ phần tử sai dạng", async () => {
+    const calls = stubFetch(() => Promise.resolve(jsonResponse(200, [PAIR, { pair_id: "x" }])));
+    const list = await realApi.listConceptPairs({ subjectCode: "MAU101", chapterCode: "ch2.1", status: "proposed" });
+    expect(calls[0]?.url).toBe(
+      `${DEFAULT_API_BASE}/v1/vault/concept-pairs?subject_code=MAU101&chapter_code=ch2.1&status=proposed`,
+    );
+    expect(calls[0]?.init?.method).toBe("GET");
+    expect(list.pairs.map((pair) => pair.pair_id)).toEqual(["cp 1"]);
+    expect(list.hasSkipped).toBe(true);
+    await realApi.listConceptPairs({ subjectCode: "MAU101", chapterCode: null, status: null });
+    expect(calls[1]?.url).toBe(`${DEFAULT_API_BASE}/v1/vault/concept-pairs?subject_code=MAU101`);
+    stubFetch(() => Promise.resolve(jsonResponse(200, { pairs: [] })));
+    const bad = await captureError(
+      realApi.listConceptPairs({ subjectCode: "MAU101", chapterCode: null, status: null }),
+    );
+    expect(bad.info.kind).toBe("server");
+  });
+
+  it("POST tạo cặp: body đúng, gửi nguyên chuỗi đoạn định nghĩa", async () => {
+    const calls = stubFetch(() => Promise.resolve(jsonResponse(201, PAIR)));
+    const quote = "  Tiến trình là\r\nchương trình  ";
+    const pair = await realApi.createConceptPair("chk_1", "tiến trình", quote);
+    expect(pair.pair_id).toBe("cp 1");
+    expect(calls[0]?.url).toBe(`${DEFAULT_API_BASE}/v1/vault/concept-pairs`);
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(jsonBody(calls[0])).toEqual({
+      editor_id: LOCAL_EDITOR_ID,
+      chunk_id: "chk_1",
+      term: "tiến trình",
+      definition_quote: quote,
+    });
+  });
+
+  it("POST xác nhận: chỉ gửi field sửa; POST từ chối: editor_id và expected_version", async () => {
+    const calls = stubFetch(() => Promise.resolve(jsonResponse(200, PAIR)));
+    await realApi.confirmConceptPair("cp 1", 2, {});
+    expect(calls[0]?.url).toBe(`${DEFAULT_API_BASE}/v1/vault/concept-pairs/cp%201/confirm`);
+    expect(jsonBody(calls[0])).toEqual({ editor_id: LOCAL_EDITOR_ID, expected_version: 2 });
+    await realApi.confirmConceptPair("cp 1", 2, { term: "a", definitionQuote: "đoạn mới đủ dài" });
+    expect(jsonBody(calls[1])).toEqual({
+      editor_id: LOCAL_EDITOR_ID,
+      expected_version: 2,
+      term: "a",
+      definition_quote: "đoạn mới đủ dài",
+    });
+    await realApi.rejectConceptPair("cp/1", 3);
+    expect(calls[2]?.url).toBe(`${DEFAULT_API_BASE}/v1/vault/concept-pairs/cp%2F1/reject`);
+    expect(calls[2]?.init?.method).toBe("POST");
+    expect(jsonBody(calls[2])).toEqual({ editor_id: LOCAL_EDITOR_ID, expected_version: 3 });
+  });
+
+  it("lỗi: 404, 409 lệch phiên bản, 422 theo field, 503 kho bận, mất kết nối", async () => {
+    stubFetch(() => Promise.resolve(jsonResponse(404, { detail: "không tìm thấy chunk" })));
+    expect((await captureError(realApi.createConceptPair("c", "t", "đoạn đủ dài"))).info.kind).toBe("not_found");
+    expect((await captureError(realApi.rejectConceptPair("p", 1))).info.kind).toBe("not_found");
+
+    stubFetch(() => Promise.resolve(jsonResponse(409, { detail: "version lệch" })));
+    const conflict = await captureError(realApi.confirmConceptPair("p", 1, {}));
+    expect(conflict.info).toMatchObject({ kind: "version_conflict", action: "reload" });
+    expect((await captureError(realApi.rejectConceptPair("p", 1))).info.kind).toBe("version_conflict");
+
+    const term = { detail: [{ loc: ["body", "term"], msg: "x", type: "string_too_long" }] };
+    stubFetch(() => Promise.resolve(jsonResponse(422, term)));
+    expect((await captureError(realApi.createConceptPair("c", "t", "đoạn đủ dài"))).info.message).toContain(
+      "Thuật ngữ",
+    );
+    const quote = { detail: [{ loc: ["body", "definition_quote"], msg: "x", type: "value_error" }] };
+    stubFetch(() => Promise.resolve(jsonResponse(422, quote)));
+    expect((await captureError(realApi.confirmConceptPair("p", 1, {}))).info.message).toContain("Đoạn định nghĩa");
+    expect((await captureError(realApi.rejectConceptPair("p", 1))).info.message).not.toContain("Đoạn định nghĩa");
+
+    stubFetch(() => Promise.resolve(jsonResponse(503, { detail: "kho bận" })));
+    expect((await captureError(realApi.createConceptPair("c", "t", "đoạn đủ dài"))).info.kind).toBe("busy");
+
+    stubFetch(() => Promise.reject(new TypeError("Failed to fetch")));
+    const offline = await captureError(
+      realApi.listConceptPairs({ subjectCode: "MAU101", chapterCode: null, status: null }),
+    );
+    expect(offline.status).toBeNull();
+    expect(offline.info.kind).toBe("network");
+
+    stubFetch(() => Promise.resolve(jsonResponse(200, { pair_id: "p" })));
+    expect((await captureError(realApi.confirmConceptPair("p", 1, {}))).info.kind).toBe("server");
+  });
+});
+
 describe("bật dữ liệu mẫu: chỉ bản ghi mẫu dùng fixture", () => {
   it("mã tài liệu mẫu đọc từ fixture, không gọi fetch; tài liệu khác gọi backend thật", async () => {
     resetMockDocumentSessions();
@@ -411,25 +495,6 @@ describe("bật dữ liệu mẫu: chỉ bản ghi mẫu dùng fixture", () => {
     expect(calls[0]?.url).toBe(`${DEFAULT_API_BASE}/v1/documents?subject_code=${MOCK_IMPORT_SUBJECT}`);
     const otherSubject = await mocked.listDocuments("MAU202");
     expect(otherSubject.map((document) => document.docId)).toEqual([REAL_DOC_ID]);
-  });
-
-  it("listVaultChunks: câu của blueprint mẫu dùng chunk mẫu; blueprint thật cùng môn mẫu vẫn gọi backend", async () => {
-    const calls = stubFetch(() => Promise.resolve(jsonResponse(200, { total: 0, chunks: [] })));
-    const mocked = createApi(true);
-    const blueprint = await mocked.createBlueprint({ subject_code: MOCK_IMPORT_SUBJECT, theory_slots: [] });
-    const query = { subjectCode: blueprint.subjectCode, chapterCode: null, offset: 0, limit: 50 };
-
-    const sample = await mocked.listVaultChunks({ ...query, blueprintId: blueprint.blueprintId });
-    expect(sample.chunks.length).toBeGreaterThan(0);
-    expect(calls).toHaveLength(0);
-
-    const real = await mocked.listVaultChunks({ ...query, blueprintId: "bp_that" });
-    expect(real.chunks).toEqual([]);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.url).not.toContain("blueprint");
-
-    await mocked.listVaultChunks(query);
-    expect(calls).toHaveLength(2);
   });
 
   it("tắt dữ liệu mẫu: luôn gọi backend theo môn của blueprint, mã blueprint không gửi đi", async () => {

@@ -3,7 +3,7 @@
  * Mã môn trung tính tự đặt, không gắn với môn thật; sắp theo `subject_code` như §6.8.
  */
 
-import type { Subject } from "@/types/contract-pending";
+import type { Subject } from "@/types/holocron";
 
 export const SUBJECT_FIXTURES: Subject[] = [
   {

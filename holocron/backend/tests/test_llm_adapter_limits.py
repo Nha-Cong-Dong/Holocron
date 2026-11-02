@@ -318,6 +318,31 @@ def test_total_budget_must_be_positive_and_finite(budget: float) -> None:
         )
 
 
+def test_remaining_budget_never_exceeds_the_total_budget_despite_float_rounding() -> None:
+    # Với t0 này, (t0 + 42) - t0 = 42.00000000000364 > 42 do làm tròn; thời gian còn lại phải kẹp về đúng 42.
+    t0 = 32765.479414075653
+    assert (t0 + 42.0) - t0 > 42.0
+    client = OpenAiChatClient(
+        base_url=BASE_URL,
+        api_key=SecretStr(SECRET),
+        model=MODEL,
+        timeout_s=12.5,
+        total_budget_s=42.0,
+        monotonic=lambda: t0,
+    )
+    assert client._remaining_s() == 42.0
+
+
+def test_remaining_budget_still_counts_down_after_the_clamp() -> None:
+    clock = FakeClock()
+    client = _budget_client(TimedTransport(clock), clock, 30.0)
+    clock.advance(12.5)
+    assert client._remaining_s() == 17.5
+    clock.advance(20.0)
+    remaining = client._remaining_s()
+    assert remaining is not None and remaining == -2.5
+
+
 def test_a_trickling_server_through_the_real_client_ends_within_the_budget() -> None:
     clock = FakeClock()
     body = TrickleBody(clock, step=0.75)

@@ -5,6 +5,7 @@
  *   sập trang. Dữ liệu lạ ở cấp ngoài cùng (không phải object, thiếu mảng `twins`) thì cả phản hồi không được nhận.
  * - Câu MCQ4 chỉ được nhận khi đúng luật I2: đủ bốn phương án A–D, `correct_key` thuộc A–D, và mỗi phương án sai có
  *   đúng một misconception (`distractor_to_misconception_map` phủ đúng ba khoá còn lại).
+ * - Câu lý thuyết (`TheoryTwin`) còn cần trích dẫn cho mọi phương án sai (`distractor_citations`, I3).
  * - Mọi câu PHẢI có trích dẫn nguyên văn kèm số trang (I3); thiếu thì không hiển thị như kiến thức.
  * - Kết quả chấm tự luận chỉ giữ số ý khớp, tổng số ý và văn bản các ý; `ngram_coverage` bị bỏ ngay tại đây để giao diện
  *   không thể hiển thị nó như điểm (§5.14). Hai con số `matched_count`, `total_points` do backend trả; ở đây chỉ kiểm
@@ -260,9 +261,85 @@ function parseEssayPoints(value: unknown): EssayPointView[] | null {
 
 type TwinParse = { kind: "ok"; question: PracticeQuestion } | { kind: "unsupported" } | { kind: "malformed" };
 
-/** Một câu hỏi của `TwinBatch` (§5.11, §5.14). */
+const MALFORMED: TwinParse = { kind: "malformed" };
+
+/**
+ * Trích dẫn của từng phương án nhiễu (`TheoryQuestion.distractor_citations`): phủ đúng ba phương án sai, mỗi trích
+ * dẫn có số trang (I3). Thiếu một khoá, thừa khoá đáp án hay trích dẫn sai dạng ⇒ `null`.
+ */
+function parseDistractorCitations(
+  value: unknown,
+  correctKey: OptionKey,
+): Partial<Record<OptionKey, PracticeCitation>> | null {
+  if (!isRecord(value)) return null;
+  const keys = Object.keys(value);
+  const wrongKeys = OPTION_KEYS.filter((key) => key !== correctKey);
+  if (keys.length !== wrongKeys.length || !wrongKeys.every((key) => keys.includes(key))) return null;
+  const result: Partial<Record<OptionKey, PracticeCitation>> = {};
+  for (const key of wrongKeys) {
+    const citation = parseCitation(value[key]);
+    if (citation === null) return null;
+    result[key] = citation;
+  }
+  return result;
+}
+
+/**
+ * `TheoryTwin` của backend (quyết định 14(b), nợ ADR-004): `question_kind = "theory"` ở cấp twin, câu nằm trong
+ * `question` (`TheoryQuestion`). Chuyển sang câu trắc nghiệm hiển thị; trích dẫn của phương án nhiễu lấy từ
+ * `question.distractor_citations[key]` và gộp vào misconception cùng khoá. Câu sai luật I2 (đủ 4 phương án, đáp án
+ * thuộc A–D, misconception phủ đúng ba phương án sai) hay I3 (trích dẫn của đáp án và của MỌI phương án nhiễu, có số
+ * trang) bị bỏ. Không tính con số nào (I1).
+ */
+function parseTheoryTwin(value: Record<string, unknown>): TwinParse {
+  const { twin_id, slot_index, format, question } = value;
+  if (value.question_kind !== "theory" || !isRecord(question)) return MALFORMED;
+  if (!isText(twin_id) || !isIndex(slot_index, 1) || format !== "MCQ4") return MALFORMED;
+  if (question.question_kind !== undefined && question.question_kind !== "theory") return MALFORMED;
+  const { stem, solution_explanation_vi } = question;
+  const citation = parseCitation(question.citation);
+  if (!isText(stem) || typeof solution_explanation_vi !== "string" || citation === null) return MALFORMED;
+  const options = parseOptions(question.options);
+  const correctKey = optionKeyOf(question.correct_key);
+  if (options === null || correctKey === null) return MALFORMED;
+  const misconceptions = parseMisconceptionMap(question.distractor_to_misconception_map, correctKey);
+  const citations = parseDistractorCitations(question.distractor_citations, correctKey);
+  if (misconceptions === null || citations === null) return MALFORMED;
+  for (const key of OPTION_KEYS) {
+    const misconception = misconceptions[key];
+    const distractorCitation = citations[key];
+    if (misconception === undefined) continue;
+    if (distractorCitation === undefined) return MALFORMED;
+    misconceptions[key] = { ...misconception, citation: distractorCitation };
+  }
+  return {
+    kind: "ok",
+    question: {
+      kind: "mcq",
+      twinId: twin_id,
+      slotIndex: slot_index,
+      questionKind: "theory",
+      stem,
+      solution: solution_explanation_vi,
+      citation,
+      artifacts: [],
+      options,
+      correctKey,
+      misconceptions,
+    },
+  };
+}
+
+/**
+ * Một câu hỏi của `TwinBatch` (§5.11, §5.14; quyết định 14(b)). Ba dạng:
+ * - `TheoryTwin` (có `question`): xem `parseTheoryTwin`; thiếu `question_kind` khi có `question` là sai dạng;
+ * - `TwinQuestion` câu tính toán (không có `question_kind`): như trước;
+ * - `TwinQuestion` đa hình theo §5.11 (phương án (a), `question_kind` ở cấp twin, chưa có ở backend; dữ liệu mẫu còn
+ *   dùng): chờ (a) sau 29/10 (nợ ADR-004).
+ */
 export function parseTwin(value: unknown): TwinParse {
   if (!isRecord(value)) return { kind: "malformed" };
+  if (value.question !== undefined) return parseTheoryTwin(value);
   const { twin_id, slot_index, stem, solution_explanation_vi, format } = value;
   const citation = parseCitation(value.citation);
   if (!isText(twin_id) || !isIndex(slot_index, 1) || !isText(stem) || citation === null) return { kind: "malformed" };

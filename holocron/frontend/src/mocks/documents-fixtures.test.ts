@@ -20,7 +20,6 @@ import {
   MOCK_IMPORT_SUBJECT,
   mockDocumentImport,
 } from "./fixtures/documents";
-import { mockApi, mockSubjectApi } from "./index";
 import { isMockDocument, resetMockDocumentSessions } from "./store";
 
 function allPages(): PageExtractionPending[] {
@@ -159,19 +158,6 @@ describe("handler giả của tài liệu mẫu", () => {
     await mockDocumentApi.deleteDocument(MOCK_IMPORT_DOC_ID);
     expect(mockDocumentApi.listDocuments(MOCK_IMPORT_SUBJECT)).toEqual([]);
     await expect(mockDocumentApi.getDocument(MOCK_IMPORT_DOC_ID)).rejects.toMatchObject({ status: 404 });
-  });
-});
-
-describe("handler giả của môn học", () => {
-  it("tạo môn mới hiện trong danh sách; mã đã có ⇒ 409", async () => {
-    const created = await mockSubjectApi.createSubject({ subject_code: "MAU303", exam_format: "essay" });
-    expect(created).toMatchObject({ subject_code: "MAU303", display_name: "MAU303", exam_format: "essay", version: 1 });
-    const list = await mockApi.listSubjects?.();
-    expect(list?.map((subject) => subject.subject_code)).toEqual(["MAU101", "MAU202", "MAU303"]);
-    await expect(mockSubjectApi.createSubject({ subject_code: "MAU101" })).rejects.toMatchObject({
-      status: 409,
-      info: { kind: "duplicate" },
-    });
   });
 });
 

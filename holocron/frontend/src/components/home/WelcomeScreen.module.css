@@ -1,0 +1,36 @@
+.welcome {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-5);
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--sp-12) var(--sp-6) var(--sp-8);
+  text-align: center;
+}
+
+.title {
+  font-size: var(--fs-display);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-display);
+  letter-spacing: -0.03em;
+}
+
+.lead {
+  max-width: 54ch;
+  color: var(--ink-2);
+  font-size: 17px;
+  line-height: 27px;
+}
+
+.cta {
+  min-height: 52px;
+  margin-top: var(--sp-2);
+  padding: 0 30px;
+  font-size: var(--fs-body);
+}
+
+.caption {
+  color: var(--ink-2);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+}

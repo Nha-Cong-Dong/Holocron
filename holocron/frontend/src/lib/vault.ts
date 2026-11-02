@@ -373,6 +373,9 @@ export function parseVaultLocation(params: SearchParamsLike): VaultLocation {
   };
 }
 
+/** Hàm dựng địa chỉ cho liên kết trong danh sách tài liệu và màn xem lại trang; mặc định là `vaultHref`. */
+export type VaultHrefFor = (location: Partial<VaultLocation>) => string;
+
 /** Địa chỉ của màn Vault; chỉ ghi tham số có giá trị, `tab` mặc định (`documents`) không ghi. */
 export function vaultHref(location: Partial<VaultLocation>): string {
   const params = new URLSearchParams();

@@ -1,0 +1,24 @@
+/* Hình dáng thanh tiến độ; chuyển động ở motion.css (.m-progress, .m-progress-fill, .m-progress-tip). */
+.root {
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+/* Chừa chỗ cho ngôi sao ở hai đầu thanh. */
+.track {
+  height: 8px;
+  margin: 5px 9px;
+  border-radius: 4px;
+  background: var(--line);
+}
+
+.fill {
+  background: var(--accent);
+}
+
+.text {
+  color: var(--ink-2);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+}

@@ -152,7 +152,12 @@ describe("groupCapabilities", () => {
     // Lượt đọc thứ hai tắt là do cấu hình backend (`secondary_ocr_disabled`), không phải thiếu chương trình trên máy.
     expect(groups.install.map((c) => c.name)).toEqual(["ocr"]);
     expect(groups.configure.map((c) => c.name)).toEqual(["ocr_cross_check", "vlm"]);
-    expect(groups.not_implemented.map((c) => c.name)).toEqual(["essay_grading_llm"]);
+    expect(groups.not_implemented.map((c) => c.name)).toEqual([
+      "essay_grading_llm",
+      "concept_auto_proposal",
+      "line_review_queue",
+      "page_progress_eta",
+    ]);
   });
 
   it("chạy offline không có LLM: không khả năng nào ở nhóm dùng mạng", () => {

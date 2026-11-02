@@ -1,10 +1,11 @@
 {
   "name": "holocron-frontend",
-  "version": "0.1.0-alpha",
+  "version": "0.2.0-alpha",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:static": "node scripts/build-static.mjs",
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
@@ -13,6 +14,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@fontsource/lexend": "5.3.0",
+    "@fontsource/newsreader": "5.3.0",
     "next": "16.4.3",
     "react": "19.1.10",
     "react-dom": "19.1.10"

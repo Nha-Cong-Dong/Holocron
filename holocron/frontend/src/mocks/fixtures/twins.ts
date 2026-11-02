@@ -11,12 +11,12 @@
  */
 
 import type {
-  CitationPending,
   MisconceptionRefPending,
   TheoryTrace,
   TwinBatchPending,
   TwinQuestionPending,
 } from "@/types/contract-pending";
+import type { Citation } from "@/types/holocron";
 
 import { MOCK_BLUEPRINT_ID } from "./blueprints";
 import { chunkOf, DEFINITIONS } from "./chunks";
@@ -26,7 +26,7 @@ export const THEORY_MISCONCEPTIONS = ["THEORY_SAME_CHAPTER_CONCEPT", "THEORY_SAM
 
 const BLANK = "____";
 
-function citationFor(quote: string): CitationPending {
+function citationFor(quote: string): Citation {
   const source = chunkOf(quote);
   return { doc_id: source.doc_id, page_number: source.page_number, verbatim_quote: quote, chunk_id: source.chunk_id };
 }
@@ -204,6 +204,3 @@ export const EMPTY_TWIN_BATCH_FIXTURE: TwinBatchPending = {
   })),
   created_at: GENERATED_AT,
 };
-
-/** Thân lỗi 409 khi bộ đề dựa trên đề thi chưa được duyệt (§6.3); `detail` là chuỗi như backend hiện trả. */
-export const UNAPPROVED_SOURCE_BODY = { detail: "blueprint chứa item chưa approved hoặc non_cloneable: item_mau_01" };

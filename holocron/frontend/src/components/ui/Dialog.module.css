@@ -1,0 +1,48 @@
+/* Hình dáng hộp thoại; chuyển động ở motion.css (.m-dialog, .m-dialog::backdrop). */
+.dialog {
+  width: min(480px, calc(100vw - var(--sp-8)));
+  max-height: calc(100vh - var(--sp-12));
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xl);
+  background: var(--surface);
+  box-shadow: var(--sh-3);
+  color: var(--ink);
+}
+
+.dialog::backdrop {
+  background: rgba(8, 10, 30, 0.55);
+}
+
+.inner {
+  display: grid;
+  gap: var(--sp-4);
+  padding: var(--sp-6);
+}
+
+.title {
+  font-size: var(--fs-h2);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-h2);
+}
+
+.description {
+  margin-top: calc(var(--sp-2) * -1);
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+
+.body {
+  display: grid;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-3);
+  padding-top: var(--sp-2);
+}

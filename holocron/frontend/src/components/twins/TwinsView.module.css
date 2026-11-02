@@ -47,7 +47,7 @@
 .button {
   min-height: 36px;
   padding: var(--space-1) var(--space-4);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--accent-ink);
   border-radius: var(--radius);
   background: var(--accent);
   color: var(--accent-contrast);

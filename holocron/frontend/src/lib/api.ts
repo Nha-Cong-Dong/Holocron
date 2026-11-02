@@ -4,10 +4,12 @@
  * - Base URL và header token lấy từ `lib/config.ts` lúc gọi (chạy được dưới `next dev`, static export và vỏ desktop).
  * - Lỗi được phân loại tập trung ở `lib/errors.ts`; component đọc `ApiError.info` để chọn thông điệp và hành động.
  * - `api` gộp dữ liệu mẫu cho endpoint backend CHƯA có khi bật `NEXT_PUBLIC_HOLOCRON_MOCKS`; endpoint đã có luôn gọi
- *   backend thật (kế hoạch UI mục 3.2). `/v1/runtime` đã có nên luôn gọi backend; cờ mock chỉ bù field backend chưa trả.
+ *   backend thật (kế hoạch UI mục 3.2), gồm môn học, tạo bộ đề và sinh câu. `/v1/runtime` đã có nên luôn gọi backend;
+ *   cờ mock chỉ bù field backend chưa trả.
  * - Thân `/v1/runtime` được kiểm dạng ở đây (`normalizeRuntimeInfo`) trước khi tới component.
  */
 
+import { parseProposalJobList } from "@/lib/concept-proposals";
 import { apiBase, authHeaders, USE_MOCKS } from "@/lib/config";
 import {
   type DocumentImportOutcome,
@@ -25,6 +27,8 @@ import {
   classifyNetworkError,
   invalidResponseError,
 } from "@/lib/errors";
+import { type ImportResultView, type ProposalJobView, parseImportResult, parseProposalJob } from "@/lib/import-result";
+import { type ConceptPairList, parseConceptPair, parseConceptPairList } from "@/lib/pairs";
 import {
   type ChunkPageView,
   type EssayGradeView,
@@ -50,30 +54,29 @@ import {
   type SearchResultView,
   searchQueryString,
 } from "@/lib/vault";
-import {
-  fillRuntimeGaps,
-  mockApi,
-  mockDocumentApi,
-  mockPracticeBatch,
-  mockSubjectApi,
-  mockVaultSourceChunks,
-} from "@/mocks";
-import { isMockBlueprint, isMockDocument } from "@/mocks/store";
+import { fillRuntimeGaps, mockApi, mockDocumentApi } from "@/mocks";
+import { isConceptProposalMock, isConceptProposalPair, mockConceptProposalApi } from "@/mocks/concept-proposals";
+import { isImportResultMock, mockImportResultApi } from "@/mocks/import-result";
+import { isMockDocument } from "@/mocks/store";
+import type { EssayGradeRequest, ProposalJobCreate } from "@/types/contract-pending";
 import type {
   BlueprintCreate,
-  DocumentConfirmRequest,
-  EssayGradeRequest,
-  LineEdit,
-  PageConfirmRequest,
-  PageLinesPatch,
-  Subject,
-  SubjectCreate,
-} from "@/types/contract-pending";
-import type {
   CellPatch,
   ChunkLabelsPatch,
+  ConceptPair,
+  ConceptPairConfirm,
+  ConceptPairCreate,
+  ConceptPairReject,
+  ConceptPairStatus,
+  DocumentConfirmRequest,
   IngestionItem,
+  LineEdit,
   NonCloneableRequest,
+  PageConfirmRequest,
+  PageLinesPatch,
+  PageRestoreRequest,
+  Subject,
+  SubjectCreate,
   TablePatchRequest,
   TwinBatch,
   TwinBatchRequest,
@@ -150,14 +153,22 @@ function validated<T>(value: T | null): T {
 export interface ChunkQuery {
   /** Môn của blueprint sinh ra câu (ADR-006 mục 6), không phải môn đang chọn ở thanh bên. */
   subjectCode: string;
-  /**
-   * Blueprint sinh ra câu. Không gửi lên backend; chỉ dùng để chọn nguồn khi bật dữ liệu mẫu (câu của blueprint mẫu
-   * trích dẫn chunk mẫu).
-   */
-  blueprintId?: string;
   chapterCode: string | null;
   offset: number;
   limit: number;
+}
+
+/** Tham số của `GET /v1/vault/concept-pairs` (§6.6); `null` là không lọc. */
+export interface ConceptPairQuery {
+  subjectCode: string;
+  chapterCode: string | null;
+  status: ConceptPairStatus | null;
+}
+
+/** Phần sửa khi xác nhận cặp (§6.6); field `undefined` thì giữ nguyên ở backend. */
+export interface ConceptPairEdits {
+  term?: string;
+  definitionQuote?: string;
 }
 
 /** Dữ liệu của form nhập tài liệu, đã kiểm ở `lib/documents.ts`. */
@@ -174,7 +185,7 @@ export interface DocumentImportInput {
 export interface HolocronApi {
   /** `GET /v1/runtime` (§5.12), đã kiểm dạng. */
   getRuntime: () => Promise<RuntimeView>;
-  /** `GET /v1/subjects` (§6.8, đường dẫn còn đề xuất; chưa có ở backend), đã kiểm dạng từng phần tử. */
+  /** `GET /v1/subjects` (§6.8), đã kiểm dạng từng phần tử. */
   listSubjects: () => Promise<Subject[]>;
   /** `POST /v1/ingestion/upload` (§6.1). */
   uploadDocument: (file: File, topicKey: string, quantum: number | null) => Promise<UploadResponse>;
@@ -195,11 +206,11 @@ export interface HolocronApi {
     payload: TwinBatchRequest,
     idempotencyKey: string | null,
   ) => Promise<TwinBatch>;
-  /** `POST /v1/blueprints` (§6.7; chưa có ở backend), đã kiểm dạng. */
+  /** `POST /v1/blueprints` (§6.7): 201 `ExamBlueprint`, đã kiểm dạng. */
   createBlueprint: (payload: BlueprintCreate) => Promise<PracticeBlueprint>;
   /**
    * `POST /v1/blueprints/{id}/twins` (§6.3) cho màn luyện tập: cùng endpoint với `createTwinBatch` nhưng thân trả về
-   * được kiểm dạng thành từng câu (câu sai dạng bị bỏ và được đếm).
+   * (union `TwinQuestion | TheoryTwin`) được kiểm dạng thành từng câu (câu sai dạng bị bỏ và được đếm).
    */
   generatePracticeBatch: (
     blueprintId: string,
@@ -210,7 +221,7 @@ export interface HolocronApi {
   gradeEssay: (twinId: string, answerText: string) => Promise<EssayGradeView>;
   /** `GET /v1/vault/chunks` (§6.6) cho màn luyện tập (tìm văn bản nguồn của trích dẫn), đã kiểm dạng. */
   listVaultChunks: (query: ChunkQuery) => Promise<ChunkPageView>;
-  /** `POST /v1/subjects` (§6.8, đường dẫn còn đề xuất; chưa có ở backend), đã kiểm dạng. */
+  /** `POST /v1/subjects` (§6.8): 201 `Subject`, đã kiểm dạng. */
   createSubject: (payload: SubjectCreate) => Promise<Subject>;
   /** `GET /v1/documents?subject_code=` (§6.5), đã kiểm dạng; mới nhất trước. */
   listDocuments: (subjectCode: string) => Promise<DocumentSummaryView[]>;
@@ -230,8 +241,27 @@ export interface HolocronApi {
   ) => Promise<PageView>;
   /** `POST /v1/documents/{document_id}/pages/{page_number}/confirm` (§6.5; chưa có ở backend của nhánh). */
   confirmPage: (documentId: string, pageNumber: number, expectedVersion: number) => Promise<PageView>;
+  /**
+   * `POST /v1/documents/{document_id}/pages/{page_number}/restore` (§6.5, GĐ0 0D; đường dẫn là đề xuất suy ra, chờ
+   * duyệt): hoàn tác bỏ mềm, trả trang mới (`version` + 1). Gọi trên trang không bỏ mềm trả 200, không đổi gì.
+   */
+  restorePage: (documentId: string, pageNumber: number, expectedVersion: number) => Promise<PageView>;
   /** `POST /v1/documents/{document_id}/confirm` (§6.5; chưa có ở backend của nhánh): chỉ xác nhận trang `ok`. */
   confirmDocument: (documentId: string) => Promise<DocumentView>;
+  /**
+   * `GET /v1/documents/{document_id}` (§6.5) cho màn kết quả nhập: `DocumentImport` với số đếm, lý do và `proposal_job`
+   * (T1e; field chưa có ở `holocron.ts`), đã kiểm dạng với mặc định an toàn.
+   */
+  getImportResult: (documentId: string) => Promise<ImportResultView>;
+  /**
+   * `POST /v1/documents/{document_id}/confirm` (§6.5) cho nút "Chấp nhận tài liệu": cùng endpoint với
+   * `confirmDocument` nhưng trả cả field T1e (job vừa tạo). 409 ném `ApiError`; nơi gọi phân loại bằng cách đọc lại.
+   */
+  confirmImport: (documentId: string) => Promise<ImportResultView>;
+  /** `POST /v1/vault/concept-pairs/jobs` (§6.6): 202 `ProposalJob` (`trigger = "manual"`), đã kiểm dạng. */
+  startProposalJob: (subjectCode: string, documentId: string) => Promise<ProposalJobView>;
+  /** `GET /v1/vault/concept-pairs/jobs?subject_code=` (§6.6): job của môn, mới nhất trước; phần tử sai dạng bị bỏ. */
+  listProposalJobs: (subjectCode: string) => Promise<ProposalJobView[]>;
   /** `DELETE /v1/documents/{document_id}` (§6.5): 204. */
   deleteDocument: (documentId: string) => Promise<void>;
   /** `GET /v1/vault/chunks` (§6.6) cho màn Vault, đã kiểm dạng. */
@@ -243,6 +273,14 @@ export interface HolocronApi {
    * `expected_version` (dựng ở `lib/vault.ts`). Trả chunk đã kiểm dạng.
    */
   patchChunkLabels: (chunkId: string, change: ChunkLabelChange) => Promise<ChunkView>;
+  /** `GET /v1/vault/concept-pairs` (§6.6), đã kiểm dạng; giữ thứ tự backend `(chapter_code, term, pair_id)`. */
+  listConceptPairs: (query: ConceptPairQuery) => Promise<ConceptPairList>;
+  /** `POST /v1/vault/concept-pairs` (§6.6): 201, cặp `confirmed` với `proposed_by = "user"`. */
+  createConceptPair: (chunkId: string, term: string, definitionQuote: string) => Promise<ConceptPair>;
+  /** `POST /v1/vault/concept-pairs/{pair_id}/confirm` (§6.6): sửa (nếu có) rồi xác nhận. */
+  confirmConceptPair: (pairId: string, expectedVersion: number, edits: ConceptPairEdits) => Promise<ConceptPair>;
+  /** `POST /v1/vault/concept-pairs/{pair_id}/reject` (§6.6). */
+  rejectConceptPair: (pairId: string, expectedVersion: number) => Promise<ConceptPair>;
 }
 
 /**
@@ -418,12 +456,55 @@ export const realApi: HolocronApi = {
     return validated(parsePageExtraction(raw));
   },
 
+  restorePage: async (documentId, pageNumber, expectedVersion) => {
+    const payload: PageRestoreRequest = { editor_id: LOCAL_EDITOR_ID, expected_version: expectedVersion };
+    const raw = await request<unknown>(
+      `/v1/documents/${segment(documentId)}/pages/${pageNumber}/restore`,
+      jsonSpec("POST", payload),
+      { versioned: true, context: "document_review" },
+    );
+    return validated(parsePageExtraction(raw));
+  },
+
   confirmDocument: async (documentId) => {
     const payload: DocumentConfirmRequest = { editor_id: LOCAL_EDITOR_ID };
     const raw = await request<unknown>(`/v1/documents/${segment(documentId)}/confirm`, jsonSpec("POST", payload), {
       context: "document_confirm",
     });
     return validated(parseDocumentImport(raw));
+  },
+
+  getImportResult: async (documentId) => {
+    const raw = await request<unknown>(
+      `/v1/documents/${segment(documentId)}`,
+      { method: "GET" },
+      { context: "document_review" },
+    );
+    return validated(parseImportResult(raw));
+  },
+
+  confirmImport: async (documentId) => {
+    const payload: DocumentConfirmRequest = { editor_id: LOCAL_EDITOR_ID };
+    const raw = await request<unknown>(`/v1/documents/${segment(documentId)}/confirm`, jsonSpec("POST", payload), {
+      context: "document_confirm",
+    });
+    return validated(parseImportResult(raw));
+  },
+
+  startProposalJob: async (subjectCode, documentId) => {
+    const payload: ProposalJobCreate = { subject_code: subjectCode, document_id: documentId };
+    const raw = await request<unknown>("/v1/vault/concept-pairs/jobs", jsonSpec("POST", payload));
+    return validated(parseProposalJob(raw));
+  },
+
+  listProposalJobs: async (subjectCode) => {
+    const params = new URLSearchParams({ subject_code: subjectCode });
+    const raw = await request<unknown>(
+      `/v1/vault/concept-pairs/jobs?${params.toString()}`,
+      { method: "GET" },
+      { context: "pairs_list" },
+    );
+    return validated(parseProposalJobList(raw));
   },
 
   deleteDocument: async (documentId) => {
@@ -456,51 +537,152 @@ export const realApi: HolocronApi = {
     });
     return validated(parseKnowledgeChunk(raw));
   },
+
+  listConceptPairs: async (query) => {
+    const params = new URLSearchParams({ subject_code: query.subjectCode });
+    if (query.chapterCode !== null) params.set("chapter_code", query.chapterCode);
+    if (query.status !== null) params.set("status", query.status);
+    const raw = await request<unknown>(
+      `/v1/vault/concept-pairs?${params.toString()}`,
+      { method: "GET" },
+      { context: "pairs_list" },
+    );
+    return validated(parseConceptPairList(raw));
+  },
+
+  createConceptPair: async (chunkId, term, definitionQuote) => {
+    const payload: ConceptPairCreate = {
+      editor_id: LOCAL_EDITOR_ID,
+      chunk_id: chunkId,
+      term,
+      definition_quote: definitionQuote,
+    };
+    const raw = await request<unknown>("/v1/vault/concept-pairs", jsonSpec("POST", payload), {
+      context: "pair_create",
+    });
+    return validated(parseConceptPair(raw));
+  },
+
+  confirmConceptPair: async (pairId, expectedVersion, edits) => {
+    const payload: ConceptPairConfirm = { editor_id: LOCAL_EDITOR_ID, expected_version: expectedVersion };
+    if (edits.term !== undefined) payload.term = edits.term;
+    if (edits.definitionQuote !== undefined) payload.definition_quote = edits.definitionQuote;
+    const raw = await request<unknown>(
+      `/v1/vault/concept-pairs/${segment(pairId)}/confirm`,
+      jsonSpec("POST", payload),
+      { versioned: true, context: "pair_confirm" },
+    );
+    return validated(parseConceptPair(raw));
+  },
+
+  rejectConceptPair: async (pairId, expectedVersion) => {
+    const payload: ConceptPairReject = { editor_id: LOCAL_EDITOR_ID, expected_version: expectedVersion };
+    const raw = await request<unknown>(`/v1/vault/concept-pairs/${segment(pairId)}/reject`, jsonSpec("POST", payload), {
+      versioned: true,
+      context: "pair_reject",
+    });
+    return validated(parseConceptPair(raw));
+  },
 };
 
 /**
  * Bộ hàm gọi backend theo cờ mock. Bật mock: endpoint backend chưa có lấy từ `mockApi`; `/v1/runtime` vẫn gọi backend
- * thật (backend không chạy thì vẫn báo không kết nối), chỉ bù `capabilities` và `mock_extractor` còn thiếu.
+ * thật (backend không chạy thì vẫn báo không kết nối), chỉ bù `capabilities` và `mock_extractor` còn thiếu. Môn học,
+ * tạo bộ đề và sinh câu luôn gọi backend thật, kể cả khi bật mock.
  */
 export function createApi(useMocks: boolean): HolocronApi {
   if (!useMocks) return realApi;
   const documents = mockDocumentApi;
+  const result = mockImportResultApi;
+  const proposals = mockConceptProposalApi;
   return {
     ...realApi,
     ...mockApi,
-    ...mockSubjectApi,
     getRuntime: () => loadRuntime(fillRuntimeGaps),
-    // Sinh câu đã có ở backend (câu tính toán): chỉ blueprint do dữ liệu mẫu tạo mới lấy batch mẫu (M8).
-    generatePracticeBatch: (blueprintId, payload, idempotencyKey) =>
-      isMockBlueprint(blueprintId)
-        ? mockPracticeBatch()
-        : realApi.generatePracticeBatch(blueprintId, payload, idempotencyKey),
     // Các endpoint dưới đây đã có ở backend: chỉ bản ghi do dữ liệu mẫu tạo ra (chọn theo mã) mới lấy fixture.
-    // `GET /v1/vault/chunks`: chỉ câu của blueprint mẫu (chọn theo mã blueprint, không theo môn: môn mẫu vẫn có thể
-    // chứa tài liệu thật) tìm trích dẫn trong chunk mẫu.
-    listVaultChunks: (query) =>
-      query.blueprintId !== undefined && isMockBlueprint(query.blueprintId)
-        ? mockVaultSourceChunks()
-        : realApi.listVaultChunks(query),
-    // `GET /v1/documents`: danh sách thật (mới nhất trước), thêm tài liệu mẫu của môn ở cuối để mở được màn xem lại
-    // mẫu.
+    // `GET /v1/documents`: danh sách thật (mới nhất trước), thêm các tài liệu mẫu của môn ở cuối để mở được màn xem lại
+    // và màn kết quả nhập mẫu.
     listDocuments: async (subjectCode) => [
       ...(await realApi.listDocuments(subjectCode)),
       ...documents.listDocuments(subjectCode),
+      ...result.listDocuments(subjectCode),
+      ...proposals.listDocuments(subjectCode),
     ],
-    getDocument: (id) => (isMockDocument(id) ? documents.getDocument(id) : realApi.getDocument(id)),
+    getDocument: (id) =>
+      isImportResultMock(id)
+        ? result.getDocument(id)
+        : isMockDocument(id)
+          ? documents.getDocument(id)
+          : realApi.getDocument(id),
     getDocumentPage: (id, page) =>
-      isMockDocument(id) ? documents.getDocumentPage(id, page) : realApi.getDocumentPage(id, page),
-    deleteDocument: (id) => (isMockDocument(id) ? documents.deleteDocument(id) : realApi.deleteDocument(id)),
+      isImportResultMock(id)
+        ? result.getDocumentPage(id, page)
+        : isMockDocument(id)
+          ? documents.getDocumentPage(id, page)
+          : realApi.getDocumentPage(id, page),
+    deleteDocument: (id) =>
+      isImportResultMock(id)
+        ? result.deleteDocument(id)
+        : isMockDocument(id)
+          ? documents.deleteDocument(id)
+          : realApi.deleteDocument(id),
     // Sửa dòng và xác nhận (§6.5) chưa có ở backend của nhánh: tài liệu mẫu dùng fixture; tài liệu thật vẫn gọi
     // backend (backend chưa có endpoint thì trả 404 và giao diện báo backend chưa hỗ trợ).
     patchPageLines: (id, page, version, edits, appended) =>
-      isMockDocument(id)
-        ? documents.patchPageLines(id, page, version)
-        : realApi.patchPageLines(id, page, version, edits, appended),
+      isImportResultMock(id)
+        ? result.patchPageLines(id, page)
+        : isMockDocument(id)
+          ? documents.patchPageLines(id, page, version)
+          : realApi.patchPageLines(id, page, version, edits, appended),
     confirmPage: (id, page, version) =>
-      isMockDocument(id) ? documents.confirmPage(id, page, version) : realApi.confirmPage(id, page, version),
-    confirmDocument: (id) => (isMockDocument(id) ? documents.confirmDocument(id) : realApi.confirmDocument(id)),
+      isImportResultMock(id)
+        ? result.confirmPage(id, page, version)
+        : isMockDocument(id)
+          ? documents.confirmPage(id, page, version)
+          : realApi.confirmPage(id, page, version),
+    restorePage: (id, page, version) =>
+      isImportResultMock(id)
+        ? result.restorePage(id, page, version)
+        : isMockDocument(id)
+          ? documents.restorePage(id, page, version)
+          : realApi.restorePage(id, page, version),
+    confirmDocument: (id) =>
+      isImportResultMock(id)
+        ? result.confirmDocument(id)
+        : isMockDocument(id)
+          ? documents.confirmDocument(id)
+          : realApi.confirmDocument(id),
+    // Màn kết quả nhập (T1e, T1b): backend chưa trả field mới nên tài liệu mẫu riêng dùng nhà giả; mọi tài liệu khác
+    // gọi backend thật (backend cũ không trả field mới thì màn vẫn dựng với mặc định an toàn).
+    getImportResult: (id) => (isImportResultMock(id) ? result.getImportResult(id) : realApi.getImportResult(id)),
+    confirmImport: (id) => (isImportResultMock(id) ? result.confirmImport(id) : realApi.confirmImport(id)),
+    startProposalJob: (subjectCode, id) =>
+      isImportResultMock(id)
+        ? result.startProposalJob(subjectCode, id)
+        : isConceptProposalMock(subjectCode)
+          ? proposals.startProposalJob(subjectCode)
+          : realApi.startProposalJob(subjectCode, id),
+    // Màn khái niệm với cặp đề xuất (T2.3): chỉ môn mẫu riêng dùng nhà giả; mọi môn khác gọi backend thật.
+    listProposalJobs: (subjectCode) =>
+      isConceptProposalMock(subjectCode)
+        ? proposals.listProposalJobs(subjectCode)
+        : realApi.listProposalJobs(subjectCode),
+    browseVaultChunks: (filter) =>
+      isConceptProposalMock(filter.subjectCode)
+        ? proposals.browseVaultChunks(filter)
+        : realApi.browseVaultChunks(filter),
+    listConceptPairs: (query) =>
+      isConceptProposalMock(query.subjectCode)
+        ? proposals.listConceptPairs(query.subjectCode)
+        : realApi.listConceptPairs(query),
+    confirmConceptPair: (pairId, version, edits) =>
+      isConceptProposalPair(pairId)
+        ? proposals.confirmConceptPair(pairId, version, edits)
+        : realApi.confirmConceptPair(pairId, version, edits),
+    rejectConceptPair: (pairId, version) =>
+      isConceptProposalPair(pairId)
+        ? proposals.rejectConceptPair(pairId, version)
+        : realApi.rejectConceptPair(pairId, version),
   };
 }
 

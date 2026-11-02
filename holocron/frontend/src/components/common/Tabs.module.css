@@ -1,0 +1,66 @@
+/* Hàng tab của trang môn (design-handoff/README.md màn 3). Mỗi tab rộng cố định để viên nền trượt đúng một bước
+   bằng `translate: <chỉ số * 100>% 0`. */
+.root {
+  --tab-width: 168px;
+
+  display: grid;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.list {
+  position: relative;
+  display: flex;
+  width: max-content;
+  max-width: 100%;
+  padding: 4px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+}
+
+/* `hideList` (làm bài toàn màn): `display: flex` ở trên đè luật `[hidden]` của trình duyệt nên ẩn tường minh. */
+.list[hidden] {
+  display: none;
+}
+
+.tab {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  width: var(--tab-width);
+  min-height: var(--tap-min);
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: var(--r-pill);
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: var(--fs-body);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--ink);
+}
+
+.tab[aria-selected="true"] {
+  color: var(--accent-ink);
+  font-weight: var(--fw-semibold);
+}
+
+/* Viên nền nằm trong phần đệm 4px của hàng tab. */
+.list .pill {
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: var(--tab-width);
+}
+
+.panel {
+  min-width: 0;
+}

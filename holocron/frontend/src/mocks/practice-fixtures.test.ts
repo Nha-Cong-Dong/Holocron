@@ -7,7 +7,8 @@
 import { describe, expect, it } from "vitest";
 
 import { parseBlueprint, parsePracticeBatch } from "@/lib/practice-data";
-import type { CitationPending, OptionKeyPending, TwinQuestionPending } from "@/types/contract-pending";
+import type { TwinQuestionPending } from "@/types/contract-pending";
+import type { Citation as CitationPending, OptionKey as OptionKeyPending } from "@/types/holocron";
 
 import { BLUEPRINT_FIXTURE, MOCK_BLUEPRINT_ID } from "./fixtures/blueprints";
 import { CHUNK_FIXTURES } from "./fixtures/chunks";
@@ -17,10 +18,8 @@ import {
   THEORY_MISCONCEPTIONS,
   THEORY_TICKET_REASON,
   TWIN_BATCH_FIXTURE,
-  UNAPPROVED_SOURCE_BODY,
 } from "./fixtures/twins";
-import { mockApi, mockPracticeBatch } from "./index";
-import { isMockBlueprint, practiceScenarioFromSearch } from "./store";
+import { mockApi } from "./index";
 
 const OPTION_KEYS: readonly OptionKeyPending[] = ["A", "B", "C", "D"];
 
@@ -192,13 +191,6 @@ describe("EssayGradeResult mẫu (§5.14)", () => {
 });
 
 describe("handler giả của màn luyện tập", () => {
-  it("tạo bộ đề ghi nhớ mã blueprint mẫu để sinh câu bằng dữ liệu mẫu", async () => {
-    const blueprint = await mockApi.createBlueprint?.({ subject_code: "MAU101", theory_slots: [] });
-    expect(blueprint?.blueprintId).toBe(MOCK_BLUEPRINT_ID);
-    expect(isMockBlueprint(MOCK_BLUEPRINT_ID)).toBe(true);
-    expect(isMockBlueprint("bp_that_tu_backend")).toBe(false);
-  });
-
   it("chấm tự luận chọn kết quả theo twin_id, không theo câu trả lời; twin lạ là không tìm thấy", async () => {
     const [twinId] = Object.keys(ESSAY_GRADE_FIXTURES);
     if (twinId === undefined) throw new Error("thiếu kết quả mẫu");
@@ -206,19 +198,5 @@ describe("handler giả của màn luyện tập", () => {
     const second = await mockApi.gradeEssay?.(twinId, "một câu trả lời khác hẳn");
     expect(first).toEqual(second);
     await expect(mockApi.gradeEssay?.("twin_khong_co", "x")).rejects.toMatchObject({ info: { kind: "not_found" } });
-  });
-
-  it("kịch bản luyện tập chọn theo query; mặc định là batch đủ dạng câu", async () => {
-    expect(practiceScenarioFromSearch("?mock_practice=empty")).toBe("empty");
-    expect(practiceScenarioFromSearch("?mock_practice=unapproved")).toBe("unapproved");
-    expect(practiceScenarioFromSearch("?mock_practice=la")).toBe("normal");
-    const batch = await mockPracticeBatch();
-    expect(batch.questions).toHaveLength(TWIN_BATCH_FIXTURE.twins.length);
-    expect(UNAPPROVED_SOURCE_BODY.detail.length).toBeGreaterThan(0);
-  });
-
-  it("chunk mẫu đi qua kiểm dạng nguyên vẹn", async () => {
-    const page = await mockApi.listVaultChunks?.({ subjectCode: "MAU101", chapterCode: "ch1", offset: 0, limit: 200 });
-    expect(page?.chunks.map((c) => c.rawText)).toEqual(CHUNK_FIXTURES.map((c) => c.raw_text));
   });
 });

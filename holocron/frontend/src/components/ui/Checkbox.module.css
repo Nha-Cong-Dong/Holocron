@@ -1,0 +1,87 @@
+/* Hình dáng ô đánh dấu; chuyển động ở motion.css (.m-check, .m-check-box, .m-check-tick, .m-check-burst). */
+.root {
+  display: inline-grid;
+  justify-items: start;
+}
+
+.check {
+  position: relative;
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: var(--tap-min);
+  padding: 10px 0;
+  color: var(--ink);
+  font-size: var(--fs-body);
+  cursor: pointer;
+}
+
+.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Input thật phủ lên ô vẽ: bấm và focus đi thẳng vào input. */
+.input {
+  position: absolute;
+  top: 10px;
+  left: 0;
+  width: 24px;
+  height: 24px;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+
+.box {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--surface);
+}
+
+.input:focus-visible + .box {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.input:checked + .box {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.tick {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.text {
+  display: grid;
+  gap: 2px;
+  line-height: 24px;
+}
+
+/* Gợi ý thẳng hàng với chữ nhãn (ô 24 px + khoảng cách 10 px). */
+.hint {
+  margin: -6px 0 var(--sp-2) 34px;
+  color: var(--ink-2);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+}
+
+/* Hạt sao bắn từ tâm ô (ô nằm ở dòng đầu của nhãn, kể cả khi nhãn nhiều dòng). */
+.check :global(.m-check-burst) {
+  top: 22px;
+}

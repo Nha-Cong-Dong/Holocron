@@ -7,6 +7,7 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 
 ### 🚀 Tính năng mới
 - Bộ nhập PDF đọc metadata font (ADR-010 mục 3, 5, 15; spec §5.7, §5.15; không thêm dependency): bảng font mỗi trang (`RawFont`: tên đã làm sạch, đậm/nghiêng/đơn cách kèm nguồn weight/cờ/tên), cỡ chữ hiệu dụng theo ma trận, số đếm độc lập (`pdfium_nonws_total`, `hidden_nonws_dropped`) và `PageGeometry` kèm `reader_settings_sha256` (sha256 của toàn bộ `PdfReaderConfig`, gồm cả ba tập token tên font).
+- Bộ dựng khối cho trang có lớp chữ, thuần hình học (ADR-010 mục 2, 3, 5, 6, 7, 11, 12, 13, 15; spec §5.15; không thêm dependency; chưa nối vào luồng nhập — X09): model `Block`/`PageBlocks`/`ExtractionLedger` ở `domain/blocks.py` (`LAYOUT_VERSION = 1`, `LAYOUT_HASH_REGISTRY`); dòng → khối theo cỡ/đậm, thụt lề, khoảng cách dọc, glyph bullet; XY-cut tất định có trần độ sâu/số nút; sổ bảo toàn ký tự (basis `pdfium` và `confirmed_lines`), lệch ⇒ `layout_failed`; số trang hai bước cấp tài liệu (ứng viên phải khớp mẫu số trang của ngôn ngữ); mẫu ngôn ngữ ở `infrastructure/lang/{vi,en}.toml`; trần tất định số phép so cặp chồng lấn mỗi trang; `scripts/export_blocks.py` xuất định dạng `--pred` của bộ đo X03.
 
 ## [0.2.0-alpha] - 2026-10-28
 

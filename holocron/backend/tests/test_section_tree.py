@@ -382,3 +382,54 @@ def test_suffix_stripped_by_position_on_normalized_text() -> None:
     assert [(s.title, s.flags) for s in tree.sections[1:]] == [("Straße", ["continued_across_pages"])]
     tree = build([[head("Alpha"), para()], [head("ALPHA   (Tiếp)"), para()]])
     assert by_title(tree, "Alpha").flags == ["continued_across_pages"]
+
+
+def test_keyword_numbering_decides_level_even_when_sizes_close() -> None:
+    tree = build([[head("Chương 2", 20.0), para(), head("Section 2.1", 18.5), para(), head("Phần III", 18.5)]])
+    assert [(s.title, s.level, s.flags) for s in tree.sections[1:]] == [
+        ("Chương 2", 1, []),
+        ("Section 2.1", 2, []),
+        ("Phần III", 1, []),
+    ]
+    assert parent_of(tree, by_title(tree, "Section 2.1")).title == "Chương 2"
+
+
+def test_keyword_numbering_without_size_is_not_uncertain() -> None:
+    context, blocks = make_page(1, [head("Chương 2"), para(), head("Section 2.1"), para()])
+    stripped = [b.model_copy(update={"line_refs": []}) for b in blocks]
+    tree = build_section_tree(DOC_ID, None, None, [(context, stripped)], LANG)
+    assert [(s.level, s.flags) for s in tree.sections[1:]] == [(1, []), (2, [])]
+    assert parent_of(tree, by_title(tree, "Section 2.1")).title == "Chương 2"
+
+
+def test_unnumbered_heading_in_close_cluster_is_uncertain_beside_numbered() -> None:
+    tree = build([[head("Chương 2", 20.0), para(), para(), head("Chi tiet", 18.5), para()]])
+    assert by_title(tree, "Chương 2").flags == []
+    assert "level_uncertain" in by_title(tree, "Chi tiet").flags
+
+
+def test_keyword_dotted_number_keeps_depth_level() -> None:
+    tree = build([[head("Section 1.2", 20.0), para()]])
+    assert by_title(tree, "Section 1.2").level == 2
+
+
+def test_roman_pattern_is_standard_roman_only() -> None:
+    from holocron_core.services.section_tree import _Numbering
+
+    numbering = _Numbering(SectionTreeSettings(), LANG)
+    assert numbering.classify("IV. Bon") == ("roman", 1)
+    assert numbering.classify("C. Ket luan")[0] is None
+    assert numbering.classify("Chapter IV") == ("keyword", 1)
+    assert numbering.classify("Part C")[0] is None
+
+
+def test_strip_suffix_branches() -> None:
+    from holocron_core.services.section_tree import _strip_suffix
+
+    assert _strip_suffix("Lap (tiep)", ["(tiep)"]) == ("Lap", True)
+    assert _strip_suffix("Lap", ["(tiep)"]) == ("Lap", False)
+    # "ß" casefold thành "ss": hậu tố "s" chỉ khớp một phần ký tự ⇒ không cắt; "ss" khớp trọn ký tự ⇒ cắt
+    assert _strip_suffix("Maß", ["s"]) == ("Maß", False)
+    assert _strip_suffix("Maß", ["ss"]) == ("Ma", True)
+    assert _strip_suffix("Maß", ["ß"]) == ("Ma", True)
+    assert _strip_suffix("Ma (TIẾP)", ["(tiếp)"]) == ("Ma", True)

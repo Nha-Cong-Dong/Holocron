@@ -16,7 +16,9 @@ Quy tắc chốt:
   mọi trang của tài liệu; các mục khác chỉ bao trang của khối của chính nó.
 - Tiêu đề rỗng sau khi bỏ hậu tố ⇒ `title = None` + `untitled`; không đoán tên.
 - Tiêu đề mở đầu bằng từ khoá của `LangPatterns.heading_keywords` + số (`Chương 2`, `Section 1.2`) có cấp quyết được
-  bằng số (độ sâu số chấm, La Mã = 1); từ khoá nằm trong config ngôn ngữ, không trong code.
+  bằng số (độ sâu số chấm; số đơn hay La Mã = 1), KHÔNG cờ kể cả khi cụm cỡ chữ gần nhau (ADR-010: cờ chỉ khi cấp không
+  quyết được từ cỡ chữ, độ đậm HAY đánh số). La Mã chuẩn 1-39 (I/V/X); chữ `C`/`L` đơn không phải La Mã (`C. Kết luận`,
+  `Part C` không đánh số). Từ khoá nằm trong config ngôn ngữ, không trong code.
 - `level_uncertain` chỉ khi cấp KHÔNG quyết được bằng đánh số (số trên tiêu đề, `a)`, hay cụm kiểu có tiêu đề đánh số) và
   hai cụm cỡ quá gần.
 - `section_id` = `sec_` + sha256[:16] của JSON chuẩn hoá `["section", document_id, path]`, `path` = các cặp
@@ -42,10 +44,12 @@ from ..domain.schemas import StrictModel
 from ..infrastructure.lang_patterns import LangPatterns
 from .block_pipeline import PageContext
 
-SECTION_TREE_STAGE_VERSION = 1
+SECTION_TREE_STAGE_VERSION = 2
 MAX_SECTION_TITLE_CHARS = 300
 SECTION_FLAG_ORDER: tuple[SectionFlag, ...] = ("untitled", "continued_across_pages", "level_uncertain")
 _MAX_LEVEL = 6
+# La Mã chuẩn 1-39 (I, V, X): không nhận L/C để "C. Kết luận", "Part C" không bị coi là La Mã.
+_ROMAN = r"(?=[IVX])X{0,3}(?:IX|IV|V?I{0,3})"
 
 NumberKind = Literal["arabic", "roman", "letter", "keyword"]
 PathItem = tuple[str, int]
@@ -58,7 +62,7 @@ class SectionTreeSettings(BaseModel):
 
     # Ba mẫu đánh số đầu tiêu đề; nhóm có tên `num` là phần số. Chỉ chữ số, La Mã, chữ cái đơn.
     arabic_pattern: str = r"^(?P<num>\d{1,2}(?:\.\d{1,2}){0,5})[.)]?\s+\S"
-    roman_pattern: str = r"^(?P<num>[IVXLC]{1,6})[.)]\s+\S"
+    roman_pattern: str = rf"^(?P<num>{_ROMAN})[.)]\s+\S"
     letter_pattern: str = r"^(?P<num>[a-z])\)\s+\S"
     # Hai cỡ chữ lệch tương đối ≤ ngưỡng này (so với cỡ lớn nhất của cụm) thuộc cùng một cụm.
     cluster_tol: float = Field(default=0.04, ge=0.0)
@@ -188,9 +192,7 @@ class _Numbering:
         words = sorted({_collapse(k) for k in lang.heading_keywords if _collapse(k)}, key=lambda k: (-len(k), k))
         if words:
             alternatives = "|".join(re.escape(w) for w in words)
-            self.keyword = re.compile(
-                rf"^(?i:{alternatives})\s+(?P<num>\d{{1,2}}(?:\.\d{{1,2}}){{0,5}}|[IVXLC]{{1,6}})\b"
-            )
+            self.keyword = re.compile(rf"^(?i:{alternatives})\s+(?P<num>\d{{1,2}}(?:\.\d{{1,2}}){{0,5}}|{_ROMAN})\b")
         self.arabic = re.compile(settings.arabic_pattern)
         self.roman = re.compile(settings.roman_pattern)
         self.letter = re.compile(settings.letter_pattern)
@@ -209,14 +211,22 @@ class _Numbering:
 
 
 def _strip_suffix(text: str, suffixes: Sequence[str]) -> tuple[str, bool]:
-    """Bỏ hậu tố nối trang; vị trí cắt tính trên chính `text` (đã chuẩn hoá), không trên bản casefold."""
+    """Bỏ hậu tố nối trang; vị trí cắt tính trên chính `text` (đã chuẩn hoá), không trên bản casefold.
+
+    Duyệt một lần từ cuối, cộng độ dài casefold của từng ký tự (ký tự như "ß" đổi độ dài); không rơi đúng ranh giới
+    ký tự thì không cắt.
+    """
     folded = text.casefold()
     for suffix in sorted(suffixes, key=len, reverse=True):
         needle = _collapse(suffix).casefold()
         if needle and folded.endswith(needle):
+            remaining = len(needle)
             for cut in range(len(text) - 1, -1, -1):
-                if text[cut:].casefold() == needle:
+                remaining -= len(text[cut].casefold())
+                if remaining == 0:
                     return text[:cut].strip(), True
+                if remaining < 0:
+                    break
     return text, False
 
 

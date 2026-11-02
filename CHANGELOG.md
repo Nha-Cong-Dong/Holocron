@@ -10,6 +10,9 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 - Bộ dựng khối cho trang có lớp chữ, thuần hình học (ADR-010 mục 2, 3, 5, 6, 7, 11, 12, 13, 15; spec §5.15; không thêm dependency; chưa nối vào luồng nhập — X09): model `Block`/`PageBlocks`/`ExtractionLedger` ở `domain/blocks.py` (`LAYOUT_VERSION = 1`, `LAYOUT_HASH_REGISTRY`); dòng → khối theo cỡ/đậm, thụt lề, khoảng cách dọc, glyph bullet; XY-cut tất định có trần độ sâu/số nút; sổ bảo toàn ký tự (basis `pdfium` và `confirmed_lines`), lệch ⇒ `layout_failed`; số trang hai bước cấp tài liệu (ứng viên phải khớp mẫu số trang của ngôn ngữ); mẫu ngôn ngữ ở `infrastructure/lang/{vi,en}.toml`; trần tất định số phép so cặp chồng lấn mỗi trang; `scripts/export_blocks.py` xuất định dạng `--pred` của bộ đo X03.
 - Cây tiêu đề theo tài liệu (`build_section_tree`, ADR-010 mục 4, 15; spec §5.15; chưa bật trong pipeline): cấp tiêu đề từ phân cụm cỡ chữ/độ đậm toàn tài liệu kết hợp đánh số đa cấp và từ khoá tiêu đề theo ngôn ngữ; nối trang theo tiêu đề lặp và hậu tố "(tiếp)"/"(cont.)"; `section_id` tất định theo ADR-010; cờ `untitled`, `level_uncertain`, `continued_across_pages` thay vì đoán.
 
+### 🐛 Sửa lỗi
+- Cây tiêu đề: La Mã chuẩn 1-39 nên `C. Kết luận`, `Part C` không bị coi là đánh số La Mã; `_strip_suffix` tuyến tính và đúng ranh giới ký tự khi casefold đổi độ dài; tiêu đề có từ khoá + số giữ cấp theo đánh số, không cờ; `SECTION_TREE_STAGE_VERSION` = 2.
+
 ## [0.2.0-alpha] - 2026-10-28
 
 ### 🚀 Tính năng mới

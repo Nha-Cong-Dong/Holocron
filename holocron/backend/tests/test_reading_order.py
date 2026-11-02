@@ -11,6 +11,7 @@ from holocron_core.services.reading_order import (
     XyCutLimitError,
     XyCutSettings,
     assign_block_ids,
+    block_id_for,
     order_positions,
     xy_cut,
 )
@@ -126,3 +127,14 @@ def test_fallback_ids_for_blocks_without_refs_are_unique_and_stable() -> None:
     assert {b.block_id for b in second} == set(ids)
     other_page = assign_block_ids(DOC_ID, 2, blocks[:1], index)
     assert other_page[0].block_id not in ids
+
+
+def test_block_id_does_not_depend_on_line_ref_order() -> None:
+    geo = geometry([geo_line("alpha beta gamma", 0.1, 0.1)])
+    index = SourceIndex(geo, extraction_for(geo))
+    refs = [{"kind": "word", "line_idx": 0, "word_idx": i} for i in range(3)]
+    forward = _block("paragraph", (0.1, 0.1, 0.4, 0.112), text="alpha beta gamma", line_refs=refs)
+    backward = _block("paragraph", (0.1, 0.1, 0.4, 0.112), text="alpha beta gamma", line_refs=list(reversed(refs)))
+    first = block_id_for(DOC_ID, 1, forward, index)
+    assert first is not None and first == block_id_for(DOC_ID, 1, backward, index)
+    assert first != block_id_for(DOC_ID, 2, forward, index)

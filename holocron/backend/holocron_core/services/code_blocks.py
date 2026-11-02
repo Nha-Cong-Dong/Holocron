@@ -9,7 +9,8 @@ Văn bản khối (mục 7): dòng nối bằng `\\n`; số dấu cách đầu d
 từ = max(1, round(khoảng cách / bề rộng ký tự)); bề rộng ký tự = trung vị của (x1 − x0) / số code point NFC của từ trên
 các từ đơn cách có hộp. Khoảng trắng tái dựng không vào ledger. Không chắc (lẫn font, từ không hộp, bước x không đều,
 dòng chồng, khoảng cách bị chặn trần) ⇒ vẫn là `code` kèm cờ `code_layout_uncertain`; không đủ tín hiệu ⇒ `None`
-(giữ khối cũ). Làm tròn: `floor(v + 0.5)` (tất định, không làm tròn chẵn).
+(giữ khối cũ). Từ không hộp đứng sau từ có hộp liền trước nó theo luồng PDFium, khối mang thêm cờ
+`reading_order_uncertain`. Làm tròn: `floor(v + 0.5)` (tất định, không làm tròn chẵn).
 """
 
 from __future__ import annotations
@@ -57,9 +58,13 @@ class CodeBlockSettings(BaseModel):
     row_overlap_max: float = Field(default=0.5, ge=0.0, le=1.0)
     # Hai từ chồng ngang quá hệ số này × bề rộng ký tự ⇒ dòng chồng.
     word_overlap_max_chars: float = Field(default=0.5, ge=0.0)
-    # Gom các khối đơn cách cạnh nhau (stage): nới hộp theo dọc/ngang × chiều cao từ.
+    # Gom các khối đơn cách cạnh nhau (stage): hai khối chỉ gộp khi hộp nới theo dọc `merge_y_factor` × chiều cao từ
+    # chạm nhau VÀ khoảng trống ngang giữa hai hộp ≤ `merge_x_factor` × chiều cao từ (hai listing đặt cạnh nhau cách
+    # xa hơn thì là hai khối riêng).
     merge_y_factor: float = Field(default=1.5, ge=0.0)
-    merge_x_factor: float = Field(default=12.0, ge=0.0)
+    merge_x_factor: float = Field(default=6.0, ge=0.0)
+    # Trần số khối ứng viên gộp trên một trang; vượt ⇒ bỏ qua gộp, giữ khối cũ kèm cờ (chặn O(n²)).
+    max_merge_candidates: int = Field(default=200, ge=1)
     # Trần số dấu cách tái dựng một chỗ (vượt ⇒ cắt cụt kèm cờ).
     max_spaces: int = Field(default=120, ge=1)
 
@@ -118,38 +123,45 @@ def _yc(box: BBox) -> float:
 
 
 def _rows(words: Sequence[_W], settings: CodeBlockSettings, height: float) -> list[list[_W]]:
-    """Chia từ thành hàng theo tâm dọc (từ có hộp). Từ không hộp theo hàng của từ có hộp cùng dòng thô, nếu dòng đó
-    không có từ có hộp thì tạo hàng riêng đặt cuối."""
+    """Chia từ thành hàng theo tâm dọc (từ có hộp). Từ không hộp theo luồng PDFium (ADR-010 mục 7, 11): nằm cùng hàng
+    với từ có hộp liền trước nó trong dòng thô (đứng đầu dòng thô: hàng trên cùng của dòng đó); dòng thô không có từ có
+    hộp nào thành hàng riêng đặt ngay sau hàng của từ có hộp liền trước nó theo luồng (không có thì đứng đầu)."""
     boxed = sorted(
-        (w for w in words if w.box is not None),
-        key=lambda w: (_yc(w.box) if w.box else 0.0, w.box[0] if w.box else 0.0),
+        ((w, w.box) for w in words if w.box is not None),
+        key=lambda item: (_yc(item[1]), item[1][0]),
     )
     tol = settings.row_tol_ratio * height
     rows: list[list[_W]] = []
     centers: list[float] = []
-    for w in boxed:
-        if w.box is None:
-            continue
-        if rows and abs(_yc(w.box) - centers[-1]) <= tol:
+    row_of: dict[tuple[int, int], int] = {}
+    for w, box in boxed:
+        if rows and abs(_yc(box) - centers[-1]) <= tol:
             rows[-1].append(w)
             centers[-1] = statistics.fmean(_yc(item.box) for item in rows[-1] if item.box)
         else:
             rows.append([w])
-            centers.append(_yc(w.box))
-    row_of_line: dict[int, int] = {}
-    for position, row in enumerate(rows):
-        for w in row:
-            row_of_line.setdefault(w.ref.line_idx, position)
-    tail: dict[int, list[_W]] = {}
-    for w in words:
-        if w.box is not None:
-            continue
-        target = row_of_line.get(w.ref.line_idx)
-        if target is not None:
-            rows[target].append(w)
+            centers.append(_yc(box))
+        row_of[(w.ref.line_idx, w.ref.word_idx)] = len(rows) - 1
+    top_row_of_line: dict[int, int] = {}
+    for (line_idx, _), position in row_of.items():
+        top_row_of_line[line_idx] = min(top_row_of_line.get(line_idx, position), position)
+    prev_row_in_line: dict[int, int] = {}
+    last_row = -1
+    boxless_lines: dict[tuple[int, int], list[_W]] = {}
+    for w in sorted(words, key=lambda item: (item.ref.line_idx, item.ref.word_idx)):
+        line_idx = w.ref.line_idx
+        found = row_of.get((line_idx, w.ref.word_idx))
+        if found is not None:
+            prev_row_in_line[line_idx] = last_row = found
+        elif line_idx in top_row_of_line:
+            rows[prev_row_in_line.get(line_idx, top_row_of_line[line_idx])].append(w)
         else:
-            tail.setdefault(w.ref.line_idx, []).append(w)
-    return rows + list(tail.values())
+            boxless_lines.setdefault((last_row, line_idx), []).append(w)
+    out: list[list[_W]] = [rest for (anchor, _), rest in boxless_lines.items() if anchor == -1]
+    for position, row in enumerate(rows):
+        out.append(row)
+        out.extend(rest for (anchor, _), rest in boxless_lines.items() if anchor == position)
+    return out
 
 
 def _order_row(row: Sequence[_W]) -> list[_W]:
@@ -158,11 +170,14 @@ def _order_row(row: Sequence[_W]) -> list[_W]:
     def key(w: _W) -> tuple[float, int, int]:
         if w.box is not None:
             return (w.box[0], w.ref.line_idx, w.ref.word_idx)
-        anchor = -math.inf
+        anchor_x: float | None = None
+        anchor_idx = -1
         for other in row:
-            if other.box is not None and other.ref.line_idx == w.ref.line_idx and other.ref.word_idx < w.ref.word_idx:
-                anchor = max(anchor, other.box[0])
-        return (anchor, w.ref.line_idx, w.ref.word_idx)
+            if other.box is None or other.ref.line_idx != w.ref.line_idx:
+                continue
+            if anchor_idx < other.ref.word_idx < w.ref.word_idx:
+                anchor_idx, anchor_x = other.ref.word_idx, other.box[0]
+        return (-math.inf if anchor_x is None else anchor_x, w.ref.line_idx, w.ref.word_idx)
 
     return sorted(row, key=key)
 
@@ -188,6 +203,8 @@ def _build(
     flags: set[BlockFlag] = set()
     if uniform < settings.flag_uniform_ratio or any(not w.mono for w in words) or len(boxes) < len(words):
         flags.add(_UNCERTAIN)
+    if len(boxes) < len(words):
+        flags.add("reading_order_uncertain")
     rows = _rows(words, settings, height)
     x_left = min(b[0] for b in boxes)
     lines: list[str] = []
@@ -254,8 +271,12 @@ def build_code_block(
     context: PageContext, line_refs: Sequence[SourceRef], settings: CodeBlockSettings = DEFAULT_CODE_SETTINGS
 ) -> Block | None:
     """Khối `code` từ tập tham chiếu từ, hoặc `None` khi không nhận (tham chiếu không phải `WordRef`, không giải được,
-    đa số ký tự không phải font đơn cách, không đủ từ đo được hoặc bước x quá lệch). Ô "C" của ma trận `set_type`."""
-    return _build(context, SourceIndex(context.geometry, context.extraction), line_refs, settings)
+    đa số ký tự không phải font đơn cách, không đủ từ đo được, bước x quá lệch hoặc văn bản dài quá
+    `MAX_BLOCK_TEXT_CHARS`). Ô "C" của ma trận `set_type`; stage vẫn báo `LAYOUT_FAILED` khi khối vượt trần (mục 7)."""
+    try:
+        return _build(context, SourceIndex(context.geometry, context.extraction), line_refs, settings)
+    except LayoutBuildError:
+        return None
 
 
 class CodeBlockStage:
@@ -273,24 +294,23 @@ class CodeBlockStage:
         settings = self.settings
         index = SourceIndex(context.geometry, context.extraction)
         grown: dict[int, BBox] = {}
+        heights: dict[int, float] = {}
         for position, block in enumerate(blocks):
             if block.type not in _MERGEABLE_TYPES or block.bbox is None:
                 continue
             words = _resolve(index, context, block.line_refs)
             if words is None or _mono_ratio(words) < settings.min_monospace_ratio:
                 continue
-            heights = [w.box[3] - w.box[1] for w in words if w.box is not None]
-            if not heights:
+            word_heights = [w.box[3] - w.box[1] for w in words if w.box is not None]
+            if not word_heights:
                 continue
-            height = statistics.median(heights)
+            height = statistics.median(word_heights)
             x0, y0, x1, y1 = block.bbox
-            grown[position] = (
-                x0 - settings.merge_x_factor * height,
-                y0 - settings.merge_y_factor * height,
-                x1 + settings.merge_x_factor * height,
-                y1 + settings.merge_y_factor * height,
-            )
+            heights[position] = height
+            grown[position] = (x0, y0 - settings.merge_y_factor * height, x1, y1 + settings.merge_y_factor * height)
         candidates = list(grown)
+        if len(candidates) > settings.max_merge_candidates:
+            return [_flag_uncertain(block) if p in grown else block for p, block in enumerate(blocks)]
         parent = {p: p for p in candidates}
 
         def find(p: int) -> int:
@@ -301,8 +321,7 @@ class CodeBlockStage:
 
         for i, a in enumerate(candidates):
             for b in candidates[i + 1 :]:
-                ga, gb = grown[a], grown[b]
-                if ga[0] <= gb[2] and gb[0] <= ga[2] and ga[1] <= gb[3] and gb[1] <= ga[3]:
+                if _adjacent(grown, heights, a, b, settings):
                     parent[find(b)] = find(a)
         clusters: dict[int, list[int]] = {}
         for p in candidates:
@@ -316,3 +335,17 @@ class CodeBlockStage:
             replaced[min(members)] = code
             removed.update(m for m in members if m != min(members))
         return [replaced.get(p, block) for p, block in enumerate(blocks) if p not in removed]
+
+
+def _flag_uncertain(block: Block) -> Block:
+    """Giữ nguyên khối cũ, chỉ thêm cờ `code_layout_uncertain` (không gộp được vì quá nhiều ứng viên)."""
+    return Block.model_validate({**block.model_dump(), "flags": [*block.flags, _UNCERTAIN]})
+
+
+def _adjacent(grown: dict[int, BBox], heights: dict[int, float], a: int, b: int, settings: CodeBlockSettings) -> bool:
+    """Hai khối ứng viên thuộc cùng một listing khi hộp nới theo dọc chạm nhau và khoảng trống ngang đủ nhỏ."""
+    ga, gb = grown[a], grown[b]
+    if not (ga[1] <= gb[3] and gb[1] <= ga[3]):
+        return False
+    gap = max(ga[0] - gb[2], gb[0] - ga[2])
+    return gap <= settings.merge_x_factor * max(heights[a], heights[b])

@@ -1,0 +1,16 @@
+# Mẫu phụ thuộc tiếng Việt cho bộ dựng khối (ADR-010 mục 12, 16; ADR-006 mục 10).
+# Bộ nạp (`infrastructure/lang_patterns.py`) nạp HỢP mọi tệp ngôn ngữ, không đoán ngôn ngữ tài liệu.
+# Sửa tệp này làm đổi `layout_settings_sha256` (ADR-010 mục 15): phải tăng `LAYOUT_VERSION` cùng PR.
+
+# Mẫu số trang có chữ: so khớp không phân biệt hoa thường trên chữ đã NFC + gộp khoảng trắng; nhóm `n` là số trang.
+page_number_patterns = [
+    '^trang\s+(?P<n>\d{1,5})$',
+    '^trang\s+(?P<n>\d{1,5})\s*/\s*\d{1,5}$',
+    '^trang\s+(?P<n>\d{1,5})\s+trên\s+\d{1,5}$',
+]
+
+# Hậu tố nối trang của tiêu đề (X08).
+continuation_suffixes = ["(tiếp)", "(tiếp theo)", "(tt)"]
+
+# Từ khoá tiêu đề (X09 chuyển từ `vault_chunking.HEADING_RE`, ADR-010 mục 16).
+heading_keywords = ["chương", "bài", "phần", "mục"]

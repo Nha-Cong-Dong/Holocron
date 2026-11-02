@@ -11,7 +11,7 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 - Cây tiêu đề theo tài liệu (`build_section_tree`, ADR-010 mục 4, 15; spec §5.15; chưa bật trong pipeline): cấp tiêu đề từ phân cụm cỡ chữ/độ đậm toàn tài liệu kết hợp đánh số đa cấp và từ khoá tiêu đề theo ngôn ngữ; nối trang theo tiêu đề lặp và hậu tố "(tiếp)"/"(cont.)"; `section_id` tất định theo ADR-010; cờ `untitled`, `level_uncertain`, `continued_across_pages` thay vì đoán.
 
 ### 🐛 Sửa lỗi
-- Cây tiêu đề: La Mã chuẩn 1-39 nên `C. Kết luận`, `Part C` không bị coi là đánh số La Mã; `_strip_suffix` tuyến tính và đúng ranh giới ký tự khi casefold đổi độ dài; tiêu đề có từ khoá + số giữ cấp theo đánh số, không cờ; `SECTION_TREE_STAGE_VERSION` = 2.
+- Cây tiêu đề: La Mã chuẩn 1-39 nên `C. Kết luận`, `Part C` không bị coi là đánh số La Mã; `_strip_suffix` tuyến tính và đúng ranh giới ký tự khi casefold đổi độ dài; thêm test khoá luật cấp (từ khoá + số ⇒ cấp theo đánh số, không cờ; chỉ tiêu đề không đánh số trong cụm cỡ quá gần mới `level_uncertain`); `SECTION_TREE_STAGE_VERSION` = 2.
 
 ## [0.2.0-alpha] - 2026-10-28
 

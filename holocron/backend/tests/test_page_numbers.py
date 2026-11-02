@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 import pytest
 from pydantic import ValidationError
@@ -115,13 +116,26 @@ def test_value_parsing_and_filters() -> None:
     assert page_number_value("iiii", patterns) is None
     assert page_number_value("chapter", patterns) is None
     settings = PageNumberSettings()
-    assert candidate_text("Trang 12", settings) and candidate_text("iv", settings)
-    assert not candidate_text("Course notes", settings) and not candidate_text("1234567890123", settings)
+    assert candidate_text("Trang 12", settings, patterns) and candidate_text("iv", settings, patterns)
+    assert not candidate_text("Course notes", settings, patterns)
+    assert not candidate_text("1234567890123", settings, patterns)
+    # Chữ có chữ số nhưng KHÔNG khớp mẫu số trang không phải ứng viên (SPEC §5.15 "Số trang hai bước").
+    assert not candidate_text("Chương 3", settings, patterns) and not candidate_text(
+        "1. Giới thiệu", settings, patterns
+    )
     assert in_margin_band((0.4, 0.95, 0.6, 0.97), settings) and in_margin_band((0.4, 0.01, 0.6, 0.05), settings)
     assert not in_margin_band((0.4, 0.5, 0.6, 0.52), settings) and not in_margin_band(None, settings)
     with pytest.raises(ValidationError):
         PageNumberSettings(generic_patterns=(r"^\d+$",))
     assert isinstance(patterns[0], re.Pattern)
+
+
+def test_page_number_value_is_read_after_nfc() -> None:
+    patterns = PageNumberStage(LANG)._patterns
+    nfc = "Trang 3 trên 9"
+    nfd = unicodedata.normalize("NFD", nfc)
+    assert nfd != nfc and page_number_value(nfd, patterns) == page_number_value(nfc, patterns) == 3
+    assert candidate_text(nfd, PageNumberSettings(), patterns)
 
 
 def test_typed_line_is_never_a_candidate() -> None:

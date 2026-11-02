@@ -1,13 +1,21 @@
 """Số trang cấp tài liệu (ADR-010 mục 12, 13; spec §5.15 "Số trang hai bước").
 
 Bước (1) ở stage từng trang (`block_builder`): mỗi đoạn dòng có hộp nằm trong dải lề trên/dưới
-`page_number_margin`, ≤ `page_number_max_chars` ký tự không trắng, có chữ số hoặc từ dạng số La Mã thành khối ỨNG VIÊN
-riêng (loại `paragraph`, hay `header_footer` khi dòng khớp khoá TEXT template). Bước (2) ở đây, CẤP TÀI LIỆU, sau khi mọi
-trang đã dựng khối: ứng viên có chữ khớp một mẫu số trang (mẫu không phụ thuộc ngôn ngữ ở settings dưới, mẫu có chữ ở
-`infrastructure/lang/*.toml`) và hiệu (số đọc được − `page_number`) không đổi trên ≥ `page_number_min_pages` trang ⇒
+`page_number_margin`, ≤ `page_number_max_chars` ký tự không trắng VÀ có chữ khớp một mẫu số trang của `context.lang`
+(`compile_page_number_patterns`: mẫu không phụ thuộc ngôn ngữ ở settings dưới + mẫu có chữ ở `infrastructure/lang/*.toml`)
+thành khối ỨNG VIÊN riêng (loại `paragraph`, hay `header_footer` khi dòng khớp khoá TEXT template); tiêu đề ngắn có chữ
+số ở dải lề ("Chương 3", "1. Giới thiệu") không khớp mẫu nên vẫn là `heading`. Bước (2) ở đây, CẤP TÀI LIỆU, sau khi mọi
+trang đã dựng khối: hiệu (số đọc được − `page_number`) của các ứng viên không đổi trên ≥ `page_number_min_pages` trang ⇒
 `type = "page_number"`, `ledger.by_type` cập nhật; id không chứa `type` nên không đổi.
 
 Chạy lại được (idempotent): mỗi lần chạy đặt mọi ứng viên về loại gốc (`PageBlocks.page_number_candidates`) rồi áp luật.
+
+ĐIỀU KIỆN CHO X09 (dựng `PageBlocks` từ khối đã lưu): `page_number_candidates` không nằm trong khối đã lưu. Khối đã lưu
+có `type = "page_number"` mất loại gốc (`paragraph`/`header_footer`) nên chạy lại stage này KHÔNG đưa nó về loại gốc
+được. Do đó X09 PHẢI hoặc (a) lưu loại gốc của khối đã đổi sang `page_number` (hay lưu luôn `page_number_candidates`),
+hoặc (b) không chạy lại stage này trên `PageBlocks` dựng từ khối đã lưu mà dựng lại khối từ `PageGeometry` (đường dựng
+lại, ADR-010 mục 13) rồi chạy stage trên kết quả đó. Khối `page_number` của trang có `page_number_candidates = None`
+được giữ nguyên (stage không đoán loại gốc).
 """
 
 from __future__ import annotations
@@ -28,7 +36,6 @@ if TYPE_CHECKING:
 
 PAGE_NUMBERS_STAGE_VERSION = 1
 _ROMAN_VALUES = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100, "d": 500, "m": 1000}
-_ROMAN_TOKEN = re.compile(r"^[ivxlcdm]{1,8}$", re.IGNORECASE)
 _SPACES = re.compile(r"\s+")
 _ROMAN_TABLE: tuple[tuple[int, str], ...] = (
     (1000, "m"),
@@ -89,11 +96,18 @@ def in_margin_band(bbox: BBox | None, settings: PageNumberSettings) -> bool:
     return bbox[3] <= margin or bbox[1] >= 1.0 - margin
 
 
-def candidate_text(text: str, settings: PageNumberSettings) -> bool:
-    """Chữ đủ ngắn và có chữ số hoặc một từ dạng số La Mã (lọc thô, không phụ thuộc ngôn ngữ)."""
+def compile_page_number_patterns(settings: PageNumberSettings, lang: LangPatterns) -> tuple[re.Pattern[str], ...]:
+    """Mẫu số trang đã biên dịch: mẫu không phụ thuộc ngôn ngữ của `settings` rồi mẫu của `lang` (không phân biệt hoa
+    thường). MỘT nguồn dùng cho cả stage từng trang lẫn stage cấp tài liệu."""
+    generic = tuple(re.compile(p, re.IGNORECASE) for p in settings.generic_patterns)
+    return generic + lang.compiled_page_number_patterns()
+
+
+def candidate_text(text: str, settings: PageNumberSettings, patterns: tuple[re.Pattern[str], ...]) -> bool:
+    """Chữ đủ ngắn VÀ khớp một mẫu số trang (SPEC §5.15 "Số trang hai bước"): "Chương 3", "1. Giới thiệu" không khớp."""
     if nonws_units(text) > settings.page_number_max_chars:
         return False
-    return any(char.isdigit() for char in text) or any(_ROMAN_TOKEN.match(token) for token in text.split())
+    return page_number_value(text, patterns) is not None
 
 
 def _roman(value: str) -> int | None:
@@ -133,13 +147,15 @@ def page_number_value(text: str, patterns: tuple[re.Pattern[str], ...]) -> int |
     return None
 
 
-def page_number_candidates(blocks: list[Block], settings: PageNumberSettings) -> list[PageNumberCandidate]:
-    """Ứng viên của một trang vừa dựng: khối `paragraph`/`header_footer` có hộp trong dải lề và chữ ứng viên."""
+def page_number_candidates(
+    blocks: list[Block], settings: PageNumberSettings, patterns: tuple[re.Pattern[str], ...]
+) -> list[PageNumberCandidate]:
+    """Ứng viên của một trang vừa dựng: khối `paragraph`/`header_footer` có hộp trong dải lề và chữ khớp mẫu số trang."""
     out: list[PageNumberCandidate] = []
     for block in blocks:
         if block.type not in ("paragraph", "header_footer") or block.text is None:
             continue
-        if in_margin_band(block.bbox, settings) and candidate_text(block.text, settings):
+        if in_margin_band(block.bbox, settings) and candidate_text(block.text, settings, patterns):
             base: Literal["paragraph", "header_footer"] = "paragraph" if block.type == "paragraph" else "header_footer"
             out.append(PageNumberCandidate(block_id=block.block_id, base_type=base, units=nonws_units(block.text)))
     return out
@@ -153,8 +169,7 @@ class PageNumberStage:
     def __init__(self, lang: LangPatterns, settings: PageNumberSettings | None = None) -> None:
         self.lang = lang
         self.settings = settings or PageNumberSettings()
-        generic = tuple(re.compile(p, re.IGNORECASE) for p in self.settings.generic_patterns)
-        self._patterns = generic + lang.compiled_page_number_patterns()
+        self._patterns = compile_page_number_patterns(self.settings, lang)
 
     def fingerprint(self) -> dict[str, Any]:
         settings = {**self.settings.model_dump(), "lang_patterns_sha256": self.lang.sha256()}
@@ -169,7 +184,7 @@ class PageNumberStage:
                 continue
             candidates = page.page_number_candidates
             if candidates is None:
-                candidates = page_number_candidates(page.blocks, self.settings)
+                candidates = page_number_candidates(page.blocks, self.settings, self._patterns)
             reset.append(self._retype(page, candidates, {c.block_id: c.base_type for c in candidates}))
         offsets: dict[int, set[int]] = {}
         values: dict[tuple[int, str], int] = {}
@@ -179,7 +194,7 @@ class PageNumberStage:
             by_id = {block.block_id: block for block in page.blocks}
             for candidate in page.page_number_candidates:
                 block = by_id.get(candidate.block_id)
-                if block is None or block.text is None or not candidate_text(block.text, self.settings):
+                if block is None or block.text is None or not candidate_text(block.text, self.settings, self._patterns):
                     continue
                 value = page_number_value(block.text, self._patterns)
                 if value is not None:

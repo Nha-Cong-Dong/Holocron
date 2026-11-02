@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +12,7 @@ import pytest
 from pydantic import ValidationError
 
 from holocron_core.domain import blocks as blocks_module
-from holocron_core.domain.blocks import LAYOUT_HASH_REGISTRY, LAYOUT_VERSION, Block
+from holocron_core.domain.blocks import LAYOUT_HASH_REGISTRY, LAYOUT_VERSION, Block, ExtractionLedger
 from holocron_core.domain.documents import GeoLine, PageGeometry
 from holocron_core.infrastructure.lang_patterns import LANG_DIR, load_lang_patterns
 from holocron_core.services import block_builder, block_pipeline
@@ -24,6 +26,7 @@ from holocron_core.services.block_pipeline import (
     default_layout_settings_sha256,
     layout_settings_sha256,
 )
+from holocron_core.services.extraction_ledger import SourceIndex, compute_ledger
 from holocron_core.services.page_numbers import PageNumberSettings, PageNumberStage
 from holocron_core.services.reading_order import ReadingOrderStage, XyCutSettings
 from scripts import export_blocks
@@ -193,7 +196,7 @@ def test_layout_hash_registered_for_current_version() -> None:
 
 
 def test_layout_hash_v1_pinned() -> None:
-    assert LAYOUT_HASH_REGISTRY[1] == "c03d333cffb3dc82342f6882a4a0573061f35f80263c2acfad564d005d83b43a"
+    assert LAYOUT_HASH_REGISTRY[1] == "6dbbacb166ac527442c052009189b0b50f2e024b55d1762baac69175f9414ae6"
 
 
 def test_layout_version_change_changes_hash() -> None:
@@ -222,6 +225,9 @@ def test_lang_toml_change_changes_layout_hash(tmp_path: Path) -> None:
         ((BaseBlockStage(BaseBlockSettings(segment_gap_ratio=2.0)), ReadingOrderStage()), None),
         ((BaseBlockStage(BaseBlockSettings(heading_size_ratio=1.3)), ReadingOrderStage()), None),
         ((BaseBlockStage(BaseBlockSettings(xy_cut=XyCutSettings(xy_cut_max_depth=40))), ReadingOrderStage()), None),
+        ((BaseBlockStage(BaseBlockSettings(overlap_max_pair_checks=1000)), ReadingOrderStage()), None),
+        ((BaseBlockStage(BaseBlockSettings(gap_sample_height_factor=2.0)), ReadingOrderStage()), None),
+        ((BaseBlockStage(BaseBlockSettings(backward_gap_height_factor=0.4)), ReadingOrderStage()), None),
         ((BaseBlockStage(), ReadingOrderStage(XyCutSettings(xy_cut_max_depth=40))), None),
         ((BaseBlockStage(), ReadingOrderStage(XyCutSettings(xy_cut_max_nodes=1000))), None),
         ((BaseBlockStage(), ReadingOrderStage(XyCutSettings(column_gap_min=0.02))), None),
@@ -292,3 +298,72 @@ def test_export_page_entry_for_failed_page() -> None:
     figure = export_blocks.page_entry(extraction, built)
     assert any(block["type"] == "figure" and block["text"] == "x one\nx two" for block in figure["blocks"])
     assert blocks_module.LAYOUT_VERSION == LAYOUT_VERSION
+
+
+class _Raiser:
+    name = "raiser"
+
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    def fingerprint(self) -> dict[str, Any]:
+        return {"name": self.name, "version": 1, "settings": {}}
+
+    def run(self, context: PageContext, blocks: list[Block]) -> list[Block]:
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError("đĩa"),
+        KeyError("k"),
+        IndexError("i"),
+        re.error("mẫu"),
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "x"),
+        ZeroDivisionError("z"),
+        RecursionError("r"),
+        MemoryError(),
+    ],
+)
+def test_any_stage_exception_marks_layout_failed(error: Exception) -> None:
+    result = _run(_sample(), (BaseBlockStage(), _Raiser(error), ReadingOrderStage()))
+    assert result.layout_failed and result.blocks == [] and result.ledger is None
+
+
+def test_non_exception_base_errors_still_propagate() -> None:
+    with pytest.raises(KeyboardInterrupt):
+        _run(_sample(), (BaseBlockStage(), _Raiser(KeyboardInterrupt()), ReadingOrderStage()))
+
+
+class _Many:
+    """Stage trả `count` bản sao một khối: chỉ để thử trần số khối trước khi đếm ledger."""
+
+    name = "many"
+
+    def __init__(self, block: Block, count: int) -> None:
+        self.block = block
+        self.count = count
+
+    def fingerprint(self) -> dict[str, Any]:
+        return {"name": self.name, "version": 1, "settings": {}}
+
+    def run(self, context: PageContext, blocks: list[Block]) -> list[Block]:
+        return [self.block] * self.count
+
+
+def test_pipeline_block_cap_is_exactly_max_page_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Đúng MAX_PAGE_BLOCKS + 1 khối ⇒ `layout_failed` TRƯỚC khi tính ledger; đúng MAX thì vẫn qua bước kiểm trần."""
+    reached: list[int] = []
+    block = _run(_sample()).blocks[0]
+
+    def spy(document_id: str, page_number: int, blocks: Sequence[Block], index: SourceIndex) -> ExtractionLedger:
+        reached.append(len(blocks))
+        return compute_ledger(document_id, page_number, blocks, index)
+
+    monkeypatch.setattr(block_pipeline, "compute_ledger", spy)
+    monkeypatch.setattr(block_pipeline, "MAX_PAGE_BLOCKS", 3)
+    over = _run(_sample(), (_Many(block, 4),))
+    assert over.layout_failed and over.ledger is None and reached == []
+    at_cap = _run(_sample(), (_Many(block, 3),))
+    assert at_cap.layout_failed and reached == [3]  # qua trần; ledger từ chối vì khối trùng tham chiếu

@@ -248,11 +248,12 @@ def compute_ledger(document_id: str, page_number: int, blocks: Sequence[Block], 
     )
 
 
-def with_page_drop_reason(ledger: ExtractionLedger, page_role: PageRole, *, dropped: bool = True) -> ExtractionLedger:
-    """Ledger với `page_drop_reason` của trang (ADR-010 mục 6): = `page_role` khi trang bị bỏ mềm (`dropped`) với vai
-    trò bỏ được; ngược lại null. Hàm thuần; X09 gọi lại sau MỌI lần đổi `page_role` hay `dropped` của trang."""
-    reason = _DROP_REASONS.get(page_role) if dropped else None
-    return ledger.model_copy(update={"page_drop_reason": reason})
+def with_page_drop_reason(ledger: ExtractionLedger, page_role: PageRole) -> ExtractionLedger:
+    """Ledger với `page_drop_reason` của trang (ADR-010 mục 6): = `page_role` khi vai trò bỏ được
+    (`DROPPABLE_ROLE_ORDER`); ngược lại null. Hàm thuần. X09 gọi sau MỌI lần đổi `page_role` hay `dropped` của trang và
+    truyền vai trò HIỆU LỰC: vai trò của trang khi đang bỏ mềm; `"content"` khi trang đã được khôi phục (không có tham
+    số `dropped` riêng)."""
+    return ledger.model_copy(update={"page_drop_reason": _DROP_REASONS.get(page_role)})
 
 
 def retype_by_type(ledger: ExtractionLedger, moves: Iterable[tuple[BlockType, BlockType, int]]) -> ExtractionLedger:

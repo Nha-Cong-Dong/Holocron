@@ -13,7 +13,8 @@ Các bước (hàm thuần, tất định):
    `paragraph_gap_factor` × trung vị khoảng cách dòng của trang, chồng ngang đủ, không thụt lề dòng đầu, không bắt đầu
    bằng ký hiệu đầu dòng hay số thứ tự. Đoạn có cỡ chữ ≥ `heading_size_ratio` × cỡ chữ thân trang (hoặc đậm trong khi
    thân không đậm, đủ ngắn) là `heading` (`level = 1` sơ bộ). Dòng header/footer (khoá TEXT template) là khối
-   `header_footer`. Ứng viên số trang là khối riêng (`page_numbers.py`).
+   `header_footer`. Ứng viên số trang (dải lề, chữ khớp mẫu số trang của `context.lang`) là khối riêng
+   (`page_numbers.py`); tiêu đề ngắn có chữ số ở dải lề không khớp mẫu nên vẫn là `heading`.
 4. **Văn bản khối** (mục 7): NFC từng từ, nối bằng MỘT dấu cách, giữ gạch nối cuối dòng; `paragraph` dài quá
    `MAX_BLOCK_TEXT_CHARS` tách tại ranh giới đoạn dòng; loại khác vượt ⇒ `LayoutBuildError` (trang `LAYOUT_FAILED`).
 """
@@ -42,7 +43,7 @@ from ..domain.blocks import (
 )
 from ..domain.documents import BBox, GeoWord, PageGeometry
 from .extraction_ledger import FlowKey, SourceIndex
-from .page_numbers import PageNumberSettings, candidate_text, in_margin_band
+from .page_numbers import candidate_text, compile_page_number_patterns, in_margin_band
 from .reading_order import XyCutSettings, assign_block_ids, xy_cut
 
 if TYPE_CHECKING:
@@ -50,6 +51,15 @@ if TYPE_CHECKING:
 
 BASE_BLOCKS_STAGE_VERSION = 1
 _PLACEHOLDER_ID = "blk_0000000000000000"
+
+# Hằng làm tròn số học thuần (không phải ngưỡng hành vi; đổi chúng đổi đầu ra nên phải tăng `BASE_BLOCKS_STAGE_VERSION`):
+# - cỡ chữ làm tròn tới 0,1 pt trước khi bỏ phiếu đa số (bỏ nhiễu dấu phẩy động của PDFium);
+# - lề trái làm tròn tới 4 chữ số thập phân khi gom bậc thụt lề danh sách, cộng sai số 1e-9 khi so với mốc bậc;
+# - `Block.list_depth` tối đa 8 (ràng buộc của model `Block`).
+FONT_SIZE_ROUND_DIGITS = 1
+LEFT_ROUND_DIGITS = 4
+LEFT_COMPARE_EPS = 1e-9
+MAX_LIST_DEPTH = 8
 
 GroupKind = Literal["heading", "paragraph", "list_item", "header_footer", "figure", "candidate"]
 
@@ -76,6 +86,12 @@ class BaseBlockSettings(BaseModel):
     list_indent_step: float = Field(default=0.02, gt=0.0)
     overlap_min_ratio: float = Field(default=0.3, gt=0.0, le=1.0)
     overlap_leaf_cap: int = Field(default=2000, ge=2)
+    # Trần tất định tổng số phép so cặp chồng lấn của MỘT trang (không đo thời gian); lá vượt phần còn lại ⇒ figure.
+    overlap_max_pair_checks: int = Field(default=200_000, ge=1)
+    # Khe dọc giữa hai dòng chỉ được tính vào trung vị khe đoạn khi < hệ số này × chiều cao dòng cao hơn.
+    gap_sample_height_factor: float = Field(default=3.0, gt=0.0)
+    # Dòng kế tiếp được nối vào khối chỉ khi không chồng ngược lên dòng trước quá hệ số này × chiều cao dòng thấp hơn.
+    backward_gap_height_factor: float = Field(default=0.5, ge=0.0)
     # Ký hiệu đầu dòng (không phụ thuộc ngôn ngữ); `U+F0xx` là glyph Symbol/Wingdings ánh xạ vào vùng riêng.
     bullet_glyphs: tuple[str, ...] = (
         "\u2022",
@@ -117,7 +133,6 @@ class BaseBlockSettings(BaseModel):
         "*",
     )
     enumerator_pattern: str = r"^\(?(\d{1,3}|[a-zA-Z]|[ivxIVX]{1,5})[.)]$"
-    page_number: PageNumberSettings = PageNumberSettings()
     xy_cut: XyCutSettings = XyCutSettings()
 
 
@@ -193,6 +208,8 @@ class _PageBuilder:
         self.body_size: float | None = None
         self.body_bold: bool | None = None
         self.max_gap = 0.0
+        self.pair_budget = settings.overlap_max_pair_checks
+        self.page_number_patterns = compile_page_number_patterns(context.page_number_settings, context.lang)
 
     # ------------------------------------------------------------------ kiểu chữ
 
@@ -206,7 +223,9 @@ class _PageBuilder:
         self, words: Sequence[GeoWord], line_font: int | None, line_size: float | None
     ) -> tuple[float | None, bool | None]:
         weights = [(w, sum(1 for c in w.text if not c.isspace())) for w in words]
-        size = _majority([(None if w.font_size_pt is None else round(w.font_size_pt, 1), n) for w, n in weights])
+        size = _majority(
+            [(None if w.font_size_pt is None else round(w.font_size_pt, FONT_SIZE_ROUND_DIGITS), n) for w, n in weights]
+        )
         bold = _majority([(self._bold(w.font_id), n) for w, n in weights])
         return (size if size is not None else line_size), (bold if bold is not None else self._bold(line_font))
 
@@ -345,9 +364,8 @@ class _PageBuilder:
         return first in self.bullets or bool(self.enumerator.match(first))
 
     def _candidate(self, seg: _Seg) -> bool:
-        return in_margin_band(seg.bbox, self.settings.page_number) and candidate_text(
-            seg.text, self.settings.page_number
-        )
+        settings = self.context.page_number_settings
+        return in_margin_band(seg.bbox, settings) and candidate_text(seg.text, settings, self.page_number_patterns)
 
     # ------------------------------------------------------------------ dựng
 
@@ -375,8 +393,11 @@ class _PageBuilder:
         """Đoạn của một lá theo (y0, x0); các đoạn chồng lấn nhau gộp thành một nhóm (sẽ là figure)."""
         if len(leaf) == 1:
             return [leaf[0]]
-        if len(leaf) > self.settings.overlap_leaf_cap:
+        pairs = len(leaf) * (len(leaf) - 1) // 2
+        if len(leaf) > self.settings.overlap_leaf_cap or pairs > self.pair_budget:
+            # Nhánh an toàn (ADR-010 mục 11): không so cặp, cả lá thành MỘT figure + `layout_uncertain` (không chữ rác).
             return [leaf]
+        self.pair_budget -= pairs
         parent = list(range(len(leaf)))
 
         def find(i: int) -> int:
@@ -422,7 +443,9 @@ class _PageBuilder:
             if prev.bbox is None or seg.bbox is None or prev.header_footer or seg.header_footer:
                 continue
             gap = seg.bbox[1] - prev.bbox[3]
-            if 0 < gap < 3 * max(prev.height, seg.height) and self._x_overlap(prev.bbox, seg.bbox):
+            if 0 < gap < self.settings.gap_sample_height_factor * max(prev.height, seg.height) and self._x_overlap(
+                prev.bbox, seg.bbox
+            ):
                 gaps.append(gap)
         if gaps:
             median = statistics.median(gaps)
@@ -479,7 +502,7 @@ class _PageBuilder:
         if prev.bbox is None or seg.bbox is None or not self._same_style(prev, seg):
             return False
         gap = seg.bbox[1] - prev.bbox[3]
-        if gap > self.max_gap or gap < -0.5 * max(min(prev.height, seg.height), 0.0):
+        if gap > self.max_gap or gap < -self.settings.backward_gap_height_factor * min(prev.height, seg.height):
             return False
         extent = _union([s.bbox for s in group.segs if s.bbox is not None])
         if extent is None or not self._x_overlap(extent, seg.bbox):
@@ -539,7 +562,13 @@ class _PageBuilder:
         return groups
 
     def _list_depths(self, groups: list[_Group]) -> dict[int, int]:
-        lefts = sorted({round(b[0], 4) for g in groups if g.kind == "list_item" and (b := g.segs[0].bbox) is not None})
+        lefts = sorted(
+            {
+                round(b[0], LEFT_ROUND_DIGITS)
+                for g in groups
+                if g.kind == "list_item" and (b := g.segs[0].bbox) is not None
+            }
+        )
         levels: list[float] = []
         for left in lefts:
             if not levels or left - levels[-1] > self.settings.list_indent_step:
@@ -552,8 +581,8 @@ class _PageBuilder:
             if box is None:
                 depths[id(group)] = 0
                 continue
-            depth = sum(1 for level in levels if level <= round(box[0], 4) + 1e-9) - 1
-            depths[id(group)] = min(max(depth, 0), 8)
+            depth = sum(1 for level in levels if level <= round(box[0], LEFT_ROUND_DIGITS) + LEFT_COMPARE_EPS) - 1
+            depths[id(group)] = min(max(depth, 0), MAX_LIST_DEPTH)
         return depths
 
     def _block(self, group: _Group, position: int, depth: int | None) -> Block:

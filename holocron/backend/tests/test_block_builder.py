@@ -9,10 +9,18 @@ from pydantic import ValidationError
 
 from holocron_core.domain.blocks import MAX_BLOCK_TEXT_CHARS, Block
 from holocron_core.domain.documents import ExtractedLine, GeoLine, PageExtraction, PageGeometry
-from holocron_core.infrastructure.lang_patterns import load_lang_patterns
-from holocron_core.services.block_builder import BaseBlockSettings, BaseBlockStage
-from holocron_core.services.block_pipeline import PageBlocks, build_page_blocks
+from holocron_core.infrastructure.lang_patterns import LangPatterns, load_lang_patterns
+from holocron_core.services import block_builder
+from holocron_core.services.block_builder import (
+    BaseBlockSettings,
+    BaseBlockStage,
+    LayoutBuildError,
+    _PageBuilder,
+    _Seg,
+)
+from holocron_core.services.block_pipeline import PageBlocks, PageContext, build_page_blocks
 from holocron_core.services.extraction_ledger import SourceIndex
+from holocron_core.services.page_numbers import PageNumberSettings
 from holocron_core.services.reading_order import ReadingOrderStage
 from tests.block_samples import BOLD, DOC_ID, extraction_for, geo_line, geometry
 
@@ -528,3 +536,153 @@ def test_block_flags_sorted_unique_and_section_crop_models() -> None:
         CropImage.model_validate({**crop, "bbox": (0.3, 0.1, 0.2, 0.2)})
     with pytest.raises(ValidationError):
         CropImage.model_validate({**crop, "width_px": 1025})
+
+
+# --------------------------------------------------------------------------- #
+# Ứng viên số trang khớp mẫu của `context.lang` (SPEC §5.15 "Số trang hai bước")
+# --------------------------------------------------------------------------- #
+
+
+def _titled_page(title: str) -> PageBlocks:
+    top = geo_line(title, 0.1, 0.02, height=0.02, size=18, font_id=1)  # hộp nằm trọn trong dải lề trên 10%
+    geo = geometry([top, *_column(0.1, 0.3, ["body text line one here", "body text line two here", "body text three"])])
+    return _build(geo)
+
+
+@pytest.mark.parametrize("title", ["Chương 3", "1. Giới thiệu", "Bài 2", "Part 4", "Lecture 12"])
+def test_short_numbered_title_in_margin_band_stays_heading(title: str) -> None:
+    blocks = _ordered(_titled_page(title))
+    assert blocks[0].type == "heading" and blocks[0].text == title and blocks[0].level == 1
+
+
+def _footer_page(footer: str, lang: LangPatterns = LANG, settings: PageNumberSettings | None = None) -> list[Block]:
+    body = _column(0.1, 0.86, ["body text line one", "body text line two", "body text line three"])
+    geo = geometry([*body, geo_line(footer, 0.1, 0.914)])  # dòng cuối trong dải lề dưới 10%
+    result = build_page_blocks(
+        document_id=DOC_ID,
+        page_number=1,
+        geometry=geo,
+        extraction=extraction_for(geo),
+        lang=lang,
+        page_number_settings=settings,
+    )
+    return _ordered(result)
+
+
+def test_page_number_candidate_must_match_a_page_number_pattern() -> None:
+    matching = _footer_page("Trang 5")
+    assert [b.text for b in matching][-1] == "Trang 5" and len(matching) == 2  # ứng viên: khối riêng
+    for footer in ("Chương 5", "Bước 2", "Hình 3"):
+        merged = _footer_page(footer)
+        assert len(merged) == 1 and merged[0].text is not None and merged[0].text.endswith(footer)
+
+
+def test_page_number_candidate_uses_context_lang_and_single_settings_source() -> None:
+    german = LangPatterns(page_number_patterns=(r"^seite\s+(?P<n>\d{1,5})$",))
+    assert len(_footer_page("Seite 4")) == 1
+    assert len(_footer_page("Seite 4", german)) == 2
+    assert len(_footer_page("5", german)) == 2  # mẫu không phụ thuộc ngôn ngữ luôn áp, mẫu của `lang` chỉ thêm vào
+    assert len(_footer_page("Trang 5", settings=PageNumberSettings(page_number_max_chars=3))) == 1
+    assert len(_footer_page("Trang 5", settings=PageNumberSettings(page_number_margin=0.01))) == 1
+    assert "page_number" not in BaseBlockSettings.model_fields
+    assert "page_number" not in BaseBlockStage().fingerprint()["settings"]
+
+
+# --------------------------------------------------------------------------- #
+# Trần tất định của phép so cặp chồng lấn (CLAUDE.md §2.2: file không tin cậy)
+# --------------------------------------------------------------------------- #
+
+
+def test_overlap_pair_budget_is_per_page_and_falls_back_to_one_figure() -> None:
+    geo = geometry([geo_line(f"w{i}", 0.1, 0.1 + 0.03 * i) for i in range(3)])  # 3 đoạn, 3 cặp, không chồng lấn
+    context = PageContext(DOC_ID, 1, geo, extraction_for(geo), LANG)
+    builder = _PageBuilder(context, BaseBlockSettings(overlap_max_pair_checks=3))
+    segs = builder.segments()
+    first = builder._resolve_leaf(segs)
+    assert len(first) == 3 and all(isinstance(item, _Seg) for item in first) and builder.pair_budget == 0
+    second = builder._resolve_leaf(segs)  # hết ngân sách: không so cặp, cả lá thành một nhóm figure
+    assert len(second) == 1 and isinstance(second[0], list) and len(second[0]) == 3 and builder.pair_budget == 0
+    fresh = _PageBuilder(context, BaseBlockSettings(overlap_max_pair_checks=2))  # 3 cặp > 2 ngay từ lá đầu
+    assert isinstance(fresh._resolve_leaf(segs)[0], list)
+    assert _PageBuilder(context, BaseBlockSettings()).pair_budget == BaseBlockSettings().overlap_max_pair_checks
+
+
+def test_pair_budget_exhaustion_gives_uncertain_figure_not_noise() -> None:
+    lines = [geo_line(f"w{i}", 0.3 + 0.001 * i, 0.3 + 0.0005 * i) for i in range(5)]  # 10 cặp chồng lấn
+    geo = geometry(lines)
+    stages = (BaseBlockStage(BaseBlockSettings(overlap_max_pair_checks=9)), ReadingOrderStage())
+    result = build_page_blocks(
+        document_id=DOC_ID, page_number=1, geometry=geo, extraction=extraction_for(geo), lang=LANG, stages=stages
+    )
+    (block,) = _ordered(result)
+    assert block.type == "figure" and len(block.labels) == 5
+    assert {"layout_uncertain", "crop_pending"} <= set(block.flags)
+    assert result.ledger is not None and result.ledger.balanced
+
+
+def test_threshold_settings_are_in_the_stage_fingerprint() -> None:
+    settings = BaseBlockStage().fingerprint()["settings"]
+    assert {"overlap_max_pair_checks", "gap_sample_height_factor", "backward_gap_height_factor"} <= set(settings)
+
+
+# --------------------------------------------------------------------------- #
+# Biên của trần độ dài và trần số khối (đột biến sống ở vòng 1)
+# --------------------------------------------------------------------------- #
+
+
+def _text_of(length: int) -> str:
+    """Chuỗi đúng `length` ký tự gồm các từ 99 chữ cách nhau một dấu cách (không dấu cách ở cuối)."""
+    text = (("x" * 99 + " ") * (length // 100 + 1))[:length]
+    return text[:-1] + "x" if text.endswith(" ") else text
+
+
+LINE_LEN = 1900  # mỗi dòng ≤ 2000 ký tự (giới hạn của `ExtractedLine.text`)
+# 26 dòng đủ + dòng cuối: tổng sau khi nối bằng dấu cách đúng MAX_BLOCK_TEXT_CHARS (574) hay hơn một (575).
+LAST_LENS = [(574, 1), (575, 2)]
+
+
+def _wide_lines(last: int, *, boxed: bool) -> list[GeoLine]:
+    lens = [LINE_LEN] * 26 + [last]
+    return [
+        geo_line(_text_of(n), 0.05 if boxed else None, 0.05 + 0.015 * i, char_w=1e-5, height=0.01)
+        for i, n in enumerate(lens)
+    ]
+
+
+@pytest.mark.parametrize(("last", "blocks"), LAST_LENS)
+def test_paragraph_text_up_to_exactly_max_chars_joins_one_over_splits(last: int, blocks: int) -> None:
+    geo = geometry(_wide_lines(last, boxed=True))
+    result = _ordered(_build(geo))
+    assert len(result) == blocks and all(b.type == "paragraph" for b in result)
+    assert max(len(b.text or "") for b in result) <= MAX_BLOCK_TEXT_CHARS
+    assert (len(result[0].text or "") == MAX_BLOCK_TEXT_CHARS) == (blocks == 1)
+
+
+@pytest.mark.parametrize(("last", "blocks"), LAST_LENS)
+def test_floating_lines_split_at_max_chars_without_layout_failure(last: int, blocks: int) -> None:
+    geo = geometry(_wide_lines(last, boxed=False))
+    result = _build(geo)
+    assert not result.layout_failed and len(result.blocks) == blocks
+    assert max(len(b.text or "") for b in result.blocks) <= MAX_BLOCK_TEXT_CHARS
+
+
+def test_page_block_cap_boundary_is_exact(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(block_builder, "MAX_PAGE_BLOCKS", 3)
+    for count in (3, 4):
+        geo = geometry([geo_line(f"line {i}", 0.1, 0.1 + 0.2 * i) for i in range(count)])
+        context = PageContext(DOC_ID, 1, geo, extraction_for(geo), LANG)
+        if count <= 3:
+            assert len(BaseBlockStage().run(context, [])) == count
+        else:
+            with pytest.raises(LayoutBuildError):
+                BaseBlockStage().run(context, [])
+
+
+def test_editing_a_confirmed_line_changes_the_block_id() -> None:
+    geo = geometry([geo_line("alpha beta", 0.1, 0.1), geo_line("far away text", 0.1, 0.6)])
+    extraction = extraction_for(geo)
+    first = _ordered(_build(geo, _patched(extraction, {0: "fixed one"}, [])))
+    second = _ordered(_build(geo, _patched(extraction, {0: "fixed two"}, [])))
+    assert first[0].line_refs == second[0].line_refs  # cùng tham chiếu `confirmed_line`
+    assert first[0].block_id != second[0].block_id
+    assert first[1].block_id == second[1].block_id  # khối không sửa giữ id

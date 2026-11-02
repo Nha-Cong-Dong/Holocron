@@ -4,9 +4,10 @@ Thứ tự stage từng trang chốt MỘT chỗ ở `PAGE_STAGES`: `base_blocks
 `reading_order` (X05, LUÔN cuối, gán `reading_order` và id) → kiểm ledger. `page_numbers` là stage CẤP TÀI LIỆU riêng
 (`services/page_numbers.py`), chạy sau khi mọi trang đã dựng khối.
 
-Mọi nhánh lỗi (thiếu geometry, stage ném lỗi, vượt `MAX_PAGE_BLOCKS`, XY-cut vượt trần, khối không phải `paragraph`
-quá dài, tham chiếu không giải được, ledger lệch) ⇒ `PageBlocks.layout_failed = True`, `blocks = []`, KHÔNG ném;
-ledger là None khi thiếu geometry hay lỗi trước khi đếm, và có `balanced = false` khi ledger lệch.
+Mọi nhánh lỗi (thiếu geometry, stage ném BẤT KỲ `Exception` nào, vượt `MAX_PAGE_BLOCKS`, XY-cut vượt trần, khối không
+phải `paragraph` quá dài, tham chiếu không giải được, ledger lệch) ⇒ `PageBlocks.layout_failed = True`, `blocks = []`,
+KHÔNG ném `Exception` ra ngoài (`KeyboardInterrupt`/`SystemExit` không phải `Exception` nên vẫn lan ra); ledger là None
+khi thiếu geometry hay lỗi trước khi đếm, và có `balanced = false` khi ledger lệch.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from pydantic import Field, model_validator
@@ -26,22 +27,10 @@ from ..domain.schemas import StrictModel
 from ..infrastructure.lang_patterns import LangPatterns
 from .block_builder import BaseBlockStage
 from .extraction_ledger import LedgerError, SourceIndex, compute_ledger
-from .page_numbers import PageNumberCandidate, PageNumberStage
+from .page_numbers import PageNumberCandidate, PageNumberSettings, PageNumberStage
 from .reading_order import ReadingOrderStage
 
 logger = logging.getLogger(__name__)
-
-# Lỗi của stage hay của bước kiểm ledger (gồm `ValidationError`, lớp con của `ValueError`, và `XyCutLimitError`,
-# `LayoutBuildError`, `LedgerError`): trang `LAYOUT_FAILED`, lần đọc vẫn tiếp tục (ADR-010 mục 6).
-BUILD_ERRORS = (
-    ValueError,
-    TypeError,
-    LookupError,
-    ArithmeticError,
-    AttributeError,
-    RuntimeError,
-    MemoryError,
-)
 
 
 @dataclass(frozen=True)
@@ -53,6 +42,8 @@ class PageContext:
     geometry: PageGeometry
     extraction: PageExtraction
     lang: LangPatterns
+    # Ngưỡng số trang: MỘT nguồn, cùng đối tượng với `PageNumberStage.settings` của người gọi (vào hash qua stage đó).
+    page_number_settings: PageNumberSettings = field(default_factory=PageNumberSettings)
 
 
 class PageStage(Protocol):
@@ -69,7 +60,8 @@ class PageBlocks(StrictModel):
     """Kết quả pipeline của MỘT trang (nội bộ, không ra response; response khối của trang là `PageBlockList`, §6.10).
 
     `layout_failed` ⇒ `blocks = []`; X09 gắn `LAYOUT_FAILED` từ field này. `page_number_candidates` = None khi
-    `page_numbers` chưa chạy trên trang (stage cấp tài liệu tự lập danh sách ứng viên và loại gốc ở lần chạy đầu).
+    `page_numbers` chưa chạy trên trang (stage cấp tài liệu tự lập danh sách ứng viên và loại gốc ở lần chạy đầu); khối
+    đã lưu không giữ danh sách này (điều kiện cho X09: docstring `services/page_numbers.py`).
     """
 
     document_id: str = Field(pattern=r"^doc_[0-9a-f]{16}$")
@@ -106,12 +98,15 @@ def build_page_blocks(
     extraction: PageExtraction,
     lang: LangPatterns,
     stages: Sequence[PageStage] = PAGE_STAGES,
+    page_number_settings: PageNumberSettings | None = None,
 ) -> PageBlocks:
     """Chạy các stage từng trang rồi kiểm ledger. Dùng cho cả lần đọc đầu (basis `pdfium`) và dựng lại sau
-    `PATCH …/lines` (dòng đã sửa/gõ thêm ⇒ basis `confirmed_lines`). Không bao giờ ném."""
+    `PATCH …/lines` (dòng đã sửa/gõ thêm ⇒ basis `confirmed_lines`). Lỗi `Exception` của stage ⇒ `layout_failed`."""
     if geometry is None:
         return _failed(document_id, page_number)
-    context = PageContext(document_id, page_number, geometry, extraction, lang)
+    context = PageContext(
+        document_id, page_number, geometry, extraction, lang, page_number_settings or PageNumberSettings()
+    )
     try:
         blocks: list[Block] = []
         for stage in stages:
@@ -119,8 +114,10 @@ def build_page_blocks(
             if len(blocks) > MAX_PAGE_BLOCKS:
                 raise LedgerError(f"trang có quá {MAX_PAGE_BLOCKS} khối")
         ledger = compute_ledger(document_id, page_number, blocks, SourceIndex(geometry, extraction))
-    except BUILD_ERRORS as exc:  # mọi lỗi của bộ dựng ⇒ LAYOUT_FAILED (ADR-010 mục 6), không làm hỏng lần đọc
-        logger.warning("Dựng khối trang %d thất bại (%s): trang dùng đường dòng", page_number, type(exc).__name__)
+    except Exception as exc:  # mọi lỗi của bộ dựng ⇒ LAYOUT_FAILED (ADR-010 mục 6), không làm hỏng lần đọc
+        logger.warning(
+            "Dựng khối trang %d thất bại (%s): trang dùng đường dòng", page_number, type(exc).__name__, exc_info=True
+        )
         return _failed(document_id, page_number)
     if not ledger.balanced:
         logger.warning("Ledger trang %d lệch: trang dùng đường dòng", page_number)

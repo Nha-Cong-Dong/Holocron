@@ -49,7 +49,7 @@ LAYOUT_VERSION = 1
 # Sổ đăng ký cộng dồn: version → `layout_settings_sha256` của cấu hình mặc định (ADR-010 mục 15). PR tăng
 # `LAYOUT_VERSION` THÊM đúng một mục mới, KHÔNG sửa mục cũ.
 LAYOUT_HASH_REGISTRY: dict[int, str] = {
-    1: "c03d333cffb3dc82342f6882a4a0573061f35f80263c2acfad564d005d83b43a",
+    1: "6dbbacb166ac527442c052009189b0b50f2e024b55d1762baac69175f9414ae6",
 }
 
 # Trần độ dài `Block.text` (ADR-010 mục 7): `paragraph` dài hơn được tách tại ranh giới dòng; loại khác ⇒ LAYOUT_FAILED.

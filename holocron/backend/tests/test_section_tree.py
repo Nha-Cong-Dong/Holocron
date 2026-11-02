@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import itertools
+import json
 from dataclasses import dataclass
 
 import pytest
@@ -267,7 +269,10 @@ def test_deterministic_and_input_order_independent() -> None:
 
 def test_fingerprint_changes_with_threshold_pattern_and_lang() -> None:
     base = SectionTreeStage(LANG).fingerprint()
-    assert set(base) == {"name", "version", "settings", "lang_sha256"}
+    assert set(base) == {"name", "version", "settings"}
+    assert base["name"] == "section_tree"
+    assert base["settings"]["lang_patterns_sha256"] == LANG.sha256()
+    assert set(base["settings"]) == {*SectionTreeSettings().model_dump(), "lang_patterns_sha256"}
     assert SectionTreeStage(LANG).fingerprint() == base
     assert SectionTreeStage(LANG, SectionTreeSettings(cluster_tol=0.05)).fingerprint() != base
     assert SectionTreeStage(LANG, SectionTreeSettings(letter_pattern=r"^(?P<num>[a-z])\.\s+\S")).fingerprint() != base
@@ -279,3 +284,101 @@ def test_settings_validation() -> None:
         SectionTreeSettings(arabic_pattern=r"^\d+")
     with pytest.raises(ValueError):
         SectionTreeSettings(cluster_tol=0.2, close_cluster_tol=0.1)
+
+
+def expected_id(document_id: str, path: list[list[object]]) -> str:
+    """Công thức ADR-010 mục 4 tính độc lập với code (hashlib + json)."""
+    text = json.dumps(["section", document_id, path], sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return "sec_" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def test_section_id_pinned_to_adr_formula() -> None:
+    tree = build(
+        [[head("1. Mot"), para(), head("1.1 Muc  CON"), para(), head("2. Hai"), para(), head("2.1 Muc  con"), para()]]
+    )
+    ids = {s.title: s.section_id for s in tree.sections}
+    assert ids["Chuong hai"] == expected_id(DOC_ID, [])
+    assert ids["1. Mot"] == expected_id(DOC_ID, [["1. mot", 0]])
+    assert ids["1.1 Muc CON"] == expected_id(DOC_ID, [["1. mot", 0], ["1.1 muc con", 0]])
+    assert ids["2. Hai"] == expected_id(DOC_ID, [["2. hai", 1]])
+    assert ids["2.1 Muc con"] == expected_id(DOC_ID, [["2. hai", 1], ["2.1 muc con", 0]])
+
+
+def test_same_title_under_different_parents_pinned() -> None:
+    tree = build([[head("1. A"), para(), head("Vi du", 15.0), para(), head("2. B"), para(), head("Vi du", 15.0)]])
+    examples = [s for s in tree.sections if s.title == "Vi du"]
+    assert [s.section_id for s in examples] == [
+        expected_id(DOC_ID, [["1. a", 0], ["vi du", 0]]),
+        expected_id(DOC_ID, [["2. b", 1], ["vi du", 0]]),
+    ]
+
+
+def test_untitled_section_id_uses_empty_title() -> None:
+    tree = build([[head("(tiếp)", 30.0), para(), head("(tiếp)", 22.0), para()]])
+    outer, inner = tree.sections[1], tree.sections[2]
+    assert outer.section_id == expected_id(DOC_ID, [["", 0]])
+    assert inner.section_id == expected_id(DOC_ID, [["", 0], ["", 0]])
+
+
+def test_root_id_ignores_chapter_title() -> None:
+    built = [make_page(1, [head("1. A"), para()])]
+    one = build_section_tree(DOC_ID, "ch1", "Ten mot", built, LANG)
+    two = build_section_tree(DOC_ID, "ch1", "Ten hai", built, LANG)
+    assert [s.section_id for s in one.sections] == [s.section_id for s in two.sections]
+
+
+def test_numbered_headings_not_flagged_even_with_close_sizes() -> None:
+    tree = build([[head("1. A", 20.0), para(), head("1.1 B", 19.0), para(), head("a) C", 19.0)]])
+    assert [s.flags for s in tree.sections[1:]] == [[], [], []]
+    assert by_title(tree, "1.1 B").level == 2
+
+
+def test_heading_keywords_decide_level() -> None:
+    tree = build([[head("Chương 2", 20.0), para(), head("Section 2.1", 19.0), para(), head("Phần III", 19.0)]])
+    assert [(s.title, s.level, s.flags) for s in tree.sections[1:]] == [
+        ("Chương 2", 1, []),
+        ("Section 2.1", 2, []),
+        ("Phần III", 1, []),
+    ]
+    assert parent_of(tree, by_title(tree, "Section 2.1")).title == "Chương 2"
+
+
+def test_keyword_without_number_is_not_numbering() -> None:
+    tree = build([[head("Chương trình học", 20.0), para(), head("Bài in", 20.0)]])
+    assert all(s.level == 1 for s in tree.sections[1:])
+
+
+def test_keywords_come_from_lang_config_only() -> None:
+    bare = LANG.model_copy(update={"heading_keywords": ()})
+    built = [make_page(1, [head("Chương 2", 20.0), para(), head("Section 2.1", 19.0)])]
+    tree = build_section_tree(DOC_ID, None, "T", built, bare)
+    assert all("level_uncertain" in s.flags for s in tree.sections[1:])
+
+
+def test_equal_headings_on_same_page_not_merged() -> None:
+    tree = build([[head("Lap"), para(), head("Lap"), para()]])
+    laps = [s for s in tree.sections if s.title == "Lap"]
+    assert len(laps) == 2
+    assert all(s.flags == [] for s in laps)
+    assert laps[0].section_id != laps[1].section_id
+
+
+def test_non_adjacent_repeat_without_suffix_not_merged() -> None:
+    tree = build([[head("Lap"), para()], [head("Khac"), para()], [head("Lap"), para()]])
+    assert len([s for s in tree.sections if s.title == "Lap"]) == 2
+
+
+@pytest.mark.parametrize("text", [None, "", "   "])
+def test_blank_heading_text_is_untitled(text: str | None) -> None:
+    context, blocks = make_page(1, [head("x")])
+    blank = [b.model_copy(update={"text": text}) for b in blocks]
+    tree = build_section_tree(DOC_ID, None, "T", [(context, blank)], LANG)
+    section = tree.sections[1]
+    assert section.title is None and "untitled" in section.flags
+
+
+def test_suffix_stripped_by_position_on_normalized_text() -> None:
+    tree = build([[head("Straße"), para()], [head("STRASSE (TIẾP)"), para()]])
+    assert [(s.title, s.flags) for s in tree.sections[1:]] == [("Straße", ["continued_across_pages"])]
+    tree = build([[head("Alpha"), para()], [head("ALPHA   (Tiếp)"), para()]])
+    assert by_title(tree, "Alpha").flags == ["continued_across_pages"]

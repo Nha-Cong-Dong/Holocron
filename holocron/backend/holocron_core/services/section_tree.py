@@ -15,12 +15,18 @@ Quy tắc chốt:
 - Khối trước tiêu đề đầu tiên thuộc gốc chương (không tạo Section `untitled` riêng). Gốc có `page_start`/`page_end` bao
   mọi trang của tài liệu; các mục khác chỉ bao trang của khối của chính nó.
 - Tiêu đề rỗng sau khi bỏ hậu tố ⇒ `title = None` + `untitled`; không đoán tên.
-- `section_id` = `sec_` + 16 hex của sha256(document_id, đường dẫn thứ tự tổ tiên, thứ tự tạo).
+- Tiêu đề mở đầu bằng từ khoá của `LangPatterns.heading_keywords` + số (`Chương 2`, `Section 1.2`) có cấp quyết được
+  bằng số (độ sâu số chấm, La Mã = 1); từ khoá nằm trong config ngôn ngữ, không trong code.
+- `level_uncertain` chỉ khi cấp KHÔNG quyết được bằng đánh số (số trên tiêu đề, `a)`, hay cụm kiểu có tiêu đề đánh số) và
+  hai cụm cỡ quá gần.
+- `section_id` = `sec_` + sha256[:16] của JSON chuẩn hoá `["section", document_id, path]`, `path` = các cặp
+  `[tiêu đề chuẩn hoá, sibling_ordinal]` (0-based) của mọi Section từ cấp 1 tới nút (ADR-010 mục 4); gốc `path = []`.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import unicodedata
 from collections import Counter
@@ -41,7 +47,8 @@ MAX_SECTION_TITLE_CHARS = 300
 SECTION_FLAG_ORDER: tuple[SectionFlag, ...] = ("untitled", "continued_across_pages", "level_uncertain")
 _MAX_LEVEL = 6
 
-NumberKind = Literal["arabic", "roman", "letter"]
+NumberKind = Literal["arabic", "roman", "letter", "keyword"]
+PathItem = tuple[str, int]
 
 
 class SectionTreeSettings(BaseModel):
@@ -114,12 +121,13 @@ class _Node:
     ordinal: int
     level: int
     kind: NumberKind | None
-    path: tuple[int, ...]
+    path: tuple[PathItem, ...]
     section_id: str
     parent_id: str | None
     title: str | None
     key: str
     flags: set[SectionFlag] = field(default_factory=set)
+    child_count: int = 0
     heading_ids: list[str] = field(default_factory=list)
     block_ids: list[str] = field(default_factory=list)
     pages: list[int] = field(default_factory=list)
@@ -134,9 +142,11 @@ def _collapse(text: str) -> str:
     return " ".join(unicodedata.normalize("NFC", text).split())
 
 
-def _section_id(document_id: str, path: tuple[int, ...], ordinal: int) -> str:
-    raw = f"{document_id}\x1f{'/'.join(map(str, path))}\x1f{ordinal}".encode()
-    return "sec_" + hashlib.sha256(raw).hexdigest()[:16]
+def _section_id(document_id: str, path: tuple[PathItem, ...]) -> str:
+    """`sec_` + sha256[:16] của JSON chuẩn hoá `["section", document_id, path]` (ADR-010 mục 4)."""
+    payload = ["section", document_id, [[title, ordinal] for title, ordinal in path]]
+    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return "sec_" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
 def _majority(items: Sequence[tuple[Any, int]]) -> Any:
@@ -173,12 +183,22 @@ def _measure(block: Block, geometry: PageGeometry, digits: int) -> tuple[float |
 
 
 class _Numbering:
-    def __init__(self, settings: SectionTreeSettings) -> None:
+    def __init__(self, settings: SectionTreeSettings, lang: LangPatterns) -> None:
+        self.keyword: re.Pattern[str] | None = None
+        words = sorted({_collapse(k) for k in lang.heading_keywords if _collapse(k)}, key=lambda k: (-len(k), k))
+        if words:
+            alternatives = "|".join(re.escape(w) for w in words)
+            self.keyword = re.compile(
+                rf"^(?i:{alternatives})\s+(?P<num>\d{{1,2}}(?:\.\d{{1,2}}){{0,5}}|[IVXLC]{{1,6}})\b"
+            )
         self.arabic = re.compile(settings.arabic_pattern)
         self.roman = re.compile(settings.roman_pattern)
         self.letter = re.compile(settings.letter_pattern)
 
     def classify(self, text: str) -> tuple[NumberKind | None, int | None]:
+        if self.keyword is not None and (match := self.keyword.match(text)):
+            num = match.group("num")
+            return "keyword", len(num.split(".")) if num[0].isdigit() else 1
         if match := self.arabic.match(text):
             return "arabic", len(match.group("num").rstrip(".").split("."))
         if self.roman.match(text):
@@ -189,11 +209,14 @@ class _Numbering:
 
 
 def _strip_suffix(text: str, suffixes: Sequence[str]) -> tuple[str, bool]:
+    """Bỏ hậu tố nối trang; vị trí cắt tính trên chính `text` (đã chuẩn hoá), không trên bản casefold."""
     folded = text.casefold()
     for suffix in sorted(suffixes, key=len, reverse=True):
         needle = _collapse(suffix).casefold()
         if needle and folded.endswith(needle):
-            return text[: len(text) - len(needle)].strip(), True
+            for cut in range(len(text) - 1, -1, -1):
+                if text[cut:].casefold() == needle:
+                    return text[:cut].strip(), True
     return text, False
 
 
@@ -241,7 +264,7 @@ def _cluster_styles(heads: Sequence[_Head], settings: SectionTreeSettings) -> _S
     depths: dict[tuple[int, int], Counter[int]] = {}
     for head in heads:
         key = styles.key_of(head)
-        if key is not None and head.kind in ("arabic", "roman") and head.depth is not None:
+        if key is not None and head.kind in ("arabic", "roman", "keyword") and head.depth is not None:
             depths.setdefault(key, Counter())[head.depth] += 1
     numbered = {key: min(counter.items(), key=lambda item: (-item[1], item[0]))[0] for key, counter in depths.items()}
     return _Styles(rank, numbered, frozenset(uncertain), cluster_of)
@@ -257,9 +280,10 @@ def build_section_tree(
 ) -> SectionTree:
     """Dựng cây `Section` của tài liệu từ khối đã dựng của mọi trang (hàm thuần, tất định).
 
-    `lang` dùng cho hậu tố nối trang; `PageContext.lang` của từng trang cũng được tôn trọng khi đo tiêu đề.
+    `lang` (do người gọi truyền) là MỘT nguồn mẫu ngôn ngữ cho cả tài liệu: hậu tố nối trang và từ khoá tiêu đề;
+    nó thay `PageContext.lang` của từng trang.
     """
-    numbering = _Numbering(settings)
+    numbering = _Numbering(settings, lang)
     ordered = sorted(pages, key=lambda item: item[0].page_number)
     sequence: list[tuple[PageContext, Block]] = []
     for context, blocks in ordered:
@@ -271,7 +295,7 @@ def build_section_tree(
     styles = _cluster_styles(list(infos.values()), settings)
 
     root_title = _collapse(chapter_title)[:MAX_SECTION_TITLE_CHARS].strip() if chapter_title else ""
-    root = _Node(0, 0, None, (), _section_id(document_id, (), 0), None, root_title or None, root_title.casefold())
+    root = _Node(0, 0, None, (), _section_id(document_id, ()), None, root_title or None, root_title.casefold())
     if not root_title:
         root.flags.add("untitled")
     nodes: list[_Node] = [root]
@@ -291,14 +315,15 @@ def build_section_tree(
                 while stack[-1].level >= level:
                     stack.pop()
                 parent = stack[-1]
-                path = (*parent.path, parent.ordinal)
+                path = (*parent.path, (head.key, parent.child_count))
+                parent.child_count += 1
                 ordinal = len(nodes)
                 target = _Node(
                     ordinal,
                     level,
                     head.kind,
                     path,
-                    _section_id(document_id, path, ordinal),
+                    _section_id(document_id, path),
                     parent.section_id,
                     head.title or None,
                     head.key,
@@ -343,7 +368,7 @@ def build_section_tree(
 
 
 def _with_lang(context: PageContext, lang: LangPatterns) -> PageContext:
-    """Ngữ cảnh trang với mẫu ngôn ngữ do người gọi truyền (một nguồn cho cả tài liệu)."""
+    """Bản sao ngữ cảnh trang với `lang` của người gọi thay cho `PageContext.lang` (một nguồn cho cả tài liệu)."""
     return PageContext(
         context.document_id,
         context.page_number,
@@ -369,15 +394,17 @@ def _continuation_target(stack: Sequence[_Node], head: _Head, page: int) -> _Nod
 def _level_of(head: _Head, stack: Sequence[_Node], styles: _Styles) -> tuple[int, bool]:
     """Cấp danh nghĩa của tiêu đề mới và cờ `level_uncertain`."""
     key = styles.key_of(head)
-    uncertain = key is not None and key[0] in styles.uncertain_clusters
+    uncertain = False
     level: int
     if head.kind == "letter":
         top = stack[-1]
         level = top.level if top.kind == "letter" else top.level + 1
     elif head.depth is not None:
         level = head.depth
+    elif key is not None and key in styles.numbered_level:
+        level = styles.numbered_level[key]
     elif key is not None:
-        level = styles.numbered_level.get(key, styles.rank[key])
+        level, uncertain = styles.rank[key], key[0] in styles.uncertain_clusters
     else:
         level, uncertain = 1, True
     return min(max(level, 1), _MAX_LEVEL), uncertain
@@ -393,12 +420,8 @@ class SectionTreeStage:
         self.settings = settings or SectionTreeSettings()
 
     def fingerprint(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "version": SECTION_TREE_STAGE_VERSION,
-            "settings": self.settings.model_dump(),
-            "lang_sha256": self.lang.sha256(),
-        }
+        settings = {**self.settings.model_dump(), "lang_patterns_sha256": self.lang.sha256()}
+        return {"name": self.name, "version": SECTION_TREE_STAGE_VERSION, "settings": settings}
 
     def run(
         self,

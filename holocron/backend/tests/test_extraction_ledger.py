@@ -26,6 +26,7 @@ from holocron_core.domain.blocks import (
     WordRef,
 )
 from holocron_core.domain.documents import ExtractedLine, PageExtraction, PageGeometry
+from holocron_core.domain.schemas import quote_in_text
 from holocron_core.infrastructure.document_readers.pdf_reader import WorkerPdfReader
 from holocron_core.infrastructure.lang_patterns import load_lang_patterns
 from holocron_core.services.block_pipeline import PageBlocks, build_page_blocks
@@ -101,7 +102,13 @@ def test_pdf_blocks_keep_i3_and_types(
         kinds = Counter(block.type for block in built.blocks)
         assert kinds["heading"] >= 1 and kinds["header_footer"] >= 1 and kinds["page_number"] == 1
         for block in built.blocks:
-            assert block.text == " ".join(index.text(ref) for ref in block.line_refs)
+            joined = " ".join(index.text(ref) for ref in block.line_refs)
+            if block.type == "code":
+                # ADR-010 mục 7 (`code`): giữ dòng, khoảng trắng dựng lại từ x ⇒ I3 sau NFC + gộp khoảng trắng.
+                assert block.text is not None and quote_in_text(joined, block.text)
+                assert "".join(block.text.split()) == "".join(joined.split())
+            else:
+                assert block.text == joined
             assert unicodedata.is_normalized("NFC", block.text)
         assert built.ledger is not None and built.ledger.balanced
         assert {t.type: t.count for t in built.ledger.by_type}["page_number"] == len(str(extraction.page_number))

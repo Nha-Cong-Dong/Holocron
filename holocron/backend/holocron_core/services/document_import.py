@@ -1782,10 +1782,15 @@ def remove_orphan_files(store: DocumentRepository, files: OriginalFiles) -> list
 # --------------------------------------------------------------------------- #
 
 
-def _has_text(page: PageExtraction) -> bool:
+def page_has_text(page: PageExtraction) -> bool:
     """Trang có ít nhất một dòng có chữ (không tính dòng rỗng hay chỉ có khoảng trắng, và từ GĐ0 không tính dòng
-    header/footer)."""
+    header/footer). MỘT định nghĩa cho xác nhận (§5.7 "Chốt trạng thái") và "trang có nội dung" của cây (§6.10)."""
     return any(line.text.strip() and not line.is_header_footer for line in page.lines)
+
+
+def _has_text(page: PageExtraction) -> bool:
+    """Tên cũ của `page_has_text` (giữ cho nơi gọi trong module và test)."""
+    return page_has_text(page)
 
 
 def _page_key(document_id: str, page_number: int) -> str:

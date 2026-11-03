@@ -1021,3 +1021,184 @@ export interface ValidationErrorItem {
   msg: string;
   type: string;
 }
+
+// ------------------------------------------------------------------------------------------ khối, mục (§5.15, §6.10)
+
+/** Loại khối (ADR-010 mục 2), thứ tự khai báo của `BlockType`. */
+export type BlockType =
+  | "heading"
+  | "paragraph"
+  | "list_item"
+  | "table"
+  | "figure"
+  | "formula"
+  | "code"
+  | "caption"
+  | "header_footer"
+  | "page_number";
+
+/** Cờ của khối (ADR-010 mục 3), sắp theo thứ tự khai báo, không trùng. */
+export type BlockFlag =
+  | "crop_pending"
+  | "crop_failed"
+  | "crop_capped"
+  | "table_unresolved"
+  | "table_token_mismatch"
+  | "boxed"
+  | "formula_text_unverified"
+  | "code_layout_uncertain"
+  | "layout_uncertain"
+  | "reading_order_uncertain"
+  | "figure_label_text"
+  | "text_occluded"
+  | "low_text_contrast"
+  | "font_encoding_suspect"
+  | "human_edited"
+  | "too_short_for_chunk"
+  | "ai_proposal_applied"
+  | "ai_proposal_rejected"
+  | "vlm_invalid"
+  | "vlm_gate_rejected";
+
+export type SemanticLabel = "definition" | "example" | "exercise";
+
+/** Hộp chuẩn hoá [x0, y0, x1, y1] ∈ [0, 1], gốc trên-trái. */
+export type UnitBBox = [number, number, number, number];
+
+/** Tham chiếu nguồn của khối, phân biệt theo `kind` (ADR-010 mục 3). */
+export type SourceRef =
+  | { kind: "word"; line_idx: number; word_idx: number }
+  | { kind: "ocr_word"; line_idx: number; word_idx: number }
+  | { kind: "confirmed_line"; line_index: number };
+
+export interface TableCell {
+  text: string;
+  line_refs: SourceRef[];
+  row: number;
+  col: number;
+  rowspan: number;
+  colspan: number;
+}
+
+/** Một khối của trang (§5.15); mọi field do backend dựng, frontend chỉ hiển thị. */
+export interface Block {
+  block_id: string;
+  document_id: string;
+  page_number: number;
+  type: BlockType;
+  bbox: UnitBBox | null;
+  text: string | null;
+  line_refs: SourceRef[];
+  label_line_refs: SourceRef[];
+  labels: string[];
+  level: number | null;
+  list_depth: number | null;
+  cells: TableCell[][] | null;
+  caption_of: string | null;
+  semantic_label: SemanticLabel | null;
+  flags: BlockFlag[];
+  crop_ref: string | null;
+  source: "text_layer" | "ocr" | "vlm";
+  ocr_text: string | null;
+  reading_order: number;
+}
+
+export type SectionFlag = "untitled" | "continued_across_pages" | "level_uncertain";
+
+/** Một nút của cây theo từng tài liệu (§5.15): gốc `chapter` (`level` 0), mục `section` (`level` 1–6). */
+export interface Section {
+  section_id: string;
+  document_id: string;
+  parent_id: string | null;
+  kind: "chapter" | "section";
+  level: number;
+  chapter_code: string | null;
+  title: string | null;
+  heading_block_ids: string[];
+  block_ids: string[];
+  ordinal: number;
+  page_start: number;
+  page_end: number;
+  flags: SectionFlag[];
+}
+
+export type LedgerBasis = "pdfium" | "confirmed_lines" | "ocr";
+
+export interface LedgerDrop {
+  reason: "hidden";
+  count: number;
+}
+
+export interface LedgerBasisCount {
+  ledger_basis: LedgerBasis;
+  source_count: number;
+  assigned_count: number;
+  dropped: LedgerDrop[];
+}
+
+export interface LedgerTypeCount {
+  type: BlockType;
+  count: number;
+}
+
+export interface LedgerFlagCount {
+  reason: "occluded" | "low_contrast";
+  count: number;
+}
+
+/** Sổ bảo toàn của một trang (ADR-010 mục 6); số đếm do backend tính. */
+export interface ExtractionLedger {
+  document_id: string;
+  page_number: number;
+  unit: "nonws_nfc_codepoint";
+  bases: LedgerBasisCount[];
+  by_type: LedgerTypeCount[];
+  flagged: LedgerFlagCount[];
+  page_drop_reason: "cover_or_course_nav" | "chapter_nav" | "build_step" | null;
+  balanced: boolean;
+}
+
+/** Nút cây mục của `GET /v1/vault/tree` (§6.10): Section và các con theo `ordinal`. */
+export interface SectionNode {
+  section: Section;
+  children: SectionNode[];
+}
+
+/** "Nguồn" = một tài liệu đã đóng (§6.10); danh sách trang do backend đếm (tăng dần), frontend chỉ hiển thị. */
+export interface SourceNode {
+  document_id: string;
+  title: string;
+  source_kind: SourceKind;
+  chapter_code: string | null;
+  chapter_title: string | null;
+  layout_version: number | null;
+  chunks_from_lines: boolean;
+  chapter_shared_with: string[];
+  root: SectionNode | null;
+  layout_failed_pages: number[];
+  pages_without_blocks: number[];
+  pages_unconfirmable_with_blocks: number[];
+}
+
+/** `GET /v1/vault/tree` (§6.10): môn và các nguồn đã đóng, sắp theo số chương, `uploaded_at`, `document_id`. */
+export interface SubjectTree {
+  subject_code: string;
+  display_name: string;
+  sources: SourceNode[];
+}
+
+/** `GET /v1/documents/{id}/sections/{section_id}/blocks` (§6.10): khối đủ điều kiện của mục; `total` do backend đếm. */
+export interface SectionBlocks {
+  section: Section;
+  total: number;
+  blocks: Block[];
+}
+
+/** `GET /v1/documents/{id}/pages/{n}/blocks` (§6.10): mọi khối của trang và ledger (null khi chưa có). */
+export interface PageBlockList {
+  document_id: string;
+  page_number: number;
+  layout_version: number | null;
+  blocks: Block[];
+  ledger: ExtractionLedger | null;
+}

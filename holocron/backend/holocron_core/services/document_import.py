@@ -1997,61 +1997,51 @@ def _rebuild_after_edit(
 ) -> PageExtraction:
     """`PATCH …/lines` trên tài liệu có khối lưu (C6), người gọi giữ khoá của tài liệu.
 
-    (1) Tính kế hoạch dựng lại (`plan_rebuild`) trên trạng thái kho với trang đã sửa; (2) ghi trang đã sửa (kèm
-    `LAYOUT_FAILED` tính lại) CÙNG `PageEditAudit` (`update_page`); (3) lưu NGUYÊN TỬ khối, ledger, version/hash mới
-    và các trang khác đổi (`LAYOUT_FAILED`, bỏ tự xác nhận) bằng `save_document_layout`. Hàng trang khác lệch version ở
-    (3) ⇒ đọc lại và tính lại tối đa `SETTLE_ATTEMPTS` lần; hết lượt ⇒ ném `VersionConflictError`.
-
-    Kho chưa có method ghi `PageEditAudit` cùng giao dịch `save_document_layout` nên (2) và (3) là HAI giao dịch, cùng
-    dưới khoá của tài liệu (mọi đường ghi trang của tài liệu đã đọc xong đều lấy khoá này).
+    (1) Tính kế hoạch dựng lại (`plan_rebuild`) trên trạng thái kho với trang đã sửa; (2) lưu NGUYÊN TỬ trong MỘT
+    giao dịch (`save_document_layout`, ADR-010 mục 13): trang đã sửa (kèm `LAYOUT_FAILED` tính lại) CÙNG
+    `PageEditAudit` (`PageRewrite.audit`), khối, ledger, version/hash mới và các trang khác đổi (`LAYOUT_FAILED`, bỏ
+    tự xác nhận). Lỗi giữa chừng ⇒ không ghi gì (không audit, không trang, không khối). Trang vừa sửa lệch version ⇒
+    `VersionConflictError` ngay (như `update_page`); chỉ trang khác lệch ⇒ đọc lại và tính lại tối đa
+    `SETTLE_ATTEMPTS` lần; hết lượt ⇒ ném `VersionConflictError`, trang chưa được sửa.
     """
     document_id = document.meta.doc_id
     page_number = page.page_number
-    plan, changed = _plan_rebuild(store, document, page_number, edited, layout)
-    final = changed.pop(page_number, edited)
-    audit = PageEditAudit(
-        document_id=document_id,
-        page_number=page_number,
-        from_version=page.version,
-        to_version=final.version,
-        editor_id=patch.editor_id,
-        changes=changes,
-        at=now,
-    )
-    store.update_page(
-        document_id,
-        page_number,
-        final,
-        status=final.status,
-        confirmed=False,
-        expected_version=page.version,
-        audit=audit,
-    )
-    for attempt in range(1, SETTLE_ATTEMPTS + 1):
-        if attempt > 1:
-            plan, changed = _plan_rebuild(store, document, page_number, final, layout)
-            changed.pop(page_number, None)
+    attempt = 1
+    while True:
+        plan, changed = _plan_rebuild(store, document, page_number, edited, layout)
+        final = changed.pop(page_number, edited).model_copy(update={"version": page.version + 1, "confirmed": False})
+        audit = PageEditAudit(
+            document_id=document_id,
+            page_number=page_number,
+            from_version=page.version,
+            to_version=final.version,
+            editor_id=patch.editor_id,
+            changes=changes,
+            at=now,
+        )
         stored = {item.page_number: item for item in store.list_pages(document_id, PageExtraction)}
-        rewrites = [
+        rewrites = [PageRewrite(page=final, expected_version=page.version, audit=audit)] + [
             PageRewrite(
                 page=updated.model_copy(update={"version": stored[number].version + 1}),
                 expected_version=stored[number].version,
             )
-            for number, updated in sorted(changed.items())
+            for number, updated in changed.items()
         ]
+        rewrites.sort(key=lambda rewrite: rewrite.page.page_number)
         try:
             store.save_document_layout(document_id, plan.model_copy(update={"page_rewrites": rewrites}))
             return final
         except VersionConflictError:
-            if attempt == SETTLE_ATTEMPTS:
+            current = store.get_page(document_id, page_number, PageExtraction)
+            if current is None or current.version != page.version or attempt == SETTLE_ATTEMPTS:
                 _LOGGER.warning(
-                    "đã sửa trang %d của tài liệu %s nhưng chưa lưu được khối dựng lại sau %d lần (version lệch)",
+                    "chưa lưu được trang %d của tài liệu %s cùng khối dựng lại (version lệch, lần %d)",
                     page_number,
                     document_id,
-                    SETTLE_ATTEMPTS,
+                    attempt,
                 )
                 raise
-    return final
+        attempt += 1
 
 
 def _store_confirmed(store: DocumentRepository, page: PageExtraction, now: datetime) -> PageExtraction:

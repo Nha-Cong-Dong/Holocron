@@ -772,6 +772,9 @@ class IngestionStore:
                 self._pages[(document_id, page.page_number)] = _StoredPage.of(
                     page, page.status, page.confirmed, rewrite.expected_version + 1
                 )
+                if rewrite.audit is not None:
+                    audits = self._page_audits.setdefault((document_id, page.page_number), [])
+                    audits.append(rewrite.audit.model_copy(deep=True))
             for page_layout in layout.pages:
                 number = page_layout.page_number
                 for key in [k for k, b in self._blocks.items() if k[0] == document_id and b.page_number == number]:

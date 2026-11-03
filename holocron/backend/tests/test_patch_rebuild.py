@@ -8,15 +8,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from holocron_core.domain.blocks import Block, WordRef
 from holocron_core.domain.documents import (
     LineEdit,
     PageConfirmRequest,
+    PageEditAudit,
     PageExtraction,
     PageLinesPatch,
     PageUnconfirmRequest,
 )
-from holocron_core.domain.repositories import AppStore
+from holocron_core.domain.repositories import AppStore, DocumentLayout, PageRewrite
 from holocron_core.services.document_import import (
     ImportRuntime,
     confirm_page,
@@ -219,3 +223,64 @@ def test_rebuild_reopens_auto_confirmed_page_that_becomes_layout_failed(store: A
     assert not second.confirmed and second.confirmed_by is None and not second.auto_confirm_undone
     assert store.list_blocks(doc_id, 2) == []
     assert pages_of(store, doc_id)[2].confirmed_by == "auto"
+
+
+def _foreign(layout: DocumentLayout) -> DocumentLayout:
+    """Cùng kế hoạch nhưng khối của trang cuối thuộc tài liệu khác: kho ném `ValueError` GIỮA giao dịch, sau khi đã
+    ghi hàng trang và audit (bản SQLite) — dùng để kiểm rollback."""
+    last = layout.pages[-1]
+    blocks = [block.model_copy(update={"document_id": "doc_" + "0" * 16}) for block in last.blocks]
+    return layout.model_copy(update={"pages": [*layout.pages[:-1], last.model_copy(update={"blocks": blocks})]})
+
+
+def test_patch_rebuild_is_one_transaction_with_audit(
+    store: AppStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-010 mục 13 / C6: PATCH dựng lại là MỘT giao dịch gồm trang, `PageEditAudit`, khối, ledger. Lỗi giữa chừng
+    ⇒ không còn audit, hàng trang, khối hay ledger mới; lần PATCH sau (kho bình thường) ghi đủ cả bốn."""
+    pages = [text_page("1. Gioi thieu", extra=("Doan thu hai noi ve thanh ghi va co bao loi",)), *THREE[1:]]
+    runtime = runtime_for(tmp_path)
+    doc_id = import_doc(store, runtime, GeoReader(pages), auto_confirm=False)
+    before_pages = pages_of(store, doc_id)
+    before_blocks = store.list_blocks(doc_id)
+    before_ledgers = store.list_extraction_ledgers(doc_id)
+    real_save = store.save_document_layout
+    monkeypatch.setattr(
+        store, "save_document_layout", lambda document_id, layout: real_save(document_id, _foreign(layout))
+    )
+    with pytest.raises(ValueError, match="không thuộc tài liệu"):
+        _patch(store, runtime, doc_id, 1, {3: "Doan thu hai da sua boi nguoi dung"})
+    assert store.list_page_audits(doc_id, 1) == []
+    assert pages_of(store, doc_id) == before_pages
+    assert store.list_blocks(doc_id) == before_blocks
+    assert store.list_extraction_ledgers(doc_id) == before_ledgers
+    monkeypatch.undo()
+    edited = _patch(store, runtime, doc_id, 1, {3: "Doan thu hai da sua boi nguoi dung"})
+    [audit] = store.list_page_audits(doc_id, 1)
+    assert (audit.from_version, audit.to_version) == (before_pages[0].version, edited.version)
+    assert pages_of(store, doc_id)[0] == edited
+    assert store.list_blocks(doc_id, 1) != [b for b in before_blocks if b.page_number == 1]
+
+
+def test_page_rewrite_rejects_audit_of_another_step(store: AppStore, tmp_path: Path) -> None:
+    """`PageRewrite.audit` phải thuộc đúng trang và đúng bước version (`from = expected`, `to = page.version`)."""
+    runtime = runtime_for(tmp_path)
+    doc_id = import_doc(store, runtime, GeoReader(list(THREE)), auto_confirm=False)
+    page = pages_of(store, doc_id)[0]
+    written = page.model_copy(update={"version": page.version + 1})
+
+    def audit(number: int, start: int) -> PageEditAudit:
+        return PageEditAudit(
+            document_id=doc_id,
+            page_number=number,
+            from_version=start,
+            to_version=start + 1,
+            editor_id="u",
+            changes=[],
+            at=NOW,
+        )
+
+    PageRewrite(page=written, expected_version=page.version, audit=audit(1, page.version))
+    for bad in (audit(2, page.version), audit(1, page.version + 1)):
+        with pytest.raises(ValidationError):
+            PageRewrite(page=written, expected_version=page.version, audit=bad)

@@ -394,13 +394,13 @@ class VisionReader:
         if provider is None:
             return VisionSkipped(reason="no_provider")
         if not self._take_region_slot(document_id, page_number):
-            self._recorder.record(provider.provider_id, _zero_usage(), reserved=estimate)
+            self._recorder.release(provider.reservation_id)
             logger.info("vượt trần vùng VLM của tài liệu/trang: region_cap")
             return VisionSkipped(reason="region_cap")
         key = ai_cache_key(KIND, image.sha256, provider.model, PROMPT_VERSION)
         cached = self._from_cache(key, document_id, image.sha256)
         if cached is not None:
-            self._recorder.record(provider.provider_id, _zero_usage(), reserved=estimate)
+            self._recorder.release(provider.reservation_id)
             return cached
         return self._call(document_id, image, provider, estimate)
 
@@ -430,17 +430,17 @@ class VisionReader:
             client = self._client_factory(provider)
             result = client.complete([_message(image, retry=retry)], max_tokens=self._settings.limits.max_tokens)
         except ConfigError:
-            self._recorder.record(provider.provider_id, _zero_usage(), reserved=estimate)
+            self._recorder.release(provider.reservation_id)
             logger.warning("cấu hình nhà cung cấp VLM không dùng được: upstream_error")
             return "upstream_error"
         except ImageTooLargeError:
-            self._recorder.record(provider.provider_id, _zero_usage(), reserved=estimate)
+            self._recorder.release(provider.reservation_id)
             return "upstream_error"
         except LlmUpstreamError as exc:
-            sent = exc.attempts > 0
-            self._recorder.record(
-                provider.provider_id, _worst_case(estimate) if sent else _zero_usage(), reserved=estimate
-            )
+            if exc.attempts > 0:  # đã gửi: ghi chi phí ước tính bảo thủ
+                self._recorder.record(provider.reservation_id, _worst_case(estimate))
+            else:
+                self._recorder.release(provider.reservation_id)
             status = _failure_status(exc)
             logger.warning("gọi VLM thất bại: %s", status)
             return status
@@ -450,7 +450,7 @@ class VisionReader:
             if usage is not None
             else _worst_case(estimate)
         )
-        self._recorder.record(provider.provider_id, recorded, reserved=estimate)
+        self._recorder.record(provider.reservation_id, recorded)
         return result
 
     def _call(
@@ -499,10 +499,6 @@ class VisionReader:
             result_json=_CachedBlocks(blocks=blocks).model_dump_json(),
         )
         self._cache.put_ai_cache(entry, document_id, now=self._clock())
-
-
-def _zero_usage() -> AiUsage:
-    return AiUsage(input_tokens=0, output_tokens=0, images=0, estimated=False)
 
 
 def _worst_case(estimate: CostEstimate) -> AiUsage:

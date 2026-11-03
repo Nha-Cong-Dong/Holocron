@@ -35,6 +35,7 @@ VLM_ENV = {
     "HOLOCRON_VLM_MODEL": "vision-model-x",
 }
 ESTIMATE = CostEstimate(input_tokens=1000, max_output_tokens=1000, images=1)
+ONE_IMAGE = AiUsage(input_tokens=0, output_tokens=0, images=1, estimated=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -198,17 +199,17 @@ def test_budget_exhausted_falls_to_next_provider_then_offline() -> None:
     selection = ProviderSelection(lambda: providers, ledger)
     first = selection.select("vlm", ESTIMATE)
     assert first is not None and first.provider_id == "usr_a"
-    selection.record("usr_a", AiUsage(input_tokens=0, output_tokens=0, images=1, estimated=False), reserved=ESTIMATE)
+    selection.record(first.reservation_id, ONE_IMAGE)
     assert ledger.spent_usd("usr_a") == pytest.approx(0.1) and ledger.reserved_usd("usr_a") == 0.0
     second = selection.select("vlm", ESTIMATE)
     assert second is not None and second.provider_id == "usr_b"
     assert selection.select("vlm", ESTIMATE) is None  # usr_b đang giữ chỗ hết trần
     assert not selection.budget_exhausted("vlm")
-    selection.record("usr_b", AiUsage(input_tokens=0, output_tokens=0, images=1, estimated=False), reserved=ESTIMATE)
+    selection.record(second.reservation_id, ONE_IMAGE)
     assert selection.budget_exhausted("vlm")
 
 
-def test_parallel_selection_never_exceeds_budget() -> None:
+def test_parallel_selection_with_record_never_exceeds_budget() -> None:
     budget = 1.0
     providers = [_candidate("usr_a", priority=1, budget=budget)]
     ledger = InMemorySpendLedger()
@@ -224,9 +225,7 @@ def test_parallel_selection_never_exceeds_budget() -> None:
             return
         with lock:
             granted.append(1)
-        selection.record(
-            chosen.provider_id, AiUsage(input_tokens=0, output_tokens=0, images=1, estimated=False), reserved=ESTIMATE
-        )
+        selection.record(chosen.reservation_id, ONE_IMAGE)
 
     threads = [threading.Thread(target=call) for _ in range(32)]
     for thread in threads:
@@ -246,3 +245,72 @@ def test_ai_cache_key_changes_with_every_component() -> None:
     assert base != ai_cache_key("vlm_region", sha, "m", "v2")
     assert base != ai_cache_key("structure_proposal", sha, "m", "v1")
     assert base != ai_cache_key("vlm_region", "b" * 64, "m", "v1")
+
+
+def test_release_frees_the_reservation_without_spending() -> None:
+    providers = [_candidate("usr_a", priority=1, budget=0.1)]
+    ledger = InMemorySpendLedger()
+    selection = ProviderSelection(lambda: providers, ledger)
+    chosen = selection.select("vlm", ESTIMATE)
+    assert chosen is not None and ledger.reserved_usd("usr_a") > 0
+    assert selection.select("vlm", ESTIMATE) is None
+    selection.release(chosen.reservation_id)
+    selection.release(chosen.reservation_id)  # nhả lần hai không làm gì
+    assert ledger.reserved_usd("usr_a") == 0.0 and ledger.spent_usd("usr_a") == 0.0
+    assert selection.select("vlm", ESTIMATE) is not None
+
+
+def test_reservation_ids_are_unique_and_unknown_ids_are_ignored() -> None:
+    providers = [_candidate("usr_a", priority=1, budget=10)]
+    ledger = InMemorySpendLedger()
+    selection = ProviderSelection(lambda: providers, ledger)
+    ids = set()
+    for _ in range(20):
+        chosen = selection.select("vlm", ESTIMATE)
+        assert chosen is not None
+        ids.add(chosen.reservation_id)
+    assert len(ids) == 20
+    selection.record("khong-co", ONE_IMAGE)
+    assert ledger.spent_usd("usr_a") == 0.0
+
+
+def test_peek_never_reserves_or_exhausts_the_budget() -> None:
+    providers = [_candidate("usr_a", priority=1, budget=0.1), _candidate("usr_b", priority=2, budget=0.1)]
+    ledger = InMemorySpendLedger()
+    selection = ProviderSelection(lambda: providers, ledger)
+    for _ in range(100):
+        preview = selection.peek("vlm")
+        assert preview is not None and preview.provider_id == "usr_a"
+    assert ledger.reserved_usd("usr_a") == 0.0 and ledger.spent_usd("usr_a") == 0.0
+    assert not selection.budget_exhausted("vlm")
+    chosen = selection.select("vlm", ESTIMATE)
+    assert chosen is not None and chosen.provider_id == "usr_a"
+    assert selection.peek("llm") is None
+    selection.record(chosen.reservation_id, ONE_IMAGE)
+    preview = selection.peek("vlm")
+    assert preview is not None and preview.provider_id == "usr_b"
+    assert "k" * 16 not in repr(preview)
+
+
+def test_budget_reservation_blocks_concurrent_overspend() -> None:
+    providers = [_candidate("usr_a", priority=1, budget=0.15)]  # đủ cho đúng một lời gọi (0.1 USD)
+    ledger = InMemorySpendLedger()
+    selection = ProviderSelection(lambda: providers, ledger)
+    barrier = threading.Barrier(16)
+    chosen: list[str] = []
+    lock = threading.Lock()
+
+    def call() -> None:
+        barrier.wait()
+        picked = selection.select("vlm", ESTIMATE)
+        if picked is not None:
+            with lock:
+                chosen.append(picked.reservation_id)
+
+    threads = [threading.Thread(target=call) for _ in range(16)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(chosen) == 1
+    assert ledger.reserved_usd("usr_a") == pytest.approx(0.1)

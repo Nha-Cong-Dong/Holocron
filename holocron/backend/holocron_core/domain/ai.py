@@ -124,7 +124,8 @@ class ProviderCandidate(BaseModel):
 
 
 class SelectedProvider(BaseModel):
-    """Nhà cung cấp được chọn cho một lời gọi (nội bộ; KHÔNG ra response, log hay exception)."""
+    """Nhà cung cấp được chọn cho một lời gọi (nội bộ; KHÔNG ra response, log hay exception). `reservation_id` là id
+    chỗ giữ (chi phí tối đa của lời gọi) do `select` tạo, dùng cho `UsageRecorder.record`/`release`."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -134,6 +135,17 @@ class SelectedProvider(BaseModel):
     model: str = Field(repr=False)
     local: bool
     ip_policy: IpPolicy
+    reservation_id: str = Field(min_length=1)
+
+
+class ProviderPreview(BaseModel):
+    """Nhà cung cấp `select` sẽ chọn lúc này cho trạng thái (`ai_status`); KHÔNG có khoá, endpoint hay chỗ giữ."""
+
+    model_config = ConfigDict(frozen=True)
+
+    provider_id: str
+    label: str
+    local: bool
 
 
 class AiConsent(Protocol):
@@ -148,10 +160,18 @@ class ProviderSelector(Protocol):
         `estimate` được GIỮ CHỖ nguyên tử cùng lúc kiểm trần. Không còn ⇒ `None` (lùi offline)."""
         ...
 
+    def peek(self, role: AiRole) -> ProviderPreview | None:
+        """Xem trước nhà cung cấp sẽ chọn cho `role` (nhóm chưa tiêu hết trần) mà KHÔNG giữ chỗ hay đổi số dư."""
+        ...
+
 
 class UsageRecorder(Protocol):
-    def record(self, provider_id: str, usage: AiUsage, *, reserved: CostEstimate | None = None) -> None:
-        """Ghi chi phí thật của một lời gọi; `reserved` là ước tính đã giữ chỗ lúc `select` (được trả lại)."""
+    def record(self, reservation_id: str, usage: AiUsage) -> None:
+        """Sau lời gọi (kể cả lỗi SAU khi đã gửi, `usage` ước tính bảo thủ): cộng chi phí thật và nhả chỗ, cùng khoá."""
+        ...
+
+    def release(self, reservation_id: str) -> None:
+        """Lỗi TRƯỚC khi gửi request (hoặc không gửi, ví dụ trúng cache): chỉ nhả chỗ, không cộng chi phí."""
         ...
 
 

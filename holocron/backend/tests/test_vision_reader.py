@@ -11,7 +11,7 @@ import pytest
 from pydantic import SecretStr
 
 from holocron_core.domain.llm import ImageUrlPart, LlmUpstreamError, TextPart, TokenUsage
-from holocron_core.infrastructure.llm_config import VlmSettings
+from holocron_core.infrastructure.llm_config import ConfigError, VlmSettings
 from holocron_core.infrastructure.vision_reader import (
     PROMPT_V1,
     PROMPT_VERSION,
@@ -24,7 +24,7 @@ from holocron_core.infrastructure.vision_reader import (
     openai_client_factory,
     parse_vlm_blocks,
 )
-from tests.vision_support import DOC, MODEL, SECRET, Harness, Switch, candidate, region_image
+from tests.vision_support import DOC, MODEL, SECRET, Harness, StubClient, Switch, candidate, region_image
 
 PARAGRAPH = json.dumps([{"type": "paragraph", "text": "Thanh ghi R13 = 42"}], ensure_ascii=False)
 
@@ -241,3 +241,27 @@ def test_key_endpoint_and_model_never_logged(caplog: pytest.LogCaptureFixture) -
     assert result.status == "upstream_error"
     for text in (caplog.text, repr(result), repr(harness.providers[0])):
         assert SECRET not in text and "vision.example.test" not in text and MODEL not in text
+
+
+def test_budget_release_on_presend_error_and_estimate_on_postsend_error() -> None:
+    def broken(provider: object) -> StubClient:
+        raise ConfigError("HOLOCRON_VLM_BASE_URL không hợp lệ")
+
+    presend = Harness([PARAGRAPH], client_factory=broken)
+    assert _result(presend.reader.read_region(DOC, 1, region_image())).status == "upstream_error"
+    assert presend.ledger.reserved_usd("env_vlm") == 0.0 and presend.ledger.spent_usd("env_vlm") == 0.0
+    unsent = Harness([LlmUpstreamError("không dựng được yêu cầu", attempts=0)])
+    _result(unsent.reader.read_region(DOC, 1, region_image()))
+    assert unsent.ledger.spent_usd("env_vlm") == 0.0 and unsent.ledger.reserved_usd("env_vlm") == 0.0
+    postsend = Harness([LlmUpstreamError("LLM từ chối yêu cầu (HTTP 500)", attempts=1)])
+    _result(postsend.reader.read_region(DOC, 1, region_image()))
+    assert postsend.ledger.spent_usd("env_vlm") > 0.0 and postsend.ledger.reserved_usd("env_vlm") == 0.0
+
+
+def test_cache_hit_and_region_cap_release_the_reservation() -> None:
+    harness = Harness([PARAGRAPH], settings=VisionReaderSettings(max_regions_per_document=1))
+    image = region_image()
+    _result(harness.reader.read_region(DOC, 1, image))
+    spent = harness.ledger.spent_usd("env_vlm")
+    assert harness.reader.read_region(DOC, 2, image) == VisionSkipped(reason="region_cap")
+    assert harness.ledger.reserved_usd("env_vlm") == 0.0 and harness.ledger.spent_usd("env_vlm") == spent

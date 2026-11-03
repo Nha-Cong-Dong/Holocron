@@ -98,6 +98,29 @@ def test_put_without_configured_token_is_403_even_with_an_invalid_body(file_stor
     assert response.json()["code"] == "token_not_configured"
 
 
+def test_put_without_configured_token_is_403_before_any_409(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Fail-closed: chưa đặt token thì 403 thắng cả khoá env lẫn kho không lưu được (không lộ trạng thái cấu hình).
+    monkeypatch.setenv("HOLOCRON_AI_CONSENT", "1")
+    response = _settings_client(UnpersistedAiConsentStore(), None).put(CONSENT_URL, json={"enabled": True})
+    assert response.status_code == 403
+    assert response.json()["code"] == "token_not_configured"
+
+
+def test_main_app_serves_ai_consent_and_put_is_fail_closed(file_store: FileAiConsentStore) -> None:
+    main_app.dependency_overrides[deps.get_ai_consent_store] = lambda: file_store
+    main_app.dependency_overrides[get_required_token] = lambda: None
+    try:
+        client = TestClient(main_app)
+        assert client.get(CONSENT_URL).json()["source"] == "default"
+        response = client.put(CONSENT_URL, json={"enabled": True})
+    finally:
+        main_app.dependency_overrides.pop(deps.get_ai_consent_store, None)
+        main_app.dependency_overrides.pop(get_required_token, None)
+    assert response.status_code == 403
+    assert response.json()["code"] == "token_not_configured"
+    assert not file_store.path.exists()
+
+
 @pytest.mark.parametrize("headers", [{}, {"X-Holocron-Token": "sai"}], ids=["missing", "wrong"])
 def test_put_with_missing_or_wrong_token_is_403_and_writes_nothing(
     file_store: FileAiConsentStore, headers: dict[str, str]

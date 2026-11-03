@@ -10,7 +10,7 @@ import urllib.request
 import pytest
 from pydantic import SecretStr
 
-from holocron_core.domain.llm import ImageUrlPart, LlmUpstreamError, TextPart, TokenUsage
+from holocron_core.domain.llm import ImageUrlPart, LlmTimeoutError, LlmUpstreamError, TextPart, TokenUsage
 from holocron_core.infrastructure.llm_config import ConfigError, VlmSettings
 from holocron_core.infrastructure.vision_reader import (
     PROMPT_V1,
@@ -212,7 +212,7 @@ def test_too_many_blocks_or_table_cells_are_rejected() -> None:
 @pytest.mark.parametrize(
     ("error", "status"),
     [
-        (LlmUpstreamError("hết hạn thời gian tổng của lần gọi LLM", attempts=1), "timeout"),
+        (LlmTimeoutError("hết hạn thời gian tổng của lần gọi LLM", attempts=1), "timeout"),
         (LlmUpstreamError("LLM không phản hồi được sau 3 lần thử (HTTP 429)", attempts=3), "upstream_error"),
     ],
 )

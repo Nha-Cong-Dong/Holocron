@@ -12,6 +12,8 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from holocron_core.domain.ai import AiCacheEntry, ai_cache_key
 from holocron_core.domain.repositories import AppStore
@@ -20,6 +22,9 @@ from holocron_core.infrastructure.memory_store import IngestionStore
 from holocron_core.infrastructure.storage.connection import connect
 from holocron_core.infrastructure.storage.sqlite_store import SQLiteStore
 from holocron_core.infrastructure.vision_reader import VisionSkipped, VlmRegionResult
+from holocron_core.routers import deps
+from holocron_core.routers import settings as settings_router
+from holocron_core.routers.access import LocalAccessMiddleware, get_allowed_hosts, get_required_token
 from tests.vault_support import STORE_KINDS, add_document, open_store
 from tests.vision_support import MODEL, NOW, Harness, Switch, candidate, region_image
 
@@ -174,3 +179,44 @@ def test_ttl_expires_rows(kind: str, tmp_path: Path) -> None:
 
 def _connect(tmp_path: Path) -> sqlite3.Connection:
     return connect(tmp_path / "capped.sqlite3")
+
+
+# --------------------------------------------------------------------------- #
+# DELETE /v1/settings/ai-cache (spec §6.11; ADR-009 mục 12.7)
+# --------------------------------------------------------------------------- #
+
+TOKEN = "t" * 43
+
+
+def _settings_app(store: AppStore, token: str | None) -> TestClient:
+    app = FastAPI()
+    app.add_middleware(LocalAccessMiddleware, overrides=lambda: app.dependency_overrides)
+    app.include_router(settings_router.router)
+    app.dependency_overrides[deps.get_store] = lambda: store
+    app.dependency_overrides[get_required_token] = lambda: token
+    app.dependency_overrides[get_allowed_hosts] = lambda: frozenset({"testserver"})
+    return TestClient(app)
+
+
+def test_settings_write_forbidden_without_token(store: AppStore) -> None:
+    store.put_ai_cache(_entry("a"), DOC_A, now=NOW)
+    response = _settings_app(store, None).delete("/v1/settings/ai-cache")
+    assert response.status_code == 403
+    assert response.json() == {
+        "detail": settings_router.TOKEN_NOT_CONFIGURED_DETAIL,
+        "code": "token_not_configured",
+    }
+    client = _settings_app(store, TOKEN)
+    assert client.delete("/v1/settings/ai-cache").status_code == 403
+    assert client.delete("/v1/settings/ai-cache", headers={"X-Holocron-Token": "sai"}).status_code == 403
+    assert store.get_ai_cache(_entry("a").cache_key, DOC_A, now=NOW) is not None
+
+
+def test_delete_ai_cache_with_token_clears_everything(store: AppStore) -> None:
+    for seed in "ab":
+        store.put_ai_cache(_entry(seed), DOC_A, now=NOW)
+    client = _settings_app(store, TOKEN)
+    response = client.delete("/v1/settings/ai-cache", headers={"X-Holocron-Token": TOKEN})
+    assert response.status_code == 200 and response.json() == {"deleted_entries": 2}
+    again = client.delete("/v1/settings/ai-cache", headers={"X-Holocron-Token": TOKEN})
+    assert again.json() == {"deleted_entries": 0}

@@ -199,3 +199,23 @@ def test_patch_rebuild_recomputes_layout_failed(store: AppStore, tmp_path: Path)
     assert store.list_blocks(doc_id, 1) == []
     fixed = _patch(store, runtime, doc_id, 1, {1: "Dong da sua lan hai"})
     assert fixed.review_reasons == [] and fixed.status == "ok" and store.list_blocks(doc_id, 1)
+
+
+def test_rebuild_reopens_auto_confirmed_page_that_becomes_layout_failed(store: AppStore, tmp_path: Path) -> None:
+    """Hash khác và bộ dựng mới lỗi ở trang tự xác nhận khác ⇒ trang đó về xem lại VÀ mang `LAYOUT_FAILED`
+    (`needs_review`, không khối) trong cùng lần PATCH."""
+
+    def explode(block: Block) -> Block:
+        raise ValueError("bộ dựng lỗi")
+
+    runtime = runtime_for(tmp_path)
+    doc_id = import_doc(store, runtime, GeoReader(THREE))
+    page = pages_of(store, doc_id)[0]
+    unconfirm_page(store, store, runtime, doc_id, 1, PageUnconfirmRequest(editor_id="u", expected_version=page.version))
+    broken = runtime_for(tmp_path / "loi", layout_with(EditStage("loi", explode, frozenset({2}))))
+    _patch(store, broken, doc_id, 1, {1: "Dong da sua"})
+    second = pages_of(store, doc_id)[1]
+    assert second.review_reasons == ["LAYOUT_FAILED"] and second.status == "needs_review"
+    assert not second.confirmed and second.confirmed_by is None and not second.auto_confirm_undone
+    assert store.list_blocks(doc_id, 2) == []
+    assert pages_of(store, doc_id)[2].confirmed_by == "auto"

@@ -190,12 +190,13 @@ def plan_rebuild(
     ledgers = {ledger.page_number: ledger for ledger in stored_ledgers}
     page_layouts: list[PageLayout] = []
     final_blocks: dict[int, list[Block]] = {number: list(blocks) for number, blocks in by_page.items()}
-    changed: dict[int, PageExtraction] = {}
+    layout_failed: dict[int, bool] = {}
     for page in pages:
         number = page.page_number
         result = built.get(number)
         if result is None:
             continue
+        layout_failed[number] = result.layout_failed
         previous = {block.block_id: block for block in by_page.get(number, [])}
         blocks = [_carry_crop(block, previous.get(block.block_id)) for block in result.blocks]
         ledger = _ledger_for(page, result)
@@ -205,20 +206,26 @@ def plan_rebuild(
         if rebuild_all or number == rebuilt_page or not same:
             page_layouts.append(PageLayout(page_number=number, blocks=blocks, ledger=ledger))
             final_blocks[number] = blocks
-        updated = with_layout_reason(page, result.layout_failed)
-        if updated is not page:
-            changed[number] = updated
+    changed: dict[int, PageExtraction] = {}
     for page in pages:
-        current = changed.get(page.page_number, page)
-        if current.confirmed_by != "auto":
-            continue
-        if current.review_reasons or has_blocking_block_flags(final_blocks.get(page.page_number, [])):
-            changed[page.page_number] = _reopened(current)
+        number = page.page_number
+        failed = layout_failed.get(number)
+        current = page
+        # Trang tự xác nhận có lý do xem lại (kể cả `LAYOUT_FAILED` mới) hay khối mang cờ chặn ⇒ về xem lại TRƯỚC khi
+        # gắn lý do (trang `confirmed_by = "auto"` không được có `review_reasons`).
+        if page.confirmed_by == "auto" and (
+            bool(failed) or bool(page.review_reasons) or has_blocking_block_flags(final_blocks.get(number, []))
+        ):
+            current = _reopened(page)
             _LOGGER.info(
                 "trang %d của tài liệu %s về xem lại sau khi dựng lại khối (cờ chặn hoặc lỗi bố cục)",
-                page.page_number,
+                number,
                 document_id,
             )
+        if failed is not None:
+            current = with_layout_reason(current, failed)
+        if current is not page:
+            changed[number] = current
     plan = DocumentLayout(layout_version=LAYOUT_VERSION, layout_settings_sha256=new_sha, pages=page_layouts)
     return plan, changed
 

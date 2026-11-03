@@ -314,3 +314,28 @@ def test_budget_reservation_blocks_concurrent_overspend() -> None:
         thread.join()
     assert len(chosen) == 1
     assert ledger.reserved_usd("usr_a") == pytest.approx(0.1)
+
+
+def test_selector_order_env_priority_id() -> None:
+    """Spec §5.16: env (`priority = 0`) trước, rồi `priority` tăng dần, hoà thì theo id (không theo id trước)."""
+    providers = [
+        _candidate("usr_a", priority=5, budget=10),
+        _candidate("usr_z", priority=1, budget=10),
+        _candidate("usr_m", priority=1, budget=10),
+        _candidate("env_vlm", priority=0, budget=10),
+    ]
+    ledger = InMemorySpendLedger()
+    selection = ProviderSelection(lambda: providers, ledger)
+    order: list[str] = []
+    for _ in providers:
+        chosen = selection.select("vlm", ESTIMATE)
+        assert chosen is not None
+        order.append(chosen.provider_id)
+        selection.record(chosen.reservation_id, AiUsage(input_tokens=0, output_tokens=0, images=100, estimated=False))
+    assert order == ["env_vlm", "usr_m", "usr_z", "usr_a"]
+
+
+def test_budget_exhausted_is_false_without_configured_providers() -> None:
+    assert not ProviderSelection(list, InMemorySpendLedger()).budget_exhausted("vlm")
+    unusable = [_candidate("keyless", priority=0, budget=0.0)]
+    assert not ProviderSelection(lambda: unusable, InMemorySpendLedger()).budget_exhausted("vlm")

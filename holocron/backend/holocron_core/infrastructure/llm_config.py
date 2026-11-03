@@ -446,6 +446,16 @@ def _load_vlm(source: Mapping[str, str]) -> tuple[VlmSettings | None, tuple[str,
     return settings, (), mode
 
 
+def read_vlm_mode(env: Mapping[str, str]) -> VlmMode:
+    """`HOLOCRON_VLM_MODE` đọc riêng (công tắc đồng ý đọc nó ở MỖI lời gọi, ADR-009 mục 7); sai ⇒ `ConfigError`."""
+    return _read_vlm_mode(env)
+
+
+def read_vlm_settings(env: Mapping[str, str]) -> VlmSettings | None:
+    """Chỉ nhóm VLM của `load_runtime_config` (nhà cung cấp env `env_vlm`, ADR-009 mục 12.2); sai ⇒ `ConfigError`."""
+    return _load_vlm(env)[0]
+
+
 def load_runtime_config(env: Mapping[str, str] | None = None) -> RuntimeConfig:
     """Đọc cấu hình từ `env` (mặc định `os.environ`); `env` truyền tường minh để test không phụ thuộc máy chạy.
 

@@ -10,8 +10,9 @@ Phụ thuộc cấp qua `Depends`, test thay bằng `app.dependency_overrides`:
 - `get_request_readers` → `get_pdf_reader`: `WorkerPdfReader` với cấu hình bộ đọc của runtime và cấu hình OCR đọc từ
   biến môi trường (spec §11.2). Cấu hình OCR sai không làm request lỗi: bộ đọc chạy không có OCR (trang cần OCR thành
   `failed`, `OCR_ENGINE_MISSING`, ADR-008 mục 8), kèm cảnh báo chỉ nêu tên biến. X09: `RequestReaders` giữ CÙNG một
-  `WorkerPdfReader` ở hai vai `PdfReader` và `PageGeometrySource` (thoả theo cấu trúc, không `isinstance`/`cast`);
-  `import_document` chỉ truyền bộ đọc hình học khi `get_pdf_reader` trả đúng đối tượng đó (so định danh), nên test
+  `WorkerPdfReader` ở hai vai `PdfReader` và `PageGeometrySource` (thoả theo cấu trúc, không `cast`, không so lớp cụ
+  thể); bộ đọc từ `load_pdf_reader` chỉ nhận vai hình học khi khớp Protocol `runtime_checkable`
+  `_ConfiguredGeometryReader` (stub thay `load_pdf_reader` ⇒ đường cũ, Q1 = A); `import_document` chỉ truyền bộ đọc hình học khi `get_pdf_reader` trả đúng đối tượng đó (so định danh), nên test
   ghi đè `get_pdf_reader` bằng stub đọc theo đường cũ (`layout_version` null, Q1 = A).
 - `get_document_proposals` (T1b, T1e; spec §5.7, §5.8 "Khi nào chạy", §6.5): runtime job đề xuất cặp của app
   (`get_optional_proposal_jobs`, `None` khi không qua `lifespan`), khả năng `concept_pair_llm_proposal` tính bằng CÙNG
@@ -33,10 +34,10 @@ from __future__ import annotations
 import dataclasses
 import functools
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Protocol, runtime_checkable
 
 from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 
@@ -57,8 +58,9 @@ from ..domain.documents import (
 from ..domain.repositories import AppStore, DocumentExistsError, VersionConflictError
 from ..domain.schemas import SourceKind
 from ..domain.vault import ProposalJob
-from ..infrastructure.document_readers.config import MIB, PdfReaderConfig, load_ocr_settings
+from ..infrastructure.document_readers.config import MIB, OcrSettings, PdfReaderConfig, load_ocr_settings
 from ..infrastructure.document_readers.pdf_reader import (
+    GeometrySink,
     PageGeometrySource,
     PdfReader,
     PdfWorkerError,
@@ -143,6 +145,31 @@ def load_pdf_reader(config: PdfReaderConfig) -> WorkerPdfReader:
     return WorkerPdfReader(config, load_ocr_settings())
 
 
+@runtime_checkable
+class _ConfiguredGeometryReader(Protocol):
+    """Hình dạng KHAI BÁO của bộ đọc cấp hình học (`WorkerPdfReader`): thuộc tính `config`, `ocr` và
+    `read_pages(..., geometry_sink=…)` của `PageGeometrySource`. Chỉ dùng để nhận ra bộ đọc mà `load_pdf_reader` trả
+    (test có thể thay hàm đó bằng stub chỉ cài `PdfReader`); không so lớp cụ thể."""
+
+    config: PdfReaderConfig
+    ocr: OcrSettings | None
+
+    def read_pages(
+        self,
+        path: Path,
+        document_id: str,
+        page_numbers: Sequence[int] | None = None,
+        *,
+        geometry_sink: GeometrySink,
+    ) -> Iterator[PageExtraction]: ...
+
+
+def _geometry_of(reader: PdfReader) -> PageGeometrySource | None:
+    """`reader` ở vai `PageGeometrySource` khi nó khai báo hình dạng của bộ đọc cấp hình học; không ⇒ None: tài liệu
+    đọc theo đường cũ, `layout_version` null (Q1 = A)."""
+    return reader if isinstance(reader, _ConfiguredGeometryReader) else None
+
+
 def create_import_runtime(data_dir: Path | None, config: PdfReaderConfig | None = None) -> ImportRuntime:
     """Kho file gốc (`HOLOCRON_DATA_DIR/files` hoặc thư mục tạm) và hàng đợi đọc nền; gọi trong `lifespan`.
 
@@ -185,7 +212,7 @@ def requeue_on_startup(store: AppStore, runtime: ImportRuntime) -> list[str]:
         locks=runtime.locks,
         config=runtime.reader_config,
         on_document_confirmed=runtime.on_document_confirmed,
-        geometry_reader=reader,
+        geometry_reader=_geometry_of(reader),
         layout=runtime.layout,
     )
 
@@ -219,7 +246,7 @@ def get_request_readers(runtime: RuntimeDep) -> RequestReaders:
     except ConfigError as exc:
         _LOGGER.warning("cấu hình OCR không hợp lệ, đọc PDF không có OCR: %s", exc)
         worker = WorkerPdfReader(runtime.reader_config, ocr=None)
-    return RequestReaders(reader=worker, geometry=worker)
+    return RequestReaders(reader=worker, geometry=_geometry_of(worker))
 
 
 RequestReadersDep = Annotated[RequestReaders, Depends(get_request_readers)]

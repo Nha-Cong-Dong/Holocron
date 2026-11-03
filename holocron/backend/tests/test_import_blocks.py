@@ -36,6 +36,7 @@ from holocron_core.infrastructure.lang_patterns import load_lang_patterns
 from holocron_core.infrastructure.memory_store import IngestionStore
 from holocron_core.infrastructure.storage import SQLiteStore
 from holocron_core.infrastructure.storage.original_files import OriginalFileStore
+from holocron_core.routers import documents as documents_router
 from holocron_core.routers.api import app, get_clock, get_store
 from holocron_core.routers.documents import get_import_runtime, get_pdf_reader
 from holocron_core.services.block_builder import BaseBlockStage
@@ -61,7 +62,7 @@ from holocron_core.services.document_import import (
 from holocron_core.services.document_layout import refresh_drop_reasons
 from holocron_core.services.reading_order import ReadingOrderStage
 from tests.block_samples import Run, build_pdf, extraction_for, geo_line, geometry
-from tests.document_import_support import pdf_bytes
+from tests.document_import_support import FakePdfReader, pdf_bytes
 
 LANG = load_lang_patterns()
 NOW = datetime(2026, 11, 3, 9, 0, tzinfo=UTC)
@@ -738,3 +739,17 @@ def test_drop_reason_follows_page_role_changes(store: AppStore, tmp_path: Path) 
     stored = pages_of(store, doc_id)[0]
     assert stored.version == restored.version and not stored.dropped
     assert reason() is None and store.list_blocks(doc_id, 1) == blocks
+
+
+def test_reader_without_geometry_from_load_pdf_reader_keeps_old_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Q1 = A: `load_pdf_reader` bị thay bằng stub chỉ cài `PdfReader` ⇒ không có vai hình học (đường cũ); bộ đọc
+    thật ⇒ CÙNG đối tượng ở cả hai vai."""
+    runtime = runtime_for(tmp_path)
+    real = documents_router.get_request_readers(runtime)
+    assert real.geometry is real.reader
+    stub = FakePdfReader()
+    monkeypatch.setattr(documents_router, "load_pdf_reader", lambda config: stub)
+    readers = documents_router.get_request_readers(runtime)
+    assert readers.reader is stub and readers.geometry is None

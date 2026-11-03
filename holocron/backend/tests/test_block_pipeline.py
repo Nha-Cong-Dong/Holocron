@@ -13,7 +13,8 @@ from pydantic import ValidationError
 
 from holocron_core.domain import blocks as blocks_module
 from holocron_core.domain.blocks import LAYOUT_HASH_REGISTRY, LAYOUT_VERSION, Block, ExtractionLedger
-from holocron_core.domain.documents import GeoLine, PageGeometry
+from holocron_core.domain.documents import GeoFont, GeoLine, PageGeometry
+from holocron_core.domain.schemas import quote_in_text
 from holocron_core.infrastructure.lang_patterns import LANG_DIR, load_lang_patterns
 from holocron_core.services import block_builder, block_pipeline
 from holocron_core.services.block_builder import BaseBlockSettings, BaseBlockStage
@@ -24,13 +25,16 @@ from holocron_core.services.block_pipeline import (
     PageStage,
     build_page_blocks,
     default_layout_settings_sha256,
+    layout_fingerprints,
     layout_settings_sha256,
 )
+from holocron_core.services.code_blocks import CodeBlockSettings, CodeBlockStage
 from holocron_core.services.extraction_ledger import SourceIndex, compute_ledger
 from holocron_core.services.page_numbers import PageNumberSettings, PageNumberStage
 from holocron_core.services.reading_order import ReadingOrderStage, XyCutSettings
+from holocron_core.services.section_tree import SectionTreeSettings, SectionTreeStage
 from scripts import export_blocks
-from tests.block_samples import DOC_ID, extraction_for, geo_line, geometry, write_document
+from tests.block_samples import DOC_ID, REGULAR, extraction_for, geo_line, geometry, write_document
 
 LANG = load_lang_patterns()
 CROP_FLAGS = {"crop_pending", "crop_failed", "crop_capped"}
@@ -84,7 +88,7 @@ class _DropFirst:
 
 
 def test_pipeline_stage_order_and_layout_failed_returns_no_blocks() -> None:
-    assert [stage.name for stage in PAGE_STAGES] == ["base_blocks", "reading_order"]
+    assert [stage.name for stage in PAGE_STAGES] == ["base_blocks", "code_blocks", "reading_order"]
     calls: list[str] = []
     stages: tuple[PageStage, ...] = (
         _Recorder("base_blocks", calls, BaseBlockStage()),
@@ -99,6 +103,36 @@ def test_pipeline_stage_order_and_layout_failed_returns_no_blocks() -> None:
     lost = _run(_sample(), (BaseBlockStage(), _DropFirst(), ReadingOrderStage()))
     assert lost.layout_failed and lost.blocks == []
     assert lost.ledger is not None and not lost.ledger.balanced
+
+
+MONO = GeoFont(
+    font_name="Courier",
+    bold=False,
+    italic=False,
+    monospace=True,
+    bold_source=None,
+    italic_source=None,
+    monospace_source="name",
+)
+
+
+def test_default_pipeline_builds_code_block_keeping_i3() -> None:
+    """Pipeline mặc định (không `stages=`) dựng khối `code`; trích dẫn nguồn là chuỗi con sau gộp khoảng trắng (I3)."""
+    rows = ["start:", "    load a, 1", "        add a, b", "    store a, out", "end"]
+    lines = [
+        geo_line(text.strip(), 0.1 + (len(text) - len(text.lstrip())) * 0.008, 0.2 + i * 0.016, char_w=0.008, font_id=1)
+        for i, text in enumerate(rows)
+    ]
+    geo = geometry(lines, fonts=[REGULAR, MONO])
+    result = build_page_blocks(
+        document_id=DOC_ID, page_number=1, geometry=geo, extraction=extraction_for(geo), lang=LANG
+    )
+    assert not result.layout_failed and result.ledger is not None and result.ledger.balanced
+    assert [b.type for b in result.blocks] == ["code"]
+    text = result.blocks[0].text
+    assert text is not None and "\n        add a, b\n" in text
+    assert quote_in_text("load a, 1 add a, b store a, out", text)
+    assert not quote_in_text("add a, c", text)
 
 
 def test_stage_error_marks_layout_failed_without_ledger() -> None:
@@ -197,6 +231,33 @@ def test_layout_hash_registered_for_current_version() -> None:
 
 def test_layout_hash_v1_pinned() -> None:
     assert LAYOUT_HASH_REGISTRY[1] == "6dbbacb166ac527442c052009189b0b50f2e024b55d1762baac69175f9414ae6"
+
+
+def test_layout_hash_v2_pinned() -> None:
+    assert LAYOUT_HASH_REGISTRY[2] == "084b4a5a06c692e2f275b4ac982476aaf8bd59573d495d08d52b66033906da5f"
+
+
+def test_document_stages_follow_page_stages_in_hash() -> None:
+    """Thứ tự fingerprint: stage từng trang rồi `page_numbers` rồi `section_tree` (ADR-010 mục 13, 15)."""
+    names = [fp["name"] for fp in layout_fingerprints(PageNumberStage(LANG))]
+    assert names == ["base_blocks", "code_blocks", "reading_order", "page_numbers", "section_tree"]
+    explicit = layout_settings_sha256(PageNumberStage(LANG), section_tree=SectionTreeStage(LANG))
+    assert explicit == default_layout_settings_sha256(LANG)
+
+
+@pytest.mark.parametrize(
+    ("stages", "section_tree"),
+    [
+        ((BaseBlockStage(), CodeBlockStage(CodeBlockSettings(min_monospace_ratio=0.7)), ReadingOrderStage()), None),
+        ((BaseBlockStage(), ReadingOrderStage()), None),
+        (PAGE_STAGES, SectionTreeStage(LANG, SectionTreeSettings(cluster_tol=0.05))),
+    ],
+)
+def test_changing_code_or_section_tree_changes_hash(
+    stages: tuple[PageStage, ...], section_tree: SectionTreeStage | None
+) -> None:
+    changed = layout_settings_sha256(PageNumberStage(LANG), stages, section_tree=section_tree)
+    assert changed != default_layout_settings_sha256(LANG)
 
 
 def test_layout_version_change_changes_hash() -> None:

@@ -148,6 +148,64 @@ class ProviderPreview(BaseModel):
     local: bool
 
 
+AiConsentSource = Literal["env", "setting", "default"]
+AiVlmMode = Literal["unset", "off", "images_only"]
+WriteProtection = Literal["token", "token_not_configured"]
+AiAutoBlockReason = Literal["no_provider", "budget_exhausted", "mode_off", "mode_images_only", "consent_off"]
+AI_ROLES: tuple[AiRole, ...] = ("vlm", "llm")
+
+
+class AiConsentState(StrictModel):
+    """Response `GET/PUT /v1/settings/ai-consent` (spec §5.16, §6.11). Nguồn: `HOLOCRON_AI_CONSENT` thắng file cài
+    đặt; chưa lưu (hoặc file hỏng) ⇒ tắt, `source = "default"`."""
+
+    enabled: bool
+    source: AiConsentSource
+    vlm_mode: AiVlmMode
+    persistent: bool
+
+
+class AiRoleStatus(StrictModel):
+    """Trạng thái gửi tự động của một vai; chỉ id, nhãn đã lọc, boolean và mã lý do (không khoá, không endpoint)."""
+
+    role: AiRole
+    auto_send_allowed: bool
+    reason: AiAutoBlockReason | None
+    provider_id: str | None
+    recipient_label: str | None
+    local: bool
+
+
+class AiStatus(StrictModel):
+    """`RuntimeInfo.ai_status` (spec §5.12, §5.16): tính lại ở MỖI `GET /v1/runtime`, không gọi mạng, không giữ chỗ."""
+
+    consent_enabled: bool
+    consent_source: AiConsentSource
+    vlm_mode: AiVlmMode
+    settings_persistent: bool
+    write_protection: WriteProtection
+    roles: list[AiRoleStatus] = Field(min_length=len(AI_ROLES), max_length=len(AI_ROLES))
+
+
+class AiConsentStore(Protocol):
+    """Kho giá trị công tắc đồng ý (ADR-009 mục 7, 12.4). `persistent = False` khi không có `HOLOCRON_DATA_DIR`."""
+
+    @property
+    def persistent(self) -> bool: ...
+
+    def load(self) -> bool | None:
+        """Giá trị đã lưu; chưa lưu, file hỏng hoặc không đọc được ⇒ `None` (coi như tắt), không ném lỗi."""
+        ...
+
+    def save(self, enabled: bool) -> None:
+        """Ghi nguyên tử; kho không lưu được (`persistent = False`) ⇒ `SettingsNotPersistentError`."""
+        ...
+
+
+class SettingsNotPersistentError(RuntimeError):
+    """Ghi cài đặt khi không có thư mục dữ liệu (`HOLOCRON_DATA_DIR`)."""
+
+
 class AiConsent(Protocol):
     def auto_send_allowed(self, content: AiContentKind) -> bool:
         """Đọc ở MỖI lời gọi: công tắc bật VÀ `HOLOCRON_VLM_MODE` cho phép `content`. Chỉ áp cho lần gửi TỰ ĐỘNG."""
@@ -163,6 +221,14 @@ class ProviderSelector(Protocol):
     def peek(self, role: AiRole) -> ProviderPreview | None:
         """Xem trước nhà cung cấp sẽ chọn cho `role` (nhóm chưa tiêu hết trần) mà KHÔNG giữ chỗ hay đổi số dư."""
         ...
+
+
+class ProviderStatusView(Protocol):
+    """Phần chỉ đọc của bộ chọn dùng cho `ai_status`: xem trước và trạng thái trần, KHÔNG giữ chỗ."""
+
+    def peek(self, role: AiRole) -> ProviderPreview | None: ...
+
+    def budget_exhausted(self, role: AiRole) -> bool: ...
 
 
 class UsageRecorder(Protocol):

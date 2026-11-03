@@ -1,7 +1,8 @@
 """Cài đặt tối thiểu của Kết nối AI cho V02 (spec §5.16, §11.2; ADR-009 mục 7, 12.6).
 
-- `EnvAiConsent`: công tắc đồng ý đọc `HOLOCRON_AI_CONSENT` và `HOLOCRON_VLM_MODE` ở MỖI lời gọi (không chụp lúc
-  khởi động). Không đặt công tắc ⇒ tắt (V04 thêm giá trị lưu ở file cài đặt và UI).
+- `EnvAiConsent`: công tắc đồng ý đọc `HOLOCRON_AI_CONSENT`, giá trị lưu ở kho cài đặt (`AiConsentStore`) và
+  `HOLOCRON_VLM_MODE` ở MỖI lời gọi (không chụp lúc khởi động). Env thắng file; chưa lưu ⇒ tắt (`read_consent_state`).
+- `build_ai_status`: `RuntimeInfo.ai_status` từ trạng thái công tắc và phần chỉ đọc của bộ chọn (`peek`, không giữ chỗ).
 - `EnvProviderSource`: nhà cung cấp CHỈ từ biến môi trường `HOLOCRON_VLM_*` (`env_vlm`), đọc lại ở mỗi lần gọi. Chỉ
   đọc nguồn; việc chọn theo vai, thứ tự và trần nằm DUY NHẤT ở `services/provider_selection.py`.
 - `InMemorySpendLedger`: sổ chi tiêu trong RAM (thuộc tính instance, có khoá), reset khi khởi động lại.
@@ -19,15 +20,24 @@ import threading
 from collections.abc import Callable, Mapping
 
 from ..domain.ai import (
+    AI_ROLES,
     TEMPLATE_DEFAULT_BUDGET_USD,
     TEMPLATE_DEFAULT_PRICES,
+    AiAutoBlockReason,
+    AiConsentState,
+    AiConsentStore,
     AiContentKind,
+    AiRole,
+    AiRoleStatus,
+    AiStatus,
     ProviderCandidate,
     ProviderModels,
     ProviderPrices,
+    ProviderStatusView,
     ProviderTemplate,
+    WriteProtection,
 )
-from .llm_config import ConfigError, read_vlm_mode, read_vlm_settings
+from .llm_config import BROKEN_VLM_MODE, ConfigError, VlmMode, read_vlm_mode, read_vlm_settings
 
 ENV_AI_CONSENT = "HOLOCRON_AI_CONSENT"
 ENV_VLM_TEMPLATE = "HOLOCRON_VLM_TEMPLATE"
@@ -137,27 +147,101 @@ def load_env_vlm_provider(env: Mapping[str, str]) -> ProviderCandidate | None:
     )
 
 
-class EnvAiConsent:
-    """`AiConsent` đọc biến môi trường ở MỖI lời gọi (ADR-009 mục 7).
+def ai_consent_env_locked(env: Mapping[str, str]) -> bool:
+    """`HOLOCRON_AI_CONSENT` có giá trị (kể cả giá trị sai): công tắc bị khoá bởi biến môi trường, UI chỉ đọc."""
+    return _read(env, ENV_AI_CONSENT) is not None
 
-    `auto_send_allowed(kind)` = công tắc bật VÀ `HOLOCRON_VLM_MODE` cho phép `kind`: không đặt ⇒ không cấm; `off` ⇒
-    cấm mọi gửi tự động; `images_only` ⇒ chỉ ảnh. Biến sai ⇒ coi như tắt (lenient).
-    """
 
-    def __init__(self, env: EnvReader = _environ) -> None:
-        self._env = env
+def _lenient_vlm_mode(env: Mapping[str, str]) -> VlmMode:
+    try:
+        return read_vlm_mode(env)
+    except ConfigError as exc:
+        logger.warning("cấu hình chế độ gửi AI không hợp lệ, coi như tắt: %s", exc)
+        return BROKEN_VLM_MODE
 
-    def auto_send_allowed(self, content: AiContentKind) -> bool:
-        source = self._env()
+
+def read_consent_state(env: Mapping[str, str], store: AiConsentStore | None) -> AiConsentState:
+    """Giá trị công tắc đang hiệu lực (ADR-009 mục 7): `HOLOCRON_AI_CONSENT` đặt ⇒ giá trị đó (`source = "env"`; giá
+    trị sai ⇒ tắt, vẫn khoá); không thì giá trị lưu ở kho (`"setting"`); chưa lưu hoặc file hỏng ⇒ tắt (`"default"`)."""
+    persistent = store is not None and store.persistent
+    mode = _lenient_vlm_mode(env)
+    if ai_consent_env_locked(env):
         try:
-            consent = read_ai_consent(source)
-            mode = read_vlm_mode(source)
+            from_env = read_ai_consent(env)
         except ConfigError as exc:
             logger.warning("cấu hình đồng ý gửi AI không hợp lệ, coi như tắt: %s", exc)
-            return False
-        if consent is not True or mode == "off":
-            return False
-        return not (mode == "images_only" and content != "image")
+            from_env = False
+        return AiConsentState(enabled=from_env is True, source="env", vlm_mode=mode, persistent=persistent)
+    saved = None if store is None else store.load()
+    if saved is None:
+        return AiConsentState(enabled=False, source="default", vlm_mode=mode, persistent=persistent)
+    return AiConsentState(enabled=saved, source="setting", vlm_mode=mode, persistent=persistent)
+
+
+def _mode_allows(mode: VlmMode, content: AiContentKind) -> bool:
+    if mode == "off":
+        return False
+    return not (mode == "images_only" and content != "image")
+
+
+class EnvAiConsent:
+    """`AiConsent` đọc biến môi trường và kho cài đặt ở MỖI lời gọi (ADR-009 mục 7).
+
+    `auto_send_allowed(kind)` = công tắc bật VÀ `HOLOCRON_VLM_MODE` cho phép `kind`: không đặt ⇒ không cấm; `off` ⇒
+    cấm mọi gửi tự động; `images_only` ⇒ chỉ ảnh. Biến sai hoặc file cài đặt hỏng ⇒ coi như tắt (lenient).
+    """
+
+    def __init__(self, env: EnvReader = _environ, store: AiConsentStore | None = None) -> None:
+        self._env = env
+        self._store = store
+
+    def auto_send_allowed(self, content: AiContentKind) -> bool:
+        state = read_consent_state(self._env(), self._store)
+        return state.enabled and _mode_allows(state.vlm_mode, content)
+
+
+_ROLE_CONTENT: dict[AiRole, AiContentKind] = {"vlm": "image", "llm": "text"}
+
+
+def _role_status(role: AiRole, consent: AiConsentState, providers: ProviderStatusView) -> AiRoleStatus:
+    """Lý do đầu tiên đúng theo thứ tự `AiAutoBlockReason` (spec §5.16): nhà cung cấp, trần, chế độ, công tắc."""
+    preview = providers.peek(role)
+    reason: AiAutoBlockReason | None
+    if preview is None:
+        reason = "budget_exhausted" if providers.budget_exhausted(role) else "no_provider"
+        return AiRoleStatus(
+            role=role, auto_send_allowed=False, reason=reason, provider_id=None, recipient_label=None, local=False
+        )
+    if consent.vlm_mode == "off":
+        reason = "mode_off"
+    elif not _mode_allows(consent.vlm_mode, _ROLE_CONTENT[role]):
+        reason = "mode_images_only"
+    elif not consent.enabled:
+        reason = "consent_off"
+    else:
+        reason = None
+    return AiRoleStatus(
+        role=role,
+        auto_send_allowed=reason is None,
+        reason=reason,
+        provider_id=preview.provider_id,
+        recipient_label=preview.label,
+        local=preview.local,
+    )
+
+
+def build_ai_status(
+    consent: AiConsentState, providers: ProviderStatusView, write_protection: WriteProtection
+) -> AiStatus:
+    """`RuntimeInfo.ai_status`: không gọi mạng, không giữ chỗ; chỉ id, nhãn, boolean và mã lý do."""
+    return AiStatus(
+        consent_enabled=consent.enabled,
+        consent_source=consent.source,
+        vlm_mode=consent.vlm_mode,
+        settings_persistent=consent.persistent,
+        write_protection=write_protection,
+        roles=[_role_status(role, consent, providers) for role in AI_ROLES],
+    )
 
 
 class EnvProviderSource:

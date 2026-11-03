@@ -54,7 +54,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Protocol
 
+from ..domain.block_eligibility import is_candidate_block
+from ..domain.blocks import Block
 from ..domain.documents import (
+    GEOMETRY_VERSION,
     ChapterSource,
     ConfirmedBy,
     CrossCheck,
@@ -67,6 +70,7 @@ from ..domain.documents import (
     PageConfirmRequest,
     PageEditAudit,
     PageExtraction,
+    PageGeometry,
     PageLineChange,
     PageLinesPatch,
     PageRestoreRequest,
@@ -86,6 +90,7 @@ from ..domain.documents import (
 from ..domain.ingestion import UploadedDocument
 from ..domain.limits import MAX_LINE_CHARS
 from ..domain.repositories import (
+    BlockFlagUpdate,
     DocumentExistsError,
     DocumentRepository,
     ImportedDocument,
@@ -96,17 +101,27 @@ from ..domain.repositories import (
     VersionConflictError,
 )
 from ..domain.schemas import DocumentMeta, SourceKind
-from ..domain.vault import MAX_PAGE_LINES, ConfirmedDocumentText, ConfirmedPage, ProposalJob
+from ..domain.vault import (
+    MAX_PAGE_LINES,
+    BlockDocumentText,
+    ChunkBlock,
+    ConfirmedDocumentText,
+    ConfirmedPage,
+    ProposalJob,
+)
 from ..infrastructure.document_readers.config import PdfReaderConfig
 from ..infrastructure.document_readers.pdf_reader import PDF_MAGIC, PdfInputError, PdfReader, PdfWorkerError
 from ..infrastructure.document_readers.tiers import failed_page
 from ..infrastructure.storage.original_files import StagedFile
 from .auto_confirm import AUTO_CONFIRM_RULE, passes_page_clean
+from .block_pipeline import LayoutConfig, PageContext, default_layout_config
 from .chapter_naming import DEFAULT_TITLE, InitialChapter
 from .chapter_reservation import ChapterReservations, ChapterTurn, reserve_chapter
 from .concept_proposal_job import DocumentProposals
 from .page_roles import RoleDecision, apply_decision, assign_roles, changeable, reassess_cover, reassessable
-from .vault import ingest_confirmed_text
+from .section_tree import SectionTree
+from .vault import ingest_block_chunks, ingest_confirmed_text
+from .vault_chunking import build_block_chunks
 
 MAX_FILENAME_LENGTH = 255
 DEFAULT_FILENAME = "upload.pdf"
@@ -981,7 +996,12 @@ _SETTLE_DATA_ERRORS: tuple[type[Exception], ...] = (ValueError, TypeError, Looku
 
 
 def _settle_after_read(
-    store: DocumentRepository, vault: VaultRepository, document_id: str, status: Literal["review", "failed"]
+    store: DocumentRepository,
+    vault: VaultRepository,
+    document_id: str,
+    status: Literal["review", "failed"],
+    *,
+    layout: LayoutConfig | None = None,
 ) -> bool:
     """Lần đọc kết thúc (`status` vừa ghi là `review` hoặc `failed`): tài liệu đủ điều kiện (mọi trang có văn bản đã
     xác nhận từ trước) thì nhập Vault và thành `confirmed` (`settle_document`, §5.7 "Chốt trạng thái tài liệu").
@@ -995,9 +1015,10 @@ def _settle_after_read(
     lệ, không kèm thông điệp hay traceback vì chúng có thể chứa văn bản của tài liệu.
 
     Trả `True` khi chính lần gọi này vừa chuyển tài liệu sang `confirmed` (T1b: người gọi báo hook sau khi nhả khoá).
+    `layout` (None ⇒ mặc định) chuyển tiếp cho `settle_outcome`.
     """
     try:
-        return settle_outcome(store, vault, document_id).closed
+        return settle_outcome(store, vault, document_id, layout=layout).closed
     except (StorageError, DocumentChapterMissingError, DocumentNotFoundError) as exc:
         _LOGGER.warning(
             "lần đọc tài liệu %s đã kết thúc nhưng chưa hoàn tất xác nhận (%s); tài liệu giữ %s, gọi lại xác nhận "
@@ -1763,13 +1784,146 @@ def confirmed_text(document: ImportedDocument, pages: list[PageExtraction]) -> C
 
 
 def _ingest(vault: VaultRepository, document: ImportedDocument, pages: list[PageExtraction]) -> None:
-    """Cắt chunk vào Vault (idempotent: chunk đã có giữ nguyên bản đang lưu). Tài liệu `past_exam` không được cắt
-    chunk: §6.5 chỉ quy định cắt chunk cho tài liệu có `source_kind` khác `past_exam`."""
+    """Cắt chunk theo dòng (`build_chunks`) vào Vault cho tài liệu KHÔNG có khối lưu (`layout_version` null), idempotent
+    (chunk đã có giữ nguyên bản đang lưu). Tài liệu `past_exam` không được cắt chunk: §6.5 chỉ quy định cắt chunk cho
+    tài liệu có `source_kind` khác `past_exam`."""
     if document.meta.source_kind == SourceKind.PAST_EXAM:
         return
     text = confirmed_text(document, pages)
     if text is not None:
         ingest_confirmed_text(vault, text)
+
+
+# Hình học rỗng cho trang có khối mà thiếu `pages.geometry_json` (không xảy ra với dữ liệu X09 ghi: khối chỉ dựng được
+# từ hình học và được lưu cùng nó): X08 không đo được cỡ chữ/độ đậm của tiêu đề trên trang đó, cấp lấy theo đánh số.
+_NO_GEOMETRY = PageGeometry(version=GEOMETRY_VERSION, reader_settings_sha256="0" * 64, source="text_layer")
+
+
+def _page_geometry(store: DocumentRepository, document_id: str, page_number: int) -> PageGeometry:
+    """Hình học đã lưu của trang có khối; thiếu ⇒ `_NO_GEOMETRY` kèm cảnh báo log (dữ liệu bất thường, không im lặng)."""
+    geometry = store.get_page_geometry(document_id, page_number)
+    if geometry is not None:
+        return geometry
+    _LOGGER.warning(
+        "trang %d của tài liệu %s có khối nhưng thiếu hình học; cấp tiêu đề chỉ lấy theo đánh số",
+        page_number,
+        document_id,
+    )
+    return _NO_GEOMETRY
+
+
+def _candidate_blocks(store: DocumentRepository, document: ImportedDocument) -> tuple[list[Block], set[int]]:
+    """Bước (1): khối ứng viên theo trạng thái trang HIỆN TẠI (`is_candidate_block`), và các trang có khối lưu."""
+    document_id = document.meta.doc_id
+    summaries = {summary.page_number: summary for summary in store.list_page_summaries(document_id)}
+    blocks = store.list_blocks(document_id)
+    candidates = [
+        block
+        for block in blocks
+        if block.page_number in summaries
+        and is_candidate_block(block, summaries[block.page_number], document.meta.source_kind)
+    ]
+    return candidates, {block.page_number for block in blocks}
+
+
+def _section_tree(
+    store: DocumentRepository,
+    document: ImportedDocument,
+    pages: list[PageExtraction],
+    candidates: list[Block],
+    layout: LayoutConfig,
+) -> SectionTree:
+    """Bước (2): cây X08 trên đúng tập ứng viên (trang `dropped` không có ứng viên nên không sinh Section)."""
+    document_id = document.meta.doc_id
+    extraction = {page.page_number: page for page in pages}
+    by_page: dict[int, list[Block]] = {}
+    for block in candidates:
+        by_page.setdefault(block.page_number, []).append(block)
+    contexts = [
+        (
+            PageContext(
+                document_id,
+                number,
+                _page_geometry(store, document_id, number),
+                extraction[number],
+                layout.lang,
+                layout.page_number_settings(),
+            ),
+            blocks,
+        )
+        for number, blocks in sorted(by_page.items())
+        if number in extraction
+    ]
+    return layout.section_tree.run(document_id, document.chapter_code, document.chapter_title, contexts)
+
+
+def _block_text(
+    document: ImportedDocument,
+    pages: list[PageExtraction],
+    candidates: list[Block],
+    block_pages: set[int],
+    tree: SectionTree,
+) -> BlockDocumentText:
+    """Đầu vào cắt chunk theo khối: khối ứng viên có `text` (bỏ khối tiêu đề lặp do nối trang, giữ khối đầu) và dòng
+    đã xác nhận của trang không có khối."""
+    repeated = {block_id for section in tree.sections for block_id in section.heading_block_ids[1:]}
+    blocks = [
+        ChunkBlock(
+            block_id=block.block_id,
+            page_number=block.page_number,
+            reading_order=block.reading_order,
+            is_heading=block.type == "heading",
+            text=block.text,
+            section_id=tree.block_section[block.block_id],
+        )
+        for block in candidates
+        if block.text is not None and block.block_id not in repeated
+    ]
+    line_pages = [
+        ConfirmedPage(page_number=page.page_number, lines=_confirmed_lines(page))
+        for page in pages
+        if page.confirmed and not page.dropped and page.status != "failed" and page.page_number not in block_pages
+    ]
+    return BlockDocumentText(
+        doc_id=document.meta.doc_id,
+        subject_code=document.meta.subject_code,
+        chapter_code=_chapter_code(document),
+        blocks=blocks,
+        line_pages=line_pages,
+    )
+
+
+def _settle_blocks(
+    store: DocumentRepository,
+    vault: VaultRepository,
+    document: ImportedDocument,
+    pages: list[PageExtraction],
+    layout: LayoutConfig,
+) -> None:
+    """Bước (1)–(4) của settle cho tài liệu có khối lưu (ADR-010 mục 13; §5.15). KHÔNG dựng lại khối, KHÔNG so hash.
+
+    (1) tập ứng viên → (2) thay TOÀN BỘ Section và `Block.level` tiêu đề (một giao dịch của kho) → (3) Vault đã có chunk
+    của tài liệu ⇒ không cắt; ngược lại ghi cờ `too_short_for_chunk` rồi nhập chunk theo khối/mục (nguyên tử) →
+    (4) `refresh_eligible_blocks`. Mọi bước idempotent nên gọi lại sau lỗi chạy lại từ (1).
+    """
+    document_id = document.meta.doc_id
+    candidates, block_pages = _candidate_blocks(store, document)
+    tree = _section_tree(store, document, pages, candidates, layout)
+    store.replace_sections(document_id, tree.sections)
+    if document.meta.source_kind != SourceKind.PAST_EXAM and not vault.has_document_chunks(document_id):
+        result = build_block_chunks(
+            _block_text(document, pages, candidates, block_pages, tree), layout.lang.heading_keywords
+        )
+        if result.too_short_block_ids:
+            store.update_block_flags(
+                document_id,
+                [
+                    BlockFlagUpdate(block_id=block_id, add=["too_short_for_chunk"])
+                    for block_id in result.too_short_block_ids
+                ],
+            )
+        ingest_block_chunks(vault, result.chunks)
+    store.refresh_eligible_blocks(document_id)
 
 
 @dataclass(frozen=True)
@@ -1781,20 +1935,35 @@ class SettleOutcome:
 
 
 def settle_document(
-    store: DocumentRepository, vault: VaultRepository, document_id: str, *, by_user: bool = False
+    store: DocumentRepository,
+    vault: VaultRepository,
+    document_id: str,
+    *,
+    by_user: bool = False,
+    layout: LayoutConfig | None = None,
 ) -> ImportedDocument:
-    """Bước chốt (`settle_outcome`), chỉ trả tài liệu đang lưu."""
-    return settle_outcome(store, vault, document_id, by_user=by_user).document
+    """Bước chốt (`settle_outcome`), chỉ trả tài liệu đang lưu. Tài liệu đã `confirmed` ⇒ no-op."""
+    return settle_outcome(store, vault, document_id, by_user=by_user, layout=layout).document
 
 
 def settle_outcome(
-    store: DocumentRepository, vault: VaultRepository, document_id: str, *, by_user: bool = False
+    store: DocumentRepository,
+    vault: VaultRepository,
+    document_id: str,
+    *,
+    by_user: bool = False,
+    layout: LayoutConfig | None = None,
 ) -> SettleOutcome:
     """Khi đủ điều kiện (`_ready_to_confirm`): cắt chunk vào Vault TRƯỚC, rồi đặt tài liệu `confirmed`.
 
     Tài liệu có ít nhất một trang `confirmed_by = "auto"` chỉ được chốt khi `by_user = True` (người dùng bấm
     "Chấp nhận", `confirm_document`); ngược lại (cuối lần đọc, đường `failed`, sau `confirm_page`) giữ nguyên, không
-    cắt chunk (§5.7 "Chốt trạng thái tài liệu"). Tài liệu đã `confirmed` luôn chạy lại bước cắt idempotent.
+    cắt chunk (§5.7 "Chốt trạng thái tài liệu"). Tài liệu ĐÃ `confirmed` ⇒ no-op: không dựng Section, không cắt chunk,
+    không đổi `eligible`, chỉ trả bản đang lưu (`closed = False`; ADR-010 mục 13, §5.15).
+
+    Tài liệu có khối lưu (`layout_version` khác null) chạy các bước (1)–(4) của `_settle_blocks` (Section, chunk theo
+    khối/mục, `eligible`) với cấu hình `layout` (None ⇒ `default_layout_config()`); tài liệu `layout_version` null cắt
+    chunk bằng `build_chunks` như trước. Settle KHÔNG dựng lại khối và KHÔNG so `layout_settings_sha256`.
 
     Hai bước không nằm trong một giao dịch (Vault và tài liệu là hai repository). Bù lại:
     - nhập Vault là nguyên tử và idempotent (chunk đã có giữ nguyên bản đang lưu), nên gọi lại chỉ nhập lại đúng
@@ -1812,25 +1981,37 @@ def settle_outcome(
     """
     for _ in range(SETTLE_ATTEMPTS - 1):
         try:
-            return _settle_once(store, vault, document_id, by_user)
+            return _settle_once(store, vault, document_id, by_user, layout=layout)
         except VersionConflictError:
             continue
-    return _settle_once(store, vault, document_id, by_user)
+    return _settle_once(store, vault, document_id, by_user, layout=layout)
 
 
-def _settle_once(store: DocumentRepository, vault: VaultRepository, document_id: str, by_user: bool) -> SettleOutcome:
+def _settle_once(
+    store: DocumentRepository,
+    vault: VaultRepository,
+    document_id: str,
+    by_user: bool,
+    *,
+    layout: LayoutConfig | None = None,
+) -> SettleOutcome:
+    """Một lần settle: tài liệu đã `confirmed` ⇒ no-op (chỉ trả bản đang lưu); chưa đủ điều kiện ⇒ không đổi gì;
+    ngược lại cắt chunk (theo khối/mục khi có khối lưu, `_settle_blocks`; theo dòng khi không) rồi đặt `confirmed`.
+    Gọi lại sau lỗi chạy lại toàn bộ, idempotent."""
     document = store.get_imported_document(document_id)
     if document is None:
         raise DocumentNotFoundError(document_id)
-    pages = store.list_pages(document_id, PageExtraction)
-    if document.status != "confirmed":
-        if not _ready_to_confirm(pages):
-            return SettleOutcome(document, closed=False)
-        if not by_user and any(page.confirmed_by == "auto" for page in pages):
-            return SettleOutcome(document, closed=False)
-    _ingest(vault, document, pages)
     if document.status == "confirmed":
         return SettleOutcome(document, closed=False)
+    pages = store.list_pages(document_id, PageExtraction)
+    if not _ready_to_confirm(pages):
+        return SettleOutcome(document, closed=False)
+    if not by_user and any(page.confirmed_by == "auto" for page in pages):
+        return SettleOutcome(document, closed=False)
+    if document.layout_version is None:
+        _ingest(vault, document, pages)
+    else:
+        _settle_blocks(store, vault, document, pages, layout or default_layout_config())
     # `has_text_layer` tính ngay ở đây (§5.8): tài liệu đi thẳng `processing → confirmed` (bước kết thúc lần đọc chưa
     # ghi được vì kho bận) không còn lần ghi trạng thái cuối nào sửa lại nó.
     settled = document.model_copy(update={"status": "confirmed", "meta": _with_text_layer(document, pages)})
@@ -1838,14 +2019,19 @@ def _settle_once(store: DocumentRepository, vault: VaultRepository, document_id:
 
 
 def _settle_confirmed(
-    store: DocumentRepository, vault: VaultRepository, document_id: str, *, by_user: bool = False
+    store: DocumentRepository,
+    vault: VaultRepository,
+    document_id: str,
+    *,
+    by_user: bool = False,
+    layout: LayoutConfig | None = None,
 ) -> bool:
     """Settle sau khi request đã ghi xác nhận trang. Hết lượt thử vì version lệch thì KHÔNG trả lỗi cho request
     (trang đã xác nhận thật, báo "version lệch" là sai), chỉ ghi cảnh báo: response mang trạng thái đang lưu, tài
     liệu được settle ở lần xác nhận sau hoặc khi lần đọc nền kết thúc. Lỗi khác (ví dụ `StorageBusyError` ⇒ 503
     theo §6.0) ném nguyên: gọi lại xác nhận là idempotent. Trả `True` khi lần gọi này vừa đóng tài liệu (T1b)."""
     try:
-        return settle_outcome(store, vault, document_id, by_user=by_user).closed
+        return settle_outcome(store, vault, document_id, by_user=by_user, layout=layout).closed
     except VersionConflictError:
         _LOGGER.warning(
             "đã xác nhận trang của tài liệu %s nhưng chưa đặt được confirmed sau %d lần (version lệch); tài liệu "

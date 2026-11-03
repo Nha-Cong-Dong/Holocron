@@ -9,21 +9,26 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from pydantic import BaseModel
 
 from ..domain.ai import AiCacheEntry
-from ..domain.documents import PageEditAudit, PageSummary
+from ..domain.block_eligibility import is_candidate_block
+from ..domain.blocks import Block, CropImage, ExtractionLedger, Section
+from ..domain.documents import PageEditAudit, PageGeometry, PageSummary
 from ..domain.ingestion import IngestionItem, MediaType, UploadedDocument
 from ..domain.repositories import (
     AI_CACHE_MAX_ROWS,
     AI_CACHE_TTL_DAYS,
     IDEMPOTENCY_TTL,
+    BlockFlagUpdate,
     ConcurrentUpdateError,
+    CropWriteResult,
     DocumentExistsError,
+    DocumentLayout,
     ImportedDocument,
     MissingReferenceError,
     PageStatus,
@@ -31,12 +36,19 @@ from ..domain.repositories import (
     RecordNotFoundError,
     SearchIndex,
     StorageError,
+    StructureProposalRecord,
     SubjectExistsError,
     VaultEntity,
     VaultSearchUnavailableError,
     VersionConflictError,
+    capped,
+    check_crop_bytes,
     check_page_audit,
+    cropped,
+    heading_levels,
     same_item_state,
+    with_flags,
+    with_root_chapter,
 )
 from ..domain.schemas import BlueprintSummary, ExamBlueprint, ExamFormat, KnowledgeChunk, Subject
 from ..domain.twins import IdempotencyRecord, TwinBatch
@@ -45,6 +57,9 @@ from ..domain.vault import ConceptPair, ConceptPairStatus, VaultEdit, check_defi
 __all__ = ["IDEMPOTENCY_TTL", "IngestionStore"]
 
 IMPORTED_MEDIA_TYPE: MediaType = "application/pdf"  # bộ nhập §6.5 chỉ nhận PDF trong MVP, như bản SQLite
+MEMORY_CROP_MAX_BYTES = 256 * 1024 * 1024  # trần tổng byte ảnh cắt giữ trong một instance (§5.13 "Ảnh cắt")
+# Bốn field khối của `ImportedDocument`: chỉ `create_imported_document` (thế hệ) và `save_document_layout` ghi.
+_LAYOUT_FIELDS = ("layout_version", "layout_settings_sha256", "blocks_after_close", "import_generation")
 
 
 @dataclass(frozen=True)
@@ -126,8 +141,13 @@ class IngestionStore:
     """Kho in-memory cho item, tài liệu (tải lên và nhập qua §6.5) và Vault; cấp qua `Depends(get_store)`."""
 
     def __init__(
-        self, *, ai_cache_max_rows: int = AI_CACHE_MAX_ROWS, ai_cache_ttl_days: int = AI_CACHE_TTL_DAYS
+        self,
+        memory_crop_max_bytes: int = MEMORY_CROP_MAX_BYTES,
+        *,
+        ai_cache_max_rows: int = AI_CACHE_MAX_ROWS,
+        ai_cache_ttl_days: int = AI_CACHE_TTL_DAYS,
     ) -> None:
+        """`memory_crop_max_bytes`: trần tổng byte ảnh cắt (không có biến môi trường); vượt ⇒ khối `crop_capped`."""
         if ai_cache_max_rows < 1 or ai_cache_ttl_days < 1:
             raise ValueError("ai_cache_max_rows và ai_cache_ttl_days phải là số nguyên dương")
         self._ai_cache: dict[str, _StoredAiCache] = {}
@@ -150,6 +170,18 @@ class IngestionStore:
         self._document_versions: dict[str, int] = {}
         self._pages: dict[tuple[str, int], _StoredPage] = {}
         self._page_audits: dict[tuple[str, int], list[PageEditAudit]] = {}
+        # BlockRepository (bảng của migration khối). `_last_generation` là `import_generations`: KHÔNG bị xoá theo tài
+        # liệu, mất khi tắt app. `_eligible` là các `(document_id, block_id)` có `eligible = 1`.
+        self._last_generation: dict[str, int] = {}
+        self._geometries: dict[tuple[str, int], str] = {}
+        self._blocks: dict[tuple[str, str], Block] = {}
+        self._eligible: set[tuple[str, str]] = set()
+        self._ledgers: dict[tuple[str, int], ExtractionLedger] = {}
+        self._sections: dict[str, list[Section]] = {}
+        self._proposals: dict[tuple[str, int], StructureProposalRecord] = {}
+        self._crop_rows: dict[tuple[str, str], CropImage] = {}
+        self._crop_bytes: dict[tuple[str, str], bytes] = {}
+        self._memory_crop_max_bytes = memory_crop_max_bytes
         self._lock = threading.RLock()
 
     def get_item(self, item_id: str) -> IngestionItem | None:
@@ -340,8 +372,13 @@ class IngestionStore:
     # ------------------------------------------------------------------ #
 
     def _put_imported(self, document: ImportedDocument, version: int) -> ImportedDocument:
-        """Ghi tài liệu nhập với `version` kèm dòng `documents` tương ứng (`get_document` đọc lại được, như SQLite)."""
-        stored = document.model_copy(update={"version": version}, deep=True)
+        """Ghi tài liệu nhập với `version` kèm dòng `documents` tương ứng (`get_document` đọc lại được, như SQLite).
+
+        Bốn field khối giữ giá trị đang lưu (chưa có bản ghi ⇒ mặc định), như bản SQLite."""
+        current = self._imported.get(document.meta.doc_id)
+        layout = {name: getattr(current, name) for name in _LAYOUT_FIELDS} if current is not None else {}
+        defaults = {name: ImportedDocument.model_fields[name].default for name in _LAYOUT_FIELDS}
+        stored = document.model_copy(update={"version": version, **defaults, **layout}, deep=True)
         meta = stored.meta
         self._documents[meta.doc_id] = UploadedDocument(
             document_id=meta.doc_id,
@@ -388,6 +425,10 @@ class IngestionStore:
             stored = self._put_imported(document, 1 if current is None else current + 1)
             self._pages.update(rows)
             self._ensure_subject(Subject.implicit(document.meta.subject_code, document.meta.uploaded_at))
+            generation = self._last_generation.get(document_id, 0) + 1
+            self._last_generation[document_id] = generation
+            stored = stored.model_copy(update={"import_generation": generation})
+            self._imported[document_id] = stored.model_copy(deep=True)
             return stored
 
     def get_imported_document(self, document_id: str) -> ImportedDocument | None:
@@ -403,8 +444,9 @@ class IngestionStore:
                 raise RecordNotFoundError("tài liệu", document_id)
             if current != expected_version:
                 raise VersionConflictError("tài liệu", document_id, expected_version, current)
-            self._put_imported(document, expected_version + 1)
-        return document.model_copy(update={"version": expected_version + 1})
+            stored = self._put_imported(document, expected_version + 1)
+        layout = {name: getattr(stored, name) for name in _LAYOUT_FIELDS}
+        return document.model_copy(update={"version": expected_version + 1, **layout})
 
     def list_imported_documents(self, subject_code: str | None = None) -> list[ImportedDocument]:
         with self._lock:
@@ -423,6 +465,7 @@ class IngestionStore:
                 return False
             if any(item.source_doc_id == document_id for item in self._items.values()):
                 raise RecordInUseError(f"tài liệu {document_id} còn được ingestion item tham chiếu")
+            # `_last_generation` giữ nguyên: thế hệ tăng đơn điệu qua xoá rồi nhập lại.
             self._drop_import_data(document_id)
             del self._documents[document_id]
             self._imported.pop(document_id, None)
@@ -461,6 +504,17 @@ class IngestionStore:
         for key in [key for key in self._pages if key[0] == document_id]:
             del self._pages[key]
             self._page_audits.pop(key, None)
+            self._geometries.pop(key, None)
+            self._ledgers.pop(key, None)
+            self._proposals.pop(key, None)
+        for block_key in [key for key in self._blocks if key[0] == document_id]:
+            del self._blocks[block_key]
+            self._eligible.discard(block_key)
+        self._sections.pop(document_id, None)
+        for crop_key in [key for key in self._crop_rows if key[0] == document_id]:
+            del self._crop_rows[crop_key]
+        for bytes_key in [key for key in self._crop_bytes if key[0] == document_id]:
+            del self._crop_bytes[bytes_key]
         self._relink(subjects)
 
     def add_page(
@@ -483,8 +537,9 @@ class IngestionStore:
         confirmed: bool,
         expected_version: int,
         audit: PageEditAudit | None = None,
+        geometry: PageGeometry | None = None,
     ) -> int:
-        """So-và-ghi dưới khoá; `audit` được ghi cùng lúc với trang."""
+        """So-và-ghi dưới khoá; `audit` và `geometry` (None ⇒ giữ hình học đã lưu) được ghi cùng lúc với trang."""
         if audit is not None:
             check_page_audit(audit, document_id, page_number, expected_version)
         key = (document_id, page_number)
@@ -497,6 +552,8 @@ class IngestionStore:
             self._pages[key] = _StoredPage.of(page, status, confirmed, expected_version + 1)
             if audit is not None:
                 self._page_audits.setdefault(key, []).append(audit.model_copy(deep=True))
+            if geometry is not None:
+                self._geometries[key] = geometry.model_dump_json()
         return expected_version + 1
 
     def list_page_audits(self, document_id: str, page_number: int) -> list[PageEditAudit]:
@@ -735,3 +792,203 @@ class IngestionStore:
             deleted = len(self._ai_cache)
             self._ai_cache.clear()
         return deleted
+
+    # ------------------------------------------------------------------ #
+    # BlockRepository (cùng ngữ nghĩa với bản SQLite; ảnh cắt là byte trong instance, có trần tổng)
+    # ------------------------------------------------------------------ #
+
+    def _require_imported(self, document_id: str) -> ImportedDocument:
+        document = self._imported.get(document_id)
+        if document is None:
+            raise RecordNotFoundError("tài liệu", document_id)
+        return document
+
+    def _require_page(self, document_id: str, page_number: int) -> _StoredPage:
+        page = self._pages.get((document_id, page_number))
+        if page is None:
+            raise RecordNotFoundError("trang", f"{document_id}#{page_number}")
+        return page
+
+    def _require_block(self, document_id: str, block_id: str) -> Block:
+        block = self._blocks.get((document_id, block_id))
+        if block is None:
+            raise RecordNotFoundError("khối", f"{document_id}#{block_id}")
+        return block
+
+    def get_page_geometry(self, document_id: str, page_number: int) -> PageGeometry | None:
+        with self._lock:
+            raw = self._geometries.get((document_id, page_number))
+        return None if raw is None else PageGeometry.model_validate_json(raw)
+
+    def save_document_layout(self, document_id: str, layout: DocumentLayout) -> None:
+        """Như bản SQLite: kiểm mọi điều kiện trước, rồi mới ghi dưới khoá (lỗi ⇒ không ghi gì)."""
+        with self._lock:
+            document = self._require_imported(document_id)
+            for rewrite in layout.page_rewrites:
+                page = rewrite.page
+                if page.document_id != document_id:
+                    raise ValueError("trang ghi lại không thuộc tài liệu")
+                stored = self._require_page(document_id, page.page_number)
+                if stored.version != rewrite.expected_version:
+                    raise VersionConflictError(
+                        "trang", f"{document_id}#{page.page_number}", rewrite.expected_version, stored.version
+                    )
+            for page_layout in layout.pages:
+                self._require_page(document_id, page_layout.page_number)
+                if any(block.document_id != document_id for block in page_layout.blocks) or (
+                    page_layout.ledger is not None and page_layout.ledger.document_id != document_id
+                ):
+                    raise ValueError("khối hoặc ledger không thuộc tài liệu")
+            for rewrite in layout.page_rewrites:
+                page = rewrite.page
+                self._pages[(document_id, page.page_number)] = _StoredPage.of(
+                    page, page.status, page.confirmed, rewrite.expected_version + 1
+                )
+            for page_layout in layout.pages:
+                number = page_layout.page_number
+                for key in [k for k, b in self._blocks.items() if k[0] == document_id and b.page_number == number]:
+                    del self._blocks[key]
+                    self._eligible.discard(key)
+                for block in page_layout.blocks:
+                    self._blocks[(document_id, block.block_id)] = block.model_copy(deep=True)
+                if page_layout.ledger is None:
+                    self._ledgers.pop((document_id, number), None)
+                else:
+                    self._ledgers[(document_id, number)] = page_layout.ledger.model_copy(deep=True)
+            changes: dict[str, object] = {
+                "layout_version": layout.layout_version,
+                "layout_settings_sha256": layout.layout_settings_sha256,
+            }
+            if layout.blocks_after_close is not None:
+                changes["blocks_after_close"] = layout.blocks_after_close
+            self._imported[document_id] = document.model_copy(update=changes, deep=True)
+            stale = [key for key in self._crop_rows if key[0] == document_id and key not in self._blocks]
+            refs = {self._crop_rows[key].crop_ref for key in stale}
+            for key in stale:
+                del self._crop_rows[key]
+            self._release_crop_bytes(document_id, refs)
+
+    def _release_crop_bytes(self, document_id: str, crop_refs: set[str]) -> None:
+        """Bỏ byte của các `crop_ref` không còn hàng ảnh cắt nào của tài liệu; gọi khi đang giữ khoá."""
+        used = {row.crop_ref for key, row in self._crop_rows.items() if key[0] == document_id}
+        for ref in crop_refs - used:
+            self._crop_bytes.pop((document_id, ref), None)
+
+    def _sorted_blocks(self, document_id: str, keep: Callable[[tuple[str, str], Block], bool]) -> list[Block]:
+        with self._lock:
+            found = [b.model_copy(deep=True) for k, b in self._blocks.items() if k[0] == document_id and keep(k, b)]
+        return sorted(found, key=lambda b: (b.page_number, b.reading_order, b.block_id))
+
+    def list_blocks(self, document_id: str, page_number: int | None = None) -> list[Block]:
+        return self._sorted_blocks(document_id, lambda _, b: page_number is None or b.page_number == page_number)
+
+    def list_extraction_ledgers(self, document_id: str) -> list[ExtractionLedger]:
+        with self._lock:
+            found = [(k[1], ledger.model_copy(deep=True)) for k, ledger in self._ledgers.items() if k[0] == document_id]
+        return [ledger for _, ledger in sorted(found, key=lambda item: item[0])]
+
+    def replace_sections(self, document_id: str, sections: Sequence[Section]) -> None:
+        if any(section.document_id != document_id for section in sections):
+            raise ValueError("Section không thuộc tài liệu")
+        if len({section.section_id for section in sections}) != len(sections):
+            raise ValueError("section_id trùng")
+        with self._lock:
+            self._require_imported(document_id)
+            levels = heading_levels(sections)
+            updated: list[Block] = []
+            for block_id, level in levels:
+                block = self._require_block(document_id, block_id)
+                if block.type != "heading":
+                    raise ValueError(f"khối tiêu đề {block_id} không phải heading")
+                updated.append(block.model_copy(update={"level": level}))
+            self._sections[document_id] = [section.model_copy(deep=True) for section in sections]
+            for block in updated:
+                self._blocks[(document_id, block.block_id)] = block
+
+    def list_sections(self, document_id: str) -> list[Section]:
+        with self._lock:
+            found = [section.model_copy(deep=True) for section in self._sections.get(document_id, [])]
+        return sorted(found, key=lambda section: (section.ordinal, section.section_id))
+
+    def update_imported_document_and_root_section(
+        self, document: ImportedDocument, expected_version: int
+    ) -> ImportedDocument:
+        document_id = document.meta.doc_id
+        with self._lock:
+            sections = self._sections.get(document_id, [])
+            roots = [index for index, section in enumerate(sections) if section.parent_id is None]
+            root = None
+            if roots:
+                root = with_root_chapter(sections[roots[0]], document.chapter_code, document.chapter_title)
+            updated = self.update_imported_document(document, expected_version)
+            if root is not None:
+                sections[roots[0]] = root
+        return updated
+
+    def update_block_flags(self, document_id: str, updates: Sequence[BlockFlagUpdate]) -> list[Block]:
+        with self._lock:
+            written = [with_flags(self._require_block(document_id, update.block_id), update) for update in updates]
+            for block in written:
+                self._blocks[(document_id, block.block_id)] = block
+        return [block.model_copy(deep=True) for block in written]
+
+    def save_structure_proposal(self, record: StructureProposalRecord) -> None:
+        with self._lock:
+            self._require_page(record.document_id, record.page_number)
+            self._proposals[(record.document_id, record.page_number)] = record.model_copy(deep=True)
+
+    def list_structure_proposals(self, document_id: str) -> list[StructureProposalRecord]:
+        with self._lock:
+            found = [(k[1], r.model_copy(deep=True)) for k, r in self._proposals.items() if k[0] == document_id]
+        return [record for _, record in sorted(found, key=lambda item: item[0])]
+
+    def refresh_eligible_blocks(self, document_id: str) -> int:
+        with self._lock:
+            source_kind = self._require_imported(document_id).meta.source_kind
+            pages = {page.page_number: page for page in self.list_page_summaries(document_id)}
+            for key, block in self._blocks.items():
+                if key[0] != document_id:
+                    continue
+                if is_candidate_block(block, pages[block.page_number], source_kind):
+                    self._eligible.add(key)
+                else:
+                    self._eligible.discard(key)
+            return sum(1 for key in self._eligible if key[0] == document_id)
+
+    def list_eligible_blocks(self, document_id: str) -> list[Block]:
+        return self._sorted_blocks(document_id, lambda key, _: key in self._eligible)
+
+    def save_crop_image(self, crop: CropImage, png: bytes) -> CropWriteResult:
+        """Byte giữ trong instance; tổng byte (mỗi `(document_id, crop_ref)` tính một lần) vượt
+        `memory_crop_max_bytes` ⇒ không ghi, khối giữ `crop_pending` + thêm `crop_capped`."""
+        check_crop_bytes(crop, png)
+        document_id = crop.document_id
+        key = (document_id, crop.block_id)
+        with self._lock:
+            block = self._require_block(document_id, crop.block_id)
+            if block.page_number != crop.page_number:
+                raise ValueError("ảnh cắt khác trang của khối")
+            file_key = (document_id, crop.crop_ref)
+            extra = 0 if file_key in self._crop_bytes else len(png)
+            if sum(len(data) for data in self._crop_bytes.values()) + extra > self._memory_crop_max_bytes:
+                self._blocks[key] = capped(block)
+                return "capped"
+            stored = cropped(block, crop.crop_ref)
+            previous = self._crop_rows.get(key)
+            self._crop_bytes.setdefault(file_key, bytes(png))
+            self._crop_rows[key] = crop.model_copy(deep=True)
+            self._blocks[key] = stored
+            if previous is not None and previous.crop_ref != crop.crop_ref:
+                self._release_crop_bytes(document_id, {previous.crop_ref})
+        return "stored"
+
+    def list_crop_images(self, document_id: str) -> list[CropImage]:
+        with self._lock:
+            found = [row.model_copy(deep=True) for key, row in self._crop_rows.items() if key[0] == document_id]
+        return sorted(found, key=lambda row: row.block_id)
+
+    def get_crop_bytes(self, document_id: str, crop_ref: str) -> bytes | None:
+        with self._lock:
+            if not any(k[0] == document_id and row.crop_ref == crop_ref for k, row in self._crop_rows.items()):
+                return None
+            return self._crop_bytes.get((document_id, crop_ref))

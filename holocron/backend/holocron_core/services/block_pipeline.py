@@ -1,8 +1,9 @@
 """Pipeline dựng khối của một trang lớp chữ và hash cấu hình bộ dựng (ADR-010 mục 6, 13, 15; spec §5.15).
 
-Thứ tự stage từng trang chốt MỘT chỗ ở `PAGE_STAGES`: `base_blocks` (X05) → [bảng/hình vector, X07] → [code, X06] →
-`reading_order` (X05, LUÔN cuối, gán `reading_order` và id) → kiểm ledger. `page_numbers` là stage CẤP TÀI LIỆU riêng
-(`services/page_numbers.py`), chạy sau khi mọi trang đã dựng khối.
+Thứ tự stage từng trang chốt MỘT chỗ ở `PAGE_STAGES`: `base_blocks` (X05) → [bảng/hình vector, X07, chưa có] →
+`code_blocks` (X06) → `reading_order` (X05, LUÔN cuối, gán `reading_order` và id) → kiểm ledger. Hai bước CẤP TÀI LIỆU
+chạy sau khi mọi trang đã dựng khối, theo thứ tự: `page_numbers` (`services/page_numbers.py`) rồi `section_tree`
+(`services/section_tree.py`, X08); cả hai vào `layout_settings_sha256` sau các stage từng trang (ADR-010 mục 13, 15).
 
 Mọi nhánh lỗi (thiếu geometry, stage ném BẤT KỲ `Exception` nào, vượt `MAX_PAGE_BLOCKS`, XY-cut vượt trần, khối không
 phải `paragraph` quá dài, tham chiếu không giải được, ledger lệch) ⇒ `PageBlocks.layout_failed = True`, `blocks = []`,
@@ -17,18 +18,22 @@ import json
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import Field, model_validator
 
 from ..domain.blocks import LAYOUT_VERSION, MAX_PAGE_BLOCKS, Block, ExtractionLedger
 from ..domain.documents import PageExtraction, PageGeometry
 from ..domain.schemas import StrictModel
-from ..infrastructure.lang_patterns import LangPatterns
+from ..infrastructure.lang_patterns import LangPatterns, load_lang_patterns
 from .block_builder import BaseBlockStage
+from .code_blocks import CodeBlockStage
 from .extraction_ledger import LedgerError, SourceIndex, compute_ledger
 from .page_numbers import PageNumberCandidate, PageNumberSettings, PageNumberStage
 from .reading_order import ReadingOrderStage
+
+if TYPE_CHECKING:
+    from .section_tree import SectionTreeStage
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +83,11 @@ class PageBlocks(StrictModel):
         return self
 
 
-# Danh sách stage từng trang theo thứ tự chạy — NƠI DUY NHẤT chốt thứ tự (X07 chèn bảng/hình vector, X06 chèn code
-# giữa `base_blocks` và `reading_order`).
+# Danh sách stage từng trang theo thứ tự chạy — NƠI DUY NHẤT chốt thứ tự (ADR-010 mục 6 "Stage từng trang"; X07 chèn
+# bảng/hình vector giữa `base_blocks` và `code_blocks`).
 PAGE_STAGES: tuple[PageStage, ...] = (
     BaseBlockStage(),
+    CodeBlockStage(),
     ReadingOrderStage(),
 )
 
@@ -130,25 +136,81 @@ def _canonical_sha256(value: Any) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _default_section_tree(lang: LangPatterns) -> SectionTreeStage:
+    """`SectionTreeStage` mặc định. Import trong hàm vì `section_tree` import `PageContext` từ module này (vòng import)."""
+    from .section_tree import SectionTreeStage
+
+    return SectionTreeStage(lang)
+
+
 def layout_fingerprints(
-    page_numbers: PageNumberStage, stages: Sequence[PageStage] = PAGE_STAGES
+    page_numbers: PageNumberStage,
+    stages: Sequence[PageStage] = PAGE_STAGES,
+    *,
+    section_tree: SectionTreeStage | None = None,
 ) -> list[dict[str, Any]]:
-    """`fingerprint()` của mọi stage tất định theo thứ tự chạy: stage từng trang rồi `page_numbers`."""
-    return [*(stage.fingerprint() for stage in stages), page_numbers.fingerprint()]
+    """`fingerprint()` của mọi stage tất định theo thứ tự chạy: stage từng trang, rồi hai bước cấp tài liệu
+    `page_numbers` và `section_tree` (None ⇒ `SectionTreeStage` mặc định với mẫu ngôn ngữ của `page_numbers`)."""
+    tree = section_tree if section_tree is not None else _default_section_tree(page_numbers.lang)
+    return [*(stage.fingerprint() for stage in stages), page_numbers.fingerprint(), tree.fingerprint()]
 
 
 def layout_settings_sha256(
     page_numbers: PageNumberStage,
     stages: Sequence[PageStage] = PAGE_STAGES,
     *,
+    section_tree: SectionTreeStage | None = None,
     layout_version: int = LAYOUT_VERSION,
 ) -> str:
     """sha256 JSON chuẩn hoá của `{"layout_version", "fingerprints"}` (ADR-010 mục 15)."""
-    return _canonical_sha256(
-        {"layout_version": layout_version, "fingerprints": layout_fingerprints(page_numbers, stages)}
-    )
+    fingerprints = layout_fingerprints(page_numbers, stages, section_tree=section_tree)
+    return _canonical_sha256({"layout_version": layout_version, "fingerprints": fingerprints})
 
 
 def default_layout_settings_sha256(lang: LangPatterns) -> str:
-    """Hash của cấu hình mặc định (`PAGE_STAGES`, `PageNumberStage` mặc định) với mẫu ngôn ngữ `lang`."""
+    """Hash của cấu hình mặc định (`PAGE_STAGES`, `PageNumberStage` và `SectionTreeStage` mặc định) với mẫu `lang`."""
     return layout_settings_sha256(PageNumberStage(lang))
+
+
+@dataclass(frozen=True, kw_only=True)
+class LayoutConfig:
+    """MỘT nguồn cấu hình bộ dựng khối (ADR-010 mục 15): cùng các stage cho stage từng trang, hash
+    `layout_settings_sha256` và bước Section của settle. Ngưỡng số trang của stage từng trang lấy từ
+    `page_numbers.settings` (đã nằm trong fingerprint của `page_numbers`), không có field riêng."""
+
+    lang: LangPatterns
+    page_stages: tuple[PageStage, ...] = PAGE_STAGES
+    page_numbers: PageNumberStage
+    section_tree: SectionTreeStage
+
+    def settings_sha256(self) -> str:
+        """`layout_settings_sha256` của đúng cấu hình này."""
+        return layout_settings_sha256(self.page_numbers, self.page_stages, section_tree=self.section_tree)
+
+    def page_number_settings(self) -> PageNumberSettings:
+        return self.page_numbers.settings
+
+    def build_page_blocks(
+        self, *, document_id: str, page_number: int, geometry: PageGeometry | None, extraction: PageExtraction
+    ) -> PageBlocks:
+        """`build_page_blocks` với mẫu ngôn ngữ, stage và ngưỡng số trang của cấu hình này."""
+        return build_page_blocks(
+            document_id=document_id,
+            page_number=page_number,
+            geometry=geometry,
+            extraction=extraction,
+            lang=self.lang,
+            stages=self.page_stages,
+            page_number_settings=self.page_number_settings(),
+        )
+
+
+def default_layout_config(lang: LangPatterns | None = None) -> LayoutConfig:
+    """Cấu hình mặc định (`PAGE_STAGES`, `PageNumberStage`, `SectionTreeStage` mặc định); `lang` None ⇒ nạp các tệp
+    ngôn ngữ đóng gói. Hash của nó bằng `default_layout_settings_sha256(lang)`."""
+    patterns = load_lang_patterns() if lang is None else lang
+    return LayoutConfig(
+        lang=patterns,
+        page_numbers=PageNumberStage(patterns),
+        section_tree=_default_section_tree(patterns),
+    )

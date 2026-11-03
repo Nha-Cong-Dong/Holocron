@@ -216,3 +216,149 @@ def test_long_region_check_is_bounded() -> None:
     started = time.monotonic()
     assert judge_region(_result(_text(text)), text, 0.0).outcome == "accepted_text"
     assert time.monotonic() - started < 30
+
+
+def test_long_shuffled_region_is_rejected_within_time_bound() -> None:
+    """MAJOR review V02: vùng ~19 000 ký tự từ xáo trộn (Jaccard = 1, token số/mã bằng nhau) phải kết thúc < 1 s."""
+    rng = random.Random(11)
+    vocabulary = ["lệnh", "thanh", "ghi", "giá", "trị", "bộ", "nhớ", "địa", "chỉ", "ngắt", "cờ", "nạp"]
+    words = [rng.choice(vocabulary) + rng.choice("abcdefgh") for _ in range(4000)]
+    ocr = " ".join(words)[:19_000].rsplit(" ", 1)[0]
+    shuffled = ocr.split()
+    rng.shuffle(shuffled)
+    vlm = " ".join(shuffled)
+    assert 18_000 < len(ocr) <= 19_000 and len(vlm) == len(ocr)
+    started = time.perf_counter()
+    decision = judge_region(_result(_text(vlm)), ocr, 0.0)
+    elapsed = time.perf_counter() - started
+    assert decision.outcome == "rejected" and decision.reason == "cer" and decision.text is None
+    assert elapsed < 1.0
+
+
+def test_edit_distance_on_long_unicode_strings_matches_reference() -> None:
+    rng = random.Random(3)
+    alphabet = "aăâđêôơưáàảãạ R0"
+    for _ in range(60):
+        left = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 90)))
+        right = list(left)
+        for _ in range(rng.randint(0, 20)):
+            position = rng.randint(0, len(right))
+            choice = rng.random()
+            if choice < 0.4 or not right:
+                right.insert(position, rng.choice(alphabet))
+            elif choice < 0.7:
+                del right[min(position, len(right) - 1)]
+            else:
+                right[min(position, len(right) - 1)] = rng.choice(alphabet)
+        other = "".join(right)
+        distance = levenshtein(left, other)
+        assert within_edit_distance(left, other, distance)
+        assert not within_edit_distance(left, other, distance - 1)
+
+
+@pytest.mark.parametrize("overlap", [float("nan"), float("inf"), float("-inf"), -0.1, 1.1])
+def test_invalid_text_layer_overlap_fails_closed(overlap: float) -> None:
+    """MAJOR review V02 (I3): độ giao không hữu hạn hoặc ngoài [0, 1] ⇒ không nhận chữ VLM, có cờ."""
+    decision = judge_region(_result(_text(OCR)), OCR, overlap)
+    assert decision.outcome == "rejected" and decision.reason == "invalid_overlap"
+    assert decision.text is None and decision.rows is None and decision.flags == ["vlm_gate_rejected"]
+    table = judge_region(_result(_table([["R13", "42"]])), "R13 42", overlap)
+    assert table.outcome == "rejected" and table.rows is None
+
+
+def test_overlap_bounds_zero_and_one_are_valid() -> None:
+    assert judge_region(_result(_text(OCR)), OCR, 0.0).outcome == "accepted_text"
+    assert judge_region(_result(_text(OCR)), OCR, 1.0).reason == "text_layer_overlap"
+
+
+def test_whitespace_is_collapsed_before_comparison() -> None:
+    ocr = "thanh ghi chứa giá trị sau lệnh"
+    vlm = ocr.replace(" ", "\n\n   ")
+    decision = judge_region(_result(_text(vlm)), ocr, 0.0)
+    assert decision.outcome == "accepted_text" and decision.text == vlm
+
+
+def test_word_jaccard_of_two_empty_word_sets_is_one() -> None:
+    from holocron_core.services.vision_gate import word_jaccard
+
+    assert word_jaccard("...", "...") == 1.0
+    assert word_jaccard("a b c", "a b d") == 0.5
+
+
+def test_jaccard_exactly_at_threshold_is_accepted() -> None:
+    settings = VisionGateSettings(min_word_jaccard=0.5, max_cer=1.0)
+    assert judge_region(_result(_text("a b d")), "a b c", 0.0, settings).outcome == "accepted_text"
+
+
+def test_cer_limit_is_floor_of_threshold_times_ocr_length() -> None:
+    ocr = "abcdefghij klmnopqrs"  # 20 ký tự ⇒ trần 0.15 × 20 = 3 lần sửa
+    settings = VisionGateSettings(min_word_jaccard=0.0)
+    assert judge_region(_result(_text("abcdefghij klmnopxyz")), ocr, 0.0, settings).outcome == "accepted_text"
+    four = judge_region(_result(_text("abcdefghij klmnowxyz")), ocr, 0.0, settings)
+    assert four.outcome == "rejected" and four.reason == "cer"
+
+
+def test_two_table_blocks_are_mixed() -> None:
+    decision = judge_region(_result(_table([["R13", "42"]]), _table([["R14", "7"]], order=1)), "R13 42 R14 7", 0.0)
+    assert decision.outcome == "rejected" and decision.reason == "mixed_table"
+
+
+def test_region_length_cap_applies_to_each_side() -> None:
+    settings = VisionGateSettings(max_region_chars=20, min_word_jaccard=0.0, max_cer=1.0)
+    exact = "a" * 20
+    assert judge_region(_result(_text(exact)), exact, 0.0, settings).outcome == "accepted_text"
+    long_vlm = VisionGateSettings(max_region_chars=50, min_word_jaccard=0.0, max_cer=1.0)
+    decision = judge_region(_result(_text("b" * 200)), "a" * 20, 0.0, long_vlm)
+    assert decision.reason == "too_long"
+    assert judge_region(_result(_text("a" * 20)), "a" * 21, 0.0, settings).reason == "too_long"
+
+
+def test_table_mismatch_carries_token_kind() -> None:
+    rows = [["Thanh ghi", "Giá trị"], ["R15", "42"], ["R14", "0x1F"]]
+    decision = judge_region(_result(_table(rows)), TABLE_OCR, 0.0)
+    assert decision.flags == ["table_token_mismatch"]
+    assert set(decision.mismatches) == {
+        GateTokenMismatch(token_kind="code", row=1, col=0, vlm_value="R15"),
+        GateTokenMismatch(token_kind="number", row=1, col=0, vlm_value="15"),
+        GateTokenMismatch(token_kind="code", ocr_value="R13"),
+        GateTokenMismatch(token_kind="number", ocr_value="13"),
+    }
+
+
+def test_table_token_over_200_chars_rejects_region() -> None:
+    long_number = "9" * 201
+    rows = [["Giá trị", long_number]]
+    decision = judge_region(_result(_table(rows)), f"Giá trị {long_number}", 0.0)
+    assert decision.outcome == "rejected" and decision.reason == "too_long" and decision.rows is None
+    ok = "9" * 200
+    accepted = judge_region(_result(_table([["Giá trị", ok]])), f"Giá trị {ok}", 0.0)
+    assert accepted.outcome == "accepted_table" and accepted.mismatches == []
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"token_kind": "number"},
+        {"token_kind": "number", "vlm_value": "1", "ocr_value": "1", "row": 0, "col": 0},
+        {"token_kind": "number", "vlm_value": "1"},
+        {"token_kind": "number", "vlm_value": "1", "row": 0},
+        {"token_kind": "number", "ocr_value": "1", "row": 0, "col": 0},
+        {"token_kind": "number", "ocr_value": "1" * 201},
+        {"token_kind": "other", "ocr_value": "1"},
+    ],
+)
+def test_token_mismatch_validator(fields: dict[str, object]) -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        GateTokenMismatch.model_validate(fields)
+
+
+def test_rapidocr_table_compares_code_tokens_without_tone_marks() -> None:
+    rows = [["Bước1 thanh ghi bộ nhớ", "42"]]
+    ocr = "Buoc1 thanh ghi bo nho 42"
+    decision = judge_region(_result(_table(rows)), ocr, 0.0, ocr_engine="rapidocr")
+    assert decision.outcome == "accepted_table" and decision.mismatches == [] and decision.flags == []
+    assert decision.rows == rows
+    wrong = judge_region(_result(_table([["Bước1 thanh ghi bộ nhớ", "43"]])), ocr, 0.0, ocr_engine="rapidocr")
+    assert wrong.flags == ["table_token_mismatch"]

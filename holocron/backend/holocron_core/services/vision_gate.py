@@ -16,13 +16,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import unicodedata
 from collections import Counter
 from collections.abc import Sequence
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..domain.blocks import BlockFlag, BlockType
 from ..infrastructure.document_readers.cross_check import TOKEN_PATTERN
@@ -31,6 +32,8 @@ from ..infrastructure.vision_reader import UNREADABLE_MARKER, VlmRegionBlock, Vl
 DEFAULT_CODE_TOKEN_PATTERN = r"(?<![0-9A-Za-z_])(?:[A-Z][A-Z0-9_]+|[A-Za-z_]+[0-9][0-9A-Za-z_]*)(?![0-9A-Za-z_])"
 WHITESPACE = re.compile(r"\s+")
 OcrEngine = Literal["tesseract", "rapidocr"]
+TokenKind = Literal["number", "code"]
+MAX_TOKEN_CHARS = 200
 
 GateOutcome = Literal["accepted_text", "accepted_table", "rejected", "keep_offline", "figure_confirmed"]
 GateReason = Literal[
@@ -38,6 +41,7 @@ GateReason = Literal[
     "status_invalid",
     "status_unavailable",
     "text_layer_overlap",
+    "invalid_overlap",
     "ocr_missing",
     "unreadable_marker",
     "empty",
@@ -64,15 +68,27 @@ class VisionGateSettings(BaseModel):
 
 
 class GateTokenMismatch(BaseModel):
-    """Một chỗ lệch token số/mã của bảng (ADR-009 mục 3.4). VLM thừa: `row`, `col`, `vlm_value`; VLM bỏ sót (token
-    OCR không có bên VLM): `row = col = vlm_value = None`, `ocr_value`."""
+    """Một chỗ lệch token số/mã của bảng (ADR-009 mục 3.4; spec §5.7 `VlmTokenMismatch`). VLM thừa: `row`, `col`,
+    `vlm_value`; VLM bỏ sót (token OCR không có bên VLM): `row = col = vlm_value = None`, `ocr_value`. `token_kind`:
+    `number` theo `cross_check.TOKEN_PATTERN`, `code` theo `VisionGateSettings.code_token_pattern`."""
 
     model_config = ConfigDict(frozen=True)
 
+    token_kind: TokenKind
     row: int | None = Field(default=None, ge=0)
     col: int | None = Field(default=None, ge=0)
-    vlm_value: str | None = None
-    ocr_value: str | None = None
+    vlm_value: str | None = Field(default=None, max_length=MAX_TOKEN_CHARS)
+    ocr_value: str | None = Field(default=None, max_length=MAX_TOKEN_CHARS)
+
+    @model_validator(mode="after")
+    def _one_side(self) -> GateTokenMismatch:
+        if (self.vlm_value is None) == (self.ocr_value is None):
+            raise ValueError("đúng một trong vlm_value, ocr_value khác null")
+        located = self.row is not None and self.col is not None
+        unlocated = self.row is None and self.col is None
+        if not (located if self.vlm_value is not None else unlocated):
+            raise ValueError("row, col khác null khi và chỉ khi vlm_value khác null")
+        return self
 
 
 class VisionGateDecision(BaseModel):
@@ -108,6 +124,7 @@ def strip_tone_marks(text: str) -> str:
 
 
 def levenshtein(left: str, right: str) -> int:
+    """Levenshtein O(n·m) đầy đủ: bản tham chiếu để test đối chiếu `within_edit_distance`, cổng không gọi."""
     if len(left) < len(right):
         left, right = right, left
     previous = list(range(len(right) + 1))
@@ -119,61 +136,59 @@ def levenshtein(left: str, right: str) -> int:
     return previous[-1]
 
 
-def cer(vlm: str, ocr: str) -> float:
-    """Khoảng cách Levenshtein ký tự chia số ký tự chuỗi OCR (hai chuỗi đã chuẩn hoá)."""
-    return levenshtein(vlm, ocr) / max(1, len(ocr))
-
-
-def _common_run(left: str, right: str, i: int, j: int) -> int:
-    """Độ dài đoạn trùng dài nhất bắt đầu ở `left[i]`, `right[j]` (so lát cắt theo bước nhân đôi rồi chia đôi)."""
-    limit = min(len(left) - i, len(right) - j)
-    low, step = 0, 1
-    while low < limit:
-        size = min(step, limit - low)
-        if left[i + low : i + low + size] != right[j + low : j + low + size]:
-            break
-        low += size
-        step *= 2
-    else:
-        return low
-    high = min(low + step, limit)
-    while high - low > 1:
-        middle = (low + high) // 2
-        if left[i + low : i + middle] == right[j + low : j + middle]:
-            low = middle
-        else:
-            high = middle
-    return low if left[i + low : i + low + 1] != right[j + low : j + low + 1] else low + 1
+def _trim_common(left: str, right: str) -> tuple[str, str]:
+    """Bỏ phần đầu và phần cuối trùng nhau (không đổi khoảng cách sửa)."""
+    limit = min(len(left), len(right))
+    head = 0
+    while head < limit and left[head] == right[head]:
+        head += 1
+    tail = 0
+    while tail < limit - head and left[-1 - tail] == right[-1 - tail]:
+        tail += 1
+    return left[head : len(left) - tail], right[head : len(right) - tail]
 
 
 def within_edit_distance(left: str, right: str, limit: int) -> bool:
-    """`levenshtein(left, right) ≤ limit` theo Landau–Vishkin: chi phí O((n + m)·d) với d là khoảng cách thật (đoạn
-    trùng được trượt bằng so lát cắt), nên vùng dài gần giống nhau được kiểm nhanh, khác nhiều thì dừng ở `limit`."""
-    n, m = len(left), len(right)
-    if abs(n - m) > limit:
+    """`levenshtein(left, right) ≤ limit` theo thuật toán song song bit của Myers (bản Hyyrö).
+
+    Cận thời gian (§2.2, dữ liệu không tin cậy): mỗi ký tự của chuỗi dài là một số phép toán cố định trên số nguyên
+    `min(n, m)` bit, nên chi phí là O(n·m/64) phép toán máy và O(max(n, m)) bước Python, không phụ thuộc khoảng cách
+    thật; đầu vào của cổng đã bị chặn ở `max_region_chars` mỗi bên. Dừng sớm khi khoảng cách chắc chắn vượt `limit`.
+    """
+    if limit < 0:
         return False
-    target = m - n
-    unset = -(10**9)
-    furthest: dict[int, int] = {0: _common_run(left, right, 0, 0)}
-    if target == 0 and furthest[0] >= n:
-        return True
-    for edits in range(1, limit + 1):
-        current: dict[int, int] = {}
-        for diagonal in range(-edits, edits + 1):
-            row = max(
-                furthest.get(diagonal, unset) + 1,
-                furthest.get(diagonal - 1, unset),
-                furthest.get(diagonal + 1, unset) + 1,
-            )
-            row = min(row, n, m - diagonal)
-            if row < 0 or row + diagonal < 0:
-                continue
-            row += _common_run(left, right, row, row + diagonal)
-            current[diagonal] = row
-            if diagonal == target and row >= n:
-                return True
-        furthest = current
-    return False
+    text, pattern = _trim_common(left, right)
+    if len(text) < len(pattern):
+        text, pattern = pattern, text
+    n, m = len(text), len(pattern)
+    if n - m > limit:
+        return False
+    if m == 0:
+        return n <= limit
+    match: dict[str, int] = {}
+    for index, char in enumerate(pattern):
+        match[char] = match.get(char, 0) | (1 << index)
+    mask = (1 << m) - 1
+    high = 1 << (m - 1)
+    plus, minus, score = mask, 0, m
+    for position, char in enumerate(text, start=1):
+        equal = match.get(char, 0)
+        vertical = equal | minus
+        horizontal = ((((equal & plus) + plus) & mask) ^ plus) | equal
+        plus_h = minus | (~(horizontal | plus) & mask)
+        minus_h = plus & horizontal
+        if plus_h & high:
+            score += 1
+        elif minus_h & high:
+            score -= 1
+        plus_h = ((plus_h << 1) | 1) & mask
+        minus_h = (minus_h << 1) & mask
+        plus = minus_h | (~(vertical | plus_h) & mask)
+        minus = plus_h & vertical
+        # Mỗi cột còn lại giảm khoảng cách nhiều nhất 1: vượt cận dưới ⇒ chắc chắn vượt `limit`.
+        if score - (n - position) > limit:
+            return False
+    return score <= limit
 
 
 def _words(text: str) -> Counter[str]:
@@ -194,6 +209,12 @@ def number_tokens(text: str) -> Counter[str]:
 
 def code_tokens(text: str, pattern: re.Pattern[str]) -> Counter[str]:
     return Counter(pattern.findall(text))
+
+
+def _kinded_tokens(text: str, pattern: re.Pattern[str]) -> list[tuple[TokenKind, str]]:
+    numbers: list[tuple[TokenKind, str]] = [("number", token) for token in TOKEN_PATTERN.findall(text)]
+    codes: list[tuple[TokenKind, str]] = [("code", token) for token in pattern.findall(text)]
+    return numbers + codes
 
 
 def _decision(outcome: GateOutcome, reason: GateReason, **fields: object) -> VisionGateDecision:
@@ -223,18 +244,32 @@ def _check_text(vlm_text: str, ocr_text: str, settings: VisionGateSettings, engi
     return None
 
 
-def _table_mismatches(rows: list[list[str]], ocr: str, pattern: re.Pattern[str]) -> list[GateTokenMismatch]:
-    remaining = number_tokens(ocr) + code_tokens(ocr, pattern)
+def _table_mismatches(
+    rows: list[list[str]], ocr: str, pattern: re.Pattern[str], engine: OcrEngine
+) -> list[GateTokenMismatch] | None:
+    """Chỗ lệch token số/mã giữa các ô và chữ OCR của vùng (so theo tập đếm, tách theo loại token). Token so trên chữ
+    đã bỏ dấu khi OCR là RapidOCR (như đường chữ). Có token dài quá `MAX_TOKEN_CHARS` ⇒ None (cổng từ chối vùng,
+    không cắt cụt giá trị hiển thị)."""
+    ocr_tokens = _kinded_tokens(_comparable(ocr, engine), pattern)
+    cell_tokens = [
+        (row_index, col_index, token)
+        for row_index, row in enumerate(rows)
+        for col_index, cell in enumerate(row)
+        for token in _kinded_tokens(_comparable(cell, engine), pattern)
+    ]
+    if any(len(value) > MAX_TOKEN_CHARS for _, value in ocr_tokens) or any(
+        len(value) > MAX_TOKEN_CHARS for _, _, (_, value) in cell_tokens
+    ):
+        return None
+    remaining: Counter[tuple[TokenKind, str]] = Counter(ocr_tokens)
     mismatches: list[GateTokenMismatch] = []
-    for row_index, row in enumerate(rows):
-        for col_index, cell in enumerate(row):
-            for token in [*TOKEN_PATTERN.findall(cell), *pattern.findall(cell)]:
-                if remaining[token] > 0:
-                    remaining[token] -= 1
-                else:
-                    mismatches.append(GateTokenMismatch(row=row_index, col=col_index, vlm_value=token))
-    for token, count in sorted(remaining.items()):
-        mismatches.extend(GateTokenMismatch(ocr_value=token) for _ in range(count))
+    for row_index, col_index, (kind, value) in cell_tokens:
+        if remaining[(kind, value)] > 0:
+            remaining[(kind, value)] -= 1
+        else:
+            mismatches.append(GateTokenMismatch(token_kind=kind, row=row_index, col=col_index, vlm_value=value))
+    for (kind, value), count in sorted(remaining.items()):
+        mismatches.extend(GateTokenMismatch(token_kind=kind, ocr_value=value) for _ in range(count))
     return mismatches
 
 
@@ -256,12 +291,15 @@ def judge_region(
     ocr_engine: OcrEngine = "tesseract",
 ) -> VisionGateDecision:
     """Quyết định cho một vùng (ADR-009 mục 3.2–3.4). `ocr_text` là chữ OCR độc lập của CÙNG vùng; `None`/rỗng ⇒ từ
-    chối. `text_layer_overlap` ≥ ngưỡng ⇒ vùng dùng lớp chữ, chữ VLM bị bỏ."""
+    chối. `text_layer_overlap` ≥ ngưỡng ⇒ vùng dùng lớp chữ, chữ VLM bị bỏ; không hữu hạn hoặc ngoài [0, 1] ⇒ từ chối
+    (fail closed, I3: không biết vùng có lớp chữ hay không thì không nhận chữ VLM)."""
     gate = settings or VisionGateSettings()
     if result.status == "vlm_invalid":
         return _decision("keep_offline", "status_invalid", flags=["vlm_invalid"])
     if result.status != "ok":
         return _decision("keep_offline", "status_unavailable")
+    if not math.isfinite(text_layer_overlap) or not 0.0 <= text_layer_overlap <= 1.0:
+        return _rejected("invalid_overlap")
     if text_layer_overlap >= gate.max_text_layer_overlap:
         return _decision("keep_offline", "text_layer_overlap")
     ocr = normalize(ocr_text or "")
@@ -285,7 +323,9 @@ def judge_region(
         joined = normalize(" ".join(" ".join(row) for row in rows))
         if word_jaccard(_comparable(joined, ocr_engine), _comparable(ocr, ocr_engine)) < gate.min_word_jaccard:
             return _rejected("jaccard")
-        mismatches = _table_mismatches(rows, ocr, re.compile(gate.code_token_pattern))
+        mismatches = _table_mismatches(rows, ocr, re.compile(gate.code_token_pattern), ocr_engine)
+        if mismatches is None:
+            return _rejected("too_long")
         flags: list[BlockFlag] = ["table_token_mismatch"] if mismatches else []
         return _decision("accepted_table", "ok", block_type="table", rows=rows, flags=flags, mismatches=mismatches)
     block_type, raw_text, uncertain = _text_candidate(texts)

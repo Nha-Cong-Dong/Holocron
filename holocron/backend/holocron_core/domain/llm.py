@@ -130,6 +130,13 @@ class LlmUpstreamError(Exception):
         self.attempts = attempts
 
 
+class LlmTimeoutError(LlmUpstreamError):
+    """`LlmUpstreamError` do hết thời gian: hết hạn tổng của lần gọi, hoặc lần thử cuối cùng hết thời gian chờ.
+
+    Nơi gọi phân biệt timeout với lỗi upstream khác theo KIỂU exception, không theo thông điệp.
+    """
+
+
 class ImageTooLargeError(Exception):
     """Một ảnh trong request vượt trần byte cấu hình; adapter từ chối TRƯỚC khi gửi (ADR-009 mục 5, mục 9).
 

@@ -12,6 +12,7 @@ import json
 import logging
 import socket
 import traceback
+import urllib.error
 import urllib.request
 
 import pytest
@@ -23,6 +24,7 @@ from holocron_core.domain.llm import (
     ImageTooLargeError,
     ImageUrl,
     ImageUrlPart,
+    LlmTimeoutError,
     LlmUpstreamError,
     TextPart,
 )
@@ -414,3 +416,47 @@ def test_client_refuses_a_non_positive_image_limit() -> None:
 @pytest.mark.parametrize("url", ["http://[::1/v1", "https://vision.example.test/v1", "not a url"])
 def test_unparsable_or_remote_urls_are_not_loopback(url: str) -> None:
     assert not is_loopback_url(url)
+
+
+# --------------------------------------------------------------------------- #
+# Timeout phân biệt theo kiểu exception (review V02)
+# --------------------------------------------------------------------------- #
+
+
+def test_call_deadline_raises_timeout_error_type() -> None:
+    clock = FakeClock()
+    transport = RecordingTransport(clock, (503, b""), (503, b""), (200, _ok_body()), spend=6.0)
+    client = OpenAiChatClient.from_vlm_settings(
+        _vlm_settings(timeout_s=10.0), transport=transport, sleep=clock.advance, monotonic=clock
+    )
+    with pytest.raises(LlmTimeoutError):
+        client.complete([_image_message()], max_tokens=10)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [TimeoutError("socket"), urllib.error.URLError(TimeoutError("connect"))],
+    ids=["timeout", "urlerror-timeout"],
+)
+def test_last_attempt_timing_out_raises_timeout_error_type(error: OSError) -> None:
+    def slow(request: urllib.request.Request, timeout_s: float) -> tuple[int, bytes]:
+        raise error
+
+    client = OpenAiChatClient.from_vlm_settings(_vlm_settings(), transport=slow, sleep=lambda _: None)
+    with pytest.raises(LlmTimeoutError) as excinfo:
+        client.complete([_image_message()], max_tokens=10)
+    assert excinfo.value.attempts >= 1
+
+
+def test_non_timeout_failures_are_not_timeout_errors() -> None:
+    def refused(request: urllib.request.Request, timeout_s: float) -> tuple[int, bytes]:
+        raise ConnectionRefusedError("refused")
+
+    def busy(request: urllib.request.Request, timeout_s: float) -> tuple[int, bytes]:
+        return 503, b""
+
+    for transport in (refused, busy):
+        client = OpenAiChatClient.from_vlm_settings(_vlm_settings(), transport=transport, sleep=lambda _: None)
+        with pytest.raises(LlmUpstreamError) as excinfo:
+            client.complete([_image_message()], max_tokens=10)
+        assert not isinstance(excinfo.value, LlmTimeoutError)

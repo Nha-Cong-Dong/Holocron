@@ -48,7 +48,14 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field, SecretStr, ValidationError
 
-from ..domain.llm import ChatCompletionResult, ChatMessage, ImageTooLargeError, LlmUpstreamError, TokenUsage
+from ..domain.llm import (
+    ChatCompletionResult,
+    ChatMessage,
+    ImageTooLargeError,
+    LlmTimeoutError,
+    LlmUpstreamError,
+    TokenUsage,
+)
 from .llm_config import (
     DEFAULT_VLM_MAX_IMAGE_BYTES,
     ENV_LLM_API_KEY,
@@ -437,39 +444,44 @@ class OpenAiChatClient:
         if request is None:
             raise LlmUpstreamError(failure, attempts=0)
         last_failure = ""
+        last_timed_out = False
         for attempt in range(1, self._retry_max + 2):
             if attempt > 1:
                 pause = self._backoff_base_s * 2 ** (attempt - 2)
                 remaining = self._remaining_s(call_deadline)
                 if remaining is not None and remaining <= pause:
-                    raise LlmUpstreamError(_deadline_message(last_failure), attempts=attempt - 1)
+                    raise LlmTimeoutError(_deadline_message(last_failure), attempts=attempt - 1)
                 self._sleep(pause)
             remaining = self._remaining_s(call_deadline)
             if remaining is not None and remaining <= 0:
-                raise LlmUpstreamError(_deadline_message(last_failure), attempts=attempt - 1)
+                raise LlmTimeoutError(_deadline_message(last_failure), attempts=attempt - 1)
             budget = self._timeout_s if remaining is None else min(self._timeout_s, remaining)
             outcome = self._send(request, budget)
             if isinstance(outcome, _Failure):
                 if outcome.retryable:
                     last_failure = outcome.message
+                    last_timed_out = outcome.timed_out
                     continue
                 raise LlmUpstreamError(outcome.message, attempts=attempt)
             status, body = outcome
             if _retryable(status):
                 last_failure = f"HTTP {status}"
+                last_timed_out = False
                 continue
             if not 200 <= status <= 299:
                 raise LlmUpstreamError(f"LLM từ chối yêu cầu (HTTP {status})", attempts=attempt)
             return _parse(body, attempt)
         attempts = self._retry_max + 1
-        raise LlmUpstreamError(f"LLM không phản hồi được sau {attempts} lần thử ({last_failure})", attempts=attempts)
+        error = LlmTimeoutError if last_timed_out else LlmUpstreamError
+        raise error(f"LLM không phản hồi được sau {attempts} lần thử ({last_failure})", attempts=attempts)
 
     def _send(self, request: urllib.request.Request, timeout_s: float) -> tuple[int, bytes] | _Failure:
         """Một lần gửi. Lỗi chỉ được giữ lại dưới dạng tên lớp và thông điệp do adapter đặt, không giữ exception gốc."""
         try:
             return self._transport(request, timeout_s)
         except (OSError, http.client.HTTPException) as exc:
-            return _Failure(f"lỗi mạng {type(exc).__name__}", retryable=True)
+            timed_out = isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError)
+            return _Failure(f"lỗi mạng {type(exc).__name__}", retryable=True, timed_out=timed_out)
         except LlmUpstreamError as exc:
             return _Failure(str(exc), retryable=False)
         except REQUEST_DATA_ERRORS as exc:
@@ -484,11 +496,12 @@ def _deadline_message(last_failure: str) -> str:
 class _Failure:
     """Kết quả thất bại của một lần gửi: thông điệp an toàn (không khoá, header, endpoint hay body)."""
 
-    __slots__ = ("message", "retryable")
+    __slots__ = ("message", "retryable", "timed_out")
 
-    def __init__(self, message: str, *, retryable: bool) -> None:
+    def __init__(self, message: str, *, retryable: bool, timed_out: bool = False) -> None:
         self.message = message
         self.retryable = retryable
+        self.timed_out = timed_out
 
 
 def _parse(body: bytes, attempts: int) -> ChatCompletionResult:

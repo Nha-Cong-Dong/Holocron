@@ -16,9 +16,9 @@ Quy tắc cứng:
   * Thiếu cấu hình VLM ⇒ `demo_mode = True`; hệ thống PHẢI dùng `MockDualPassExtractor` và UI hiển thị chế độ demo.
   * VLM (ADR-009 mục 4, 6, 7): "đã cấu hình" khi có `HOLOCRON_VLM_BASE_URL` và `HOLOCRON_VLM_MODEL`, cộng
     `HOLOCRON_VLM_API_KEY` khi endpoint không phải loopback (loopback được để trống khoá). Cloud mà trống khoá ⇒ VLM
-    chưa cấu hình (`vlm_missing` có tên biến khoá), không phải `ConfigError`. `HOLOCRON_VLM_MODE` (`off` mặc định |
-    `images_only`) lưu riêng ở `RuntimeConfig.vlm_mode`, không đổi việc VLM đã cấu hình hay chưa. Các biến
-    `HOLOCRON_VLM_TIMEOUT_S`, `HOLOCRON_VLM_CONCURRENCY` (mặc định theo loopback/cloud), `HOLOCRON_VLM_MAX_EDGE_PX`,
+    chưa cấu hình (`vlm_missing` có tên biến khoá), không phải `ConfigError`. `HOLOCRON_VLM_MODE` (không đặt ⇒ `unset`,
+    không cấm | `off` | `images_only`; ADR-009 bản 2026-11-03) lưu riêng ở `RuntimeConfig.vlm_mode`, không đổi việc
+    VLM đã cấu hình hay chưa. Các biến `HOLOCRON_VLM_TIMEOUT_S`, `HOLOCRON_VLM_CONCURRENCY` (mặc định theo loopback/cloud), `HOLOCRON_VLM_MAX_EDGE_PX`,
     `HOLOCRON_VLM_MAX_IMAGE_BYTES`, `HOLOCRON_VLM_DATA_RECIPIENT` sai ⇒ `ConfigError` chỉ nêu tên biến, không kẹp giá trị.
   * Giới hạn của một việc gọi LLM (`LlmTaskLimits`) và của tầng HTTP (`LlmHttpLimits`) là field có giá trị mặc định,
     không phải biến môi trường (spec v0.6 §11.5).
@@ -63,13 +63,19 @@ VLM_CONCURRENCY_LOOPBACK = 1
 VLM_CONCURRENCY_CLOUD = 2
 VLM_CONCURRENCY_MIN = 1
 VLM_CONCURRENCY_MAX = 8
-DEFAULT_VLM_MAX_EDGE_PX = 2048
+DEFAULT_VLM_MAX_EDGE_PX = 1024
+# Khoảng của `HOLOCRON_VLM_MAX_EDGE_PX` (ADR-009 mục 6, spec §11.2): ≤ `crop_max_edge_px` của ADR-010.
+VLM_MAX_EDGE_PX_MIN = 256
+VLM_MAX_EDGE_PX_MAX = 1024
 DEFAULT_VLM_MAX_IMAGE_BYTES = 4 * 1024 * 1024
 VLM_DATA_RECIPIENT_MAX_CHARS = 80
 
-VlmMode = Literal["off", "images_only"]
+# `unset`: biến không đặt ⇒ không cấm (ADR-009 mục 6, 7; bản 2026-11-03). `off`/`images_only` là trần của người vận hành.
+VlmMode = Literal["unset", "off", "images_only"]
 VLM_MODES: tuple[VlmMode, ...] = ("off", "images_only")
-DEFAULT_VLM_MODE: VlmMode = "off"
+DEFAULT_VLM_MODE: VlmMode = "unset"
+# Nhóm VLM có biến sai (chế độ lenient) ⇒ coi như `off` (an toàn: không gửi tự động).
+BROKEN_VLM_MODE: VlmMode = "off"
 
 # Số nguyên thập phân chỉ gồm chữ số ASCII (`int()` còn nhận dấu, `_` và chữ số Unicode khác).
 ASCII_DIGITS = re.compile(r"[0-9]+")
@@ -203,7 +209,7 @@ class VlmSettings(BaseModel):
     model: str = Field(repr=False)
     timeout_s: float = Field(default=VLM_TIMEOUT_CLOUD_S, gt=0, allow_inf_nan=False)
     concurrency: int = Field(default=VLM_CONCURRENCY_CLOUD, ge=VLM_CONCURRENCY_MIN, le=VLM_CONCURRENCY_MAX)
-    max_edge_px: int = Field(default=DEFAULT_VLM_MAX_EDGE_PX, ge=1)
+    max_edge_px: int = Field(default=DEFAULT_VLM_MAX_EDGE_PX, ge=VLM_MAX_EDGE_PX_MIN, le=VLM_MAX_EDGE_PX_MAX)
     max_image_bytes: int = Field(default=DEFAULT_VLM_MAX_IMAGE_BYTES, ge=1)
     data_recipient: str | None = None
     http_limits: LlmHttpLimits = Field(default_factory=LlmHttpLimits)
@@ -351,7 +357,8 @@ def _read_int(env: Mapping[str, str], name: str, *, low: int, high: int | None =
 
 
 def _read_vlm_mode(env: Mapping[str, str]) -> VlmMode:
-    """`HOLOCRON_VLM_MODE`: `off` (mặc định) hoặc `images_only`; giá trị khác ⇒ `ConfigError` chỉ nêu tên biến."""
+    """`HOLOCRON_VLM_MODE`: không đặt ⇒ `unset` (không cấm), `off` hoặc `images_only`; giá trị khác ⇒ `ConfigError`
+    chỉ nêu tên biến."""
     raw = _read(env, ENV_VLM_MODE)
     if raw is None:
         return DEFAULT_VLM_MODE
@@ -411,7 +418,7 @@ def _load_vlm(source: Mapping[str, str]) -> tuple[VlmSettings | None, tuple[str,
     mode = _read_vlm_mode(source)
     timeout_s = _read_seconds(source, ENV_VLM_TIMEOUT_S)
     concurrency = _read_int(source, ENV_VLM_CONCURRENCY, low=VLM_CONCURRENCY_MIN, high=VLM_CONCURRENCY_MAX)
-    max_edge_px = _read_int(source, ENV_VLM_MAX_EDGE_PX, low=1)
+    max_edge_px = _read_int(source, ENV_VLM_MAX_EDGE_PX, low=VLM_MAX_EDGE_PX_MIN, high=VLM_MAX_EDGE_PX_MAX)
     max_image_bytes = _read_int(source, ENV_VLM_MAX_IMAGE_BYTES, low=1)
     data_recipient = _read_data_recipient(source, vlm_key)
     local = vlm_base_url is not None and is_loopback_url(vlm_base_url)
@@ -454,8 +461,8 @@ def load_runtime_config_lenient(env: Mapping[str, str] | None = None) -> Runtime
     """Như `load_runtime_config`, nhưng nhóm LLM hay VLM có biến sai thì coi như nhóm đó chưa cấu hình thay vì ném lỗi.
 
     Nhóm LLM sai ⇒ `LlmSettings()` (mọi biến coi như chưa đặt, `llm_configured = false`); nhóm VLM sai ⇒ `vlm = None`
-    và `vlm_missing` gồm cả ba biến VLM, `vlm_mode = "off"` (mọi biến `HOLOCRON_VLM_*`, kể cả biến mới của ADR-009, thuộc
-    nhóm VLM). Log một cảnh báo chỉ gồm thông điệp của `ConfigError` (tên biến, không bao giờ có giá trị).
+    và `vlm_missing` gồm cả ba biến VLM, `vlm_mode = "off"` (an toàn; mọi biến `HOLOCRON_VLM_*`, kể cả biến mới của
+    ADR-009, thuộc nhóm VLM). Log một cảnh báo chỉ gồm thông điệp của `ConfigError` (tên biến, không bao giờ có giá trị).
     """
     source = os.environ if env is None else env
     try:
@@ -463,7 +470,7 @@ def load_runtime_config_lenient(env: Mapping[str, str] | None = None) -> Runtime
     except ConfigError as exc:
         logger.warning("cấu hình LLM không hợp lệ, coi như chưa cấu hình: %s", exc)
         llm = LlmSettings()
-    mode: VlmMode = DEFAULT_VLM_MODE
+    mode: VlmMode = BROKEN_VLM_MODE
     try:
         vlm, missing, mode = _load_vlm(source)
     except ConfigError as exc:

@@ -23,10 +23,11 @@ Chunk không có token nào hoặc ngắn hơn 8 ký tự bị bỏ (không đ�
 **Cắt theo khối** (`build_block_chunks`, tài liệu có khối; ADR-010 mục 16): chunk thuộc MỘT Section, gom khối ứng viên
 có chữ theo (trang, `reading_order`) thành chunk ≤ 450 token tại ranh giới khối, không chồng lấn; khối dài hơn tách
 theo câu/từ bằng các hàm ở trên. `raw_text` = `text` các khối nối bằng `\\n\\n`. Chunk ngắn hơn 8 ký tự (sau gộp khoảng
-trắng) hoặc không có token gộp vào chunk kề cùng Section khi còn vừa giới hạn; không gộp được thì không thành chunk và
-các khối của nó được báo `too_short_for_chunk`. Trang không có khối cắt bằng `build_chunks` theo từng dãy trang liền
-nhau. MỘT bộ đếm `ordinal` chung theo (trang đầu, `reading_order` của khối đầu); chunk của một dãy trang không có khối
-đứng ở vị trí trang đầu của dãy.
+trắng) hoặc không có token gộp vào chunk kề cùng Section khi còn vừa giới hạn; mảnh ngắn của một khối đã tách luôn
+gộp vào chunk kề chứa mảnh khác của cùng khối (có thể vượt nhẹ 450 token) nên không chữ nào của khối bị bỏ; chunk gồm
+toàn khối nguyên vẹn không gộp được thì không thành chunk và các khối của nó được báo `too_short_for_chunk`. Trang
+không có khối cắt bằng `build_chunks` theo từng dãy trang liền nhau. MỘT bộ đếm `ordinal` chung theo (trang đầu,
+`reading_order` của khối đầu); chunk của một dãy trang không có khối đứng ở vị trí trang đầu của dãy.
 """
 
 from __future__ import annotations
@@ -400,16 +401,25 @@ def _fits(segments: Sequence[_Segment]) -> bool:
     return sum(s.tokens for s in segments) <= MAX_CHUNK_TOKENS
 
 
+def _shares_block(before: Sequence[_Segment], after: Sequence[_Segment]) -> bool:
+    """Hai chunk liền nhau chứa hai mảnh của CÙNG một khối (khối dài bị tách theo câu/từ)."""
+    return bool(before) and bool(after) and before[-1].block.block_id == after[0].block.block_id
+
+
 def _merge_short(packed: list[list[_Segment]]) -> tuple[list[list[_Segment]], list[str]]:
-    """Gộp chunk ngắn vào chunk kề TRƯỚC, không vừa thì vào chunk kề SAU (cùng Section, còn ≤ 450 token); không gộp
-    được ⇒ bỏ chunk và trả các khối của nó."""
+    """Gộp chunk ngắn vào chunk kề TRƯỚC, không vừa thì vào chunk kề SAU (cùng Section, còn ≤ 450 token). Chunk ngắn
+    là mảnh của một khối đã bị tách và chunk kề chứa mảnh khác của CÙNG khối đó ⇒ vẫn gộp vào chunk kề (ưu tiên SAU,
+    rồi TRƯỚC) dù vượt nhẹ 450 token, để không chữ nào của khối bị bỏ khỏi `raw_text`. Vì vậy chunk bị bỏ chỉ gồm khối
+    nguyên vẹn (khối của nó không nằm trong chunk nào khác); trả `block_id` của các khối đó."""
     kept: list[list[_Segment]] = []
     dropped: list[str] = []
     carry: list[_Segment] | None = None
     for chunk in packed:
         if carry is not None:
-            if _fits(carry + chunk):
+            if _fits(carry + chunk) or _shares_block(carry, chunk):
                 chunk = carry + chunk
+            elif kept and _shares_block(kept[-1], carry):
+                kept[-1] = kept[-1] + carry
             else:
                 dropped.extend(segment.block.block_id for segment in carry)
             carry = None
@@ -420,7 +430,10 @@ def _merge_short(packed: list[list[_Segment]]) -> tuple[list[list[_Segment]], li
         else:
             carry = chunk
     if carry is not None:
-        dropped.extend(segment.block.block_id for segment in carry)
+        if kept and _shares_block(kept[-1], carry):
+            kept[-1] = kept[-1] + carry
+        else:
+            dropped.extend(segment.block.block_id for segment in carry)
     return kept, dropped
 
 

@@ -25,6 +25,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
+from ..domain.blocks import DOCUMENT_ID_PATTERN
 from ..domain.capabilities import CapabilityError
 from ..domain.llm import ChatCompletionClient, LlmUpstreamError, LlmUpstreamErrorDetail
 from ..domain.repositories import AppStore, RecordNotFoundError, VersionConflictError
@@ -34,6 +35,7 @@ from ..domain.vault import (
     MAX_ID_CHARS,
     MAX_TOPIC_KEYS,
     SUBJECT_CODE_PATTERN,
+    BlockSearchPage,
     ConceptPair,
     ConceptPairStatus,
     ProposalJob,
@@ -44,6 +46,7 @@ from ..domain.vault import (
 )
 from ..infrastructure.llm_client import OpenAiChatClient
 from ..infrastructure.llm_config import ConfigError
+from ..services import search_index
 from ..services import vault as vault_service
 from ..services.capabilities import compute_capabilities, unavailable_error
 from ..services.concept_proposal import MAX_PROPOSAL_CHUNKS, ChunkSubjectMismatchError, propose_concept_pairs
@@ -56,6 +59,10 @@ router = APIRouter(prefix="/v1/vault")
 SubjectQuery = Annotated[str, Query(pattern=SUBJECT_CODE_PATTERN)]
 ChapterQuery = Annotated[str | None, Query(pattern=CHAPTER_CODE_PATTERN)]
 TopicKeysQuery = Annotated[list[TopicKey] | None, Query(alias="topic_key", max_length=MAX_TOPIC_KEYS)]
+SearchableBlockType = Literal["heading", "paragraph", "list_item", "table", "figure", "formula", "code", "caption"]
+DocumentIdsQuery = Annotated[list[Annotated[str, Field(pattern=DOCUMENT_ID_PATTERN)]] | None, Query(max_length=50)]
+ChapterCodesQuery = Annotated[list[Annotated[str, Field(pattern=CHAPTER_CODE_PATTERN)]] | None, Query(max_length=50)]
+BlockTypesQuery = Annotated[list[SearchableBlockType] | None, Query(alias="type", max_length=8)]
 ChunkIdPath = Annotated[str, Path(min_length=1, max_length=MAX_ID_CHARS)]
 PairIdPath = Annotated[str, Path(min_length=1, max_length=MAX_ID_CHARS)]
 EditorId = Annotated[str, Field(min_length=1, max_length=MAX_ID_CHARS)]
@@ -224,6 +231,35 @@ def search(
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
 ) -> list[SearchHit]:
     return vault_service.search_chunks(vault, subject_code, q, topic_keys=topic_keys or (), limit=limit)
+
+
+@router.get("/blocks/search", response_model=BlockSearchPage)
+def search_blocks(
+    store: StoreDep,
+    q: Annotated[str, Query(min_length=1, max_length=200)],
+    subject_code: SubjectQuery,
+    document_id: DocumentIdsQuery = None,
+    chapter_code: ChapterCodesQuery = None,
+    block_type: BlockTypesQuery = None,
+    offset: Annotated[int, Query(ge=0, le=1000)] = 0,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> BlockSearchPage:
+    """Tra cứu khối offline trên tập khối đủ điều kiện (§6.10, ADR-010 mục 18); `GET /search` không đổi."""
+    try:
+        return search_index.search_blocks(
+            store,
+            subject_code=subject_code,
+            query=q,
+            document_ids=document_id or (),
+            chapter_codes=chapter_code or (),
+            types=block_type or (),
+            offset=offset,
+            limit=limit,
+        )
+    except RecordNotFoundError as exc:
+        raise _not_found(exc) from exc
+    except search_index.QueryError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.patch("/chunks/{chunk_id}/labels", response_model=KnowledgeChunk)

@@ -1799,6 +1799,19 @@ def _ingest(vault: VaultRepository, document: ImportedDocument, pages: list[Page
 _NO_GEOMETRY = PageGeometry(version=GEOMETRY_VERSION, reader_settings_sha256="0" * 64, source="text_layer")
 
 
+def _page_geometry(store: DocumentRepository, document_id: str, page_number: int) -> PageGeometry:
+    """Hình học đã lưu của trang có khối; thiếu ⇒ `_NO_GEOMETRY` kèm cảnh báo log (dữ liệu bất thường, không im lặng)."""
+    geometry = store.get_page_geometry(document_id, page_number)
+    if geometry is not None:
+        return geometry
+    _LOGGER.warning(
+        "trang %d của tài liệu %s có khối nhưng thiếu hình học; cấp tiêu đề chỉ lấy theo đánh số",
+        page_number,
+        document_id,
+    )
+    return _NO_GEOMETRY
+
+
 def _candidate_blocks(store: DocumentRepository, document: ImportedDocument) -> tuple[list[Block], set[int]]:
     """Bước (1): khối ứng viên theo trạng thái trang HIỆN TẠI (`is_candidate_block`), và các trang có khối lưu."""
     document_id = document.meta.doc_id
@@ -1831,7 +1844,7 @@ def _section_tree(
             PageContext(
                 document_id,
                 number,
-                store.get_page_geometry(document_id, number) or _NO_GEOMETRY,
+                _page_geometry(store, document_id, number),
                 extraction[number],
                 layout.lang,
                 layout.page_number_settings(),

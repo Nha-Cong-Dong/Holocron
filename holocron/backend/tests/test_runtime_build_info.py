@@ -82,6 +82,7 @@ def test_existing_fields_unchanged_and_no_secrets(client: TestClient, monkeypatc
         "commit",
         "log_dir",
         "capabilities",
+        "ai_status",
     }
     assert isinstance(body["demo_mode"], bool)
     assert "sk-secret" not in json.dumps(body)

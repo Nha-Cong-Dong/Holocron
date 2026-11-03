@@ -34,7 +34,9 @@ khi worker chết.
 
 from __future__ import annotations
 
+import base64
 import contextlib
+import hashlib
 import logging
 import os
 import queue
@@ -53,6 +55,11 @@ from pydantic import ValidationError
 from ...domain.documents import FailureReason, PageExtraction, PageGeometry
 from .config import OcrSettings, PdfReaderConfig
 from .protocol import (
+    CropBatchMessage,
+    CropErrorCode,
+    CropPng,
+    CropRegion,
+    CropRequest,
     OcrStartedMessage,
     OpenedMessage,
     OpenFailedMessage,
@@ -67,6 +74,7 @@ from .protocol import (
     WorkerRequest,
     decode_message,
 )
+from .raster import png_dimensions
 from .tiers import assemble_text_layer_page, failed_page, page_geometry
 
 PDF_MAGIC = b"%PDF-"
@@ -290,6 +298,10 @@ class WorkerSession:
 
     def request_page(self, index: int) -> None:
         self._send(PageRequest(page_index=index).model_dump_json())
+
+    def request_crops(self, request: CropRequest) -> None:
+        """Gửi một `CropRequest` (ADR-010 mục 9); worker trả đúng một thông điệp `crop_batch`."""
+        self._send(request.model_dump_json())
 
     def receive(self, timeout_s: float) -> WorkerMessage | None:
         """Thông điệp kế tiếp; `None` khi worker đã đóng stdout. Quá hạn ném `TimeoutError`.
@@ -652,3 +664,176 @@ class WorkerPdfReader:
         except (PdfInputError, PdfWorkerError):
             return None
         return session
+
+
+# --------------------------------------------------------------------------- #
+# Ảnh cắt vùng: `RegionRenderer` (ADR-010 mục 9; ADR-009 mục 5). Protocol RIÊNG, không thêm method vào `PdfReader`.
+# --------------------------------------------------------------------------- #
+
+# `capped`: vùng vượt trần số vùng mỗi trang/tài liệu hoặc hết `crop_document_budget_s` (người gọi gắn `crop_capped`);
+# mã còn lại là mã của worker; ảnh không qua kiểm của tiến trình cha coi như `render_error` (người gọi `crop_failed`).
+CropFailureCode = CropErrorCode | Literal["capped"]
+# Thời gian chờ thêm ngoài `crop_request_timeout_s` cho một lượt (mã hoá, ghi stdout, đọc thông điệp).
+CROP_REPLY_GRACE_S = 5.0
+
+
+class RenderedCrop(NamedTuple):
+    """Ảnh cắt đã qua kiểm của tiến trình cha: `png` là đúng các byte đã kiểm, `sha256` của chính các byte đó."""
+
+    region_id: int
+    png: bytes
+    width_px: int
+    height_px: int
+    sha256: str
+
+
+class CropFailure(NamedTuple):
+    region_id: int
+    code: CropFailureCode
+
+
+CropOutcome = RenderedCrop | CropFailure
+
+
+class RegionRenderer(Protocol):
+    def render_regions(self, path: Path, requests: Sequence[CropRegion], *, max_edge_px: int) -> list[CropOutcome]:
+        """Render các vùng (theo `bbox` chuẩn hoá của trang đã xoay) thành PNG trong worker có giới hạn OS.
+
+        Mỗi `region_id` có đúng một kết quả, theo thứ tự của `requests`. Không bao giờ ném lỗi ra luồng nhập: lỗi mở
+        tài liệu, worker hay giao thức thành `CropFailure`."""
+        ...
+
+
+def verify_crop(crop: CropPng, *, max_edge_px: int, max_image_bytes: int) -> bytes | None:
+    """Kiểm một ảnh cắt của worker trên chính các byte đã giải mã (ADR-010 mục 9; ADR-009 mục 5): base64 chuẩn,
+    `size_bytes` khớp và ≤ `max_image_bytes`, magic PNG, IHDR khớp `width_px`/`height_px`, cạnh dài ≤ `max_edge_px`,
+    sha256 khớp. Đạt ⇒ các byte PNG; sai ⇒ None."""
+    try:
+        data = base64.b64decode(crop.png_base64, validate=True)
+    except ValueError:
+        return None
+    if base64.b64encode(data).decode("ascii") != crop.png_base64:
+        return None
+    if len(data) != crop.size_bytes or len(data) > max_image_bytes:
+        return None
+    if png_dimensions(data) != (crop.width_px, crop.height_px):
+        return None
+    if max(crop.width_px, crop.height_px) > max_edge_px:
+        return None
+    if hashlib.sha256(data).hexdigest() != crop.sha256:
+        return None
+    return data
+
+
+class WorkerRegionRenderer:
+    """`RegionRenderer` qua worker PDF của ADR-008 mục 3 (cùng giới hạn OS, CPU, bộ nhớ).
+
+    Trần (field `PdfReaderConfig`): vùng thứ `crop_max_per_page + 1` của một trang và vùng thứ
+    `crop_max_per_document + 1` của lần gọi ⇒ `capped`; mỗi lượt gửi worker tối đa `crop_max_regions_per_request`
+    vùng; một lượt quá `crop_request_timeout_s` (+ thời gian chờ thêm) ⇒ kill worker, vùng còn lại `over_budget`; cả
+    lần gọi quá `crop_document_budget_s` ⇒ vùng chưa gửi `capped`. Trần số vùng tích luỹ qua nhiều lần gọi của cùng
+    tài liệu do job cắt ảnh giữ (ADR-010 mục 13).
+    """
+
+    def __init__(
+        self, config: PdfReaderConfig | None = None, *, monotonic: Callable[[], float] = time.monotonic
+    ) -> None:
+        self.config = config or PdfReaderConfig()
+        self._monotonic = monotonic
+
+    def _admit(self, requests: Sequence[CropRegion]) -> tuple[list[CropRegion], dict[int, CropOutcome]]:
+        per_page: dict[int, int] = {}
+        admitted: list[CropRegion] = []
+        failures: dict[int, CropOutcome] = {}
+        for region in requests:
+            count = per_page.get(region.page_index, 0)
+            if count >= self.config.crop_max_per_page or len(admitted) >= self.config.crop_max_per_document:
+                failures[region.region_id] = CropFailure(region.region_id, "capped")
+                continue
+            per_page[region.page_index] = count + 1
+            admitted.append(region)
+        return admitted, failures
+
+    def render_regions(self, path: Path, requests: Sequence[CropRegion], *, max_edge_px: int) -> list[CropOutcome]:
+        ids = [region.region_id for region in requests]
+        if len(ids) != len(set(ids)):
+            raise ValueError("region_id phải khác nhau trong một lần gọi")
+        if not requests:
+            return []
+        edge = min(max_edge_px, self.config.crop_max_edge_px)
+        admitted, results = self._admit(requests)
+        if admitted:
+            results.update(self._render_admitted(path, admitted, edge))
+        return [results[region_id] for region_id in ids]
+
+    def _render_admitted(self, path: Path, regions: list[CropRegion], edge: int) -> dict[int, CropOutcome]:
+        results: dict[int, CropOutcome] = {}
+        deadline = self._monotonic() + self.config.effective_crop_budget_s
+        size = self.config.crop_max_regions_per_request
+        batches = [regions[start : start + size] for start in range(0, len(regions), size)]
+        try:
+            check_pdf_input(path, self.config)
+            session = self._start(path, len(regions))
+        except (PdfInputError, PdfWorkerError, OSError):
+            return {region.region_id: CropFailure(region.region_id, "render_error") for region in regions}
+        try:
+            for position, batch in enumerate(batches):
+                if self._monotonic() >= deadline:
+                    for region in (item for rest in batches[position:] for item in rest):
+                        results[region.region_id] = CropFailure(region.region_id, "capped")
+                    break
+                outcome, healthy = self._one_batch(session, batch, edge)
+                results.update(outcome)
+                if not healthy:
+                    for region in (item for rest in batches[position + 1 :] for item in rest):
+                        results[region.region_id] = CropFailure(region.region_id, "over_budget")
+                    break
+        finally:
+            session.close()
+        return results
+
+    def _start(self, path: Path, crop_budget: int) -> WorkerSession:
+        request = WorkerRequest(path=str(path.resolve()), page_budget=0, config=self.config, crop_budget=crop_budget)
+        session = WorkerSession(request)
+        try:
+            WorkerPdfReader(self.config)._open(session)
+        except BaseException:
+            session.close()
+            raise
+        return session
+
+    def _one_batch(
+        self, session: WorkerSession, batch: list[CropRegion], edge: int
+    ) -> tuple[dict[int, CropOutcome], bool]:
+        """Một lượt `CropRequest`; phần tử thứ hai là False khi worker đã hỏng/bị kill (không gửi lượt nào nữa)."""
+        session.request_crops(CropRequest(regions=batch, max_edge_px=edge))
+        message: WorkerMessage | None = None
+        failure: CropErrorCode = "render_error"
+        try:
+            message = session.receive(self.config.crop_request_timeout_s + CROP_REPLY_GRACE_S)
+        except TimeoutError:
+            failure = "over_budget"
+        except (ValidationError, WorkerProtocolError):
+            failure = "render_error"
+        if not isinstance(message, CropBatchMessage):
+            session.kill()
+            return {region.region_id: CropFailure(region.region_id, failure) for region in batch}, False
+        return self._collect(message, batch, edge), True
+
+    def _collect(self, message: CropBatchMessage, batch: list[CropRegion], edge: int) -> dict[int, CropOutcome]:
+        wanted = {region.region_id for region in batch}
+        results: dict[int, CropOutcome] = {}
+        for error in message.errors:
+            if error.region_id in wanted:
+                results[error.region_id] = CropFailure(error.region_id, error.code)
+        for crop in message.crops:
+            if crop.region_id not in wanted:
+                continue
+            data = verify_crop(crop, max_edge_px=edge, max_image_bytes=self.config.crop_max_image_bytes)
+            if data is None:
+                results[crop.region_id] = CropFailure(crop.region_id, "render_error")
+            else:
+                results[crop.region_id] = RenderedCrop(crop.region_id, data, crop.width_px, crop.height_px, crop.sha256)
+        for region_id in wanted - results.keys():
+            results[region_id] = CropFailure(region_id, "render_error")
+        return results

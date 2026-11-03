@@ -1,6 +1,6 @@
 """Giao thức giữa tiến trình cha và worker đọc PDF (ADR-008 mục 3, 8, 11).
 
-Tiến trình cha gửi `WorkerRequest` rồi từng `PageRequest` qua stdin, mỗi dòng một JSON; worker chỉ đọc trang khi
+Tiến trình cha gửi `WorkerRequest` rồi từng `PageRequest` (hoặc `CropRequest`, ADR-010 mục 9) qua stdin, mỗi dòng một JSON; worker chỉ đọc trang khi
 được yêu cầu, nên wall-clock timeout của tiến trình cha đo đúng thời gian đọc một trang.
 Worker ghi mỗi thông điệp trên một dòng stdout, có tiền tố `MESSAGE_PREFIX`, nội dung là JSON của một trong các
 model dưới đây. Tiến trình cha bỏ qua dòng không có tiền tố và validate từng thông điệp bằng Pydantic: dữ liệu
@@ -192,6 +192,9 @@ class WorkerRequest(_Frozen):
     ocr: OcrSettings | None = None
     scan_templates: bool = False
     template_scan: TemplateScan | None = None
+    # Số vùng tối đa worker này được render qua `CropRequest` (ADR-010 mục 9); 0 ⇒ worker không nhận `CropRequest`.
+    # Worker cộng ngân sách CPU tương ứng vào giới hạn OS của mình.
+    crop_budget: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def _scan_or_reuse(self) -> WorkerRequest:
@@ -204,6 +207,45 @@ class PageRequest(_Frozen):
     """Mỗi dòng tiếp theo trên stdin: yêu cầu đọc đúng một trang (0-based). Đóng stdin để worker thoát."""
 
     page_index: int = Field(ge=0)
+
+
+# --- Ảnh cắt vùng: MỘT `CropRequest` dùng chung (ADR-010 mục 9, spec §5.7). Tiến trình cha gửi qua stdin; worker trả
+# MỘT thông điệp `crop_batch`. Trần cấu trúc dưới đây độc lập với cấu hình (worker bị khai thác không đẩy được cấu
+# trúc khổng lồ); trần theo cấu hình (`crop_max_regions_per_request`, byte ảnh, byte thông điệp) kiểm riêng.
+MAX_CROP_REGIONS = 1024
+
+
+class CropRegion(_Frozen):
+    region_id: int = Field(ge=0)
+    page_index: int = Field(ge=0)
+    bbox: UnitBBox
+
+
+class CropRequest(_Frozen):
+    kind: Literal["crop_request"] = "crop_request"
+    regions: list[CropRegion] = Field(min_length=1, max_length=MAX_CROP_REGIONS)
+    max_edge_px: int = Field(ge=64)
+
+
+class CropPng(_Frozen):
+    region_id: int = Field(ge=0)
+    width_px: int = Field(ge=1)
+    height_px: int = Field(ge=1)
+    size_bytes: int = Field(ge=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    png_base64: str = Field(min_length=1)
+
+
+CropErrorCode = Literal["render_error", "over_image_bytes", "over_message_bytes", "over_budget", "bad_region"]
+
+
+class CropError(_Frozen):
+    region_id: int = Field(ge=0)
+    code: CropErrorCode
+
+
+StdinRequest = Annotated[PageRequest | CropRequest, Field(union_mode="left_to_right")]
+STDIN_REQUEST: TypeAdapter[PageRequest | CropRequest] = TypeAdapter(StdinRequest)
 
 
 FontId = Annotated[int, Field(ge=0, lt=MAX_PAGE_FONTS)]
@@ -427,6 +469,21 @@ class PageErrorMessage(_Frozen):
     message: str = Field(max_length=500)
 
 
+class CropBatchMessage(_Frozen):
+    """Kết quả của MỘT `CropRequest`: mỗi `region_id` xuất hiện đúng một lần ở `crops` hoặc `errors`."""
+
+    kind: Literal["crop_batch"] = "crop_batch"
+    crops: list[CropPng] = Field(default=[], max_length=MAX_CROP_REGIONS)
+    errors: list[CropError] = Field(default=[], max_length=MAX_CROP_REGIONS)
+
+    @model_validator(mode="after")
+    def _each_region_once(self) -> CropBatchMessage:
+        ids = [crop.region_id for crop in self.crops] + [error.region_id for error in self.errors]
+        if len(ids) != len(set(ids)):
+            raise ValueError("mỗi region_id chỉ được xuất hiện một lần trong crop_batch")
+        return self
+
+
 WorkerMessage = Annotated[
     ReadyMessage
     | OpenedMessage
@@ -435,7 +492,8 @@ WorkerMessage = Annotated[
     | TemplateScanMessage
     | OcrStartedMessage
     | PageMessage
-    | PageErrorMessage,
+    | PageErrorMessage
+    | CropBatchMessage,
     Field(discriminator="kind"),
 ]
 WORKER_MESSAGE: TypeAdapter[WorkerMessage] = TypeAdapter(WorkerMessage)

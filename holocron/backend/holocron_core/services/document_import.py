@@ -948,6 +948,12 @@ def _write_page(
     read = _within_vault_lines(page).model_copy(
         update={"version": stored.version + 1, "confirmed": False, "confirmed_at": None}
     )
+    if geometry is None or read.tier_used != "text_layer":
+        # Không có hình học để ghi: gọi đúng dạng cũ (kho giữ hình học đang lưu).
+        store.update_page(
+            document_id, page.page_number, read, status=read.status, confirmed=False, expected_version=stored.version
+        )
+        return
     store.update_page(
         document_id,
         page.page_number,
@@ -955,7 +961,7 @@ def _write_page(
         status=read.status,
         confirmed=False,
         expected_version=stored.version,
-        geometry=geometry if read.tier_used == "text_layer" else None,
+        geometry=geometry,
     )
 
 

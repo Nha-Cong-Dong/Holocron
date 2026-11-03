@@ -295,8 +295,10 @@ def test_geometry_over_cap_marks_layout_failed_on_import(store: AppStore, tmp_pa
     assert store.list_blocks(doc_id, 1) and store.list_blocks(doc_id, 3)
     assert document_of(store, doc_id).layout_version is not None
     with_failed = dataclasses.replace(THREE[0], send_geometry=False)
-    other = import_doc(store, runtime_for(tmp_path / "b"), GeoReader([with_failed]), tag="b")
-    assert document_of(store, other).layout_settings_sha256 is not None, "mọi trang hỏng vẫn ghi version/hash"
+    fresh = IngestionStore()
+    other = import_doc(fresh, runtime_for(tmp_path / "b"), GeoReader([with_failed]), tag="b")
+    assert document_of(fresh, other).layout_settings_sha256 is not None, "mọi trang hỏng vẫn ghi version/hash"
+    assert pages_of(fresh, other)[0].review_reasons == ["LAYOUT_FAILED"]
 
 
 def test_reader_without_geometry_keeps_legacy_path(store: AppStore, tmp_path: Path) -> None:
@@ -377,13 +379,18 @@ def test_crop_pending_does_not_block_auto_confirm(store: AppStore, tmp_path: Pat
     def with_mismatch(block: Block) -> Block:
         return as_table("table_token_mismatch")(block) if block.reading_order == 2 else figure_and_text(block)
 
+    # Kho riêng: tài liệu thứ hai cùng nội dung trong cùng môn sẽ bị 0D coi là trang lặp (bỏ mềm).
+    fresh = IngestionStore()
     other = import_doc(
-        store,
+        fresh,
         runtime_for(tmp_path / "b", layout_with(EditStage("bang", with_mismatch))),
         GeoReader(TWO_PARAGRAPHS),
         tag="b",
     )
-    assert not pages_of(store, other)[0].confirmed
+    first = pages_of(fresh, other)[0]
+    assert any("table_token_mismatch" in block.flags for block in fresh.list_blocks(other, 1))
+    assert first.status == "ok" and first.page_role == "content" and not first.dropped
+    assert not first.confirmed and pages_of(fresh, other)[1].confirmed_by == "auto"
 
 
 @pytest.mark.parametrize("flag", ["crop_failed", "crop_capped"])

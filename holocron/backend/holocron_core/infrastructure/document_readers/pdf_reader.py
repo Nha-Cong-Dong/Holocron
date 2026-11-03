@@ -432,25 +432,7 @@ class WorkerPdfReader:
             raise
 
     def _open(self, session: WorkerSession) -> int:
-        try:
-            ready = session.receive(self.config.worker_startup_timeout_s)
-        except (TimeoutError, ValidationError, WorkerProtocolError) as exc:
-            raise PdfWorkerError("worker đọc PDF không khởi động được") from exc
-        if not isinstance(ready, ReadyMessage):
-            raise PdfWorkerError("worker đọc PDF không khởi động được")
-        try:
-            opened = session.receive(self.config.open_timeout_s)
-        except TimeoutError as exc:
-            raise PdfInputError("OPEN_TIMEOUT") from exc
-        except (ValidationError, WorkerProtocolError) as exc:
-            raise PdfInputError("OPEN_FAILED") from exc
-        if isinstance(opened, OpenFailedMessage):
-            raise PdfInputError(opened.code)
-        if not isinstance(opened, OpenedMessage) or opened.page_count < 1:
-            raise PdfInputError("OPEN_FAILED")
-        if opened.page_count > self.config.max_pages:
-            raise PdfInputError("TOO_MANY_PAGES")
-        return opened.page_count
+        return open_worker_session(session, self.config)
 
     def probe(self, path: Path) -> int:
         check_pdf_input(path, self.config)
@@ -725,6 +707,30 @@ def verify_crop(crop: CropPng, *, max_edge_px: int, max_image_bytes: int) -> byt
     return data
 
 
+def open_worker_session(session: WorkerSession, config: PdfReaderConfig) -> int:
+    """Chờ worker báo `ready` rồi `opened`; trả số trang. Worker không khởi động ⇒ `PdfWorkerError`; tài liệu không
+    mở được, quá hạn mở hay quá số trang ⇒ `PdfInputError` (dùng chung cho bộ đọc trang và bộ cắt ảnh)."""
+    try:
+        ready = session.receive(config.worker_startup_timeout_s)
+    except (TimeoutError, ValidationError, WorkerProtocolError) as exc:
+        raise PdfWorkerError("worker đọc PDF không khởi động được") from exc
+    if not isinstance(ready, ReadyMessage):
+        raise PdfWorkerError("worker đọc PDF không khởi động được")
+    try:
+        opened = session.receive(config.open_timeout_s)
+    except TimeoutError as exc:
+        raise PdfInputError("OPEN_TIMEOUT") from exc
+    except (ValidationError, WorkerProtocolError) as exc:
+        raise PdfInputError("OPEN_FAILED") from exc
+    if isinstance(opened, OpenFailedMessage):
+        raise PdfInputError(opened.code)
+    if not isinstance(opened, OpenedMessage) or opened.page_count < 1:
+        raise PdfInputError("OPEN_FAILED")
+    if opened.page_count > config.max_pages:
+        raise PdfInputError("TOO_MANY_PAGES")
+    return opened.page_count
+
+
 class WorkerRegionRenderer:
     """`RegionRenderer` qua worker PDF của ADR-008 mục 3 (cùng giới hạn OS, CPU, bộ nhớ).
 
@@ -796,7 +802,7 @@ class WorkerRegionRenderer:
         request = WorkerRequest(path=str(path.resolve()), page_budget=0, config=self.config, crop_budget=crop_budget)
         session = WorkerSession(request)
         try:
-            WorkerPdfReader(self.config)._open(session)
+            open_worker_session(session, self.config)
         except BaseException:
             session.close()
             raise

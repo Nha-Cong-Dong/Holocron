@@ -40,6 +40,7 @@ from .protocol import (
     STDIN_REQUEST,
     CropBatchMessage,
     CropError,
+    CropErrorCode,
     CropPng,
     CropRequest,
     OcrStartedMessage,
@@ -292,10 +293,36 @@ class _CropRenderer:
         return None if cropped is None else fit_long_edge(cropped, max_edge_px)
 
 
-def _batch_bytes(crops: list[CropPng], errors: list[CropError], pending: int) -> int:
-    """Byte của thông điệp `crop_batch` đã mã hoá (kèm `\\r\\n`) cộng phần dự phòng cho `pending` vùng còn lại."""
-    message = CropBatchMessage(crops=crops, errors=errors)
-    return len(encode_message(message).encode("utf-8")) + 2 + pending * CROP_ERROR_RESERVE_BYTES
+class _BatchSize:
+    """Byte của thông điệp `crop_batch` đã mã hoá (kèm `\\r\\n`), cộng dồn theo từng phần tử: mỗi lần thêm chỉ mã
+    hoá phần tử mới (tuyến tính theo số vùng). Thông điệp mã hoá gọn (không khoảng trắng) nên kích thước bằng phần
+    rỗng cộng các phần tử và dấu phẩy ngăn cách."""
+
+    def __init__(self) -> None:
+        self._empty = len(encode_message(CropBatchMessage()).encode("utf-8")) + 2
+        self._crops = 0
+        self._crop_bytes = 0
+        self._errors = 0
+        self._error_bytes = 0
+
+    @staticmethod
+    def _item(item: CropPng | CropError) -> int:
+        return len(item.model_dump_json().encode("utf-8"))
+
+    def add_crop(self, crop: CropPng) -> None:
+        self._crop_bytes += self._item(crop)
+        self._crops += 1
+
+    def add_error(self, error: CropError) -> None:
+        self._error_bytes += self._item(error)
+        self._errors += 1
+
+    def total_with(self, crop: CropPng, pending: int) -> int:
+        """Byte của thông điệp nếu thêm `crop`, cộng phần dự phòng cho `pending` vùng còn lại."""
+        crops = self._crops + 1
+        separators = (crops - 1) + max(0, self._errors - 1)
+        body = self._crop_bytes + self._item(crop) + self._error_bytes + separators
+        return self._empty + body + pending * CROP_ERROR_RESERVE_BYTES
 
 
 def render_crop_batch(
@@ -316,27 +343,34 @@ def render_crop_batch(
     renderer = _CropRenderer(document, page_count, config)
     crops: list[CropPng] = []
     errors: list[CropError] = []
+    size = _BatchSize()
+
+    def fail(region_id: int, code: CropErrorCode) -> None:
+        error = CropError(region_id=region_id, code=code)
+        errors.append(error)
+        size.add_error(error)
+
     full = False
     regions = request.regions
     for position, region in enumerate(regions):
         pending = len(regions) - position - 1
         if full:
-            errors.append(CropError(region_id=region.region_id, code="over_message_bytes"))
+            fail(region.region_id, "over_message_bytes")
             continue
         if position >= config.crop_max_regions_per_request or monotonic() >= deadline:
-            errors.append(CropError(region_id=region.region_id, code="over_budget"))
+            fail(region.region_id, "over_budget")
             continue
         try:
             image = renderer.render(region.page_index, region.bbox, max_edge_px)
         except PAGE_ERRORS:
-            errors.append(CropError(region_id=region.region_id, code="render_error"))
+            fail(region.region_id, "render_error")
             continue
         if image is None:
-            errors.append(CropError(region_id=region.region_id, code="bad_region"))
+            fail(region.region_id, "bad_region")
             continue
         png = encode_png_gray(image)
         if len(png) > config.crop_max_image_bytes:
-            errors.append(CropError(region_id=region.region_id, code="over_image_bytes"))
+            fail(region.region_id, "over_image_bytes")
             continue
         crop = CropPng(
             region_id=region.region_id,
@@ -346,11 +380,12 @@ def render_crop_batch(
             sha256=hashlib.sha256(png).hexdigest(),
             png_base64=base64.b64encode(png).decode("ascii"),
         )
-        if _batch_bytes([*crops, crop], errors, pending) > config.max_message_bytes:
+        if size.total_with(crop, pending) > config.max_message_bytes:
             full = True
-            errors.append(CropError(region_id=region.region_id, code="over_message_bytes"))
+            fail(region.region_id, "over_message_bytes")
             continue
         crops.append(crop)
+        size.add_crop(crop)
     return CropBatchMessage(crops=crops, errors=errors)
 
 

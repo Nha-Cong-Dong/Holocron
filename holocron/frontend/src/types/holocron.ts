@@ -328,6 +328,77 @@ export interface TheoryTwin {
 /** Phần tử của `TwinBatch.twins`: `question_kind === "theory"` ⇒ `TheoryTwin`, không có `question_kind` ⇒ `TwinQuestion`. */
 export type BatchTwin = TwinQuestion | TheoryTwin;
 
+// ---------------------------------------------------------------- domain/practice.py
+
+/** Kết quả một câu của lượt làm bài (§5.17); do backend tính, frontend chỉ hiển thị (I1). */
+export type AnswerOutcome = "correct" | "incorrect" | "skipped";
+
+export type PracticeMode = "batch" | "review";
+
+/** Một câu trong request ghi lượt; KHÔNG có đúng/sai, điểm hay `correct_key` (I1). `chosen_key` null = bỏ qua. */
+export interface PracticeAnswerIn {
+  twin_id: string;
+  chosen_key?: OptionKey | null;
+}
+
+/** Body của `POST /v1/practice/attempts` (§6.12): `batch_id` bắt buộc khi `mode = "batch"`, null khi `"review"`. */
+export interface PracticeAttemptCreate {
+  mode: PracticeMode;
+  batch_id?: string | null;
+  answers: PracticeAnswerIn[];
+}
+
+/** Một câu đã ghi; mọi field trừ `twin_id`, `chosen_key` do backend điền từ twin đã lưu. */
+export interface PracticeAnswer {
+  ordinal: number;
+  twin_id: string;
+  batch_id: string;
+  slot_index: number;
+  chosen_key: OptionKey | null;
+  correct_key: OptionKey;
+  outcome: AnswerOutcome;
+}
+
+/** Tóm tắt một lượt; số đếm do backend đếm trên các câu còn lưu. */
+export interface PracticeAttemptSummary {
+  attempt_id: string;
+  subject_code: string;
+  mode: PracticeMode;
+  batch_id: string | null;
+  blueprint_id: string | null;
+  submitted_at: string;
+  total_count: number;
+  correct_count: number;
+  incorrect_count: number;
+  skipped_count: number;
+}
+
+/** Chi tiết lượt (`POST`/`GET /v1/practice/attempts/{id}`); `answers` sắp theo `ordinal`. */
+export interface PracticeAttempt extends PracticeAttemptSummary {
+  answers: PracticeAnswer[];
+}
+
+/** `GET /v1/practice/attempts`: mới nhất trước. */
+export interface PracticeAttemptPage {
+  total: number;
+  attempts: PracticeAttemptSummary[];
+}
+
+/** Một câu cần ôn: bản chụp twin đã lưu, nguyên đáp án và trích dẫn (I2, I3). */
+export interface ReviewQuestion {
+  twin: BatchTwin;
+  batch_id: string;
+  last_attempt_id: string;
+  last_answered_at: string;
+  last_chosen_key: OptionKey;
+}
+
+/** `GET /v1/practice/review-questions`. */
+export interface ReviewQuestionPage {
+  total: number;
+  questions: ReviewQuestion[];
+}
+
 // ---------------------------------------------------------- services/ingestion_gate.py
 
 export type Severity = "info" | "warning" | "blocking";

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import tempfile
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
@@ -32,12 +31,17 @@ def _check_ids(document_id: str, crop_ref: str | None = None) -> None:
         raise ValueError("crop_ref không đúng mẫu <64 hex>")
 
 
-def _remove(path: Path) -> None:
-    """Xoá một mục trong thư mục ảnh: liên kết và file ⇒ `unlink` (không đi theo liên kết), thư mục ⇒ xoá cây."""
-    if path.is_symlink() or not path.is_dir():
+def _is_link(path: Path) -> bool:
+    """Liên kết tượng trưng hoặc junction (Windows): KHÔNG BAO GIỜ được duyệt hay xoá xuyên qua."""
+    return path.is_symlink() or path.is_junction()
+
+
+def _unlink_quietly(path: Path) -> None:
+    """Gỡ một mục KHÔNG đi theo liên kết (file, liên kết, junction); lỗi hệ điều hành bị bỏ qua (dọn kiểu best-effort)."""
+    try:
         path.unlink(missing_ok=True)
-    else:
-        shutil.rmtree(path, ignore_errors=True)
+    except OSError:
+        return
 
 
 class CropFiles:
@@ -98,24 +102,48 @@ class CropFiles:
         """Xoá thư mục `<root>/<document_id>/` (nếu có)."""
         _check_ids(document_id)
         path = self._root / document_id
-        if path.is_symlink():
-            path.unlink(missing_ok=True)
-        elif path.is_dir():
-            shutil.rmtree(self._inside(path), ignore_errors=True)
+        self._remove(path)  # liên kết ⇒ chỉ gỡ liên kết; không raise (gọi sau commit)
+
+    def _remove(self, path: Path) -> None:
+        """Xoá một mục trong thư mục ảnh: liên kết/junction, mục phân giải ra ngoài `root` và file ⇒ chỉ gỡ chính mục
+        đó; thư mục thật ⇒ xoá từng con theo cùng luật rồi xoá thư mục. Không bao giờ đi xuyên liên kết hay junction."""
+        if _is_link(path) or not path.is_dir() or not self._is_inside(path):
+            _unlink_quietly(path)
+            return
+        try:
+            children = list(path.iterdir())
+        except OSError:
+            return
+        for child in children:
+            self._remove(child)
+        try:
+            path.rmdir()
+        except OSError:
+            return
+
+    def _is_inside(self, path: Path) -> bool:
+        try:
+            self._inside(path)
+        except (ValueError, OSError):
+            return False
+        return True
 
     def sweep_orphans(self, keep: Mapping[str, AbstractSet[str]]) -> None:
         """Dọn mồ côi lúc mở kho: trong `root` chỉ giữ thư mục của tài liệu có trong `keep` và trong đó chỉ giữ file
         `<crop_ref>.png` với `crop_ref ∈ keep[document_id]`. Mọi mục khác (file tạm, file lạ, thư mục con, liên kết)
-        bị xoá. `root` chưa có ⇒ không làm gì."""
+        bị xoá; liên kết/junction chỉ bị gỡ, không bao giờ duyệt vào. `root` chưa có ⇒ không làm gì."""
         if not self._root.is_dir():
             return
         for entry in self._root.iterdir():
             refs = keep.get(entry.name)
-            if refs is None or entry.is_symlink() or not entry.is_dir():
-                _remove(entry)
+            if _is_link(entry) or not self._is_inside(entry):
+                _unlink_quietly(entry)
+                continue
+            if refs is None or not entry.is_dir():
+                self._remove(entry)
                 continue
             for item in entry.iterdir():
                 name = item.name
                 crop_ref = name.removesuffix(CROP_SUFFIX)
-                if item.is_symlink() or not item.is_file() or not name.endswith(CROP_SUFFIX) or crop_ref not in refs:
-                    _remove(item)
+                if _is_link(item) or not item.is_file() or not name.endswith(CROP_SUFFIX) or crop_ref not in refs:
+                    self._remove(item)

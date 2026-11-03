@@ -1928,7 +1928,10 @@ BlockFlag = Literal[                              # đóng (ADR-010 mục 3); ng
                                # chặn tự xác nhận, không đủ điều kiện tới khi gỡ cờ (ReviewReason/409 chốt ở X02b)
     "boxed",                   # văn xuôi nằm trong khung vector (ADR-010 mục 10)
     "formula_text_unverified", # chữ công thức lấy nguyên văn lớp chữ, chưa kiểm cấu trúc toán
-    "code_layout_uncertain",   # khối code lẫn font/dòng chồng; khoảng trắng dựng lại có thể sai
+    "code_layout_uncertain",   # (a) khối code lẫn font/dòng chồng; khoảng trắng dựng lại có thể sai;
+                               # (b) trang vượt max_merge_candidates ⇒ không gộp được: cờ nằm trên khối paragraph/list_item
+                               #     (không phải code) có thể là code chưa gộp. Cả hai nghĩa: KHÔNG BLOCKING, không đẩy
+                               #     trang vào hàng duyệt, không đổi chữ/hash (duyệt 2026-11-03)
     "layout_uncertain",        # chồng lấn/không chắc ⇒ figure + ảnh cắt (ADR-010 mục 11)
     "reading_order_uncertain", # CHỈ cho khối có dòng/từ bbox = null, xếp theo thứ tự PDFium (không đặt được bằng XY-cut)
     "figure_label_text",       # figure có labels (chữ nhãn bên trong, không phải văn xuôi)

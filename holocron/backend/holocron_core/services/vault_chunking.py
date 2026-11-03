@@ -6,7 +6,7 @@ Thuật toán (cùng đầu vào ⇒ cùng tập chunk, cùng `chunk_id`):
    nhau trong một đoạn nối bằng một dấu cách.
 2. **Phần theo tiêu đề.** Mỗi dòng tiêu đề mở một phần mới. Phần chỉ có tiêu đề (tiêu đề nằm ngay trên một tiêu đề
    khác) được gộp vào phần sau nó. Dòng tiêu đề nhận theo mẫu không phụ thuộc môn: tiêu đề Markdown (`# …`), từ khoá
-   đánh số (`Chương 3`, `Bài 2`, `Phần II`, `Chapter 4`, `Section 1`, …) hoặc số mục nhiều cấp (`3.2 …`, `3.2.1 …`);
+   đánh số (`Chương 3`, `Chapter 4`, …; danh sách từ khoá ở `infrastructure/lang/*.toml`) hoặc số mục nhiều cấp (`3.2 …`, `3.2.1 …`);
    dòng dài quá 120 ký tự hoặc kết thúc bằng dấu câu không phải tiêu đề.
 3. **Giới hạn 450 token.** Token là token âm tiết của chỉ mục tìm kiếm (`domain.search_text.search_tokens`). Phần
    dài hơn được tách tại ranh giới đoạn; đoạn không vừa thì tách tại ranh giới câu; câu dài hơn 450 token thì tách
@@ -25,25 +25,38 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from ..domain.schemas import KnowledgeChunk, normalize_quote
 from ..domain.search_text import TOKEN_RE, search_tokens
 from ..domain.vault import ConfirmedDocumentText
+from ..infrastructure.lang_patterns import load_lang_patterns
 
 MAX_CHUNK_TOKENS = 450
 MAX_HEADING_CHARS = 120
 MIN_QUOTE_CHARS = 8
 MAX_QUOTE_CHARS = 600
 
-HEADING_RE = re.compile(
-    r"^(?:"
-    r"#{1,6}\s+\S"
-    r"|(?:chương|chapter|bài|phần|part|section|lecture|mục|unit)\s+(?:[0-9]+|[ivxlc]+)\b"
-    r"|[0-9]{1,2}(?:\.[0-9]{1,2})+\.?\s+\S"
-    r")",
-    re.IGNORECASE,
-)
+# Mẫu tiêu đề không phụ thuộc ngôn ngữ: tiêu đề Markdown và số mục nhiều cấp. Từ khoá đánh số (`Chương`, `Chapter`,
+# …) nằm ở `infrastructure/lang/*.toml` (`LangPatterns.heading_keywords`, ADR-010 mục 16), không nằm trong code.
+_MARKDOWN_HEADING = r"#{1,6}\s+\S"
+_NUMBERED_HEADING = r"[0-9]{1,2}(?:\.[0-9]{1,2})+\.?\s+\S"
+
+
+def _heading_re(keywords: Sequence[str]) -> re.Pattern[str]:
+    """Biểu thức tiêu đề của bước 2 với các từ khoá đánh số `keywords` (so không phân biệt hoa thường)."""
+    alternatives = [_MARKDOWN_HEADING, _NUMBERED_HEADING]
+    if keywords:
+        ordered = sorted(set(keywords), key=lambda keyword: (-len(keyword), keyword))
+        words = "|".join(re.escape(keyword) for keyword in ordered)
+        alternatives.insert(1, rf"(?:{words})\s+(?:[0-9]+|[ivxlc]+)\b")
+    return re.compile(r"^(?:" + "|".join(alternatives) + r")", re.IGNORECASE)
+
+
+# Từ khoá mặc định: nạp MỘT lần lúc import từ các tệp ngôn ngữ đóng gói, thành hằng bất biến.
+DEFAULT_HEADING_KEYWORDS: tuple[str, ...] = load_lang_patterns().heading_keywords
+HEADING_RE = _heading_re(DEFAULT_HEADING_KEYWORDS)
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+")
 HEADING_TRAILING_PUNCTUATION = ".,;:!?…"
 
@@ -70,11 +83,22 @@ class _Unit:
     glued: bool = False
 
 
-def is_heading(line: str) -> bool:
-    """Dòng (đã gộp khoảng trắng) có phải tiêu đề theo mẫu ở bước 2 không."""
+def _pattern_for(heading_keywords: Sequence[str] | None) -> re.Pattern[str]:
+    return HEADING_RE if heading_keywords is None else _heading_re(heading_keywords)
+
+
+def _matches_heading(line: str, pattern: re.Pattern[str]) -> bool:
     if not line or len(line) > MAX_HEADING_CHARS or line[-1] in HEADING_TRAILING_PUNCTUATION:
         return False
-    return HEADING_RE.match(line) is not None
+    return pattern.match(line) is not None
+
+
+def is_heading(line: str, heading_keywords: Sequence[str] | None = None) -> bool:
+    """Dòng (đã gộp khoảng trắng) có phải tiêu đề theo mẫu ở bước 2 không.
+
+    `heading_keywords` None ⇒ từ khoá của các tệp ngôn ngữ đóng gói (`DEFAULT_HEADING_KEYWORDS`).
+    """
+    return _matches_heading(line, _pattern_for(heading_keywords))
 
 
 def _flush(buffer: list[str], page_number: int, paragraphs: list[_Paragraph]) -> None:
@@ -83,7 +107,7 @@ def _flush(buffer: list[str], page_number: int, paragraphs: list[_Paragraph]) ->
         buffer.clear()
 
 
-def _paragraphs(document: ConfirmedDocumentText) -> list[_Paragraph]:
+def _paragraphs(document: ConfirmedDocumentText, pattern: re.Pattern[str]) -> list[_Paragraph]:
     paragraphs: list[_Paragraph] = []
     for page in document.pages:
         buffer: list[str] = []
@@ -91,7 +115,7 @@ def _paragraphs(document: ConfirmedDocumentText) -> list[_Paragraph]:
             line = normalize_quote(raw_line)
             if not line:
                 _flush(buffer, page.page_number, paragraphs)
-            elif is_heading(line):
+            elif _matches_heading(line, pattern):
                 _flush(buffer, page.page_number, paragraphs)
                 paragraphs.append(_Paragraph(page.page_number, line, is_heading=True))
             else:
@@ -289,10 +313,15 @@ def chunk_id_for(doc_id: str, ordinal: int, raw_text: str) -> str:
     return f"chk_{digest[:16]}"
 
 
-def build_chunks(document: ConfirmedDocumentText) -> list[KnowledgeChunk]:
-    """Cắt văn bản đã xác nhận thành chunk với nhãn khởi đầu của `document` (`label_status = "proposed"`)."""
+def build_chunks(
+    document: ConfirmedDocumentText, heading_keywords: Sequence[str] | None = None
+) -> list[KnowledgeChunk]:
+    """Cắt văn bản đã xác nhận thành chunk với nhãn khởi đầu của `document` (`label_status = "proposed"`).
+
+    `heading_keywords` None ⇒ từ khoá tiêu đề của các tệp ngôn ngữ đóng gói (`DEFAULT_HEADING_KEYWORDS`).
+    """
     chunks: list[KnowledgeChunk] = []
-    for units in _pack(_sections(_paragraphs(document))):
+    for units in _pack(_sections(_paragraphs(document, _pattern_for(heading_keywords)))):
         token_count = sum(unit.tokens for unit in units)
         quote = default_quote(units)
         if token_count == 0 or quote is None:

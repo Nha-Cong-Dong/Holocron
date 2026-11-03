@@ -463,7 +463,8 @@ export type ReviewReason =
   | "FONT_ENCODING_SUSPECT"
   | "IMAGE_NEEDS_READING"
   | "PAGE_ROLE_UNCERTAIN"
-  | "DENOISE_UNAVAILABLE";
+  | "DENOISE_UNAVAILABLE"
+  | "LAYOUT_FAILED";
 
 export type FailureReason = "PAGE_TIMEOUT" | "PAGE_ERROR" | "OCR_ENGINE_MISSING" | "TOO_MANY_LINES";
 
@@ -610,6 +611,12 @@ export interface DocumentImport {
   proposal_job: ProposalJob | null;
   /** T1e: lý do không có `proposal_job`; null ⇔ `proposal_job` khác null. */
   proposal_job_absent_reason: ProposalJobAbsentReason | null;
+  /** X09 (ADR-010 mục 15): `LAYOUT_VERSION` của code đã dựng khối; null với tài liệu cũ hoặc đọc không có hình học. */
+  layout_version: number | null;
+  /** sha256 cấu hình bộ dựng khối; null ⇔ `layout_version` null. */
+  layout_settings_sha256: string | null;
+  /** Khối được lưu SAU khi tài liệu đã đóng bằng chunk dòng (chunk của tài liệu là chunk dòng; backend đặt). */
+  blocks_after_close: boolean;
 }
 
 /** Số trang "cần xem" mang một lý do (T1e, §5.7); `count` = số phần tử của `pages` (tăng dần, không trùng). */

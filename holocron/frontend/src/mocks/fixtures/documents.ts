@@ -307,6 +307,9 @@ export function mockDocumentImport(
     chapter_source: { code: "user", title: "file_name" },
     chapter_flags: [],
     auto_confirm: true,
+    layout_version: null,
+    layout_settings_sha256: null,
+    blocks_after_close: false,
   };
 }
 

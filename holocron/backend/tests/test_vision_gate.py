@@ -169,8 +169,8 @@ def test_table_cell_mismatch_is_blocking() -> None:
     decision = judge_region(_result(_table(rows)), TABLE_OCR, 0.0)
     assert decision.outcome == "accepted_table" and decision.flags == ["table_token_mismatch"]
     assert decision.mismatches == [
-        GateTokenMismatch(row=1, col=1, vlm_value="43"),
-        GateTokenMismatch(ocr_value="42"),
+        GateTokenMismatch(token_kind="number", row=1, col=1, vlm_value="43"),
+        GateTokenMismatch(token_kind="number", ocr_value="42"),
     ]
 
 
@@ -178,7 +178,7 @@ def test_table_dropped_number_is_blocking() -> None:
     rows = [["Thanh ghi", "Giá trị"], ["R13", "42"], ["R14", ""]]
     decision = judge_region(_result(_table(rows)), TABLE_OCR, 0.0, VisionGateSettings(min_word_jaccard=0.5))
     assert decision.flags == ["table_token_mismatch"]
-    assert decision.mismatches == [GateTokenMismatch(ocr_value="0x1F")]
+    assert decision.mismatches == [GateTokenMismatch(token_kind="number", ocr_value="0x1F")]
 
 
 def test_table_with_low_jaccard_is_rejected() -> None:
@@ -187,7 +187,10 @@ def test_table_with_low_jaccard_is_rejected() -> None:
 
 
 def test_mismatch_ids_are_stable_and_distinguish_repeats() -> None:
-    repeated = [GateTokenMismatch(ocr_value="7"), GateTokenMismatch(ocr_value="7")]
+    repeated = [
+        GateTokenMismatch(token_kind="number", ocr_value="7"),
+        GateTokenMismatch(token_kind="number", ocr_value="7"),
+    ]
     first, second = mismatch_ids("blk_1", repeated)
     assert first != second and first.startswith("vmm_") and len(first) == 16
     assert mismatch_ids("blk_1", repeated) == [first, second]

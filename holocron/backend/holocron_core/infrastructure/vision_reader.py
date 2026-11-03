@@ -27,7 +27,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ..domain.ai import (
     AiCacheEntry,
@@ -50,6 +50,7 @@ from ..domain.llm import (
     ImageTooLargeError,
     ImageUrl,
     ImageUrlPart,
+    LlmTimeoutError,
     LlmUpstreamError,
     TextPart,
 )
@@ -125,6 +126,7 @@ class VisionReaderSettings(BaseModel):
     max_image_bytes: int = Field(default=1024 * 1024, ge=1)
     max_regions_per_page: int = Field(default=16, ge=1)
     max_regions_per_document: int = Field(default=200, ge=1)
+    max_tracked_documents: int = Field(default=256, ge=1)
     limits: VlmTaskLimits = Field(default_factory=VlmTaskLimits)
 
     @classmethod
@@ -145,6 +147,25 @@ class VlmRegionBlock(BaseModel):
     text: str | None
     rows: list[list[str]] | None
     order: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _shape_matches_type(self) -> VlmRegionBlock:
+        if (self.rows is not None) != (self.type == "table"):
+            raise ValueError("rows khác null khi và chỉ khi type = table")
+        if (self.text is None) != (self.type in ("table", "figure")):
+            raise ValueError("text null khi và chỉ khi type là table hoặc figure")
+        return self
+
+    def within(self, limits: VlmTaskLimits) -> bool:
+        """Khối còn trong `VlmTaskLimits` (áp lại khi đọc cache: dòng cache có thể do giới hạn khác ghi)."""
+        if self.rows is not None:
+            if not self.rows or len(self.rows) > limits.max_table_rows:
+                return False
+            return all(
+                len(row) <= limits.max_table_cols and all(len(cell) <= limits.max_text_chars for cell in row)
+                for row in self.rows
+            )
+        return self.text is None or len(self.text) <= limits.max_text_chars
 
 
 class VlmRegionResult(BaseModel):
@@ -265,6 +286,10 @@ def parse_vlm_blocks(content: str, limits: VlmTaskLimits) -> list[VlmRegionBlock
             continue
         if not isinstance(value, list) or len(value) > limits.max_blocks_per_region:
             return None
+        if value and not any(isinstance(item, dict) for item in value):
+            # Mảng sớm hợp lệ nhưng không phải mảng khối (ví dụ `[1]` trong văn xuôi): thử dấu mở mảng kế tiếp.
+            start = content.find("[", start + 1)
+            continue
         blocks = [_block(item, order, limits) for order, item in enumerate(value)]
         if any(block is None for block in blocks):
             return None
@@ -332,7 +357,8 @@ def _message(image: RegionImage, *, retry: bool) -> ChatMessage:
 
 
 def _failure_status(error: LlmUpstreamError) -> VlmStatus:
-    return "timeout" if "hết hạn" in str(error) else "upstream_error"
+    """Phân loại theo kiểu exception (không theo thông điệp): `LlmTimeoutError` ⇒ `timeout`."""
+    return "timeout" if isinstance(error, LlmTimeoutError) else "upstream_error"
 
 
 def _utc_now() -> datetime:
@@ -340,7 +366,12 @@ def _utc_now() -> datetime:
 
 
 class VisionReader:
-    """Đọc một vùng bằng VLM (ADR-009). Mọi phụ thuộc là tham số; trần vùng đếm trong instance (có khoá)."""
+    """Đọc một vùng bằng VLM (ADR-009). Mọi phụ thuộc là tham số; trần vùng đếm trong instance (có khoá).
+
+    Bộ đếm vùng: chỉ lời gọi VLM thật (không trúng cache) trừ trần; `begin_document` đặt lại bộ đếm của một tài liệu ở
+    đầu mỗi lần nhập; số tài liệu được theo dõi có trần `max_tracked_documents` (bỏ tài liệu cũ nhất), số trang của
+    một tài liệu tự bị chặn bởi `max_regions_per_document`.
+    """
 
     def __init__(
         self,
@@ -361,8 +392,8 @@ class VisionReader:
         self._settings = settings or VisionReaderSettings()
         self._clock = clock
         self._lock = threading.Lock()
-        self._per_document: dict[str, int] = {}
-        self._per_page: dict[tuple[str, int], int] = {}
+        # tài liệu -> (tổng vùng đã gọi, số vùng theo trang); dict giữ thứ tự chèn để bỏ tài liệu cũ nhất.
+        self._regions: dict[str, tuple[int, dict[int, int]]] = {}
 
     def _estimate(self) -> CostEstimate:
         prompt_chars = len(PROMPT_V1) + len(RETRY_REMINDER)
@@ -372,15 +403,36 @@ class VisionReader:
             images=1,
         )
 
+    def begin_document(self, document_id: str) -> None:
+        """Đặt lại bộ đếm vùng của tài liệu ở đầu một lần nhập."""
+        with self._lock:
+            self._regions.pop(document_id, None)
+
+    def tracked_documents(self) -> int:
+        """Số tài liệu đang có bộ đếm vùng (không bao giờ vượt `max_tracked_documents`)."""
+        with self._lock:
+            return len(self._regions)
+
+    def _has_region_slot(self, document_id: str, page_number: int) -> bool:
+        total, pages = self._regions.get(document_id, (0, {}))
+        return (
+            total < self._settings.max_regions_per_document
+            and pages.get(page_number, 0) < self._settings.max_regions_per_page
+        )
+
+    def _region_slot_free(self, document_id: str, page_number: int) -> bool:
+        with self._lock:
+            return self._has_region_slot(document_id, page_number)
+
     def _take_region_slot(self, document_id: str, page_number: int) -> bool:
         with self._lock:
-            page_key = (document_id, page_number)
-            if self._per_document.get(document_id, 0) >= self._settings.max_regions_per_document:
+            if not self._has_region_slot(document_id, page_number):
                 return False
-            if self._per_page.get(page_key, 0) >= self._settings.max_regions_per_page:
-                return False
-            self._per_document[document_id] = self._per_document.get(document_id, 0) + 1
-            self._per_page[page_key] = self._per_page.get(page_key, 0) + 1
+            total, pages = self._regions.pop(document_id, (0, {}))
+            pages[page_number] = pages.get(page_number, 0) + 1
+            self._regions[document_id] = (total + 1, pages)
+            while len(self._regions) > self._settings.max_tracked_documents:
+                del self._regions[next(iter(self._regions))]
             return True
 
     def read_region(self, document_id: str, page_number: int, image: RegionImage) -> VlmRegionResult | VisionSkipped:
@@ -393,16 +445,21 @@ class VisionReader:
         provider = self._selector.select("vlm", estimate)
         if provider is None:
             return VisionSkipped(reason="no_provider")
-        if not self._take_region_slot(document_id, page_number):
-            self._recorder.release(provider.reservation_id)
-            logger.info("vượt trần vùng VLM của tài liệu/trang: region_cap")
-            return VisionSkipped(reason="region_cap")
+        if not self._region_slot_free(document_id, page_number):
+            return self._region_capped(provider)
         key = ai_cache_key(KIND, image.sha256, provider.model, PROMPT_VERSION)
         cached = self._from_cache(key, document_id, image.sha256)
-        if cached is not None:
+        if cached is not None:  # trúng cache: không gọi mạng nên không trừ trần vùng
             self._recorder.release(provider.reservation_id)
             return cached
+        if not self._take_region_slot(document_id, page_number):
+            return self._region_capped(provider)
         return self._call(document_id, image, provider, estimate)
+
+    def _region_capped(self, provider: SelectedProvider) -> VisionSkipped:
+        self._recorder.release(provider.reservation_id)
+        logger.info("vượt trần vùng VLM của tài liệu/trang: region_cap")
+        return VisionSkipped(reason="region_cap")
 
     def _from_cache(self, key: str, document_id: str, input_sha256: str) -> VlmRegionResult | None:
         entry = self._cache.get_ai_cache(key, document_id, now=self._clock())
@@ -411,6 +468,12 @@ class VisionReader:
         try:
             stored = _CachedBlocks.model_validate_json(entry.result_json)
         except ValidationError:
+            self._cache.drop_ai_cache_entry(key)
+            return None
+        limits = self._settings.limits
+        if len(stored.blocks) > limits.max_blocks_per_region or not all(
+            block.within(limits) for block in stored.blocks
+        ):
             self._cache.drop_ai_cache_entry(key)
             return None
         return VlmRegionResult(
@@ -460,6 +523,8 @@ class VisionReader:
         current = provider
         for attempt in range(self._settings.limits.json_retry_max + 1):
             if attempt > 0:
+                if not self._consent.auto_send_allowed("image"):  # công tắc đọc lại ở CHÍNH lần gửi lại
+                    break
                 again = self._selector.select("vlm", estimate)
                 if again is None:
                     break

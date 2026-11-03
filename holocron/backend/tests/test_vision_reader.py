@@ -6,11 +6,22 @@ import json
 import logging
 import unicodedata
 import urllib.request
+from collections.abc import Sequence
 
 import pytest
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
-from holocron_core.domain.llm import ImageUrlPart, LlmTimeoutError, LlmUpstreamError, TextPart, TokenUsage
+from holocron_core.domain.ai import AiUsage, CostEstimate, estimate_cost_usd, usage_cost_usd
+from holocron_core.domain.llm import (
+    ChatCompletionResult,
+    ChatMessage,
+    ImageTooLargeError,
+    ImageUrlPart,
+    LlmTimeoutError,
+    LlmUpstreamError,
+    TextPart,
+    TokenUsage,
+)
 from holocron_core.infrastructure.llm_config import ConfigError, VlmSettings
 from holocron_core.infrastructure.vision_reader import (
     PROMPT_V1,
@@ -19,6 +30,7 @@ from holocron_core.infrastructure.vision_reader import (
     RegionImage,
     VisionReaderSettings,
     VisionSkipped,
+    VlmRegionBlock,
     VlmRegionResult,
     VlmTaskLimits,
     openai_client_factory,
@@ -265,3 +277,142 @@ def test_cache_hit_and_region_cap_release_the_reservation() -> None:
     spent = harness.ledger.spent_usd("env_vlm")
     assert harness.reader.read_region(DOC, 2, image) == VisionSkipped(reason="region_cap")
     assert harness.ledger.reserved_usd("env_vlm") == 0.0 and harness.ledger.spent_usd("env_vlm") == spent
+
+
+# --------------------------------------------------------------------------- #
+# Review V02: validator khối, cache, bộ đếm vùng, consent khi gửi lại, parse
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"type": "paragraph", "text": "x", "rows": [["a"]], "order": 0},
+        {"type": "paragraph", "text": None, "rows": None, "order": 0},
+        {"type": "table", "text": None, "rows": None, "order": 0},
+        {"type": "table", "text": "x", "rows": [["a"]], "order": 0},
+        {"type": "figure", "text": "mô tả", "rows": None, "order": 0},
+        {"type": "figure", "text": None, "rows": [["a"]], "order": 0},
+    ],
+    ids=["rows-on-text", "text-missing", "table-no-rows", "table-text", "figure-text", "figure-rows"],
+)
+def test_region_block_shape_validator(fields: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        VlmRegionBlock.model_validate(fields)
+
+
+def test_parse_accepts_values_exactly_at_each_limit() -> None:
+    limits = VlmTaskLimits(max_blocks_per_region=2, max_table_rows=2, max_table_cols=2, max_text_chars=5)
+    both = [{"type": "table", "rows": [["12345", "b"], ["c", "d"]]}, {"type": "paragraph", "text": "abcde"}]
+    blocks = parse_vlm_blocks(json.dumps(both), limits)
+    assert blocks is not None and len(blocks) == 2 and blocks[1].text == "abcde"
+    assert parse_vlm_blocks(json.dumps([{"type": "paragraph", "text": "abcdef"}]), limits) is None
+    assert parse_vlm_blocks(json.dumps([{"type": "table", "rows": [["123456"]]}]), limits) is None
+    exact = json.dumps([{"type": "paragraph", "text": "x"}])
+    assert parse_vlm_blocks(exact, VlmTaskLimits(max_response_chars=len(exact))) is not None
+    assert parse_vlm_blocks(exact, VlmTaskLimits(max_response_chars=len(exact) - 1)) is None
+    deep = json.dumps([{"type": "table", "rows": [["a"]]}])  # độ sâu 4: mảng, đối tượng, rows, hàng
+    assert parse_vlm_blocks(deep, VlmTaskLimits(max_json_depth=4)) is not None
+    assert parse_vlm_blocks(deep, VlmTaskLimits(max_json_depth=3)) is None
+
+
+def test_parse_normalizes_table_cells_to_nfc() -> None:
+    nfd = unicodedata.normalize("NFD", "Giá trị")
+    blocks = parse_vlm_blocks(json.dumps([{"type": "table", "rows": [[nfd]]}], ensure_ascii=False), VlmTaskLimits())
+    assert blocks is not None and blocks[0].rows == [["Giá trị"]]
+
+
+def test_parse_skips_early_non_block_array_and_respects_start_cap() -> None:
+    blocks = parse_vlm_blocks("Có [1] khối sau: " + PARAGRAPH, VlmTaskLimits())
+    assert blocks is not None and blocks[0].text == "Thanh ghi R13 = 42"
+    assert parse_vlm_blocks("[x [y " + PARAGRAPH, VlmTaskLimits(max_parse_starts=2)) is None
+    assert parse_vlm_blocks("[x [y " + PARAGRAPH, VlmTaskLimits(max_parse_starts=3)) is not None
+    unknown = json.dumps([{"type": "formula", "text": "x"}])
+    assert parse_vlm_blocks("[1] " + unknown, VlmTaskLimits()) is None
+
+
+def test_image_exactly_at_byte_and_edge_caps_is_sent() -> None:
+    image = region_image(width=128, height=10)
+    harness = Harness([PARAGRAPH], settings=VisionReaderSettings(max_image_bytes=len(image.png), max_edge_px=128))
+    assert _result(harness.reader.read_region(DOC, 1, image)).status == "ok"
+
+
+def test_cache_hit_does_not_consume_region_cap() -> None:
+    harness = Harness([PARAGRAPH, PARAGRAPH], settings=VisionReaderSettings(max_regions_per_document=2))
+    image = region_image(shade=1)
+    _result(harness.reader.read_region(DOC, 1, image))
+    for page in (2, 3, 4):
+        assert _result(harness.reader.read_region(DOC, page, image)).from_cache
+    assert _result(harness.reader.read_region(DOC, 5, region_image(shade=2))).status == "ok"
+    assert harness.reader.read_region(DOC, 6, region_image(shade=3)) == VisionSkipped(reason="region_cap")
+    assert len(harness.client.received) == 2
+
+
+def test_begin_document_resets_and_tracking_is_bounded() -> None:
+    settings = VisionReaderSettings(max_regions_per_document=1, max_tracked_documents=2)
+    harness = Harness([PARAGRAPH] * 6, settings=settings)
+    _result(harness.reader.read_region(DOC, 1, region_image(shade=1)))
+    assert harness.reader.read_region(DOC, 1, region_image(shade=2)) == VisionSkipped(reason="region_cap")
+    harness.reader.begin_document(DOC)
+    assert _result(harness.reader.read_region(DOC, 1, region_image(shade=3))).status == "ok"
+    for index in range(4):
+        _result(harness.reader.read_region(f"doc_{index:016x}", 1, region_image(shade=10 + index)))
+        assert harness.reader.tracked_documents() <= 2
+
+
+def test_consent_is_reread_before_the_json_retry() -> None:
+    switch = Switch()
+
+    class OffAfterFirst(StubClient):
+        def complete(self, messages: Sequence[ChatMessage], *, max_tokens: int) -> ChatCompletionResult:
+            switch.image = False
+            return super().complete(messages, max_tokens=max_tokens)
+
+    client = OffAfterFirst(["không phải JSON", PARAGRAPH])
+    harness = Harness(consent=switch, client_factory=lambda provider: client)
+    result = _result(harness.reader.read_region(DOC, 1, region_image()))
+    assert result.status == "vlm_invalid" and len(client.received) == 1
+    assert harness.ledger.reserved_usd("env_vlm") == 0.0
+
+
+def _estimate_input_tokens() -> int:
+    return (len(PROMPT_V1) + len(RETRY_REMINDER)) // 2 + 1
+
+
+def test_reservation_uses_two_chars_per_token_estimate() -> None:
+    seen: list[float] = []
+    holder: list[Harness] = []
+
+    class Spy(StubClient):
+        def complete(self, messages: Sequence[ChatMessage], *, max_tokens: int) -> ChatCompletionResult:
+            seen.append(holder[0].ledger.reserved_usd("env_vlm"))
+            return super().complete(messages, max_tokens=max_tokens)
+
+    spy = Spy([PARAGRAPH], usage=TokenUsage(prompt_tokens=1, completion_tokens=1))
+    holder.append(Harness(client_factory=lambda provider: spy))
+    _result(holder[0].reader.read_region(DOC, 1, region_image()))
+    estimate = CostEstimate(input_tokens=_estimate_input_tokens(), max_output_tokens=4096, images=1)
+    assert seen == [pytest.approx(estimate_cost_usd(candidate().prices, estimate))]
+
+
+def test_missing_usage_records_worst_case_cost() -> None:
+    harness = Harness([PARAGRAPH], usage=None)
+    _result(harness.reader.read_region(DOC, 1, region_image()))
+    worst = AiUsage(input_tokens=_estimate_input_tokens(), output_tokens=4096, images=1, estimated=True)
+    assert harness.ledger.spent_usd("env_vlm") == pytest.approx(usage_cost_usd(candidate().prices, worst))
+    assert harness.ledger.reserved_usd("env_vlm") == 0.0
+
+
+def test_image_too_large_in_client_releases_reservation() -> None:
+    class Refuse(StubClient):
+        def complete(self, messages: Sequence[ChatMessage], *, max_tokens: int) -> ChatCompletionResult:
+            raise ImageTooLargeError("HOLOCRON_VLM_MAX_IMAGE_BYTES")
+
+    harness = Harness(client_factory=lambda provider: Refuse([]))
+    assert _result(harness.reader.read_region(DOC, 1, region_image())).status == "upstream_error"
+    assert harness.ledger.reserved_usd("env_vlm") == 0.0 and harness.ledger.spent_usd("env_vlm") == 0.0
+
+
+def test_upstream_error_with_deadline_text_is_not_a_timeout() -> None:
+    error = LlmUpstreamError("hết hạn thời gian tổng của lần gọi LLM", attempts=1)
+    assert _result(Harness([error]).reader.read_region(DOC, 1, region_image())).status == "upstream_error"

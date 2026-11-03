@@ -220,3 +220,111 @@ def test_delete_ai_cache_with_token_clears_everything(store: AppStore) -> None:
     assert response.status_code == 200 and response.json() == {"deleted_entries": 2}
     again = client.delete("/v1/settings/ai-cache", headers={"X-Holocron-Token": TOKEN})
     assert again.json() == {"deleted_entries": 0}
+
+
+# --------------------------------------------------------------------------- #
+# Review V02: cache hỏng hoặc vượt giới hạn bị bỏ; ngữ nghĩa TTL, trần, ghi đè
+# --------------------------------------------------------------------------- #
+
+
+def _stored(image_sha: str, result_json: str) -> AiCacheEntry:
+    return AiCacheEntry(
+        cache_key=ai_cache_key("vlm_region", image_sha, MODEL, "v1"),
+        kind="vlm_region",
+        input_sha256=image_sha,
+        model=MODEL,
+        prompt_version="v1",
+        result_json=result_json,
+    )
+
+
+def test_invalid_cache_row_is_dropped_even_when_the_refetch_fails(store: AppStore) -> None:
+    from holocron_core.domain.llm import LlmUpstreamError
+
+    image = region_image()
+    broken = _stored(image.sha256, '{"blocks":[{"type":"bogus"}]}')
+    store.put_ai_cache(broken, DOC_A, now=NOW)
+    harness = Harness([LlmUpstreamError("HTTP 500", attempts=1)], cache=store)
+    outcome = harness.reader.read_region(DOC_A, 1, image)
+    assert isinstance(outcome, VlmRegionResult) and outcome.status == "upstream_error"
+    assert store.get_ai_cache(broken.cache_key, DOC_A, now=NOW) is None
+
+
+@pytest.mark.parametrize(
+    "blocks",
+    [
+        [{"type": "paragraph", "text": "x", "rows": None, "order": k} for k in range(3)],
+        [{"type": "paragraph", "text": "x" * 6, "rows": None, "order": 0}],
+        [{"type": "table", "text": None, "rows": [["a"], ["b"], ["c"]], "order": 0}],
+        [{"type": "table", "text": None, "rows": [["a", "b", "c"]], "order": 0}],
+        [{"type": "table", "text": None, "rows": [["abcdef"]], "order": 0}],
+        [{"type": "table", "text": None, "rows": [], "order": 0}],
+        [{"type": "paragraph", "text": "x", "rows": [["a"]], "order": 0}],
+    ],
+    ids=["blocks", "text", "rows", "cols", "cell", "empty-table", "shape"],
+)
+def test_cached_blocks_over_task_limits_are_dropped_and_refetched(
+    store: AppStore, blocks: list[dict[str, object]]
+) -> None:
+    from holocron_core.infrastructure.vision_reader import VisionReaderSettings, VlmTaskLimits
+
+    limits = VlmTaskLimits(max_blocks_per_region=2, max_table_rows=2, max_table_cols=2, max_text_chars=5)
+    image = region_image()
+    entry = _stored(image.sha256, json.dumps({"blocks": blocks}))
+    store.put_ai_cache(entry, DOC_A, now=NOW)
+    reply = json.dumps([{"type": "paragraph", "text": "abc"}])
+    harness = Harness([reply], cache=store, settings=VisionReaderSettings(limits=limits))
+    result = _ok(harness.reader.read_region(DOC_A, 1, image))
+    assert not result.from_cache and len(harness.client.received) == 1
+
+
+def test_cached_blocks_exactly_at_limits_are_served(store: AppStore) -> None:
+    from holocron_core.infrastructure.vision_reader import VisionReaderSettings, VlmTaskLimits
+
+    limits = VlmTaskLimits(max_blocks_per_region=2, max_table_rows=2, max_table_cols=2, max_text_chars=5)
+    blocks = [
+        {"type": "table", "text": None, "rows": [["abcde", "b"], ["c", "d"]], "order": 0},
+        {"type": "paragraph", "text": "abcde", "rows": None, "order": 1},
+    ]
+    image = region_image()
+    store.put_ai_cache(_stored(image.sha256, json.dumps({"blocks": blocks})), DOC_A, now=NOW)
+    harness = Harness([], cache=store, settings=VisionReaderSettings(limits=limits))
+    assert _ok(harness.reader.read_region(DOC_A, 1, image)).from_cache
+
+
+def test_ttl_boundary_and_overwrite_semantics(store: AppStore) -> None:
+    from holocron_core.infrastructure.storage.sqlite_store import AI_CACHE_TTL_DAYS
+
+    first = _entry("a")
+    store.put_ai_cache(first, DOC_A, now=NOW)
+    edge = NOW + timedelta(days=AI_CACHE_TTL_DAYS)
+    assert store.get_ai_cache(first.cache_key, DOC_A, now=edge) == first  # đúng bằng TTL: còn dùng được
+    assert store.get_ai_cache(first.cache_key, DOC_A, now=edge + timedelta(days=AI_CACHE_TTL_DAYS, seconds=1)) is None
+    replaced = first.model_copy(update={"result_json": '{"blocks":[]} '})
+    store.put_ai_cache(replaced, DOC_A, now=NOW)
+    assert store.get_ai_cache(first.cache_key, DOC_A, now=NOW) == replaced
+
+
+@pytest.mark.parametrize("kind", ["memory", "sqlite"])
+def test_overwrite_refreshes_last_used_so_ttl_keeps_new_value(kind: str, tmp_path: Path) -> None:
+    ttl: AppStore = (
+        IngestionStore(ai_cache_ttl_days=1)
+        if kind == "memory"
+        else SQLiteStore(_connect(tmp_path), ai_cache_ttl_days=1)
+    )
+    old = _entry("a")
+    ttl.put_ai_cache(old, DOC_A, now=NOW)
+    later = NOW + timedelta(days=2)
+    newer = old.model_copy(update={"result_json": '{"blocks":[]} '})
+    ttl.put_ai_cache(newer, DOC_A, now=later)
+    assert ttl.get_ai_cache(old.cache_key, DOC_A, now=later) == newer
+
+
+@pytest.mark.parametrize("kind", ["memory", "sqlite"])
+@pytest.mark.parametrize("fields", [{"ai_cache_max_rows": 0}, {"ai_cache_ttl_days": 0}])
+def test_cache_limits_must_be_positive(kind: str, fields: dict[str, int], tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="ai_cache_max_rows"):
+        if kind == "memory":
+            IngestionStore(**fields)
+        else:
+            SQLiteStore(_connect(tmp_path), **fields)

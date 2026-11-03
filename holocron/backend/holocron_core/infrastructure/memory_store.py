@@ -886,6 +886,16 @@ class IngestionStore:
     def list_eligible_blocks(self, document_id: str) -> list[Block]:
         return self._sorted_blocks(document_id, lambda key, _: key in self._eligible)
 
+    def match_block_index(
+        self, subject_code: str, terms: Sequence[str], *, trigram: bool
+    ) -> list[tuple[str, str]] | None:
+        """Kho in-memory không có bảng chỉ mục FTS: `None` ⇒ tra cứu khối dùng đường lùi Python (ADR-010 mục 18)."""
+        return None
+
+    def load_eligible_blocks(self, document_id: str, block_ids: Sequence[str]) -> list[Block]:
+        wanted = set(block_ids)
+        return self._sorted_blocks(document_id, lambda key, _: key in self._eligible and key[1] in wanted)
+
     def save_crop_image(self, crop: CropImage, png: bytes) -> CropWriteResult:
         """Byte giữ trong instance; tổng byte (mỗi `(document_id, crop_ref)` tính một lần) vượt
         `memory_crop_max_bytes` ⇒ không ghi, khối giữ `crop_pending` + thêm `crop_capped`."""

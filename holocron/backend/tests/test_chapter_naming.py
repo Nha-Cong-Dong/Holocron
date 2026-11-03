@@ -90,15 +90,15 @@ def test_no_number_takes_the_smallest_free_chapter_with_a_flag() -> None:
     )
 
 
-def test_a_taken_number_takes_the_smallest_free_chapter_with_a_flag() -> None:
+def test_a_taken_number_is_kept_with_the_shared_flag() -> None:
     assert choose_chapter_code("chuong-2.pdf", {"ch1", "ch2"}) == ChapterChoice(
-        "ch3", "next_free", ("CHAPTER_NUMBER_TAKEN",)
+        "ch2", "file_name", ("CHAPTER_NUMBER_SHARED",)
     )
 
 
 def test_every_chapter_taken_still_gives_a_valid_code() -> None:
     every = {f"ch{n}" for n in range(1, 100)}
-    assert choose_chapter_code("chuong-5.pdf", every) == ChapterChoice("ch99", "next_free", ("CHAPTER_NUMBER_TAKEN",))
+    assert choose_chapter_code("chuong-5.pdf", every) == ChapterChoice("ch5", "file_name", ("CHAPTER_NUMBER_SHARED",))
     assert choose_chapter_code("x.pdf", every) == ChapterChoice(
         "ch99", "next_free", ("CHAPTER_NUMBER_NOT_IN_FILENAME",)
     )
@@ -253,7 +253,7 @@ def test_the_last_free_chapter_is_ch99() -> None:
 
 def test_auto_chapter_treats_reserved_codes_as_taken() -> None:
     assert auto_chapter("Chuong-2.pdf", [], "doc_aaaaaaaaaaaaaaaa", {"ch2", "ch1"}) == ChapterChoice(
-        "ch3", "next_free", ("CHAPTER_NUMBER_TAKEN",)
+        "ch2", "file_name", ("CHAPTER_NUMBER_SHARED",)
     )
 
 

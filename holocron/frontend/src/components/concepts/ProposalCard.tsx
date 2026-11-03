@@ -51,6 +51,18 @@ interface ProposalCardProps {
   onRetry: () => void;
   /** Animation rời đi (`m-concept-accept`/`m-concept-reject`) đã chạy xong. */
   onLeft: () => void;
+  /** Hộp chọn của thẻ (nhận hoặc từ chối nhiều cặp một lượt). */
+  selected: boolean;
+  /** Chọn được: đoạn nguồn tra được, thẻ không bận, không chờ cập nhật. */
+  selectable: boolean;
+  onToggle: () => void;
+  /** Tên đã sửa nhưng chưa gửi (gửi khi nhận); `null` ⇒ giữ tên backend đề xuất. */
+  termDraft: string | null;
+  onSaveTerm: (term: string) => void;
+  /** Mở đoạn gốc của thẻ và tô sáng trích dẫn. */
+  onShowSource: () => void;
+  /** Lý do thẻ thuộc nhóm "Cần kiểm tra"; `null` khi không thuộc nhóm. */
+  checkReason: string | null;
 }
 
 function gateReason(gate: ActionGate): string | null {
@@ -169,9 +181,9 @@ export function RenameForm({
 }
 
 /**
- * Thẻ một khái niệm đề xuất: thuật ngữ, trích dẫn nguyên văn kèm trang (khi tra được đoạn), nguồn đề xuất, và ba nút
- * Bỏ / Sửa / Nhận. "Sửa" chỉ đổi tên ("Lưu và nhận"). Nút bị khoá theo `pairActions` thì vẫn nhận focus và có lý do bằng
- * chữ. Thẻ rời đi bằng `m-concept-accept` hoặc `m-concept-reject`.
+ * Thẻ một khái niệm đề xuất: hộp chọn, thuật ngữ, trích dẫn nguyên văn kèm trang (khi tra được đoạn), nguồn đề xuất, và
+ * các nút Bỏ / Xem trong đoạn gốc / Sửa / Nhận. "Sửa" chỉ đổi tên ("Lưu tên": giữ nháp, gửi khi nhận). Nút bị khoá theo
+ * `pairActions` thì vẫn nhận focus và có lý do bằng chữ. Thẻ rời đi bằng `m-concept-accept` hoặc `m-concept-reject`.
  */
 export function ProposalCard({
   pair,
@@ -184,6 +196,13 @@ export function ProposalCard({
   onReject,
   onRetry,
   onLeft,
+  selected,
+  selectable,
+  onToggle,
+  termDraft,
+  onSaveTerm,
+  onShowSource,
+  checkReason,
 }: ProposalCardProps) {
   const ids = useId();
   const [editing, setEditing] = useState(false);
@@ -220,6 +239,7 @@ export function ProposalCard({
   const editReason = gateReason(view.actions.edit);
   const rejectReason = gateReason(view.actions.reject);
   const reason = acceptReason ?? editReason ?? rejectReason;
+  const shownTerm = termDraft ?? pair.term;
   const reasonId = `${ids}-reason`;
   const leavingClass = leaving === "accept" ? "m-concept-accept" : leaving === "reject" ? "m-concept-reject" : "";
 
@@ -237,22 +257,39 @@ export function ProposalCard({
       <article
         ref={cardRef}
         className={[styles.card, leavingClass].filter((name) => name !== "").join(" ")}
-        aria-label={pair.term}
+        aria-label={shownTerm}
         tabIndex={-1}
         data-concept-id={pair.pair_id}
         onAnimationEnd={onAnimationEnd}
       >
         <div className={styles.cardHead}>
-          {!editing && <h3 className={styles.term}>{pair.term}</h3>}
+          <div className={styles.cardSelect}>
+            <input
+              type="checkbox"
+              className={styles.check}
+              checked={selected}
+              disabled={!selectable || busy}
+              aria-label={`Chọn khái niệm ${shownTerm}`}
+              aria-describedby={!selectable && reason !== null ? reasonId : undefined}
+              onChange={onToggle}
+            />
+            {!editing && <h3 className={styles.term}>{shownTerm}</h3>}
+            {!editing && termDraft !== null && <span className={styles.draftTag}>(đã sửa tên)</span>}
+          </div>
           <span className={styles.source}>{view.sourceLabel}</span>
         </div>
+        {checkReason !== null && <p className={styles.checkNote}>{checkReason}</p>}
         {editing && (
           <RenameForm
-            initial={pair.term}
-            submitLabel="Lưu và nhận"
+            initial={shownTerm}
+            submitLabel="Lưu tên"
             busy={busy}
-            lockedReasonId={acceptReason !== null ? reasonId : null}
-            onSave={(term) => onAccept(term)}
+            lockedReasonId={null}
+            onSave={(term) => {
+              returnFocus.current = "edit";
+              onSaveTerm(term);
+              setEditing(false);
+            }}
             onCancel={cancelEdit}
             frameRef={frameRef}
           />
@@ -286,6 +323,9 @@ export function ProposalCard({
             >
               Bỏ
             </button>
+            <button type="button" className={styles.textButton} onClick={onShowSource}>
+              Xem trong đoạn gốc
+            </button>
             <button
               ref={editRef}
               type="button"
@@ -306,7 +346,7 @@ export function ProposalCard({
               aria-disabled={acceptReason !== null || undefined}
               aria-describedby={acceptReason !== null ? reasonId : undefined}
               onClick={() => {
-                if (!busy && acceptReason === null) onAccept(null);
+                if (!busy && acceptReason === null) onAccept(termDraft);
               }}
             >
               Nhận

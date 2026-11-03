@@ -10,11 +10,16 @@
  */
 
 import type {
+  BatchErrorKind,
   Citation,
   CognitiveLevel,
+  DocumentImport,
   OptionKey,
   PageExtraction,
   PageSummary,
+  ProposalJob,
+  ProposalJobStatus,
+  ProposalRejectReason,
   QuestionFormat,
   ReviewReason,
   ReviewStatus,
@@ -77,6 +82,26 @@ export interface PageSummaryPending extends Omit<PageSummary, "review_reasons"> 
 /** `PageExtraction` với `ReviewReason` của §5.7 v0.7 (có `LOW_TEXT_SCORE`). */
 export interface PageExtractionPending extends Omit<PageExtraction, "review_reasons"> {
   review_reasons: ReviewReasonPending[];
+}
+
+// ------------------------------------------------------- §5.7, §5.8, §6.5 màn kết quả nhập (T1e, T1b)
+
+// Các field T1e của `DocumentImport` (§5.7) đã có ở backend (#116) và ở `holocron.ts`; xuất lại ở đây cho nơi còn import
+// từ file này. `ReviewReasonCount.reason` là `ReviewReason` của backend (không có `LOW_TEXT_SCORE`).
+export type { DroppedRoleCount, ProposalJobAbsentReason, ReviewReasonCount } from "@/types/holocron";
+/**
+ * `ProposalJob`, `ProposalJobStatus`, `ProposalRejectReason` và `BatchErrorKind` (§5.8) đã có ở backend và ở `holocron.ts`
+ * (T1b); xuất lại ở đây cho nơi còn import từ file này. `DocumentImportPending` dùng đúng kiểu đó.
+ */
+export type { BatchErrorKind, ProposalJob, ProposalJobStatus, ProposalRejectReason };
+
+/** Bí danh giữ cho nơi còn import từ file này: `DocumentImport` của `holocron.ts` đã có đủ field T1e. */
+export type DocumentImportPending = DocumentImport;
+
+/** Body của `POST /v1/vault/concept-pairs/jobs` (§6.6): đúng một trong `document_id` và `chunk_ids`. */
+export interface ProposalJobCreate {
+  subject_code: string;
+  document_id: string;
 }
 
 // ------------------------------------------------------------------------ §5.9 Blueprint, shape (a)

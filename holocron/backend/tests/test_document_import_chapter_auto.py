@@ -1,7 +1,7 @@
 """Chương tự động khi nhập tài liệu (SPECIFICATION §5.7 "Chương tự động", §6.5 bước 3 và 5; GĐ1 1A).
 
-- `chapter_code` tuỳ chọn ở form: không gửi hoặc chuỗi rỗng ⇒ số trong TÊN FILE, không có hoặc trùng chương đã có
-  của môn ⇒ chương trống nhỏ nhất. Mã người dùng nhập vẫn được phép trùng chương của tài liệu khác.
+- `chapter_code` tuỳ chọn ở form: không gửi hoặc chuỗi rỗng ⇒ số trong TÊN FILE (trùng chương đã có
+  của môn ⇒ vẫn giữ, kèm cờ `CHAPTER_NUMBER_SHARED`), không có số ⇒ chương trống nhỏ nhất. Mã người dùng nhập vẫn được phép trùng chương của tài liệu khác.
 - Nhập lại cùng nội dung không gửi `chapter_code` ⇒ 200 bản cũ (không tính lại, không `CHAPTER_CONFLICT`); gửi mã
   khác ⇒ 409 như cũ.
 - Hai file nhập cùng lúc (luồng thật, `threading.Barrier`) không nhận cùng chương trống: chọn chương dưới khoá môn.
@@ -99,11 +99,11 @@ def test_invalid_chapter_field_is_still_422_and_stores_nothing(env: ImportEnv, c
     assert env.reader.probed == [] and list(env.files.root.iterdir()) == []
 
 
-def test_no_number_or_a_taken_number_takes_the_smallest_free_chapter(env: ImportEnv) -> None:
+def test_no_number_takes_the_smallest_free_chapter_and_a_taken_number_is_kept(env: ImportEnv) -> None:
     assert _auto(env, "a", "chuong-3.pdf") == "ch3"
     assert _auto(env, "b", "khong-so.pdf") == "ch1"
-    assert _auto(env, "c", "bai-3.pdf") == "ch2", "ch3 đã có, ch1 đã có ⇒ ch2"
-    assert _auto(env, "d", "mo-dau.pdf") == "ch4"
+    assert _auto(env, "c", "bai-3.pdf") == "ch3", "ch3 đã có ⇒ vẫn giữ ch3 (CHAPTER_NUMBER_SHARED)"
+    assert _auto(env, "d", "mo-dau.pdf") == "ch2"
     assert _auto(env, "e", "Chuong-5.pdf") == "ch5"
 
 
@@ -112,10 +112,14 @@ def test_chapters_of_other_subjects_do_not_count(env: ImportEnv) -> None:
     assert _auto(env, "mon-b", "ch2.pdf", subject_code="IT3070") == "ch2"
 
 
-def test_user_chapter_may_repeat_and_blocks_automatic_choices(env: ImportEnv) -> None:
+def test_user_chapter_may_repeat_and_counts_as_an_existing_chapter(env: ImportEnv) -> None:
     assert env.post(pdf_bytes("slide"), chapter_code="ch2").json()["chapter_code"] == "ch2"
     assert env.post(pdf_bytes("giao-trinh"), chapter_code="ch2").json()["chapter_code"] == "ch2"
-    assert _auto(env, "tu-dong", "Chuong-2.pdf") == "ch1", "chương người dùng nhập cũng là chương đã có"
+    shared = env.post(pdf_bytes("tu-dong"), chapter_code=None, filename="Chuong-2.pdf").json()
+    assert (shared["chapter_code"], shared["chapter_flags"]) == ("ch2", ["CHAPTER_NUMBER_SHARED"]), (
+        "chương người dùng nhập cũng là chương đã có"
+    )
+    assert _auto(env, "khong-so", "on-tap.pdf") == "ch1"
 
 
 def test_sub_chapter_codes_do_not_take_the_whole_chapter(env: ImportEnv) -> None:
@@ -188,7 +192,7 @@ def test_the_document_itself_is_not_a_taken_chapter() -> None:
     others = [imported("doc_aaaaaaaaaaaaaaaa", "ch2"), imported("doc_bbbbbbbbbbbbbbbb", None)]
     assert auto_chapter("Chuong-2.pdf", others, "doc_aaaaaaaaaaaaaaaa") == ChapterChoice("ch2", "file_name", ())
     assert auto_chapter("Chuong-2.pdf", others, "doc_cccccccccccccccc") == ChapterChoice(
-        "ch1", "next_free", ("CHAPTER_NUMBER_TAKEN",)
+        "ch2", "file_name", ("CHAPTER_NUMBER_SHARED",)
     )
 
 
@@ -278,9 +282,9 @@ def test_two_files_with_the_same_number_at_once(store: AppStore, tmp_path: Path)
     importer = _importer(store, tmp_path / "files", MeetingProbeReader(page_count=1))
     outcomes = _run_two(importer, ("a", "ET4010", "Chuong-2.pdf"), ("b", "ET4010", "Chuong-2-ban-2.pdf"))
     chapters = sorted((o.document.chapter_code, o.document.chapter_source.code) for o in outcomes)
-    assert chapters == [("ch1", "next_free"), ("ch2", "file_name")]
-    flags = {o.document.chapter_code: o.document.chapter_flags for o in outcomes}
-    assert flags == {"ch1": ["CHAPTER_NUMBER_TAKEN"], "ch2": []}, "chỉ lần nhận sau bị cờ trùng số"
+    assert chapters == [("ch2", "file_name"), ("ch2", "file_name")]
+    flags = sorted(o.document.chapter_flags for o in outcomes)
+    assert flags == [[], ["CHAPTER_NUMBER_SHARED"]], "chỉ lần nhận sau mang cờ thông tin trùng số"
 
 
 def test_imports_of_different_subjects_do_not_wait_for_each_other(store: AppStore, tmp_path: Path) -> None:

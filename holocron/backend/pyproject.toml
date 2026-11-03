@@ -20,7 +20,7 @@ dev = ["pytest>=9.1.1", "httpx>=0.27", "ruff>=0.17.2", "mypy>=2.4.0", "pytest-co
 include = ["holocron_core*"]
 
 [tool.setuptools.package-data]
-holocron_core = ["infrastructure/templates/*.py", "infrastructure/storage/migrations/*.sql"]
+holocron_core = ["infrastructure/templates/*.py", "infrastructure/storage/migrations/*.sql", "infrastructure/lang/*.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

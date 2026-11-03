@@ -45,6 +45,15 @@ interface PassagePanelProps {
   /** Khả năng tìm trong tài liệu: không có thì ẩn ô tìm kèm một câu. */
   searchAvailable: boolean;
   onCreated: (pair: ConceptPair) => void;
+  /** Cặp đang xem: tô sáng trích dẫn của nó khi đoạn đang mở là đoạn của cặp. `null` ⇒ không tô. */
+  highlight: PassageHighlight | null;
+  onClearHighlight: () => void;
+}
+
+/** Trích dẫn cần tô sáng và đoạn chứa nó. */
+export interface PassageHighlight {
+  chunkId: string;
+  quote: string;
 }
 
 /**
@@ -60,11 +69,21 @@ export function PassagePanel({
   onRetryMap,
   searchAvailable,
   onCreated,
+  highlight,
+  onClearHighlight,
 }: PassagePanelProps) {
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const quote = highlight?.quote ?? null;
+  // Mở một cặp để xem: đưa khung Đoạn văn vào tầm nhìn và focus vào tiêu đề (không cuộn mượt: tôn trọng giảm chuyển động).
+  useEffect(() => {
+    if (quote === null || headingRef.current === null) return;
+    headingRef.current.scrollIntoView({ behavior: "auto", block: "start" });
+    headingRef.current.focus({ preventScroll: true });
+  }, [quote]);
   return (
     <section className={styles.panel} aria-labelledby="concepts-create-title">
       <div>
-        <h2 id="concepts-create-title" className={styles.h2}>
+        <h2 id="concepts-create-title" ref={headingRef} tabIndex={-1} className={styles.h2}>
           Tự tạo khái niệm
         </h2>
         <p className={styles.muted}>Bôi một đoạn bên dưới, hoặc bấm chọn một câu, rồi bấm “Tạo khái niệm”.</p>
@@ -78,6 +97,8 @@ export function PassagePanel({
         onRetryMap={onRetryMap}
         searchAvailable={searchAvailable}
         onCreated={onCreated}
+        highlight={highlight}
+        onClearHighlight={onClearHighlight}
       />
     </section>
   );
@@ -92,6 +113,8 @@ function PanelBody({
   onRetryMap,
   searchAvailable,
   onCreated,
+  highlight,
+  onClearHighlight,
 }: PassagePanelProps) {
   // Kết quả tìm vừa chọn: đoạn backend trả đủ trong kết quả, dùng thẳng khi map chưa tải tới đoạn đó.
   const [picked, setPicked] = useState<ChunkView | null>(null);
@@ -148,7 +171,13 @@ function PanelBody({
           Tìm trong tài liệu chưa dùng được trên máy này; chọn chương rồi đi qua từng đoạn.
         </p>
       )}
-      <PassageEditor key={current.chunkId} chunk={current} onCreated={onCreated} />
+      <PassageEditor
+        key={current.chunkId}
+        chunk={current}
+        onCreated={onCreated}
+        highlightQuote={highlight !== null && highlight.chunkId === current.chunkId ? highlight.quote : null}
+        onClearHighlight={onClearHighlight}
+      />
     </>
   );
 }
@@ -285,7 +314,17 @@ function PassageSearch({ subjectCode, onPick }: { subjectCode: string; onPick: (
 }
 
 /** Văn bản một đoạn, chip câu và khung "Tạo khái niệm" (dựng lại khi đổi đoạn). */
-function PassageEditor({ chunk, onCreated }: { chunk: ChunkView; onCreated: (pair: ConceptPair) => void }) {
+function PassageEditor({
+  chunk,
+  onCreated,
+  highlightQuote,
+  onClearHighlight,
+}: {
+  chunk: ChunkView;
+  onCreated: (pair: ConceptPair) => void;
+  highlightQuote: string | null;
+  onClearHighlight: () => void;
+}) {
   const toast = useToast();
   const ids = useId();
   const sentences = useMemo(() => sentenceRanges(chunk.rawText), [chunk.rawText]);
@@ -350,8 +389,15 @@ function PassageEditor({ chunk, onCreated }: { chunk: ChunkView; onCreated: (pai
   return (
     <>
       <div className={styles.passage}>
-        <PassageText passage={chunk} onSelect={onSelect} onInvalid={onInvalid} />
+        <PassageText passage={chunk} onSelect={onSelect} onInvalid={onInvalid} highlightQuote={highlightQuote} />
       </div>
+      {highlightQuote !== null && (
+        <div>
+          <button type="button" className={styles.textButton} onClick={onClearHighlight}>
+            Bỏ tô sáng
+          </button>
+        </div>
+      )}
       {selectNote !== null && <p className={styles.error}>{selectNote}</p>}
       <SentenceChips sentences={sentences} selection={selection} onPick={pick} />
       {quote !== null && (

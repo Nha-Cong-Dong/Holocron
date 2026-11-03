@@ -181,15 +181,42 @@ def _read_one(
         return PageErrorMessage(page_index=index, message=type(exc).__name__[:200])
 
 
+def _has_font_data(raw: RawPdfPage) -> bool:
+    lines = any(line.font_id is not None or line.font_size_pt is not None for line in raw.lines)
+    words = any(word.font_id is not None or word.font_size_pt is not None for line in raw.lines for word in line.words)
+    return bool(raw.fonts) or lines or words
+
+
+def without_font_data(raw: RawPdfPage) -> RawPdfPage:
+    """Trang bỏ toàn bộ dữ liệu font (ADR-010 mục 5): `fonts = []`, mọi `font_id`/`font_size_pt` null,
+    `font_data_dropped = True`; văn bản, hộp và mọi field khác giữ nguyên."""
+    cleared = {"font_id": None, "font_size_pt": None}
+    lines = [
+        line.model_copy(update={**cleared, "words": [word.model_copy(update=cleared) for word in line.words]})
+        for line in raw.lines
+    ]
+    return raw.model_copy(update={"lines": lines, "fonts": [], "font_data_dropped": True})
+
+
+def _fits(message: PageMessage, max_message_bytes: int) -> bool:
+    return len(encode_message(message).encode("utf-8")) + 2 <= max_message_bytes
+
+
 def _fit_message(message: PageMessage | PageErrorMessage, max_message_bytes: int) -> PageMessage | PageErrorMessage:
     """Trang mà thông điệp vượt `max_message_bytes` được báo lỗi thay vì gửi (tiến trình cha sẽ không nhận dòng đó).
 
-    Tính cả `\\r\\n`, vì stdout ở chế độ văn bản trên Windows đổi `\\n` thành `\\r\\n`.
+    Tính cả `\\r\\n`, vì stdout ở chế độ văn bản trên Windows đổi `\\n` thành `\\r\\n`. Thông điệp vượt trần mà
+    trang có dữ liệu font ⇒ bỏ toàn bộ dữ liệu font (`without_font_data`) rồi thử lại; vẫn vượt ⇒ báo lỗi như trên.
+    Không nâng trần nào (ADR-010 mục 5).
     """
     if not isinstance(message, PageMessage):
         return message
-    if len(encode_message(message).encode("utf-8")) + 2 <= max_message_bytes:
+    if _fits(message, max_message_bytes):
         return message
+    if _has_font_data(message.page):
+        stripped = PageMessage(page=without_font_data(message.page))
+        if _fits(stripped, max_message_bytes):
+            return stripped
     return PageErrorMessage(page_index=message.page.page_index, message="MessageTooLarge")
 
 

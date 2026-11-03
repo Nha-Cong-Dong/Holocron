@@ -377,7 +377,7 @@ def test_only_the_most_recent_finished_jobs_are_kept(runtimes: list[ProposalJobR
 
 def test_default_settings_match_the_spec() -> None:
     settings = ConceptProposalSettings()
-    assert (settings.job_batch_chunks, settings.job_max_parallel, settings.job_keep_finished) == (20, 2, 100)
+    assert (settings.job_batch_chunks, settings.job_max_parallel, settings.job_keep_finished) == (5, 2, 100)
     with pytest.raises(ValueError):
         ConceptProposalSettings(job_batch_chunks=21)
 

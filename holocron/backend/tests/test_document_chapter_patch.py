@@ -46,6 +46,7 @@ def _doc_id(content: bytes) -> str:
 def _import(env: ImportEnv, tag: str, **kwargs: Any) -> tuple[str, dict[str, Any]]:
     kwargs.setdefault("chapter_code", None)
     kwargs.setdefault("filename", "Chuong-2_Vi-xu-ly-ARM.pdf")
+    kwargs.setdefault("auto_confirm", None)  # các test này kiểm mặc định của field form (bật), nên không gửi field
     response = env.post(pdf_bytes(tag), **kwargs)
     assert response.status_code == 202, response.text
     body: dict[str, Any] = response.json()
@@ -88,11 +89,11 @@ def test_automatic_chapter_and_cleaned_file_name_title(env: ImportEnv) -> None:
 def test_next_free_chapter_carries_its_flag(env: ImportEnv) -> None:
     _import(env, "dau", filename="Chuong-2.pdf")
     doc_id, body = _import(env, "trung", filename="bai_2-on_tap.pdf")
-    expected = ("ch1", "bai 2 on tap", {"code": "next_free", "title": "file_name"}, ["CHAPTER_NUMBER_TAKEN"], True)
+    expected = ("ch2", "bai 2 on tap", {"code": "file_name", "title": "file_name"}, ["CHAPTER_NUMBER_SHARED"], True)
     assert _chapter_fields(body) == expected
     assert _chapter_fields(_get(env, doc_id)) == expected
     _, without = _import(env, "khong-so", filename="tong-hop.pdf")
-    assert without["chapter_code"] == "ch3" and without["chapter_flags"] == ["CHAPTER_NUMBER_NOT_IN_FILENAME"]
+    assert without["chapter_code"] == "ch1" and without["chapter_flags"] == ["CHAPTER_NUMBER_NOT_IN_FILENAME"]
 
 
 def test_user_chapter_has_source_user_and_no_flag(env: ImportEnv) -> None:

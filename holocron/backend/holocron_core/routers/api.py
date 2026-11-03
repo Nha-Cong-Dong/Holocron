@@ -128,20 +128,25 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
 
     Runtime job đề xuất cặp (§5.8) cũng được tạo ở đây với `config.llm.proposal` và gắn vào `app.state`. Khi tắt app nó
     được đóng TRƯỚC bộ nhập và kho: không nhận job mới, bỏ lô chưa chạy, chờ có hạn lô đang chạy; job mất theo app
-    (khởi động lại ⇒ job cũ 404).
+    (khởi động lại ⇒ job cũ 404). Bộ nhập nhận hook "đề xuất sau khi đóng" (`documents.background_proposal_hook`, T1b)
+    cho các đường chốt chạy nền; hook đọc runtime job từ `app.state` mỗi lần chạy, nên sau khi runtime đã gỡ thì
+    không tạo job nào (chỉ ghi log).
     """
     check_token_config(application.dependency_overrides)
     store = get_store()
     import_runtime: ImportRuntime | None = None
     proposal_jobs: ProposalJobRuntime | None = None
     try:
-        import_runtime = documents.create_import_runtime(data_dir_from_env())
+        # Cấu hình đọc thẳng từ môi trường (cùng hàm của `Depends`), không gọi override của request. Tạo TRƯỚC bộ nhập
+        # để tài liệu đọc dở được xếp lại mà đóng ngay khi đọc xong cũng có runtime để tự tạo job (T1b).
+        proposal_jobs = create_proposal_job_runtime(get_runtime_config())
+        setattr(application.state, PROPOSAL_JOBS_STATE_ATTR, proposal_jobs)
+        import_runtime = documents.with_proposal_hook(
+            documents.create_import_runtime(data_dir_from_env()), documents.background_proposal_hook(application, store)
+        )
         setattr(application.state, documents.RUNTIME_STATE_ATTR, import_runtime)
         runtime.start_local_capability_check(application, import_runtime.reader_config)
         documents.requeue_on_startup(store, import_runtime)
-        # Cấu hình đọc thẳng từ môi trường (cùng hàm của `Depends`), không gọi override của request.
-        proposal_jobs = create_proposal_job_runtime(get_runtime_config())
-        setattr(application.state, PROPOSAL_JOBS_STATE_ATTR, proposal_jobs)
         yield
     finally:
         if proposal_jobs is not None:

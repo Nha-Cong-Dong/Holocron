@@ -20,11 +20,41 @@ bộ giữa worker và tiến trình cha, không phải contract API (spec §5.7
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    TypeAdapter,
+    model_serializer,
+    model_validator,
+)
 
+from ...domain.limits import (
+    FONT_NAME_MAX_CHARS,
+    FONT_SIZE_MAX_PT,
+    FONT_SIZE_MIN_PT,
+    MAX_GEOMETRY_JSON_BYTES,
+    MAX_PAGE_FONTS,
+    MAX_PAGE_GEOMETRY_LINES,
+    MAX_PAGE_RULES,
+    MAX_PAGE_WORDS,
+)
 from .config import OcrSettings, PdfReaderConfig, SecondaryEngine
+
+__all__ = [
+    "FONT_NAME_MAX_CHARS",
+    "FONT_SIZE_MAX_PT",
+    "FONT_SIZE_MIN_PT",
+    "MAX_GEOMETRY_JSON_BYTES",
+    "MAX_PAGE_FONTS",
+    "MAX_PAGE_GEOMETRY_LINES",
+    "MAX_PAGE_LINES",
+    "MAX_PAGE_RULES",
+    "MAX_PAGE_WORDS",
+]
 
 MESSAGE_PREFIX = "HOLOCRON_PDF:"
 
@@ -34,9 +64,10 @@ MESSAGE_PREFIX = "HOLOCRON_PDF:"
 #   rồi mới cắt thành các dòng ≤ 2000 (`tiers._chunks`), vì NFC có thể làm chuỗi dài ra; worker tự ngắt dòng dài
 #   hơn giới hạn này (`text_layer.group_lines`) nên PDF hợp lệ không bị loại vì một dòng quá dài.
 # - Một trang A4 dày đặc có cỡ vài nghìn từ và vài trăm dòng; giới hạn dưới đây cao hơn nhiều lần.
+# Trần số dòng, số từ, số font… của trang là hằng ở `domain/limits.py` (ADR-010 mục 5), re-export ở đây;
+# `MAX_PAGE_LINES` là bí danh tên cũ của `MAX_PAGE_GEOMETRY_LINES`.
 MAX_RAW_LINE_CHARS = 8000
-MAX_PAGE_LINES = 10_000
-MAX_PAGE_WORDS = 50_000
+MAX_PAGE_LINES = MAX_PAGE_GEOMETRY_LINES
 
 UnitFloat = Annotated[float, Field(ge=0.0, le=1.0)]
 UnitBBox = tuple[UnitFloat, UnitFloat, UnitFloat, UnitFloat]
@@ -64,6 +95,25 @@ TemplateScanStatus = Literal["ok", "over_cap", "timeout", "error", "skipped"]
 
 class _Frozen(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+
+class _OmitDefaults(_Frozen):
+    """Model giao thức có field mới (ADR-010 mục 5) bỏ khỏi JSON khi đang ở giá trị mặc định.
+
+    Nhờ vậy thông điệp của trang không có dữ liệu font có ĐÚNG kích thước như trước khi có các field này, và bỏ dữ liệu
+    font (`font_data_dropped`) luôn làm thông điệp nhỏ đi; mọi field bị bỏ đều có mặc định nên vẫn parse được.
+    """
+
+    _OMIT_WHEN_DEFAULT: ClassVar[frozenset[str]] = frozenset()
+
+    @model_serializer(mode="wrap")
+    def _omit_defaults(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        fields = type(self).model_fields
+        for name in self._OMIT_WHEN_DEFAULT:
+            if name in data and getattr(self, name) == fields[name].get_default(call_default_factory=True):
+                del data[name]
+        return data
 
 
 class ImageKey(_Frozen):
@@ -156,25 +206,69 @@ class PageRequest(_Frozen):
     page_index: int = Field(ge=0)
 
 
-class RawWord(_Frozen):
-    """Một cụm ký tự không trắng liền nhau trong dòng; `bbox` chuẩn hoá về [0, 1], gốc trên-trái."""
+FontId = Annotated[int, Field(ge=0, lt=MAX_PAGE_FONTS)]
+FontSizePt = Annotated[float, Field(ge=FONT_SIZE_MIN_PT, le=FONT_SIZE_MAX_PT)]
+_FONT_FIELDS = frozenset({"font_id", "font_size_pt"})
+
+
+class RawFont(_Frozen):
+    """Một font của bảng font cấp trang (ADR-010 mục 5).
+
+    `font_name`: tên PDFium bỏ tiền tố subset, chỉ ký tự ASCII in được, cắt `FONT_NAME_MAX_CHARS`; rỗng ⇒ null.
+    Đậm/nghiêng/đơn cách là thuộc tính của font nên chỉ nằm ở đây; từ và dòng tra qua `font_id`. Nguồn (`*_source`)
+    là null khi và chỉ khi giá trị tương ứng là `false`.
+    """
+
+    font_name: str | None = Field(default=None, min_length=1, max_length=FONT_NAME_MAX_CHARS)
+    bold: bool = False
+    italic: bool = False
+    monospace: bool = False
+    bold_source: Literal["weight", "name"] | None = None
+    italic_source: Literal["flag", "name"] | None = None
+    monospace_source: Literal["flag", "name"] | None = None
+
+    @model_validator(mode="after")
+    def _source_iff_set(self) -> RawFont:
+        pairs = (
+            (self.bold, self.bold_source),
+            (self.italic, self.italic_source),
+            (self.monospace, self.monospace_source),
+        )
+        if any(value != (source is not None) for value, source in pairs):
+            raise ValueError("nguồn của bold/italic/monospace có giá trị khi và chỉ khi thuộc tính là true")
+        return self
+
+
+class RawWord(_OmitDefaults):
+    """Một chuỗi ký tự không trắng tối đa của dòng; `bbox` chuẩn hoá về [0, 1], gốc trên-trái, null khi không ký tự
+    nào của từ có hộp (ADR-010 mục 5). `font_id` (chỉ số vào `RawPdfPage.fonts`) và `font_size_pt` là giá trị chiếm
+    đa số ký tự của từ."""
+
+    _OMIT_WHEN_DEFAULT: ClassVar[frozenset[str]] = _FONT_FIELDS
 
     text: str = Field(max_length=MAX_RAW_LINE_CHARS)
-    bbox: UnitBBox
+    bbox: UnitBBox | None
+    font_id: FontId | None = None
+    font_size_pt: FontSizePt | None = None
 
 
-class RawTextLine(_Frozen):
+class RawTextLine(_OmitDefaults):
     """Một dòng của lớp chữ theo thứ tự đọc của PDFium; `text` giữ nguyên khoảng trắng bên trong.
 
     GĐ0: `flags` là cờ dòng do worker đo (tương phản thấp, bị che); `header_footer` là dòng khớp một khoá TEXT
-    template của tài liệu (0B(5)). Dòng OCR luôn để mặc định.
+    template của tài liệu (0B(5)). Dòng OCR luôn để mặc định. `font_id`, `font_size_pt`: như `RawWord`, đa số ký tự
+    không trắng của dòng.
     """
+
+    _OMIT_WHEN_DEFAULT: ClassVar[frozenset[str]] = _FONT_FIELDS
 
     text: str = Field(max_length=MAX_RAW_LINE_CHARS)
     bbox: UnitBBox | None
     words: list[RawWord] = Field(max_length=MAX_RAW_LINE_CHARS)
     flags: list[RawLineFlag] = Field(default_factory=list, max_length=2)
     header_footer: bool = False
+    font_id: FontId | None = None
+    font_size_pt: FontSizePt | None = None
 
 
 class RawOcrLine(RawTextLine):
@@ -226,7 +320,7 @@ class RawPageImage(_Frozen):
     dhash: str | None = Field(default=None, pattern=r"^[0-9a-f]{16}$")
 
 
-class RawPdfPage(_Frozen):
+class RawPdfPage(_OmitDefaults):
     """Dữ liệu thô của một trang. Khổ trang tính bằng point, theo hướng hiển thị (đã áp `/Rotate`).
 
     `ocr` chỉ có khi trang cần OCR theo `text_layer.needs_ocr_page` và worker có engine OCR.
@@ -239,7 +333,18 @@ class RawPdfPage(_Frozen):
     ký tự bị loại vì chữ ẩn (không có trong `lines`); `scan_text_layer` là trang được nhận là lớp OCR của PDF scan;
     `objects_over_cap` là trang vượt trần đối tượng (`page_objects_max`, `pdf_form_max_depth`); `template_scan_ok` là
     False khi lượt quét cấp tài liệu không `ok` (worker đặt).
+
+    Bộ dựng khối (ADR-010 mục 5, 6): `fonts` là bảng font của trang (font thứ `MAX_PAGE_FONTS + 1` trở đi: ký tự
+    của nó có `font_id = null`); `font_data_dropped` là thông điệp trang vượt `max_message_bytes` vì dữ liệu font nên
+    worker đã bỏ toàn bộ dữ liệu font; `boxless_words_dropped` là worker đã bỏ mọi từ không hộp vì vượt
+    `MAX_PAGE_WORDS` (trang không có geometry); `pdfium_nonws_total`, `hidden_nonws_dropped` là số đếm ĐỘC LẬP theo
+    đơn vị ledger trên dòng ký tự PDFium (`text_layer.independent_nonws_counts`), null với trang không đọc lớp chữ.
+    Các field này bị bỏ khỏi JSON khi ở mặc định (`_OmitDefaults`).
     """
+
+    _OMIT_WHEN_DEFAULT: ClassVar[frozenset[str]] = frozenset(
+        {"fonts", "font_data_dropped", "boxless_words_dropped", "pdfium_nonws_total", "hidden_nonws_dropped"}
+    )
 
     page_index: int = Field(ge=0)
     width_pt: float = Field(gt=0)
@@ -255,11 +360,25 @@ class RawPdfPage(_Frozen):
     scan_text_layer: bool = False
     objects_over_cap: bool = False
     template_scan_ok: bool = True
+    fonts: list[RawFont] = Field(default_factory=list, max_length=MAX_PAGE_FONTS)
+    font_data_dropped: bool = False
+    boxless_words_dropped: bool = False
+    pdfium_nonws_total: int | None = Field(default=None, ge=0)
+    hidden_nonws_dropped: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def _bounded_words(self) -> RawPdfPage:
         if sum(len(line.words) for line in self.lines) > MAX_PAGE_WORDS:
             raise ValueError(f"trang có quá {MAX_PAGE_WORDS} từ")
+        return self
+
+    @model_validator(mode="after")
+    def _hidden_count_consistent(self) -> RawPdfPage:
+        if self.pdfium_nonws_total is None:
+            if self.hidden_nonws_dropped != 0:
+                raise ValueError("hidden_nonws_dropped phải là 0 khi pdfium_nonws_total là null")
+        elif self.hidden_nonws_dropped > self.pdfium_nonws_total:
+            raise ValueError("hidden_nonws_dropped không được vượt pdfium_nonws_total")
         return self
 
 

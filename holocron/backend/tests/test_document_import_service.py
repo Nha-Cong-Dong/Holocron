@@ -74,6 +74,7 @@ def _accept(
             subject_code="ET4010",
             source_kind=SourceKind.TEXTBOOK,
             chapter_code="ch3",
+            auto_confirm=False,  # GĐ1 1B: các test ở đây kiểm luồng xác nhận thủ công, trang `ok` chưa xác nhận
         ),
         store=store,
         runtime=ImportRuntime(files=files, queue=jobs),

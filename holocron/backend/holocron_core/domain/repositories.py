@@ -19,10 +19,10 @@ from .documents import (
     CHAPTER_FLAG_ORDER,
     MAX_CHAPTER_TITLE_CHARS,
     ChapterCodeSource,
-    ChapterFlag,
     ChapterTitleSource,
     PageEditAudit,
     PageSummary,
+    StoredChapterFlag,
 )
 from .ingestion import IngestionItem, UploadedDocument
 from .schemas import BlueprintSummary, DocumentMeta, ExamBlueprint, ExamFormat, KnowledgeChunk, Subject
@@ -113,7 +113,8 @@ class ImportedDocument(BaseModel):
 
     Cột của migration 0004 (§5.13): `chapter_code_source` (`None` ở bản ghi không có `chapter_code`; tầng gọi coi
     bản ghi cũ có `chapter_code` mà thiếu nguồn là `"user"`, §5.7), `chapter_title` cùng `chapter_title_source`
-    (cùng `None` với bản ghi cũ), `chapter_flags` (sắp theo thứ tự khai báo, không trùng) và `auto_confirm`.
+    (cùng `None` với bản ghi cũ), `chapter_flags` (sắp theo thứ tự khai báo, không trùng; bản ghi cũ có thể còn cờ `CHAPTER_NUMBER_TAKEN`, giữ
+    nguyên) và `auto_confirm`.
     """
 
     meta: DocumentMeta
@@ -126,12 +127,12 @@ class ImportedDocument(BaseModel):
     chapter_code_source: ChapterCodeSource | None = None
     chapter_title: str | None = Field(default=None, min_length=1, max_length=MAX_CHAPTER_TITLE_CHARS)
     chapter_title_source: ChapterTitleSource | None = None
-    chapter_flags: list[ChapterFlag] = Field(default_factory=list)
+    chapter_flags: list[StoredChapterFlag] = Field(default_factory=list)
     auto_confirm: bool = True
 
     @field_validator("chapter_flags")
     @classmethod
-    def _ordered_flags(cls, value: list[ChapterFlag]) -> list[ChapterFlag]:
+    def _ordered_flags(cls, value: list[StoredChapterFlag]) -> list[StoredChapterFlag]:
         present = set(value)
         return [flag for flag in CHAPTER_FLAG_ORDER if flag in present]
 
@@ -359,7 +360,8 @@ class DocumentRepository(Protocol):
         """Tóm tắt từng trang (`DocumentImport.pages`), theo `page_number` tăng dần, KHÔNG dựng lại các dòng.
 
         Dùng cho các `GET` hỏi trạng thái (client hỏi 1–2 s một lần, §6.5): chỉ đọc cột `status`, `confirmed` và các
-        field `tier_used`, `review_reasons` của JSON trang, không validate danh sách dòng của mọi trang.
+        field `tier_used`, `review_reasons`, `page_role`, `dropped`, `confirmed_by` của JSON trang, không validate
+        danh sách dòng của mọi trang.
         """
         ...
 

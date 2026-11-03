@@ -73,7 +73,7 @@ def test_cloud_defaults() -> None:
     config = load_runtime_config(CLOUD_ENV)
     assert config.vlm is not None
     assert (config.vlm.timeout_s, config.vlm.concurrency) == (60.0, 2)
-    assert (config.vlm.max_edge_px, config.vlm.max_image_bytes) == (2048, 4 * 1024 * 1024)
+    assert (config.vlm.max_edge_px, config.vlm.max_image_bytes) == (1024, 4 * 1024 * 1024)
     assert not config.vlm_local and config.vlm_data_recipient is None
 
 
@@ -81,7 +81,7 @@ def test_loopback_defaults() -> None:
     config = load_runtime_config(LOOPBACK_ENV)
     assert config.vlm is not None
     assert (config.vlm.timeout_s, config.vlm.concurrency) == (120.0, 1)
-    assert (config.vlm.max_edge_px, config.vlm.max_image_bytes) == (2048, 4 * 1024 * 1024)
+    assert (config.vlm.max_edge_px, config.vlm.max_image_bytes) == (1024, 4 * 1024 * 1024)
 
 
 @pytest.mark.parametrize("base", [CLOUD_ENV, LOOPBACK_ENV], ids=["cloud", "loopback"])
@@ -121,11 +121,11 @@ def test_blank_tuning_variables_count_as_unset() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_mode_defaults_to_off_and_does_not_affect_configuration() -> None:
-    off = load_runtime_config(CLOUD_ENV)
+def test_mode_defaults_to_unset_and_does_not_affect_configuration() -> None:
+    unset = load_runtime_config(CLOUD_ENV)
     on = load_runtime_config({**CLOUD_ENV, "HOLOCRON_VLM_MODE": "images_only"})
-    assert off.vlm_mode == "off" and on.vlm_mode == "images_only"
-    assert off.vlm is not None and off.vlm == on.vlm and off.vlm_missing == on.vlm_missing == ()
+    assert unset.vlm_mode == "unset" and on.vlm_mode == "images_only"
+    assert unset.vlm is not None and unset.vlm == on.vlm and unset.vlm_missing == on.vlm_missing == ()
     unconfigured = load_runtime_config({"HOLOCRON_VLM_MODE": "images_only"})
     assert unconfigured.vlm is None and unconfigured.vlm_mode == "images_only"
     assert load_runtime_config({"HOLOCRON_VLM_MODE": " off "}).vlm_mode == "off"
@@ -161,6 +161,9 @@ BAD_NUMBERS = [
     ("HOLOCRON_VLM_MAX_EDGE_PX", "2048.0"),
     ("HOLOCRON_VLM_MAX_EDGE_PX", "2e3"),
     ("HOLOCRON_VLM_MAX_EDGE_PX", "abc"),
+    ("HOLOCRON_VLM_MAX_EDGE_PX", "2048"),
+    ("HOLOCRON_VLM_MAX_EDGE_PX", "1025"),
+    ("HOLOCRON_VLM_MAX_EDGE_PX", "255"),
     ("HOLOCRON_VLM_MAX_IMAGE_BYTES", "0"),
     ("HOLOCRON_VLM_MAX_IMAGE_BYTES", "-1"),
     ("HOLOCRON_VLM_MAX_IMAGE_BYTES", "4_194_304"),

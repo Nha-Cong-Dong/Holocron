@@ -143,7 +143,7 @@ KHÔNG ĐƯỢC `--no-verify`, `SKIP=`, `continue-on-error: true`, hạ `fail_un
   - `main`: bản phát hành, chỉ nhận từ `develop` khi chốt milestone. `develop`: tích hợp.
   - Tách nhánh từ `develop`: `feat/<scope>-<tên>` cho tính năng, `fix/<tên>` cho sửa lỗi. Không ghi cứng tên nhánh cụ thể trong tài liệu hay script.
   - Nhánh feature sống ngắn (vài ngày): gộp vào `develop` ngay khi cổng xanh, không để nhiều nhánh feature chồng chờ nhau.
-  - Mọi Pull Request nhắm vào `develop`; mỗi PR cập nhật mục `[Unreleased]` của `CHANGELOG.md` đúng nhóm (🚀 🛠️ 🐛 🔒 ⚠️).
+  - Mọi Pull Request nhắm vào `develop`. Nhánh tính năng KHÔNG sửa `CHANGELOG.md`; ghi nội dung changelog đề xuất theo nhóm 🚀 🛠️ 🐛 🔒 ⚠️ trong mô tả PR; orchestrator gom vào `[Unreleased]` bằng nhánh docs riêng sau khi merge.
   - KHÔNG ĐƯỢC push thẳng hay sửa lịch sử `develop`/`main`. Không tự merge PR.
   - Chỉ commit / push / tạo PR khi người dùng yêu cầu.
 - **Không bulk add:** KHÔNG ĐƯỢC `git add .`, `git add -A` không chọn lọc, `git commit -a`. Stage theo file/hunk và chia commit theo đơn vị logic. Kiểm tra `git status` trước khi commit để chắc không có file đã stage sẵn (ví dụ do `git mv`) lẫn vào commit khác.

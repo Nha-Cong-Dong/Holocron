@@ -6,6 +6,8 @@
   thì không đổi gì.
 - Giá trị người dùng đặt nhận nguồn `"user"`; đặt `chapter_code` xoá mọi cờ chương. Mã được phép trùng chương của
   tài liệu khác cùng môn (như form).
+- Section gốc của tài liệu (nếu đã dựng ở settle, ADR-010 mục 4) nhận `title`/`chapter_code` mới trong CÙNG giao dịch
+  ghi tài liệu (`update_imported_document_and_root_section`); `section_id` gốc không đổi.
 - Ghi dưới khoá của tài liệu (`ImportRuntime.locks`), không lấy khoá môn; không có `expected_version`, người ghi sau
   thắng. Lần ghi bị version lệch (một luồng ghi tài liệu ngoài khoá) được đọc lại và thử lại tối đa
   `SETTLE_ATTEMPTS` lần.
@@ -74,7 +76,7 @@ def update_document_chapter(
             ):
                 raise ChapterCodeLockedError()
             try:
-                store.update_imported_document(_patched(document, patch), document.version)
+                store.update_imported_document_and_root_section(_patched(document, patch), document.version)
             except VersionConflictError:
                 if attempt == SETTLE_ATTEMPTS:
                     raise

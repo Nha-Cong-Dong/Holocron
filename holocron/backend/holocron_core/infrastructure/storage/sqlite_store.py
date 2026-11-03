@@ -1041,7 +1041,8 @@ class SQLiteStore:
             conn.execute(
                 "INSERT INTO chunks (chunk_id, document_id, subject_code, chapter_code, category, page_number, "
                 "page_end, raw_text, verbatim_quote, tags_json, linked_chunk_ids_json, token_count, label_status, "
-                "mapping_confidence, version, is_exercise) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "mapping_confidence, version, is_exercise, section_id, block_ids_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     chunk.chunk_id,
                     chunk.doc_id,
@@ -1059,6 +1060,8 @@ class SQLiteStore:
                     chunk.mapping_confidence,
                     chunk.version,
                     None if chunk.is_exercise is None else int(chunk.is_exercise),
+                    chunk.section_id,
+                    json.dumps(chunk.block_ids),
                 ),
             )
         except sqlite3.IntegrityError as exc:
@@ -1122,13 +1125,15 @@ class SQLiteStore:
                 "mapping_confidence": row["mapping_confidence"],
                 "version": row["version"],
                 "is_exercise": None if row["is_exercise"] is None else bool(row["is_exercise"]),
+                "section_id": row["section_id"],
+                "block_ids": json.loads(str(row["block_ids_json"])),
             }
         )
 
     _CHUNK_SELECT = (
         "SELECT chunk_id, document_id, subject_code, chapter_code, category, page_number, page_end, raw_text, "
         "verbatim_quote, tags_json, linked_chunk_ids_json, token_count, label_status, mapping_confidence, version, "
-        "is_exercise FROM chunks"
+        "is_exercise, section_id, block_ids_json FROM chunks"
     )
 
     def _load_chunks(self, conn: sqlite3.Connection, where: str, params: Sequence[object]) -> list[KnowledgeChunk]:

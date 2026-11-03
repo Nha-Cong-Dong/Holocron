@@ -35,6 +35,7 @@ from holocron_core.domain.documents import (
     GeoFont,
     GeoLine,
     GeoWord,
+    PageExtraction,
     PageGeometry,
     PageRef,
     PageRoleEvidence,
@@ -58,7 +59,12 @@ from holocron_core.services.block_pipeline import (
     default_layout_config,
     default_layout_settings_sha256,
 )
-from holocron_core.services.document_import import SynchronousImportQueue, pending_page, settle_outcome
+from holocron_core.services.document_import import (
+    DocumentChapterMissingError,
+    SynchronousImportQueue,
+    pending_page,
+    settle_outcome,
+)
 from holocron_core.services.section_tree import build_section_tree
 from holocron_core.services.vault_chunking import (
     build_block_chunks,
@@ -657,3 +663,121 @@ def test_patch_chapter_keeps_section_id(tmp_path: Path) -> None:
         assert document is not None and (document.chapter_title, document.chapter_code) == ("Ten moi", "ch5")
     finally:
         app.dependency_overrides.clear()
+
+
+# --------------------------------------------------------------------------- #
+# Bước (1)–(3) của settle: biên của tập ứng viên và cắt chunk
+# --------------------------------------------------------------------------- #
+
+
+def test_past_exam_line_page_not_chunked(store: AppStore) -> None:
+    pages = [
+        simple(1, [head("Cau 1"), para()]),
+        line_only(2, ["Trang de thi nay khong dung duoc khoi nen co dong chu da xac nhan."]),
+    ]
+    seed(store, pages, source_kind=SourceKind.PAST_EXAM)
+    assert settle(store)
+    assert chunks_of(store) == []
+
+
+def _drop(store: AppStore, number: int) -> None:
+    current = store.get_page(DOC_ID, number, PageExtraction)
+    assert current is not None
+    evidence = PageRoleEvidence(rule="cover_or_course_nav", related_pages=[PageRef(document_id=DOC_ID, page_number=1)])
+    dropped = current.model_copy(
+        update={
+            "version": current.version + 1,
+            "confirmed": False,
+            "confirmed_at": None,
+            "confirmed_by": None,
+            "page_role": "cover_or_course_nav",
+            "role_evidence": evidence,
+            "dropped": True,
+        }
+    )
+    store.update_page(DOC_ID, number, dropped, status=dropped.status, confirmed=False, expected_version=current.version)
+
+
+def test_settle_retry_keeps_existing_chunks_when_candidates_change(store: AppStore) -> None:
+    seed(store, [simple(1, [head("1. Mot"), para()]), simple(2, [para("Doan tiep theo o trang hai cua muc mot.")])])
+    flaky: Any = ConflictOnClose(store)
+    with pytest.raises(VersionConflictError):
+        settle_outcome(flaky, flaky, DOC_ID)
+    chunks = sorted(chunks_of(store), key=lambda c: c.chunk_id)
+    assert any(chunk.page_end == 2 for chunk in chunks)
+    flags = {block.block_id: block.flags for block in store.list_blocks(DOC_ID)}
+    _drop(store, 2)  # tập ứng viên đổi trước lần gọi lại
+    assert settle(store)
+    assert sorted(chunks_of(store), key=lambda c: c.chunk_id) == chunks  # Vault đã có chunk ⇒ không cắt lại
+    assert {block.block_id: block.flags for block in store.list_blocks(DOC_ID)} == flags
+
+
+def test_heading_repeated_on_three_pages_chunked_once(store: AppStore) -> None:
+    pages = [
+        simple(1, [head("Lap lich"), para("Doan thu nhat cua muc lap lich.")]),
+        simple(2, [head("Lap lich"), para("Doan thu hai cua muc lap lich.")]),
+        simple(3, [head("Lap lich"), para("Doan thu ba cua muc lap lich.")]),
+    ]
+    seed(store, pages)
+    assert settle(store)
+    headings = [b.block_id for b in store.list_blocks(DOC_ID) if b.type == "heading"]
+    (repeated,) = [s for s in store.list_sections(DOC_ID) if len(s.heading_block_ids) == 3]
+    assert repeated.heading_block_ids == headings
+    chunked = [block_id for chunk in chunks_of(store) for block_id in chunk.block_ids]
+    assert [block_id for block_id in chunked if block_id in headings] == headings[:1]
+    joined = "\n".join(chunk.raw_text for chunk in chunks_of(store))
+    assert joined.count("Lap lich\n") == 1
+
+
+def test_unconfirmed_empty_page_splits_line_page_runs(store: AppStore) -> None:
+    pages = [
+        line_only(1, ["Dong chu cua trang mot khong co khoi nao."]),
+        Page(geometry([]), None, confirmed=False),
+        line_only(3, ["Dong chu cua trang ba khong co khoi nao."]),
+    ]
+    seed(store, pages)
+    assert settle(store)
+    assert sorted((c.page_number, c.page_end) for c in chunks_of(store)) == [(1, None), (3, None)]
+
+
+def test_figure_candidate_not_in_chunks(store: AppStore) -> None:
+    geo, blocks = page_with(1, [head("1. Hinh minh hoa"), para()])
+    figure = Block.model_validate(
+        {
+            "block_id": "blk_" + "f" * 16,
+            "document_id": DOC_ID,
+            "page_number": 1,
+            "type": "figure",
+            "bbox": (0.1, 0.5, 0.9, 0.9),
+            "text": None,
+            "line_refs": [],
+            "flags": ["crop_pending"],
+            "source": "text_layer",
+            "reading_order": 2,
+        }
+    )
+    seed(store, [Page(geo, [*blocks, figure])])
+    assert settle(store)
+    assert figure.block_id in {b.block_id for b in store.list_eligible_blocks(DOC_ID)}
+    chunked = {block_id for chunk in chunks_of(store) for block_id in chunk.block_ids}
+    assert chunked == {b.block_id for b in blocks}
+
+
+def test_page_with_only_non_candidate_blocks_not_line_cut(store: AppStore) -> None:
+    margin = Item("header_footer", "Le trang cua tai lieu mau")
+    seed(store, [simple(1, [margin]), simple(2, [head("1. Mot"), para()])])
+    assert settle(store)
+    assert all(chunk.page_number == 2 for chunk in chunks_of(store))
+    assert "Le trang" not in "\n".join(chunk.raw_text for chunk in chunks_of(store))
+
+
+def test_settle_without_chapter_code_raises_chapter_missing(store: AppStore) -> None:
+    created = seed(store, [simple(1, [head("1. Mot"), para()])])
+    store.update_imported_document(
+        created.model_copy(update={"chapter_code": None, "chapter_code_source": None}), created.version
+    )
+    with pytest.raises(DocumentChapterMissingError):
+        settle(store)
+    document = store.get_imported_document(DOC_ID)
+    assert document is not None and document.status == "review"
+    assert chunks_of(store) == []

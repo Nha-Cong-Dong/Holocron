@@ -15,14 +15,17 @@ import sqlite3
 import threading
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from pydantic import BaseModel, TypeAdapter
 
+from ...domain.ai import AiCacheEntry
 from ...domain.documents import PageEditAudit, PageSummary
 from ...domain.ingestion import IngestionItem, PatchAudit, UploadedDocument
 from ...domain.repositories import (
+    AI_CACHE_MAX_ROWS,
+    AI_CACHE_TTL_DAYS,
     IDEMPOTENCY_TTL,
     ConcurrentUpdateError,
     DocumentExistsError,
@@ -129,7 +132,13 @@ def _storage_errors() -> Iterator[None]:
 class SQLiteStore:
     """Kho SQLite; tạo bằng `SQLiteStore.open(path)` (`":memory:"` cho test)."""
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        ai_cache_max_rows: int = AI_CACHE_MAX_ROWS,
+        ai_cache_ttl_days: int = AI_CACHE_TTL_DAYS,
+    ) -> None:
         """Nhận kết nối đã mở bằng `connection.connect`, kiểm JSON1, chạy migration và tạo chỉ mục FTS5 nếu SQLite
         có FTS5.
 
@@ -139,8 +148,12 @@ class SQLiteStore:
         """
         if not json1_available(conn):
             raise SQLiteFeatureError(JSON1_MISSING_DETAIL)
+        if ai_cache_max_rows < 1 or ai_cache_ttl_days < 1:
+            raise ValueError("ai_cache_max_rows và ai_cache_ttl_days phải là số nguyên dương")
         self._conn = conn
         self._lock = threading.RLock()
+        self._ai_cache_max_rows = ai_cache_max_rows
+        self._ai_cache_ttl = timedelta(days=ai_cache_ttl_days)
         with self._lock:
             migrate(conn)
             self._fts5 = fts5_available(conn)
@@ -764,6 +777,7 @@ class SQLiteStore:
             in_use = RecordInUseError(f"tài liệu {document_id} còn được ingestion item tham chiếu")
             raise _translate(exc, in_use) from exc
         self._relink(conn, subjects)  # chunk còn lại không được trỏ tới chunk vừa xoá
+        self._unlink_ai_cache(conn, document_id)
 
     def delete_document(self, document_id: str) -> bool:
         with self._write() as conn:
@@ -1326,3 +1340,73 @@ class SQLiteStore:
         if row is None or row["edited_by"] is None:
             return None
         return VaultEdit(editor_id=str(row["edited_by"]), at=datetime.fromisoformat(str(row["edited_at"])))
+
+    # ------------------------------------------------------------------ #
+    # AiCacheRepository (spec §5.16; ADR-009 mục 8)
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _unlink_ai_cache(conn: sqlite3.Connection, document_id: str) -> None:
+        """Xoá liên kết của tài liệu rồi mọi dòng `ai_cache` không còn liên kết (gọi trong giao dịch của người gọi)."""
+        conn.execute("DELETE FROM ai_cache_documents WHERE document_id = ?", (document_id,))
+        conn.execute(
+            "DELETE FROM ai_cache WHERE NOT EXISTS "
+            "(SELECT 1 FROM ai_cache_documents AS link WHERE link.cache_key = ai_cache.cache_key)"
+        )
+
+    def get_ai_cache(self, cache_key: str, document_id: str, *, now: datetime) -> AiCacheEntry | None:
+        with self._write() as conn:
+            row = conn.execute(
+                "SELECT cache_key, kind, input_sha256, model, prompt_version, result_json, last_used_at "
+                "FROM ai_cache WHERE cache_key = ?",
+                (cache_key,),
+            ).fetchone()
+            if row is None or row[6] < _ts(now - self._ai_cache_ttl):
+                return None
+            conn.execute("UPDATE ai_cache SET last_used_at = ? WHERE cache_key = ?", (_ts(now), cache_key))
+            conn.execute(
+                "INSERT OR IGNORE INTO ai_cache_documents (cache_key, document_id) VALUES (?, ?)",
+                (cache_key, document_id),
+            )
+        return AiCacheEntry(
+            cache_key=row[0], kind=row[1], input_sha256=row[2], model=row[3], prompt_version=row[4], result_json=row[5]
+        )
+
+    def put_ai_cache(self, entry: AiCacheEntry, document_id: str, *, now: datetime) -> None:
+        stamp = _ts(now)
+        with self._write() as conn:
+            conn.execute(
+                "INSERT INTO ai_cache (cache_key, kind, input_sha256, model, prompt_version, result_json, created_at, "
+                "last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (cache_key) DO UPDATE SET "
+                "result_json = excluded.result_json, last_used_at = excluded.last_used_at",
+                (
+                    entry.cache_key,
+                    entry.kind,
+                    entry.input_sha256,
+                    entry.model,
+                    entry.prompt_version,
+                    entry.result_json,
+                    stamp,
+                    stamp,
+                ),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO ai_cache_documents (cache_key, document_id) VALUES (?, ?)",
+                (entry.cache_key, document_id),
+            )
+            conn.execute("DELETE FROM ai_cache WHERE last_used_at < ?", (_ts(now - self._ai_cache_ttl),))
+            conn.execute(
+                "DELETE FROM ai_cache WHERE cache_key IN (SELECT cache_key FROM ai_cache "
+                "ORDER BY last_used_at DESC, cache_key DESC LIMIT -1 OFFSET ?)",
+                (self._ai_cache_max_rows,),
+            )
+
+    def drop_ai_cache_entry(self, cache_key: str) -> None:
+        with self._write() as conn:
+            conn.execute("DELETE FROM ai_cache WHERE cache_key = ?", (cache_key,))
+
+    def clear_ai_cache(self) -> int:
+        with self._write() as conn:
+            deleted = conn.execute("DELETE FROM ai_cache").rowcount
+            conn.execute("DELETE FROM ai_cache_documents")
+        return int(deleted)

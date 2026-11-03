@@ -10,14 +10,17 @@ from __future__ import annotations
 import json
 import threading
 from collections.abc import Sequence
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 
 from pydantic import BaseModel
 
+from ..domain.ai import AiCacheEntry
 from ..domain.documents import PageEditAudit, PageSummary
 from ..domain.ingestion import IngestionItem, MediaType, UploadedDocument
 from ..domain.repositories import (
+    AI_CACHE_MAX_ROWS,
+    AI_CACHE_TTL_DAYS,
     IDEMPOTENCY_TTL,
     ConcurrentUpdateError,
     DocumentExistsError,
@@ -104,6 +107,16 @@ class _StoredBatch:
     idempotency_key: str | None
 
 
+@dataclass
+class _StoredAiCache:
+    """Một dòng `ai_cache` kèm tập tài liệu liên kết (`ai_cache_documents`)."""
+
+    entry: AiCacheEntry
+    created_at: datetime
+    last_used_at: datetime
+    documents: set[str] = field(default_factory=set)
+
+
 def _dump(model: BaseModel) -> str:
     """JSON của model, bỏ computed field (như `sqlite_store._dump`)."""
     return model.model_dump_json(exclude=set(type(model).model_computed_fields))
@@ -112,7 +125,14 @@ def _dump(model: BaseModel) -> str:
 class IngestionStore:
     """Kho in-memory cho item, tài liệu (tải lên và nhập qua §6.5) và Vault; cấp qua `Depends(get_store)`."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self, *, ai_cache_max_rows: int = AI_CACHE_MAX_ROWS, ai_cache_ttl_days: int = AI_CACHE_TTL_DAYS
+    ) -> None:
+        if ai_cache_max_rows < 1 or ai_cache_ttl_days < 1:
+            raise ValueError("ai_cache_max_rows và ai_cache_ttl_days phải là số nguyên dương")
+        self._ai_cache: dict[str, _StoredAiCache] = {}
+        self._ai_cache_max_rows = ai_cache_max_rows
+        self._ai_cache_ttl = timedelta(days=ai_cache_ttl_days)
         self._items: dict[str, IngestionItem] = {}
         self._documents: dict[str, UploadedDocument] = {}
         self._blueprints: dict[str, ExamBlueprint] = {}
@@ -407,6 +427,7 @@ class IngestionStore:
             del self._documents[document_id]
             self._imported.pop(document_id, None)
             self._document_versions.pop(document_id, None)
+            self._unlink_ai_cache(document_id)
         return True
 
     def revert_imported_document(self, document_id: str, upload: UploadedDocument | None) -> bool:
@@ -667,3 +688,50 @@ class IngestionStore:
     def get_last_edit(self, entity: VaultEntity, key: str) -> VaultEdit | None:
         edit = self._edits.get((entity, key))
         return None if edit is None else edit.model_copy()
+
+    # ------------------------------------------------------------------ #
+    # AiCacheRepository (như bản SQLite; spec §5.16, ADR-009 mục 8)
+    # ------------------------------------------------------------------ #
+
+    def _unlink_ai_cache(self, document_id: str) -> None:
+        for key in list(self._ai_cache):
+            stored = self._ai_cache[key]
+            stored.documents.discard(document_id)
+            if not stored.documents:
+                del self._ai_cache[key]
+
+    def get_ai_cache(self, cache_key: str, document_id: str, *, now: datetime) -> AiCacheEntry | None:
+        with self._lock:
+            stored = self._ai_cache.get(cache_key)
+            if stored is None or stored.last_used_at < now - self._ai_cache_ttl:
+                return None
+            stored.last_used_at = now
+            stored.documents.add(document_id)
+            return stored.entry
+
+    def put_ai_cache(self, entry: AiCacheEntry, document_id: str, *, now: datetime) -> None:
+        with self._lock:
+            stored = self._ai_cache.get(entry.cache_key)
+            if stored is None:
+                stored = _StoredAiCache(entry=entry, created_at=now, last_used_at=now)
+                self._ai_cache[entry.cache_key] = stored
+            else:
+                stored.entry = stored.entry.model_copy(update={"result_json": entry.result_json})
+                stored.last_used_at = now
+            stored.documents.add(document_id)
+            cutoff = now - self._ai_cache_ttl
+            for key in [key for key, item in self._ai_cache.items() if item.last_used_at < cutoff]:
+                del self._ai_cache[key]
+            ranked = sorted(self._ai_cache.items(), key=lambda pair: (pair[1].last_used_at, pair[0]), reverse=True)
+            for key, _ in ranked[self._ai_cache_max_rows :]:
+                del self._ai_cache[key]
+
+    def drop_ai_cache_entry(self, cache_key: str) -> None:
+        with self._lock:
+            self._ai_cache.pop(cache_key, None)
+
+    def clear_ai_cache(self) -> int:
+        with self._lock:
+            deleted = len(self._ai_cache)
+            self._ai_cache.clear()
+        return deleted

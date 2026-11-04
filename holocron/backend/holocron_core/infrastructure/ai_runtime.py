@@ -9,7 +9,8 @@
   có `HOLOCRON_DATA_DIR`.
 - `FileSpendLedger`: như trên nhưng phần ĐÃ TIÊU lưu bền ở `HOLOCRON_DATA_DIR/ai_usage.json` (spec §5.16 "Lưu trữ";
   ADR-009 mục 12.3): đọc một lần khi tạo, ghi nguyên tử sau mỗi `settle` có chi phí, dưới khoá của instance. Chỗ giữ
-  (`reserved`) chỉ ở RAM. File chỉ gồm id nhóm bộ đếm và số USD, không khoá hay hash khoá.
+  (`reserved`) chỉ ở RAM. File chỉ gồm id nhóm bộ đếm và số USD, không khoá hay hash khoá. File có mà không đọc
+  được ⇒ fail-closed: từ chối giữ chỗ, không ghi đè file.
 
 Mọi `ConfigError` chỉ nêu tên biến, không nêu giá trị. Đọc lenient: biến sai ⇒ công tắc tắt / nhà cung cấp env coi
 như chưa cấu hình, log cảnh báo chỉ gồm tên biến.
@@ -331,24 +332,42 @@ def _parse_usage(raw: bytes) -> dict[str, float] | None:
 class FileSpendLedger(InMemorySpendLedger):
     """`SpendLedger` lưu phần đã tiêu ở `<data_dir>/ai_usage.json` để khởi động lại không vượt trần (spec §5.16).
 
-    File hỏng hoặc không đọc được ⇒ bắt đầu từ 0 kèm MỘT cảnh báo (không nội dung, không đường dẫn); ghi lại file khi
-    `settle` kế tiếp. Ghi lỗi ⇒ giữ số trong RAM (vẫn chặn trần trong phiên), log cảnh báo, không ném lỗi cho lời gọi
-    đã trả tiền.
+    - File hỏng (đọc được nhưng sai dạng) ⇒ bắt đầu từ 0 kèm MỘT cảnh báo (không nội dung, không đường dẫn); ghi lại
+      file khi `settle` kế tiếp.
+    - File có nhưng KHÔNG đọc được (`Unreadable`: lỗi I/O, quyền, quá `MAX_USAGE_BYTES`) ⇒ fail-closed: số đã tiêu
+      không biết nên mọi `try_reserve` bị từ chối (như hết trần) và file KHÔNG bao giờ bị ghi đè, kèm cảnh báo. Mỗi
+      `try_reserve` đọc lại file; đọc được (hoặc file đã bị xoá) thì nạp số đã tiêu và hoạt động lại bình thường.
+    - Ghi lỗi ⇒ giữ số trong RAM (vẫn chặn trần trong phiên), log cảnh báo, không ném lỗi cho lời gọi đã trả tiền.
     """
 
     def __init__(self, data_dir: Path) -> None:
         super().__init__()
         self._data_dir = data_dir
         self._path = data_dir / AI_USAGE_FILENAME
-        self._spent = self._load()
+        loaded = self._load()
+        self._unreadable = loaded is None
+        self._spent = {} if loaded is None else loaded
 
     @property
     def path(self) -> Path:
         return self._path
 
-    def _load(self) -> dict[str, float]:
+    @property
+    def unreadable(self) -> bool:
+        """File bộ đếm đang không đọc được: mọi giữ chỗ bị từ chối, file không bị ghi."""
+        with self._lock:
+            return self._unreadable
+
+    def _load(self) -> dict[str, float] | None:
+        """Số đã tiêu trong file; `None` khi file có nhưng không đọc được (fail-closed)."""
         raw = read_bounded(self._path, MAX_USAGE_BYTES, "file bộ đếm chi phí AI")
-        if raw is None or isinstance(raw, Unreadable):
+        if isinstance(raw, Unreadable):
+            logger.warning(
+                "file bộ đếm chi phí AI không đọc được: từ chối mọi lời gọi AI có tính phí và không ghi đè file "
+                "cho tới khi đọc lại được"
+            )
+            return None
+        if raw is None:
             return {}
         spent = _parse_usage(raw)
         if spent is None:
@@ -356,12 +375,28 @@ class FileSpendLedger(InMemorySpendLedger):
             return {}
         return spent
 
+    def try_reserve(self, group: str, amount_usd: float, budget_usd: float) -> bool:
+        with self._lock:
+            if self._unreadable:
+                loaded = self._load()
+                if loaded is None:
+                    return False
+                # Đọc lại được: nạp số đã tiêu (cộng phần đã ghi trong RAM khi file chưa đọc được).
+                for key, value in loaded.items():
+                    self._spent[key] = self._spent.get(key, 0.0) + value
+                self._unreadable = False
+                logger.warning("file bộ đếm chi phí AI đọc lại được, tiếp tục tính chi phí")
+        return super().try_reserve(group, amount_usd, budget_usd)
+
     def settle(self, group: str, reserved_usd: float, actual_usd: float) -> None:
         with self._lock:
             self._reserved[group] = max(0.0, self._reserved.get(group, 0.0) - reserved_usd)
             if actual_usd <= 0:
                 return
             self._spent[group] = self._spent.get(group, 0.0) + actual_usd
+            if self._unreadable:
+                logger.warning("file bộ đếm chi phí AI không đọc được: không ghi đè, chi phí giữ trong RAM")
+                return
             payload: dict[str, Any] = {"version": AI_USAGE_VERSION, "spent_usd": dict(sorted(self._spent.items()))}
             try:
                 write_atomic(self._data_dir, self._path, json.dumps(payload, sort_keys=True).encode("utf-8"))

@@ -14,6 +14,7 @@ import logging
 import os
 import secrets
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -43,43 +44,36 @@ class UnpersistedAiConsentStore:
         raise SettingsNotPersistentError
 
 
-class FileAiConsentStore:
-    """Công tắc lưu ở `<data_dir>/ai_settings.json`; mọi đọc/ghi dưới khoá của instance."""
+class AiSettingsFile:
+    """File `<data_dir>/ai_settings.json` dùng chung cho công tắc đồng ý và nhà cung cấp người dùng.
+
+    Mọi đọc/ghi dưới MỘT khoá của instance (deps cấp một instance cho mỗi thư mục dữ liệu), nên ghi công tắc và ghi
+    nhà cung cấp không đè mất field của nhau. Ghi nguyên tử: tệp tạm `os.open(…, 0o600)` rồi `os.replace`.
+    """
 
     def __init__(self, data_dir: Path) -> None:
         self._data_dir = data_dir
         self._path = data_dir / AI_SETTINGS_FILENAME
-        self._lock = threading.Lock()
-
-    @property
-    def persistent(self) -> bool:
-        return True
+        self._lock = threading.RLock()
 
     @property
     def path(self) -> Path:
         return self._path
 
-    def load(self) -> bool | None:
+    def read(self) -> dict[str, Any] | None:
+        """Nội dung file dạng object JSON; chưa có ⇒ `None`; hỏng ⇒ `None` kèm một cảnh báo không lộ nội dung."""
         with self._lock:
-            settings = self._read_settings()
-        if settings is None:
-            return None
-        value = settings.get(CONSENT_FIELD)
-        if value is None:
-            return None
-        if not isinstance(value, bool):
-            logger.warning("file cài đặt AI có công tắc đồng ý không hợp lệ, coi như tắt")
-            return None
-        return value
+            return self._read_settings()
 
-    def save(self, enabled: bool) -> None:
+    def update(self, mutate: Callable[[dict[str, Any]], None]) -> None:
+        """Đọc, sửa bằng `mutate`, ghi nguyên tử, cùng một đoạn khoá. File hỏng ⇒ bắt đầu từ object rỗng.
+        `mutate` ném lỗi ⇒ không ghi gì."""
         with self._lock:
             settings = self._read_settings() or {}
-            settings[CONSENT_FIELD] = enabled
+            mutate(settings)
             self._write_atomic(json.dumps(settings, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8"))
 
     def _read_settings(self) -> dict[str, Any] | None:
-        """Nội dung file dạng object JSON; chưa có ⇒ `None`; hỏng ⇒ `None` kèm một cảnh báo không lộ nội dung."""
         try:
             with self._path.open("rb") as handle:
                 raw = handle.read(MAX_SETTINGS_BYTES + 1)
@@ -115,3 +109,36 @@ class FileAiConsentStore:
         except BaseException:
             temp.unlink(missing_ok=True)
             raise
+
+
+class FileAiConsentStore:
+    """Công tắc lưu ở field `ai_consent_enabled` của `<data_dir>/ai_settings.json` (file dùng chung)."""
+
+    def __init__(self, data_dir: Path, settings_file: AiSettingsFile | None = None) -> None:
+        self._file = AiSettingsFile(data_dir) if settings_file is None else settings_file
+
+    @property
+    def persistent(self) -> bool:
+        return True
+
+    @property
+    def path(self) -> Path:
+        return self._file.path
+
+    def load(self) -> bool | None:
+        settings = self._file.read()
+        if settings is None:
+            return None
+        value = settings.get(CONSENT_FIELD)
+        if value is None:
+            return None
+        if not isinstance(value, bool):
+            logger.warning("file cài đặt AI có công tắc đồng ý không hợp lệ, coi như tắt")
+            return None
+        return value
+
+    def save(self, enabled: bool) -> None:
+        def mutate(settings: dict[str, Any]) -> None:
+            settings[CONSENT_FIELD] = enabled
+
+        self._file.update(mutate)

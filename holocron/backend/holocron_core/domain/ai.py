@@ -14,7 +14,7 @@ import hashlib
 import json
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from .schemas import StrictModel
 
@@ -118,6 +118,8 @@ class ProviderCandidate(BaseModel):
     budget_usd: float = Field(ge=0, le=1000, allow_inf_nan=False)
     prices: ProviderPrices
     budget_group: str
+    # Nhà cung cấp người dùng đã tắt: không được chọn, nhưng vẫn góp trần vào nhóm bộ đếm và vẫn kiểm thử được.
+    enabled: bool = True
 
     def model_for(self, role: AiRole) -> str | None:
         return self.models.vlm if role == "vlm" else self.models.llm
@@ -185,6 +187,173 @@ class AiStatus(StrictModel):
     settings_persistent: bool
     write_protection: WriteProtection
     roles: list[AiRoleStatus] = Field(min_length=len(AI_ROLES), max_length=len(AI_ROLES))
+
+
+KeyStorage = Literal["dpapi", "plaintext_file", "env", "none"]
+ProviderTestAction = Literal["chat", "list_models"]
+ProviderTestCode = Literal[
+    "ok",
+    "auth_failed",
+    "not_found",
+    "rate_limited",
+    "upstream_error",
+    "timeout",
+    "blocked_address",
+    "redirect_blocked",
+    "invalid_response",
+    "image_rejected",
+    "key_unreadable",
+    "no_model_for_role",
+    "budget_exhausted",
+]
+USER_PROVIDER_ID_PATTERN = r"^usr_[0-9a-f]{12}$"
+PROVIDER_ID_PATTERN = r"^(usr_[0-9a-f]{12}|env_(llm|vlm|shared))$"
+MAX_USER_PROVIDERS = 20
+USER_PROVIDER_DEFAULT_PRIORITY = 100
+# `key_last4` chỉ có khi khoá dài ≥ 12 ký tự (ADR-009 mục 12.1, B13).
+KEY_LAST4_MIN_LENGTH = 12
+KEY_MAX_LENGTH = 512
+BASE_URL_MAX_LENGTH = 2048
+LABEL_MAX_LENGTH = 80
+MAX_TEST_MODELS = 200
+
+
+def key_last4(key: str | None) -> str | None:
+    """4 ký tự cuối CHỈ khi khoá dài ≥ 12 ký tự; ngắn hơn hoặc không khoá ⇒ `None` (không hiện ký tự nào)."""
+    if key is None or len(key) < KEY_LAST4_MIN_LENGTH:
+        return None
+    return key[-4:]
+
+
+class ProviderConfig(StrictModel):
+    """Một nhà cung cấp trong `GET /v1/settings/providers` (spec §5.16); KHÔNG BAO GIỜ có khoá đầy đủ."""
+
+    id: str = Field(pattern=PROVIDER_ID_PATTERN)
+    kind: Literal["openai_compatible"]
+    source: Literal["user", "env"]
+    template: ProviderTemplate
+    label: str = Field(min_length=1, max_length=LABEL_MAX_LENGTH)
+    base_url: str | None
+    local: bool
+    models: ProviderModels
+    key_set: bool
+    key_last4: str | None = Field(default=None, pattern=r"^[\x21-\x7e]{4}$")
+    key_storage: KeyStorage
+    key_unreadable: bool
+    enabled: bool
+    priority: int = Field(ge=0, le=1000)
+    budget_usd: float = Field(ge=0, le=1000, allow_inf_nan=False)
+    spent_usd: float = Field(ge=0, allow_inf_nan=False)
+    budget_exhausted: bool
+    budget_shared_with: list[str] = Field(default_factory=list)
+    prices: ProviderPrices
+
+
+class ProviderList(StrictModel):
+    """Response `GET /v1/settings/providers`: theo thứ tự chọn (env trước, rồi `priority`, rồi id)."""
+
+    providers: list[ProviderConfig]
+    settings_persistent: bool
+    write_protection: WriteProtection
+
+
+class ProviderPricesInput(StrictModel):
+    """Giá USD người dùng nhập; như `ProviderPrices` bỏ `source`."""
+
+    input_per_1k_usd: float = Field(ge=0, le=1, allow_inf_nan=False)
+    output_per_1k_usd: float = Field(ge=0, le=1, allow_inf_nan=False)
+    per_image_usd: float = Field(ge=0, le=1, allow_inf_nan=False)
+
+
+class ProviderCreate(StrictModel):
+    """Body `POST /v1/settings/providers` (spec §6.11). `api_key` KHÔNG BAO GIỜ được trả lại."""
+
+    template: ProviderTemplate
+    label: str = Field(min_length=1, max_length=LABEL_MAX_LENGTH)
+    base_url: str = Field(min_length=1, max_length=BASE_URL_MAX_LENGTH)
+    api_key: SecretStr | None = Field(default=None, max_length=KEY_MAX_LENGTH)
+    models: ProviderModels
+    enabled: bool = True
+    priority: int = Field(default=USER_PROVIDER_DEFAULT_PRIORITY, ge=1, le=1000)
+    budget_usd: float | None = Field(default=None, ge=0, le=1000, allow_inf_nan=False)
+    prices: ProviderPricesInput | None = None
+
+    @model_validator(mode="after")
+    def _one_role_model(self) -> ProviderCreate:
+        if self.models.vlm is None and self.models.llm is None:
+            raise ValueError("cần model cho ít nhất một vai (vlm hoặc llm)")
+        return self
+
+
+# Field của `ProviderUpdate` được gửi với giá trị null tường minh ⇒ 422 (riêng `budget_usd`: null ⇒ trần mặc định).
+_UPDATE_NULLABLE_FIELDS = frozenset({"budget_usd"})
+
+
+class ProviderUpdate(StrictModel):
+    """Body `PATCH /v1/settings/providers/{id}`: field vắng = giữ nguyên; `api_key` vắng ⇒ giữ khoá cũ."""
+
+    label: str | None = Field(default=None, min_length=1, max_length=LABEL_MAX_LENGTH)
+    base_url: str | None = Field(default=None, min_length=1, max_length=BASE_URL_MAX_LENGTH)
+    api_key: SecretStr | None = Field(default=None, max_length=KEY_MAX_LENGTH)
+    models: ProviderModels | None = None
+    enabled: bool | None = None
+    priority: int | None = Field(default=None, ge=1, le=1000)
+    budget_usd: float | None = Field(default=None, ge=0, le=1000, allow_inf_nan=False)
+    prices: ProviderPricesInput | None = None
+    clear_prices: bool = False
+
+    @model_validator(mode="after")
+    def _no_explicit_null(self) -> ProviderUpdate:
+        for name in self.model_fields_set - _UPDATE_NULLABLE_FIELDS:
+            if getattr(self, name) is None:
+                raise ValueError(f"field {name} không được là null; bỏ field để giữ nguyên giá trị cũ")
+        if self.clear_prices and self.prices is not None:
+            raise ValueError("không gửi cùng lúc prices và clear_prices")
+        return self
+
+
+class ProviderTestRequest(StrictModel):
+    """Body `POST /v1/settings/providers/{id}/test`: `role` bắt buộc ⇔ `action = "chat"`."""
+
+    action: ProviderTestAction
+    role: AiRole | None = None
+
+    @model_validator(mode="after")
+    def _role_for_chat(self) -> ProviderTestRequest:
+        if (self.action == "chat") != (self.role is not None):
+            raise ValueError("role bắt buộc khi action = chat và không được gửi khi action = list_models")
+        return self
+
+
+class ProviderTestResult(StrictModel):
+    """Kết quả kiểm thử đã làm sạch: không thân phản hồi, không URL, không khoá."""
+
+    ok: bool
+    code: ProviderTestCode
+    http_status: int | None = Field(default=None, ge=100, le=599)
+    latency_ms: int = Field(ge=0)
+    models: list[str] = Field(default_factory=list, max_length=MAX_TEST_MODELS)
+
+
+class KeyStorageError(RuntimeError):
+    """Không lưu hoặc không giải mã được khoá (DPAPI lỗi). Thông điệp KHÔNG chứa khoá."""
+
+
+class ProviderNotFoundError(LookupError):
+    """Không có nhà cung cấp người dùng với id đã cho."""
+
+
+class ProviderLimitError(RuntimeError):
+    """Đã có đủ `MAX_USER_PROVIDERS` nhà cung cấp người dùng."""
+
+
+class ProviderInputError(ValueError):
+    """Dữ liệu nhà cung cấp bị từ chối khi lưu; `code` là mã 422 của spec §6.11, thông điệp không nêu giá trị."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
 
 
 class AiConsentStore(Protocol):

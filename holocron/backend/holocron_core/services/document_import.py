@@ -129,10 +129,12 @@ from .chapter_reservation import ChapterReservations, ChapterTurn, reserve_chapt
 from .concept_proposal_job import DocumentProposals
 from .document_layout import (
     effective_role,
+    is_text_layer_page,
     plan_failed_layout,
     plan_initial_layout,
     plan_rebuild,
     refresh_drop_reasons,
+    with_layout_reason,
 )
 from .extraction_ledger import with_page_drop_reason
 from .page_roles import RoleDecision, apply_decision, assign_roles, changeable, reassess_cover, reassessable
@@ -1358,7 +1360,7 @@ def _store_blocks(
                 return
             document = stored
         elif not _is_closed(document, vault):
-            refresh_drop_reasons(store, document_id)
+            _refresh_drop_reasons_or_flag(store, document, layout)
         try:
             if _is_closed(document, vault):
                 _settle_closed_blocks(store, document, layout)
@@ -1374,7 +1376,8 @@ def _save_initial_layout(
 ) -> None:
     """Lần lưu khối đầu (`plan_initial_layout`). Bộ dựng, `page_numbers` hay kế hoạch ném lỗi dữ liệu ⇒ ghi lỗi (chỉ
     tên lớp ngoại lệ) và lưu `plan_failed_layout`: mọi trang lớp chữ mang `LAYOUT_FAILED`, không khối, không tự xác
-    nhận; KHÔNG âm thầm đi đường dòng. Lỗi kho ném nguyên."""
+    nhận; KHÔNG âm thầm đi đường dòng. Kho từ chối kế hoạch vì lỗi dữ liệu (ví dụ `ValueError` "khối hoặc ledger
+    không thuộc tài liệu") ⇒ cũng lưu `plan_failed_layout` (`_save_failed_layout`). Lỗi kho ném nguyên."""
     pages = store.list_pages(document_id, PageExtraction)
     geometries = {page.page_number: store.get_page_geometry(document_id, page.page_number) for page in pages}
     has_chunks = vault is not None and vault.has_document_chunks(document_id)
@@ -1384,8 +1387,76 @@ def _save_initial_layout(
         _LOGGER.error(
             "dựng khối của tài liệu %s lỗi (%s); mọi trang lớp chữ mang LAYOUT_FAILED", document_id, type(exc).__name__
         )
-        plan = plan_failed_layout(pages, layout, blocks_after_close=has_chunks)
-    store.save_document_layout(document_id, plan)
+    else:
+        try:
+            store.save_document_layout(document_id, plan)
+            return
+        except _SETTLE_DATA_ERRORS as exc:
+            _LOGGER.error(
+                "kho từ chối khối của tài liệu %s (%s); mọi trang lớp chữ mang LAYOUT_FAILED",
+                document_id,
+                type(exc).__name__,
+            )
+    _save_failed_layout(store, document_id, plan_failed_layout(pages, layout, blocks_after_close=has_chunks))
+
+
+def _refresh_drop_reasons_or_flag(store: DocumentRepository, document: ImportedDocument, layout: LayoutConfig) -> None:
+    """`refresh_drop_reasons` cho tài liệu chưa đóng đã có khối lưu. Lỗi dữ liệu (bộ ghi ledger hay kho từ chối) ⇒ ghi
+    lỗi (chỉ tên lớp ngoại lệ) và gắn `LAYOUT_FAILED` cho mọi trang lớp chữ (`_save_failed_layout`): khối và ledger
+    đang lưu giữ nguyên, `layout_version`/hash giữ nguyên, trang không được tự xác nhận. Lỗi kho ném nguyên."""
+    document_id = document.meta.doc_id
+    try:
+        refresh_drop_reasons(store, document_id)
+        return
+    except _SETTLE_DATA_ERRORS as exc:
+        _LOGGER.error(
+            "ghi lại lý do bỏ trang của tài liệu %s lỗi (%s); mọi trang lớp chữ mang LAYOUT_FAILED",
+            document_id,
+            type(exc).__name__,
+        )
+    plan = plan_failed_layout(
+        store.list_pages(document_id, PageExtraction), layout, blocks_after_close=document.blocks_after_close
+    )
+    kept: dict[str, object] = {"blocks_after_close": None}
+    if document.layout_version is not None and document.layout_settings_sha256 is not None:
+        kept["layout_version"] = document.layout_version
+        kept["layout_settings_sha256"] = document.layout_settings_sha256
+    _save_failed_layout(store, document_id, plan.model_copy(update=kept))
+
+
+def _save_failed_layout(store: DocumentRepository, document_id: str, plan: DocumentLayout) -> None:
+    """Lưu kế hoạch `plan_failed_layout`. Kho vẫn từ chối vì lỗi dữ liệu ⇒ đường cuối: ghi `LAYOUT_FAILED` cho từng
+    trang lớp chữ bằng `update_page` (`_flag_pages_layout_failed`), để tài liệu không kẹt `processing` mà không lý do
+    (Q1). Lỗi kho ném nguyên."""
+    try:
+        store.save_document_layout(document_id, plan)
+        return
+    except _SETTLE_DATA_ERRORS as exc:
+        _LOGGER.error(
+            "kho từ chối cả kế hoạch LAYOUT_FAILED của tài liệu %s (%s); ghi lý do theo từng trang",
+            document_id,
+            type(exc).__name__,
+        )
+    _flag_pages_layout_failed(store, document_id)
+
+
+def _flag_pages_layout_failed(store: DocumentRepository, document_id: str) -> None:
+    """Gắn `LAYOUT_FAILED` cho từng trang lớp chữ chưa mang nó (so-và-ghi theo version của trang; lệch ⇒
+    `VersionConflictError` ném nguyên như lỗi kho). Không đổi `layout_version`, khối hay ledger."""
+    for page in store.list_pages(document_id, PageExtraction):
+        if not is_text_layer_page(page):
+            continue
+        updated = with_layout_reason(page, True)
+        if updated is page:
+            continue
+        store.update_page(
+            document_id,
+            page.page_number,
+            updated.model_copy(update={"version": page.version + 1}),
+            status=updated.status,
+            confirmed=page.confirmed,
+            expected_version=page.version,
+        )
 
 
 def _finish_blocks(
@@ -1827,25 +1898,43 @@ def requeue_pending(
                 # Kho bận/lệch version ở bước kết thúc: tài liệu giữ trạng thái đang lưu, xét lại ở lần khởi động sau;
                 # không chặn việc xếp lại các tài liệu khác.
                 _LOGGER.warning("chưa đánh dấu được tài liệu %s là failed (%s)", document_id, type(exc).__name__)
+            except Exception:  # một tài liệu lỗi không được làm hỏng lần khởi động hay chặn tài liệu khác (§6.5)
+                _LOGGER.exception("lỗi khi đánh dấu tài liệu %s là failed; vẫn đặt failed", document_id)
+                _force_failed(store, document_id)
             continue
         path = files.path_for(document.meta.sha256)
-        jobs.submit(
-            ReadJob(
-                document_id=document_id,
-                path=path,
-                store=store,
-                reader=reader,
-                retry=policy,
-                vault=vault,
-                locks=locks,
-                config=settings,
-                on_document_confirmed=on_document_confirmed,
-                layout=layout_config,
-                geometry_reader=geometry_reader,
+        try:
+            jobs.submit(
+                ReadJob(
+                    document_id=document_id,
+                    path=path,
+                    store=store,
+                    reader=reader,
+                    retry=policy,
+                    vault=vault,
+                    locks=locks,
+                    config=settings,
+                    on_document_confirmed=on_document_confirmed,
+                    layout=layout_config,
+                    geometry_reader=geometry_reader,
+                )
             )
-        )
+        except Exception:  # hàng đợi từ chối một việc: ghi lỗi, tài liệu giữ processing, xếp tiếp tài liệu khác
+            _LOGGER.exception("không xếp lại được tài liệu %s; tài liệu giữ processing", document_id)
+            continue
         queued.append(document_id)
     return queued
+
+
+def _force_failed(store: DocumentRepository, document_id: str) -> None:
+    """Đường cuối của `requeue_pending` khi `mark_document_failed` ném lỗi không phải lỗi kho: trang còn `pending`
+    thành `failed` (`PAGE_ERROR`, lý do hiển thị) rồi tài liệu thành `failed`, không qua bước khối hay settle. Lỗi
+    tiếp theo chỉ ghi log (app vẫn khởi động)."""
+    try:
+        _fail_pending(store, document_id, "PAGE_ERROR")
+        _write_final_status(store, document_id, "failed")
+    except Exception:  # không để một tài liệu chặn lần khởi động (§6.5)
+        _LOGGER.exception("không đặt được tài liệu %s là failed; tài liệu giữ processing", document_id)
 
 
 def remove_orphan_files(store: DocumentRepository, files: OriginalFiles) -> list[str]:

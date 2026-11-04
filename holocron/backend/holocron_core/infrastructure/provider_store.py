@@ -98,11 +98,32 @@ def _literal_ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | No
         return None
 
 
+_NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
+_IPV4_COMPATIBLE = ipaddress.IPv6Network("::/96")
+
+
+def _embedded_ipv4(address: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
+    """IPv4 nhúng mà gói tin thực sự đi tới: IPv4-mapped `::ffff:0:0/96`, NAT64 `64:ff9b::/96` và IPv4-compatible
+    `::/96` (32 bit cuối). Không tự suy theo phiên bản Python (3.12 và 3.13+ xử lý `is_global` của các dải này khác
+    nhau)."""
+    if address.ipv4_mapped is not None:
+        return address.ipv4_mapped
+    if address in _NAT64_WELL_KNOWN or address in _IPV4_COMPATIBLE:
+        return ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+    return None
+
+
 def address_is_public(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """Địa chỉ công khai: không riêng, link-local, loopback, không xác định, multicast, dành riêng, kể cả dạng
-    IPv4-mapped (`::ffff:a.b.c.d`) của các dải đó (ADR-009 mục 12.8)."""
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
-        address = address.ipv4_mapped
+    """Địa chỉ công khai: không riêng, link-local, loopback, không xác định, multicast, dành riêng, kể cả khi dải đó
+    nằm trong IPv6 dạng IPv4-mapped, NAT64 hay IPv4-compatible (ADR-009 mục 12.8). 6to4 (`2002::/16`) còn phải có
+    IPv4 nhúng công khai."""
+    if isinstance(address, ipaddress.IPv6Address):
+        embedded = _embedded_ipv4(address)
+        if embedded is not None:
+            return embedded.is_global and not embedded.is_multicast
+        sixtofour = address.sixtofour
+        if sixtofour is not None and not (sixtofour.is_global and not sixtofour.is_multicast):
+            return False
     return address.is_global and not address.is_multicast
 
 

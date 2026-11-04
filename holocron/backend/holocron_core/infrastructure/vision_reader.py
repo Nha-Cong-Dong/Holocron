@@ -35,6 +35,7 @@ from ..domain.ai import (
     AiConsent,
     AiUsage,
     CostEstimate,
+    IpPolicy,
     ProviderSelector,
     SelectedProvider,
     UsageRecorder,
@@ -57,8 +58,9 @@ from ..domain.llm import (
 from ..domain.repositories import AiCacheRepository
 from .document_readers.config import PdfReaderConfig
 from .document_readers.raster import png_dimensions
-from .llm_client import OpenAiChatClient, Transport, UrllibTransport
-from .llm_config import ENV_VLM_API_KEY, ENV_VLM_BASE_URL, ConfigError, VlmSettings
+from .llm_client import OpenAiChatClient, Transport
+from .llm_config import ENV_VLM_API_KEY, ENV_VLM_BASE_URL, ConfigError, LlmHttpLimits, VlmSettings
+from .provider_probe import guarded_transport
 
 PROMPT_VERSION = "v1"
 
@@ -318,18 +320,32 @@ def check_region_image(image: RegionImage, settings: VisionReaderSettings) -> bo
 ClientFactory = Callable[[SelectedProvider], ChatCompletionClient]
 
 
+TransportFactory = Callable[[IpPolicy, LlmHttpLimits], Transport]
+
+
 def openai_client_factory(
     vlm: VlmSettings,
     max_image_bytes: int,
     *,
     transport: Transport | None = None,
+    transport_for: TransportFactory | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> ClientFactory:
     """Client tương thích OpenAI cho nhà cung cấp đã chọn; thời gian và giới hạn HTTP theo `HOLOCRON_VLM_*`.
-    `transport`, `sleep` cấp cho test (không gọi mạng); mặc định là urllib và đồng hồ thật."""
+
+    Mạng theo `ip_policy` của nhà cung cấp đã chọn (ADR-009 mục 12.8, spec §13.1): mặc định
+    `provider_probe.guarded_transport(ip_policy, limits)` (phân giải và kiểm mọi địa chỉ ở mỗi kết nối, ghim IP, không
+    redirect, không proxy), nên nhà cung cấp người dùng có tên miền trỏ về dải nội bộ không nhận request kèm khoá.
+    `transport` (cố định), `transport_for` và `sleep` cấp cho test (không gọi mạng)."""
 
     def build(provider: SelectedProvider) -> ChatCompletionClient:
         limits = vlm.http_limits
+        if transport is not None:
+            chosen = transport
+        elif transport_for is not None:
+            chosen = transport_for(provider.ip_policy, limits)
+        else:
+            chosen = guarded_transport(provider.ip_policy, limits)
         return OpenAiChatClient(
             base_url=provider.base_url,
             api_key=provider.api_key,
@@ -341,7 +357,7 @@ def openai_client_factory(
             max_image_bytes=max_image_bytes,
             base_url_variable=ENV_VLM_BASE_URL,
             key_variable=ENV_VLM_API_KEY,
-            transport=transport or UrllibTransport(limits=limits),
+            transport=chosen,
             sleep=sleep,
         )
 

@@ -38,8 +38,8 @@ from ..domain.ai import (
     SelectedProvider,
 )
 from ..domain.llm import LlmUpstreamError
-from .llm_client import USER_AGENT, Transport, UrllibTransport
-from .llm_config import LOOPBACK_HOSTS
+from .llm_client import DEFAULT_HTTP_LIMITS, USER_AGENT, Transport, UrllibTransport
+from .llm_config import LOOPBACK_HOSTS, LlmHttpLimits
 from .provider_store import address_is_public
 
 PROBE_TIMEOUT_S = 30.0
@@ -141,10 +141,16 @@ class GuardedHTTPHandler(urllib.request.HTTPHandler):
 
 
 class GuardedHTTPSHandler(urllib.request.HTTPSHandler):
-    def __init__(self, guard: AddressGuard) -> None:
+    """`tls` mặc định là `ssl.create_default_context()` (kiểm chứng chỉ và tên máy); test cấp context ghi lại SNI."""
+
+    def __init__(self, guard: AddressGuard, tls: ssl.SSLContext | None = None) -> None:
         super().__init__()
         self._guard = guard
-        self._tls = ssl.create_default_context()
+        self._tls = ssl.create_default_context() if tls is None else tls
+
+    @property
+    def tls(self) -> ssl.SSLContext:
+        return self._tls
 
     def https_open(self, req: urllib.request.Request) -> http.client.HTTPResponse:
         guard, tls = self._guard, self._tls
@@ -157,10 +163,11 @@ class GuardedHTTPSHandler(urllib.request.HTTPSHandler):
         return self.do_open(_Connection, req)
 
 
-def guarded_transport(policy: IpPolicy) -> Transport:
-    """`UrllibTransport` (không redirect, không proxy) với kết nối đi qua `AddressGuard` của `policy`."""
+def guarded_transport(policy: IpPolicy, limits: LlmHttpLimits = DEFAULT_HTTP_LIMITS) -> Transport:
+    """`UrllibTransport` (không redirect, không proxy, giới hạn HTTP `limits`) với kết nối đi qua `AddressGuard` của
+    `policy`. Mọi client gửi tới nhà cung cấp đã chọn (kiểm thử, bộ đọc VLM) PHẢI dựng transport bằng hàm này."""
     guard = AddressGuard(policy)
-    return UrllibTransport(GuardedHTTPHandler(guard), GuardedHTTPSHandler(guard))
+    return UrllibTransport(GuardedHTTPHandler(guard), GuardedHTTPSHandler(guard), limits=limits)
 
 
 # --------------------------------------------------------------------------- #

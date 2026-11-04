@@ -19,6 +19,9 @@ from .connection import immediate_transaction
 
 MIGRATION_NAME = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
 FTS5_SCRIPT = "fts5_vault.sql"
+FTS5_BLOCKS_SCRIPT = "fts5_blocks.sql"
+FTS5_BLOCKS_TRIGRAM_SCRIPT = "fts5_blocks_trigram.sql"
+TRIGRAM_MIN_SQLITE = (3, 34, 0)
 
 
 class SchemaVersionError(RuntimeError):
@@ -48,6 +51,28 @@ def load_migrations() -> list[Migration]:
 
 def load_fts5_script() -> str:
     return _migration_dir().joinpath(FTS5_SCRIPT).read_text(encoding="utf-8")
+
+
+def load_blocks_fts5_script() -> str:
+    return _migration_dir().joinpath(FTS5_BLOCKS_SCRIPT).read_text(encoding="utf-8")
+
+
+def load_blocks_trigram_script() -> str:
+    return _migration_dir().joinpath(FTS5_BLOCKS_TRIGRAM_SCRIPT).read_text(encoding="utf-8")
+
+
+def trigram_available(conn: sqlite3.Connection) -> bool:
+    """Probe tokenizer `trigram` (ADR-010 mục 18): `sqlite_version() >= 3.34.0` VÀ tạo thử bảng ảo trong `temp` được."""
+    row = conn.execute("SELECT sqlite_version()").fetchone()
+    version = tuple(int(part) for part in str(row[0]).split(".")[:3])
+    if version < TRIGRAM_MIN_SQLITE:
+        return False
+    try:
+        conn.execute("CREATE VIRTUAL TABLE temp.holocron_trigram_probe USING fts5 (body, tokenize = 'trigram')")
+    except sqlite3.OperationalError:
+        return False
+    conn.execute("DROP TABLE temp.holocron_trigram_probe")
+    return True
 
 
 def _check_sequence(migrations: Sequence[Migration]) -> None:

@@ -1015,6 +1015,122 @@ export interface ValidationErrorItem {
   type: string;
 }
 
+// -------------------------------------------------------------- tra cứu khối (domain/blocks.py, domain/vault.py; §6.10)
+
+export type BlockType =
+  | "heading"
+  | "paragraph"
+  | "list_item"
+  | "table"
+  | "figure"
+  | "formula"
+  | "code"
+  | "caption"
+  | "header_footer"
+  | "page_number";
+
+export type BlockFlag =
+  | "crop_pending"
+  | "crop_failed"
+  | "crop_capped"
+  | "table_unresolved"
+  | "table_token_mismatch"
+  | "boxed"
+  | "formula_text_unverified"
+  | "code_layout_uncertain"
+  | "layout_uncertain"
+  | "reading_order_uncertain"
+  | "figure_label_text"
+  | "text_occluded"
+  | "low_text_contrast"
+  | "font_encoding_suspect"
+  | "human_edited"
+  | "too_short_for_chunk"
+  | "ai_proposal_applied"
+  | "ai_proposal_rejected"
+  | "vlm_invalid"
+  | "vlm_gate_rejected";
+
+export type SemanticLabel = "definition" | "example" | "exercise";
+
+/** Hộp trong [0, 1]: `[x0, y0, x1, y1]`, `x0 ≤ x1`, `y0 ≤ y1`. */
+export type UnitBBox = [number, number, number, number];
+
+export type SourceRef =
+  | { kind: "word"; line_idx: number; word_idx: number }
+  | { kind: "ocr_word"; line_idx: number; word_idx: number }
+  | { kind: "confirmed_line"; line_index: number };
+
+export interface TableCell {
+  text: string;
+  line_refs: SourceRef[];
+  row: number;
+  col: number;
+  rowspan: number;
+  colspan: number;
+}
+
+/** Một khối của trang (§5.15). `text` là null khi và chỉ khi `type` là `table` hoặc `figure`. */
+export interface Block {
+  block_id: string;
+  document_id: string;
+  page_number: number;
+  type: BlockType;
+  bbox: UnitBBox | null;
+  text: string | null;
+  line_refs: SourceRef[];
+  label_line_refs: SourceRef[];
+  labels: string[];
+  level: number | null;
+  list_depth: number | null;
+  cells: TableCell[][] | null;
+  caption_of: string | null;
+  semantic_label: SemanticLabel | null;
+  flags: BlockFlag[];
+  crop_ref: string | null;
+  source: "text_layer" | "ocr" | "vlm";
+  ocr_text: string | null;
+  reading_order: number;
+}
+
+export interface SectionPathItem {
+  section_id: string;
+  title: string | null;
+}
+
+/** Khoảng khớp trong chữ GỐC; `start`/`end` là UTF-16 code unit của chuỗi đích (cắt bằng `String.prototype.slice`). */
+export interface MatchSpan {
+  target: "text" | "cell" | "label";
+  row: number | null;
+  cell_index: number | null;
+  label_index: number | null;
+  start: number;
+  end: number;
+}
+
+export interface BlockSearchHit {
+  block: Block;
+  document_title: string;
+  chapter_code: string;
+  section_path: SectionPathItem[];
+  match_kind: "exact" | "folded" | "fuzzy";
+  /** Rỗng khi khối (figure/table/formula/code) chỉ khớp ở chữ kề (caption, đoạn quanh): không có chuỗi đích để tô. */
+  match_spans: MatchSpan[];
+  /** Chỉ để xếp hạng; giao diện không hiển thị. */
+  score: number;
+}
+
+/** `GET /v1/vault/blocks/search` (§6.10). */
+export interface BlockSearchPage {
+  total: number;
+  total_capped: boolean;
+  hits: BlockSearchHit[];
+  engine: "fts5" | "fts5_trigram" | "python";
+  layout_failed_pages: number;
+  pages_without_blocks: number;
+  pages_unconfirmable_with_blocks: number;
+}
+
 /** Response `DELETE /v1/settings/ai-cache` (khớp `routers/settings.py` `AiCacheCleared`). */
 export interface AiCacheCleared {
   deleted_entries: number;

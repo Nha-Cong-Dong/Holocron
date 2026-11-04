@@ -3,7 +3,8 @@
 - `FileAiConsentStore`: field `ai_consent_enabled` trong `HOLOCRON_DATA_DIR/ai_settings.json`. Ghi nguyên tử dưới khoá
   của instance: tệp tạm tạo bằng `os.open(…, 0o600)` rồi `os.replace`; giữ nguyên các field khác của file (V04 đầy đủ
   thêm nhà cung cấp vào cùng file). File hỏng, quá lớn hoặc không đọc được ⇒ `load` trả `None` (coi như tắt), chỉ log
-  một cảnh báo không kèm nội dung hay đường dẫn.
+  một cảnh báo không kèm nội dung hay đường dẫn. Ghi khi file không đọc được hoặc quá lớn ⇒ `SettingsReadError`, không
+  ghi gì (chỉ nội dung không phải object JSON mới bị coi là rỗng và ghi đè).
 - `UnpersistedAiConsentStore`: không có `HOLOCRON_DATA_DIR`; không lưu được (`persistent = False`).
 """
 
@@ -24,10 +25,55 @@ AI_SETTINGS_FILENAME = "ai_settings.json"
 CONSENT_FIELD = "ai_consent_enabled"
 # File cài đặt chỉ chứa vài field nhỏ; lớn hơn trần này coi như hỏng (không đọc vào RAM).
 MAX_SETTINGS_BYTES = 1024 * 1024
+SETTINGS_WHAT = "file cài đặt AI"
 _FILE_MODE = 0o600
 _DIR_MODE = 0o700
 
 logger = logging.getLogger(__name__)
+
+
+class SettingsReadError(OSError):
+    """File cài đặt có nhưng không đọc được (lỗi I/O, quyền, quá lớn): từ chối ghi để không mất dữ liệu đang lưu.
+    Thông điệp không nêu đường dẫn hay nội dung."""
+
+
+class Unreadable:
+    """Kết quả đọc: file có nhưng không đọc được hoặc quá lớn (khác "chưa có file")."""
+
+
+def read_bounded(path: Path, max_bytes: int, what: str) -> bytes | Unreadable | None:
+    """Đọc tối đa `max_bytes` byte. Chưa có file ⇒ `None`; lỗi I/O hoặc file lớn hơn `max_bytes` ⇒ `Unreadable()`
+    kèm MỘT cảnh báo chỉ nêu `what` và loại lỗi (không đường dẫn, không nội dung)."""
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(max_bytes + 1)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        logger.warning("không đọc được %s (%s)", what, type(exc).__name__)
+        return Unreadable()
+    if len(raw) > max_bytes:
+        logger.warning("%s quá lớn, coi như hỏng", what)
+        return Unreadable()
+    return raw
+
+
+def write_atomic(data_dir: Path, path: Path, payload: bytes) -> None:
+    """Ghi nguyên tử: tệp tạm `os.open(…, 0o600)` trong `data_dir`, fsync, rồi `os.replace`; lỗi ⇒ xoá tệp tạm, file
+    cũ giữ nguyên."""
+    data_dir.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
+    temp = data_dir / f".{path.name}.{secrets.token_hex(8)}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    descriptor = os.open(temp, flags, _FILE_MODE)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
 
 
 class UnpersistedAiConsentStore:
@@ -66,25 +112,28 @@ class AiSettingsFile:
             return self._read_settings()
 
     def update(self, mutate: Callable[[dict[str, Any]], None]) -> None:
-        """Đọc, sửa bằng `mutate`, ghi nguyên tử, cùng một đoạn khoá. File hỏng ⇒ bắt đầu từ object rỗng.
-        `mutate` ném lỗi ⇒ không ghi gì."""
+        """Đọc, sửa bằng `mutate`, ghi nguyên tử, cùng một đoạn khoá. Nội dung không phải object JSON ⇒ bắt đầu từ
+        object rỗng. Không đọc được file (lỗi I/O, quyền) hoặc file quá lớn ⇒ `SettingsReadError`, KHÔNG ghi gì (để
+        không đè mất nhà cung cấp và khoá đang lưu). `mutate` ném lỗi ⇒ không ghi gì."""
         with self._lock:
-            settings = self._read_settings() or {}
+            raw = read_bounded(self._path, MAX_SETTINGS_BYTES, SETTINGS_WHAT)
+            if isinstance(raw, Unreadable):
+                raise SettingsReadError("không đọc được file cài đặt AI; chưa ghi gì")
+            settings = (None if raw is None else self._parse(raw)) or {}
             mutate(settings)
-            self._write_atomic(json.dumps(settings, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8"))
+            write_atomic(
+                self._data_dir,
+                self._path,
+                json.dumps(settings, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8"),
+            )
 
     def _read_settings(self) -> dict[str, Any] | None:
-        try:
-            with self._path.open("rb") as handle:
-                raw = handle.read(MAX_SETTINGS_BYTES + 1)
-        except FileNotFoundError:
+        raw = read_bounded(self._path, MAX_SETTINGS_BYTES, SETTINGS_WHAT)
+        if raw is None or isinstance(raw, Unreadable):
             return None
-        except OSError as exc:
-            logger.warning("không đọc được file cài đặt AI (%s), coi như chưa lưu", type(exc).__name__)
-            return None
-        if len(raw) > MAX_SETTINGS_BYTES:
-            logger.warning("file cài đặt AI quá lớn, coi như hỏng")
-            return None
+        return self._parse(raw)
+
+    def _parse(self, raw: bytes) -> dict[str, Any] | None:
         try:
             parsed: object = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
@@ -94,21 +143,6 @@ class AiSettingsFile:
             logger.warning("file cài đặt AI hỏng (không phải object JSON), coi như chưa lưu")
             return None
         return {str(key): value for key, value in parsed.items()}
-
-    def _write_atomic(self, payload: bytes) -> None:
-        self._data_dir.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
-        temp = self._data_dir / f".{AI_SETTINGS_FILENAME}.{secrets.token_hex(8)}.tmp"
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-        descriptor = os.open(temp, flags, _FILE_MODE)
-        try:
-            with os.fdopen(descriptor, "wb") as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp, self._path)
-        except BaseException:
-            temp.unlink(missing_ok=True)
-            raise
 
 
 class FileAiConsentStore:

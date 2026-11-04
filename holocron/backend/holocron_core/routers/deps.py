@@ -18,7 +18,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from ..domain.ai import AiConsent, AiConsentStore
 from ..domain.repositories import AppStore, VaultRepository
 from ..infrastructure.ai_consent_store import AiSettingsFile, FileAiConsentStore, UnpersistedAiConsentStore
-from ..infrastructure.ai_runtime import EnvAiConsent, EnvProviderSource, InMemorySpendLedger
+from ..infrastructure.ai_runtime import EnvAiConsent, EnvProviderSource, FileSpendLedger, InMemorySpendLedger
 from ..infrastructure.llm_config import RuntimeConfig, load_runtime_config_lenient
 from ..infrastructure.provider_probe import ProviderProbe
 from ..infrastructure.provider_store import (
@@ -158,15 +158,16 @@ def get_provider_store() -> ProviderStore:
 
 
 @cache
-def _default_provider_selection() -> ProviderSelection:
-    """Bộ chọn của tiến trình: nguồn env và kho người dùng đọc lại mỗi lần gọi; sổ chi tiêu trong RAM dùng chung
-    (reset khi khởi động)."""
-    return ProviderSelection(CombinedProviderSource(EnvProviderSource(), get_provider_store), InMemorySpendLedger())
+def _provider_selection_for(data_dir: Path | None) -> ProviderSelection:
+    """Một bộ chọn cho mỗi thư mục dữ liệu: nguồn env và kho người dùng đọc lại mỗi lần gọi; sổ chi tiêu lưu bền ở
+    `ai_usage.json` khi có thư mục dữ liệu, không thì trong RAM (reset khi khởi động; spec §5.16 "Lưu trữ")."""
+    ledger = InMemorySpendLedger() if data_dir is None else FileSpendLedger(data_dir)
+    return ProviderSelection(CombinedProviderSource(EnvProviderSource(), get_provider_store), ledger)
 
 
 def get_provider_selection() -> ProviderSelection:
     """Bộ chọn nhà cung cấp (cài DUY NHẤT ở `services/provider_selection.py`); test thay bằng `dependency_overrides`."""
-    return _default_provider_selection()
+    return _provider_selection_for(data_dir_from_env())
 
 
 def get_provider_probe() -> ProviderProbe:

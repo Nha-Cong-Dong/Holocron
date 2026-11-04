@@ -5,7 +5,11 @@
 - `build_ai_status`: `RuntimeInfo.ai_status` từ trạng thái công tắc và phần chỉ đọc của bộ chọn (`peek`, không giữ chỗ).
 - `EnvProviderSource`: nhà cung cấp CHỈ từ biến môi trường `HOLOCRON_VLM_*` (`env_vlm`), đọc lại ở mỗi lần gọi. Chỉ
   đọc nguồn; việc chọn theo vai, thứ tự và trần nằm DUY NHẤT ở `services/provider_selection.py`.
-- `InMemorySpendLedger`: sổ chi tiêu trong RAM (thuộc tính instance, có khoá), reset khi khởi động lại.
+- `InMemorySpendLedger`: sổ chi tiêu trong RAM (thuộc tính instance, có khoá), reset khi khởi động lại; dùng khi không
+  có `HOLOCRON_DATA_DIR`.
+- `FileSpendLedger`: như trên nhưng phần ĐÃ TIÊU lưu bền ở `HOLOCRON_DATA_DIR/ai_usage.json` (spec §5.16 "Lưu trữ";
+  ADR-009 mục 12.3): đọc một lần khi tạo, ghi nguyên tử sau mỗi `settle` có chi phí, dưới khoá của instance. Chỗ giữ
+  (`reserved`) chỉ ở RAM. File chỉ gồm id nhóm bộ đếm và số USD, không khoá hay hash khoá.
 
 Mọi `ConfigError` chỉ nêu tên biến, không nêu giá trị. Đọc lenient: biến sai ⇒ công tắc tắt / nhà cung cấp env coi
 như chưa cấu hình, log cảnh báo chỉ gồm tên biến.
@@ -13,11 +17,15 @@ như chưa cấu hình, log cảnh báo chỉ gồm tên biến.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
+import re
 import threading
 from collections.abc import Callable, Mapping
+from pathlib import Path
+from typing import Any
 
 from ..domain.ai import (
     AI_ROLES,
@@ -37,6 +45,7 @@ from ..domain.ai import (
     ProviderTemplate,
     WriteProtection,
 )
+from .ai_consent_store import Unreadable, read_bounded, write_atomic
 from .llm_config import BROKEN_VLM_MODE, ConfigError, VlmMode, read_vlm_mode, read_vlm_settings
 
 ENV_AI_CONSENT = "HOLOCRON_AI_CONSENT"
@@ -53,6 +62,11 @@ ENV_PROVIDER_PRIORITY = 0
 DEFAULT_VLM_LABEL = "nhà cung cấp AI đã cấu hình"
 MAX_PRICE_USD = 1.0
 MAX_BUDGET_USD = 1000.0
+AI_USAGE_FILENAME = "ai_usage.json"
+AI_USAGE_VERSION = 1
+# Tối đa 20 nhà cung cấp người dùng + vài nhà cung cấp env: vài KB; lớn hơn trần này coi như hỏng.
+MAX_USAGE_BYTES = 256 * 1024
+_GROUP_ID = re.compile(r"^[a-z0-9_]{1,64}$")
 
 EnvReader = Callable[[], Mapping[str, str]]
 
@@ -287,3 +301,69 @@ class InMemorySpendLedger:
     def reserved_usd(self, group: str) -> float:
         with self._lock:
             return self._reserved.get(group, 0.0)
+
+
+def _parse_usage(raw: bytes) -> dict[str, float] | None:
+    """`spent_usd` hợp lệ trong `ai_usage.json`; file không đúng dạng ⇒ `None`. Mục sai (id lạ, số âm, NaN) bị bỏ."""
+    try:
+        parsed: object = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(parsed, dict) or parsed.get("version") != AI_USAGE_VERSION:
+        return None
+    spent = parsed.get("spent_usd")
+    if not isinstance(spent, dict):
+        return None
+    result: dict[str, float] = {}
+    for group, value in spent.items():
+        if (
+            isinstance(group, str)
+            and _GROUP_ID.fullmatch(group)
+            and isinstance(value, int | float)
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and value >= 0
+        ):
+            result[group] = float(value)
+    return result
+
+
+class FileSpendLedger(InMemorySpendLedger):
+    """`SpendLedger` lưu phần đã tiêu ở `<data_dir>/ai_usage.json` để khởi động lại không vượt trần (spec §5.16).
+
+    File hỏng hoặc không đọc được ⇒ bắt đầu từ 0 kèm MỘT cảnh báo (không nội dung, không đường dẫn); ghi lại file khi
+    `settle` kế tiếp. Ghi lỗi ⇒ giữ số trong RAM (vẫn chặn trần trong phiên), log cảnh báo, không ném lỗi cho lời gọi
+    đã trả tiền.
+    """
+
+    def __init__(self, data_dir: Path) -> None:
+        super().__init__()
+        self._data_dir = data_dir
+        self._path = data_dir / AI_USAGE_FILENAME
+        self._spent = self._load()
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def _load(self) -> dict[str, float]:
+        raw = read_bounded(self._path, MAX_USAGE_BYTES, "file bộ đếm chi phí AI")
+        if raw is None or isinstance(raw, Unreadable):
+            return {}
+        spent = _parse_usage(raw)
+        if spent is None:
+            logger.warning("file bộ đếm chi phí AI hỏng, bắt đầu lại từ 0")
+            return {}
+        return spent
+
+    def settle(self, group: str, reserved_usd: float, actual_usd: float) -> None:
+        with self._lock:
+            self._reserved[group] = max(0.0, self._reserved.get(group, 0.0) - reserved_usd)
+            if actual_usd <= 0:
+                return
+            self._spent[group] = self._spent.get(group, 0.0) + actual_usd
+            payload: dict[str, Any] = {"version": AI_USAGE_VERSION, "spent_usd": dict(sorted(self._spent.items()))}
+            try:
+                write_atomic(self._data_dir, self._path, json.dumps(payload, sort_keys=True).encode("utf-8"))
+            except OSError as exc:
+                logger.warning("không ghi được file bộ đếm chi phí AI (%s); bộ đếm giữ trong RAM", type(exc).__name__)

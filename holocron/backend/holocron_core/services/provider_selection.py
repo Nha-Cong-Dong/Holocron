@@ -61,6 +61,17 @@ class ProviderSelection:
         # Chỗ giữ đang mở theo id (thuộc tính instance): `record` tính chi phí theo đúng bảng giá lúc giữ chỗ.
         self._reservations: dict[str, _Reservation] = {}
 
+    def snapshot(self) -> ProviderSelection:
+        """Bộ chọn chỉ-xem trên danh sách nhà cung cấp đọc MỘT lần (cùng sổ chi tiêu): một request đọc trạng thái
+        nhiều lần (`peek`, `budget_exhausted`, `configured`) mà chỉ giải mã khoá một lần."""
+        frozen = list(self._providers())
+        return ProviderSelection(lambda: frozen, self._ledger)
+
+    def configured(self, role: AiRole) -> bool:
+        """Có ít nhất một nhà cung cấp `enabled` đủ cấu hình cho vai (model, khoá đọc được hoặc loopback), không xét
+        công tắc hay trần (ADR-009 mục 12.11: nghĩa của `llm_configured` / `vlm_configured` sau hợp nhất)."""
+        return any(self._usable(candidate, role) for candidate in self._providers())
+
     def candidates(self) -> list[ProviderCandidate]:
         """Mọi nhà cung cấp của nguồn theo thứ tự chọn (kể cả đã tắt); dùng cho trang cài đặt."""
         return ordered_candidates(self._providers())

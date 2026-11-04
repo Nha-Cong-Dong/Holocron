@@ -185,7 +185,7 @@ PROVIDERS_NOT_PERSISTENT_MESSAGE = (
 )
 KEY_STORAGE_FAILED_CODE = "key_storage_failed"
 KEY_STORAGE_FAILED_MESSAGE = "Không mã hoá được khoá để lưu (DPAPI lỗi); chưa lưu gì, thử lại"
-_ENV_PROVIDER_ID = re.compile(r"^env_[a-z]+$")
+_ENV_PROVIDER_ID = re.compile(r"^env_(llm|vlm|shared)$")
 _PROVIDER_ID = re.compile(PROVIDER_ID_PATTERN)
 
 WRITE_RESPONSES: dict[int | str, dict[str, Any]] = {
@@ -348,8 +348,10 @@ def test_provider(
         entry = next((item for item in store.entries() if item.id == provider_id), None)
         if entry is None:
             raise _not_found()
-        # Mục người dùng không có ứng viên: khoá không đọc được, hoặc URL đã lưu không còn qua kiểm tĩnh.
-        return _early_result("key_unreadable" if entry.key_unreadable else "blocked_address")
+        # Mục người dùng không có ứng viên: khoá không đọc được hoặc thiếu khoá (URL không loopback) ⇒ `key_unreadable`;
+        # còn lại là URL đã lưu không còn qua kiểm tĩnh ⇒ `blocked_address`. Không gửi gì ra mạng.
+        missing_key = not entry.key_set and not entry.local
+        return _early_result("key_unreadable" if entry.key_unreadable or missing_key else "blocked_address")
     model = "" if body.role is None else candidate.model_for(body.role)
     if model is None:
         return _early_result("no_model_for_role")

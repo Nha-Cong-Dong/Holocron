@@ -512,3 +512,76 @@ def test_build_ai_status_always_lists_vlm_then_llm() -> None:
     status = build_ai_status(consent, _NoProviders(), "token")
     assert [role.role for role in status.roles] == ["vlm", "llm"]
     assert all(role.reason == "no_provider" for role in status.roles)
+
+
+# --------------------------------------------------------------------------- #
+# llm_configured / vlm_configured / capabilities theo nguồn hợp nhất (ADR-009 mục 12.11)
+# --------------------------------------------------------------------------- #
+
+
+def _user_llm(*, enabled: bool = True, key: bool = True) -> ProviderCandidate:
+    return ProviderCandidate(
+        provider_id="usr_0123456789ab",
+        template="custom",
+        label="Nhà cung cấp người dùng",
+        base_url=f"https://{SECRET_HOST}/v1",
+        api_key=SECRET_KEY if key else None,
+        models=ProviderModels(llm=SECRET_MODEL),
+        local=False,
+        ip_policy="public_only",
+        priority=100,
+        budget_usd=1.0,
+        prices=TEMPLATE_DEFAULT_PRICES["custom"],
+        budget_group="usr_0123456789ab",
+        enabled=enabled,
+    )
+
+
+def _runtime_info(runtime: Runtime) -> dict[str, object]:
+    response = runtime.client.get("/v1/runtime")
+    assert response.status_code == 200
+    for leaked in LEAKS:
+        assert leaked not in response.text
+    info: dict[str, object] = response.json()
+    return info
+
+
+def _capability(info: dict[str, object], name: str) -> dict[str, object]:
+    capabilities = info["capabilities"]
+    assert isinstance(capabilities, list)
+    found: dict[str, object] = next(item for item in capabilities if item["name"] == name)
+    return found
+
+
+def test_runtime_flags_and_llm_capability_follow_user_providers(runtime: Runtime) -> None:
+    runtime.providers = [_user_llm()]
+    info = _runtime_info(runtime)
+    assert info["llm_configured"] is True and info["vlm_configured"] is False
+    assert _capability(info, "concept_pair_llm_proposal")["available"] is True
+    assert _capability(info, "vlm")["reason"] == "not_implemented"
+
+
+@pytest.mark.parametrize("candidate", [_user_llm(enabled=False), _user_llm(key=False)])
+def test_disabled_or_keyless_user_provider_is_not_configured(runtime: Runtime, candidate: ProviderCandidate) -> None:
+    runtime.providers = [candidate]
+    info = _runtime_info(runtime)
+    assert info["llm_configured"] is False and info["vlm_configured"] is False
+    assert _capability(info, "concept_pair_llm_proposal")["reason"] == "llm_not_configured"
+
+
+def test_runtime_vlm_configured_from_env_provider_in_selection(runtime: Runtime) -> None:
+    info = _runtime_info(runtime)
+    assert info["vlm_configured"] is True and info["llm_configured"] is False
+
+
+def test_runtime_reads_providers_once_per_request(runtime: Runtime) -> None:
+    calls: list[int] = []
+    providers = [_candidate(), _user_llm()]
+
+    def source() -> list[ProviderCandidate]:
+        calls.append(1)
+        return providers
+
+    main_app.dependency_overrides[deps.get_provider_selection] = lambda: ProviderSelection(source, runtime.ledger)
+    _runtime_info(runtime)
+    assert len(calls) == 1

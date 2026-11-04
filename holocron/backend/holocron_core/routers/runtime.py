@@ -240,18 +240,28 @@ def get_runtime(
     required_token: Annotated[str | None, Depends(get_required_token)],
 ) -> RuntimeInfo:
     # `ai_status` tính lại ở MỖI request (spec §5.12): `peek` không giữ chỗ, không gọi mạng, không lộ khoá/endpoint.
+    # Danh sách nhà cung cấp đọc MỘT lần mỗi request (giải mã khoá một lần), dùng chung cho cờ, khả năng và ai_status.
+    view = providers.snapshot()
     ai_status = build_ai_status(
         read_consent_state(os.environ, consent_store),
-        providers,
+        view,
         "token_not_configured" if required_token is None else "token",
     )
+    # Nguồn hợp nhất env + người dùng (ADR-009 mục 12.11); không có nhà cung cấp người dùng ⇒ trùng nghĩa env.
+    llm_configured = config.llm_configured or view.configured("llm")
+    vlm_configured = config.vlm is not None or view.configured("vlm")
     return RuntimeInfo(
         demo_mode=isinstance(extractor, MockDualPassExtractor),
-        llm_configured=config.llm_configured,
-        vlm_configured=config.vlm is not None,
+        llm_configured=llm_configured,
+        vlm_configured=vlm_configured,
         app_version=build.version,
         commit=build.commit,
         log_dir=log_dir,
-        capabilities=compute_capabilities(config, local_failures=local_failures),
+        capabilities=compute_capabilities(
+            config,
+            local_failures=local_failures,
+            llm_configured=llm_configured,
+            vlm_configured=vlm_configured,
+        ),
         ai_status=ai_status,
     )

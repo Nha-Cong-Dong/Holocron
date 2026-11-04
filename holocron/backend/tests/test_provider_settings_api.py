@@ -768,3 +768,71 @@ def test_usage_record_after_probe_uses_reservation(harness: Harness) -> None:
         selected.reservation_id, AiUsage(input_tokens=1000, output_tokens=0, images=0, estimated=False)
     )
     assert harness.client.get(PROVIDERS_URL).json()["providers"][0]["spent_usd"] == pytest.approx(0.0025)
+
+
+# --------------------------------------------------------------------------- #
+# Sau review V04-min: nhả chỗ giữ, mã kiểm thử, biên trần, id env
+# --------------------------------------------------------------------------- #
+
+
+class ExplodingTransport(FakeTransport):
+    """Transport ném lỗi ngoài danh sách bộ kiểm thử bắt (lỗi lập trình): router vẫn phải nhả chỗ giữ."""
+
+    def __call__(self, request: urllib.request.Request, timeout_s: float) -> tuple[int, bytes]:
+        self.requests.append(request)
+        raise RuntimeError("giả: lỗi bất ngờ")
+
+
+def test_reservation_is_released_when_probe_raises(store: FileProviderStore) -> None:
+    harness = Harness(store, transport=ExplodingTransport())
+    provider_id = harness.create().json()["id"]
+    with pytest.raises(RuntimeError):
+        _test(harness, provider_id, {"action": "chat", "role": "llm"})
+    assert len(harness.transport.requests) == 1
+    assert harness.ledger.reserved_usd(provider_id) == 0.0 and harness.ledger.spent_usd(provider_id) == 0.0
+
+
+def _strip_key(data_dir: Path) -> None:
+    saved = json.loads(_raw_file(data_dir))
+    saved[PROVIDERS_FIELD][0]["key"] = None
+    (data_dir / AI_SETTINGS_FILENAME).write_text(json.dumps(saved), encoding="utf-8")
+
+
+def test_remote_record_without_key_tests_as_key_unreadable(harness: Harness, data_dir: Path) -> None:
+    provider_id = harness.create().json()["id"]
+    _strip_key(data_dir)
+    result = _test(harness, provider_id, {"action": "list_models"})
+    assert result.status_code == 200 and result.json()["code"] == "key_unreadable"
+    assert harness.transport.requests == []
+
+
+def test_patch_label_on_remote_record_without_key_is_422_key_invalid(harness: Harness, data_dir: Path) -> None:
+    provider_id = harness.create().json()["id"]
+    _strip_key(data_dir)
+    before = _raw_file(data_dir)
+    response = harness.client.patch(f"{PROVIDERS_URL}/{provider_id}", json={"label": "Tên mới"}, headers=AUTH)
+    assert response.status_code == 422 and response.json()["detail"]["code"] == "key_invalid"
+    assert _raw_file(data_dir) == before
+
+
+def test_spent_equal_to_budget_is_exhausted(harness: Harness) -> None:
+    provider_id = harness.create(budget_usd=1.0).json()["id"]
+    harness.ledger.settle(provider_id, 0.0, 1.0)
+    provider = harness.client.get(PROVIDERS_URL).json()["providers"][0]
+    assert provider["spent_usd"] == 1.0 and provider["budget_exhausted"] is True
+
+
+@pytest.mark.parametrize("base_url", [BASE_URL + "#", BASE_URL + "?"])
+def test_base_url_with_empty_fragment_or_query_is_422(harness: Harness, base_url: str) -> None:
+    response = harness.create(base_url=base_url)
+    assert response.status_code == 422 and response.json()["detail"]["code"] == "base_url_rejected"
+
+
+def test_label_of_exactly_80_chars_is_accepted(harness: Harness) -> None:
+    assert harness.create(label="a" * 80).status_code == 201
+    assert harness.create(label="a" * 81).status_code == 422
+
+
+def test_unknown_env_like_id_is_404_not_read_only(harness: Harness) -> None:
+    response = harness.client.patch(f"{PROVIDERS_URL}/env_other", json={"label": "x"}, headers=AUTH)
+    assert response.status_code == 404

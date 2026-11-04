@@ -31,6 +31,7 @@ from .documents import (
     normalize_chapter_title,
 )
 from .ingestion import IngestionItem, UploadedDocument
+from .practice import PracticeAttempt, PracticeAttemptPage, ReviewQuestionPage, StoredTwin
 from .schemas import BlueprintSummary, DocumentMeta, ExamBlueprint, ExamFormat, KnowledgeChunk, Subject
 from .twins import IdempotencyRecord, TwinBatch
 from .vault import ConceptPair, ConceptPairStatus, VaultEdit
@@ -279,6 +280,47 @@ class TwinBatchRepository(Protocol):
 
         Đường ghi cấp thấp có từ trước `save_batch` (giữ cho test kho); router không dùng.
         """
+        ...
+
+    def get_batch_blueprint_id(self, batch_id: str) -> str | None:
+        """`blueprint_id` của batch đã lưu; batch không có ⇒ `None` (§6.12 bước 2)."""
+        ...
+
+    def get_twins(self, twin_ids: Sequence[str]) -> dict[str, StoredTwin]:
+        """Twin đã lưu theo `twin_id` kèm batch, blueprint và môn chứa nó (§5.17); id không có thì vắng trong kết quả."""
+        ...
+
+
+class PracticeAttemptRepository(Protocol):
+    """Lượt làm bài và câu sai để ôn (§5.17, §5.13 bảng `practice_attempts`, `practice_answers`).
+
+    Lượt không sửa được sau khi ghi. Mọi số đếm do code đếm trên hàng câu còn lưu lúc đọc; lượt không còn câu nào
+    (twin bị xoá theo cascade của batch) bị xoá trong cùng giao dịch. Thứ tự "gần nhất" theo `seq` tăng đơn điệu do
+    kho cấp lúc ghi, không theo đồng hồ.
+    """
+
+    def save_practice_attempt(self, attempt: PracticeAttempt) -> PracticeAttempt:
+        """Ghi lượt và mọi câu của nó trong một giao dịch; `seq` = `MAX(seq) + 1`. Twin hay batch không còn ⇒
+        `MissingReferenceError` (kho SQLite)."""
+        ...
+
+    def get_practice_attempt(self, attempt_id: str) -> PracticeAttempt | None: ...
+
+    def list_practice_attempts(self, subject_code: str, offset: int, limit: int) -> PracticeAttemptPage:
+        """Lượt của môn, mới nhất trước (`seq` giảm dần); `total` là số lượt của môn."""
+        ...
+
+    def list_review_questions(self, subject_code: str, offset: int, limit: int) -> ReviewQuestionPage:
+        """Câu sai để ôn của môn theo luật §5.17: câu trả lời `correct`/`incorrect` gần nhất của mỗi twin là
+        `incorrect`; sắp `seq` giảm dần rồi `ordinal` tăng dần."""
+        ...
+
+    def delete_practice_attempt(self, attempt_id: str) -> bool:
+        """Xoá một lượt cùng các câu của nó; không có ⇒ `False`."""
+        ...
+
+    def delete_practice_attempts(self, subject_code: str) -> int:
+        """Xoá mọi lượt của môn; trả số lượt đã xoá (0 khi môn chưa có lượt)."""
         ...
 
 
@@ -777,6 +819,7 @@ class AppStore(
     DocumentRepository,
     VaultRepository,
     SubjectRepository,
+    PracticeAttemptRepository,
     AiCacheRepository,
     Protocol,
 ):

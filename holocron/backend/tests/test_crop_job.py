@@ -13,6 +13,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pytest
+
 from holocron_core.domain.blocks import Block
 from holocron_core.domain.documents import DocumentConfirmRequest, LineEdit, PageExtraction, PageLinesPatch
 from holocron_core.domain.repositories import AppStore, BlockFlagUpdate
@@ -430,3 +432,132 @@ def test_job_never_touches_pages(store: AppStore, tmp_path: Path) -> None:
     assert job is not None
     _runner(base, FakeRenderer(fail={1: "render_error"})).run(job)
     assert [page.version for page in store.list_pages(doc_id, PageExtraction)] == versions
+
+
+def _changed_type(block: Block) -> Block:
+    return block.model_copy(update={"type": "table"})
+
+
+def _changed_bbox(block: Block) -> Block:
+    assert block.bbox is not None
+    x0, y0, x1, y1 = block.bbox
+    return block.model_copy(update={"bbox": (x0, y0, (x0 + x1) / 2, y1)})
+
+
+@pytest.mark.parametrize("change", [_changed_type, _changed_bbox], ids=["type", "bbox"])
+def test_block_changed_between_render_and_write_is_skipped(
+    store: AppStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: Callable[[Block], Block]
+) -> None:
+    """Khối cùng id và trang nhưng đổi loại hay hộp giữa lúc render (ngoài khoá) và lúc ghi ⇒ bỏ qua: không ghi ảnh,
+    không thêm cờ cho khối đó; các khối khác vẫn ghi."""
+    base = runtime_for(tmp_path, layout_with(FIGURES))
+    doc_id = import_doc(store, base, GeoReader(PAGES), auto_confirm=False)
+    target = _figures(store, doc_id)[1].block_id
+    original = store.list_blocks
+    rendered: list[bool] = []
+
+    def list_blocks(document_id: str) -> list[Block]:
+        blocks = original(document_id)
+        if not rendered:
+            return blocks
+        return [change(block) if block.block_id == target else block for block in blocks]
+
+    monkeypatch.setattr(store, "list_blocks", list_blocks)
+    job = plan_crop_job(store, doc_id, base.files)
+    assert job is not None
+    renderer = FakeRenderer(on_call=lambda _: rendered.append(True))
+    result = _runner(base, renderer, crop_max_regions_per_request=32).run(job)
+    assert (result.skipped, result.stored, result.failed, result.capped) == (1, 5, 0, 0)
+    monkeypatch.undo()
+    assert target not in {row.block_id for row in store.list_crop_images(doc_id)}
+    kept = {block.block_id: block for block in _figures(store, doc_id)}[target]
+    assert kept.crop_ref is None and set(kept.flags) & {"crop_pending", "crop_failed", "crop_capped"} == {
+        "crop_pending"
+    }
+
+
+def test_generation_change_between_batches_cancels_before_render(store: AppStore, tmp_path: Path) -> None:
+    """Thế hệ đổi (tài liệu xoá) SAU khi lô 1 đã ghi và TRƯỚC khi render lô 2 ⇒ job huỷ trước khi render lô 2."""
+    base = runtime_for(tmp_path, layout_with(FIGURES))
+    doc_id = import_doc(store, base, GeoReader(PAGES), auto_confirm=False)
+    job = plan_crop_job(store, doc_id, base.files)
+    assert job is not None
+    renderer = FakeRenderer()
+    checks = [0]
+
+    def delete_before_second_batch() -> bool:
+        checks[0] += 1
+        if checks[0] == 2:
+            delete_imported_document(store, base, doc_id)
+        return False
+
+    result = _runner(base, renderer, crop_max_regions_per_request=1).run(job, delete_before_second_batch)
+    assert result.cancelled and result.stored == 1
+    assert len(renderer.calls) == 1
+
+
+def test_generation_change_during_render_writes_nothing(store: AppStore, tmp_path: Path) -> None:
+    """Tài liệu bị xoá rồi nhập lại (cùng `document_id`, khối cùng id) trong lúc lô đang render ⇒ lần ghi dưới khoá
+    thấy khác thế hệ: job huỷ, không ghi ảnh hay cờ nào vào lần nhập mới."""
+    base = runtime_for(tmp_path, layout_with(FIGURES))
+    doc_id = import_doc(store, base, GeoReader(PAGES), auto_confirm=False)
+    job = plan_crop_job(store, doc_id, base.files)
+    assert job is not None
+
+    def reimport(call: int) -> None:
+        if call == 1:
+            delete_imported_document(store, base, doc_id)
+            assert import_doc(store, base, GeoReader(PAGES), auto_confirm=False) == doc_id
+
+    result = _runner(base, FakeRenderer(on_call=reimport, fail={2: "render_error"})).run(job)
+    assert result.cancelled and (result.stored, result.failed) == (0, 0)
+    assert store.list_crop_images(doc_id) == []
+    figures = _figures(store, doc_id)
+    assert figures and all(
+        set(block.flags) & {"crop_pending", "crop_failed", "crop_capped"} == {"crop_pending"} for block in figures
+    )
+
+
+def test_stop_requested_before_batch_renders_nothing(store: AppStore, tmp_path: Path) -> None:
+    """App đang tắt (`should_stop` đúng) ⇒ job dừng trước lô kế tiếp: không render, không ghi."""
+    base = runtime_for(tmp_path, layout_with(FIGURES))
+    doc_id = import_doc(store, base, GeoReader(PAGES), auto_confirm=False)
+    job = plan_crop_job(store, doc_id, base.files)
+    assert job is not None
+    renderer = FakeRenderer()
+    result = _runner(base, renderer, crop_max_regions_per_request=2).run(job, lambda: True)
+    assert result.stopped and result.stored == 0
+    assert renderer.calls == [] and store.list_crop_images(doc_id) == []
+
+
+def test_background_jobs_dedupe_only_while_queued(store: AppStore, tmp_path: Path) -> None:
+    """Job đã xếp mà chưa chạy cùng khoá thế hệ chỉ giữ một bản (xếp lại ⇒ `False`); khi job đã bắt đầu chạy, xếp lại
+    cùng tài liệu được nhận (`True`)."""
+    base = runtime_for(tmp_path, layout_with(FIGURES))
+    first, second = (import_doc(store, base, GeoReader(PAGES), tag=tag, auto_confirm=False) for tag in ("x", "y"))
+    entered: dict[int, threading.Event] = {n: threading.Event() for n in (1, 2, 3)}
+    release: dict[int, threading.Event] = {n: threading.Event() for n in (1, 2, 3)}
+
+    def hold(call: int) -> None:
+        if call in entered:
+            entered[call].set()
+            assert release[call].wait(WAIT_S)
+
+    runner = _runner(base, FakeRenderer(on_call=hold), crop_max_parallel_jobs=1, crop_max_regions_per_request=32)
+    jobs = BackgroundCropJobs(runner, base.files)
+    try:
+        assert jobs.schedule(store, first)
+        assert entered[1].wait(WAIT_S)
+        assert jobs.schedule(store, second) is True
+        assert jobs.schedule(store, second) is False, "job chưa chạy cùng khoá chỉ giữ một bản"
+        release[1].set()
+        assert entered[2].wait(WAIT_S)
+        assert jobs.schedule(store, second) is True, "job đã bắt đầu chạy thì xếp lại được nhận"
+        release[2].set()
+        release[3].set()
+        assert jobs.wait_until_idle(WAIT_S)
+    finally:
+        for event in release.values():
+            event.set()
+        assert jobs.close(WAIT_S)
+    assert _all_cropped(store, first) and _all_cropped(store, second)

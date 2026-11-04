@@ -71,6 +71,10 @@ export interface KnowledgeChunk {
   version: number;
   /** Nhãn "chunk là bài tập" do LLM gắn trong job đề xuất cặp (§5.8); `null` khi chưa có LLM gắn. */
   is_exercise: boolean | null;
+  /** Section chứa mọi khối của chunk (§5.8, ADR-010 mục 16); `null` với chunk cắt theo dòng. */
+  section_id: string | null;
+  /** Các `block_id` tạo nên `raw_text`, theo thứ tự nối; rỗng với chunk cắt theo dòng. */
+  block_ids: string[];
 }
 
 /** `SolverInputs` (extra="allow"): response luôn có `quantum`, có thể kèm khoá phụ theo topic. */

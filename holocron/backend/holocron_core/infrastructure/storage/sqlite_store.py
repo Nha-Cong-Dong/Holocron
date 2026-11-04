@@ -20,12 +20,17 @@ from pathlib import Path
 
 from pydantic import BaseModel, TypeAdapter
 
-from ...domain.documents import PageEditAudit, PageSummary
+from ...domain.block_eligibility import is_candidate_block
+from ...domain.blocks import Block, CropImage, ExtractionLedger, Section
+from ...domain.documents import PageEditAudit, PageGeometry, PageSummary
 from ...domain.ingestion import IngestionItem, PatchAudit, UploadedDocument
 from ...domain.repositories import (
     IDEMPOTENCY_TTL,
+    BlockFlagUpdate,
     ConcurrentUpdateError,
+    CropWriteResult,
     DocumentExistsError,
+    DocumentLayout,
     ImportedDocument,
     MissingReferenceError,
     PageStatus,
@@ -34,14 +39,29 @@ from ...domain.repositories import (
     SearchIndex,
     StorageBusyError,
     StorageError,
+    StructureProposalRecord,
     SubjectExistsError,
     VaultEntity,
     VaultSearchUnavailableError,
     VersionConflictError,
+    capped,
+    check_crop_bytes,
     check_page_audit,
+    cropped,
+    heading_levels,
     same_item_state,
+    with_flags,
+    with_root_chapter,
 )
-from ...domain.schemas import BlueprintSummary, DocumentMeta, ExamBlueprint, ExamFormat, KnowledgeChunk, Subject
+from ...domain.schemas import (
+    BlueprintSummary,
+    DocumentMeta,
+    ExamBlueprint,
+    ExamFormat,
+    KnowledgeChunk,
+    SourceKind,
+    Subject,
+)
 from ...domain.search_text import search_body, strip_diacritics
 from ...domain.twins import BatchTwin, IdempotencyRecord, ReviewTicket, TwinBatch
 from ...domain.vault import (
@@ -53,6 +73,7 @@ from ...domain.vault import (
     link_practice_chunks,
 )
 from .connection import connect, fts5_available, immediate_transaction, is_busy, read_transaction
+from .crop_files import CropFiles
 from .migrator import load_fts5_script, migrate
 
 IMPORTED_MEDIA_TYPE = "application/pdf"  # bộ nhập §6.5 chỉ nhận PDF trong MVP
@@ -129,29 +150,35 @@ def _storage_errors() -> Iterator[None]:
 class SQLiteStore:
     """Kho SQLite; tạo bằng `SQLiteStore.open(path)` (`":memory:"` cho test)."""
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: sqlite3.Connection, *, crops_dir: Path | None = None) -> None:
         """Nhận kết nối đã mở bằng `connection.connect`, kiểm JSON1, chạy migration và tạo chỉ mục FTS5 nếu SQLite
         có FTS5.
 
         SQLite thiếu JSON1 ⇒ `SQLiteFeatureError` trước khi chạy migration nào (từ chối khởi động, thông điệp nêu
         cách sửa), thay vì `sqlite3.OperationalError` trần ở request đầu tiên đọc tóm tắt trang hay nhập chunk. DB
         có version mới hơn code ⇒ `SchemaVersionError` (từ chối khởi động). Thiếu FTS5 thì vẫn chạy (BM25 tự cài).
+
+        `crops_dir` (chỉ `open_store_from_env` truyền, `HOLOCRON_DATA_DIR/crops`): thư mục file ảnh cắt; khi mở kho,
+        file/thư mục ảnh không có hàng `crop_images` tương ứng bị dọn. `None` ⇒ kho không lưu ảnh cắt, KHÔNG tạo
+        thư mục và KHÔNG xoá file nào (`save_crop_image` trả `"capped"`).
         """
         if not json1_available(conn):
             raise SQLiteFeatureError(JSON1_MISSING_DETAIL)
         self._conn = conn
         self._lock = threading.RLock()
+        self._crops = None if crops_dir is None else CropFiles(crops_dir)
         with self._lock:
             migrate(conn)
             self._fts5 = fts5_available(conn)
             if self._fts5:
                 conn.executescript(load_fts5_script())
+            self._sweep_orphan_crops()
 
     @classmethod
-    def open(cls, path: str | Path) -> SQLiteStore:
+    def open(cls, path: str | Path, *, crops_dir: Path | None = None) -> SQLiteStore:
         conn = connect(path)
         try:
-            return cls(conn)
+            return cls(conn, crops_dir=crops_dir)
         except BaseException:
             conn.close()
             raise
@@ -660,7 +687,7 @@ class SQLiteStore:
             ).fetchone()
             if existing is not None:
                 raise DocumentExistsError(document_id)
-            row = self._upsert_imported(conn, document)
+            self._upsert_imported(conn, document)
             updated_at = _now()
             for page_number, page in enumerate(pending_pages, start=1):
                 conn.execute(
@@ -669,13 +696,30 @@ class SQLiteStore:
                     (document_id, page_number, _dump(page), updated_at),
                 )
             self._ensure_subject(conn, Subject.implicit(document.meta.subject_code, document.meta.uploaded_at))
+            self._next_generation(conn, document_id)
+            row = conn.execute(f"{self._IMPORTED_SELECT} AND document_id = ?", (document_id,)).fetchone()
         return self._imported_from_row(row)
+
+    @staticmethod
+    def _next_generation(conn: sqlite3.Connection, document_id: str) -> None:
+        """Tăng bộ đếm thế hệ nhập (tạo = 1; bảng `import_generations` không bị xoá theo tài liệu) và sao vào
+        `documents.import_generation`, trong giao dịch của người gọi."""
+        conn.execute(
+            "INSERT INTO import_generations (document_id, last_generation) VALUES (?, 1) "
+            "ON CONFLICT (document_id) DO UPDATE SET last_generation = last_generation + 1",
+            (document_id,),
+        )
+        conn.execute(
+            "UPDATE documents SET import_generation = "
+            "(SELECT last_generation FROM import_generations WHERE document_id = ?) WHERE document_id = ?",
+            (document_id, document_id),
+        )
 
     _IMPORTED_SELECT = (
         "SELECT document_id, sha256, filename, size_bytes, subject_code, title, source_kind, output_language, "
         "page_count, has_text_layer, status, uploaded_at, chapter_code, chapter_title, chapter_code_source, "
-        "chapter_title_source, chapter_flags_json, auto_confirm, version FROM documents "
-        "WHERE subject_code IS NOT NULL"
+        "chapter_title_source, chapter_flags_json, auto_confirm, version, layout_version, layout_settings_sha256, "
+        "blocks_after_close, import_generation FROM documents WHERE subject_code IS NOT NULL"
     )
 
     @staticmethod
@@ -704,6 +748,10 @@ class SQLiteStore:
                 "chapter_title_source": row["chapter_title_source"],
                 "chapter_flags": json.loads(row["chapter_flags_json"]),
                 "auto_confirm": bool(row["auto_confirm"]),
+                "layout_version": row["layout_version"],
+                "layout_settings_sha256": row["layout_settings_sha256"],
+                "blocks_after_close": bool(row["blocks_after_close"]),
+                "import_generation": row["import_generation"],
             }
         )
 
@@ -712,27 +760,46 @@ class SQLiteStore:
             row = conn.execute(f"{self._IMPORTED_SELECT} AND document_id = ?", (document_id,)).fetchone()
         return None if row is None else self._imported_from_row(row)
 
-    def update_imported_document(self, document: ImportedDocument, expected_version: int) -> ImportedDocument:
+    def _update_imported_row(
+        self, conn: sqlite3.Connection, document: ImportedDocument, expected_version: int
+    ) -> ImportedDocument:
+        """So-và-ghi cột của bộ nhập (KHÔNG ghi bốn cột khối); trả `document` với version mới và cột khối đang lưu."""
         document_id = document.meta.doc_id
-        with self._write() as conn:
-            cursor = conn.execute(
-                "UPDATE documents SET filename = ?, media_type = ?, size_bytes = ?, subject_code = ?, title = ?, "
-                "source_kind = ?, output_language = ?, page_count = ?, has_text_layer = ?, status = ?, "
-                "uploaded_at = ?, chapter_code = ?, chapter_title = ?, chapter_code_source = ?, "
-                "chapter_title_source = ?, chapter_flags_json = ?, auto_confirm = ?, version = version + 1 "
-                "WHERE document_id = ? AND version = ?",
-                (*self._imported_columns(document), document_id, expected_version),
+        cursor = conn.execute(
+            "UPDATE documents SET filename = ?, media_type = ?, size_bytes = ?, subject_code = ?, title = ?, "
+            "source_kind = ?, output_language = ?, page_count = ?, has_text_layer = ?, status = ?, "
+            "uploaded_at = ?, chapter_code = ?, chapter_title = ?, chapter_code_source = ?, "
+            "chapter_title_source = ?, chapter_flags_json = ?, auto_confirm = ?, version = version + 1 "
+            "WHERE document_id = ? AND version = ?",
+            (*self._imported_columns(document), document_id, expected_version),
+        )
+        if cursor.rowcount == 0:
+            raise _version_conflict(
+                conn,
+                "tài liệu",
+                document_id,
+                expected_version,
+                "SELECT version FROM documents WHERE document_id = ?",
+                (document_id,),
             )
-            if cursor.rowcount == 0:
-                raise _version_conflict(
-                    conn,
-                    "tài liệu",
-                    document_id,
-                    expected_version,
-                    "SELECT version FROM documents WHERE document_id = ?",
-                    (document_id,),
-                )
-        return document.model_copy(update={"version": expected_version + 1})
+        row = conn.execute(
+            "SELECT layout_version, layout_settings_sha256, blocks_after_close, import_generation FROM documents "
+            "WHERE document_id = ?",
+            (document_id,),
+        ).fetchone()
+        return document.model_copy(
+            update={
+                "version": expected_version + 1,
+                "layout_version": row["layout_version"],
+                "layout_settings_sha256": row["layout_settings_sha256"],
+                "blocks_after_close": bool(row["blocks_after_close"]),
+                "import_generation": row["import_generation"],
+            }
+        )
+
+    def update_imported_document(self, document: ImportedDocument, expected_version: int) -> ImportedDocument:
+        with self._write() as conn:
+            return self._update_imported_row(conn, document, expected_version)
 
     def list_imported_documents(self, subject_code: str | None = None) -> list[ImportedDocument]:
         order = " ORDER BY uploaded_at DESC, document_id DESC"
@@ -766,13 +833,24 @@ class SQLiteStore:
         self._relink(conn, subjects)  # chunk còn lại không được trỏ tới chunk vừa xoá
 
     def delete_document(self, document_id: str) -> bool:
-        with self._write() as conn:
-            if conn.execute("SELECT 1 FROM documents WHERE document_id = ?", (document_id,)).fetchone() is None:
-                return False
-            self._delete_document_row(conn, document_id)
+        """Khối, ledger, đề xuất cấu trúc theo CASCADE của `pages`; mục, hàng ảnh cắt theo CASCADE của `documents`;
+        thư mục ảnh `crops/<document_id>/` bị xoá SAU commit. `import_generations` giữ nguyên."""
+        with self._lock:
+            with self._write() as conn:
+                if conn.execute("SELECT 1 FROM documents WHERE document_id = ?", (document_id,)).fetchone() is None:
+                    return False
+                self._delete_document_row(conn, document_id)
+            self._delete_crop_dir(document_id)
         return True
 
     def revert_imported_document(self, document_id: str, upload: UploadedDocument | None) -> bool:
+        with self._lock:
+            reverted = self._revert_rows(document_id, upload)
+            if reverted:
+                self._delete_crop_dir(document_id)
+        return reverted
+
+    def _revert_rows(self, document_id: str, upload: UploadedDocument | None) -> bool:
         with self._write() as conn:
             exists = conn.execute(f"{self._IMPORTED_SELECT} AND document_id = ?", (document_id,)).fetchone()
             if exists is None:
@@ -785,7 +863,10 @@ class SQLiteStore:
                 return True
             subjects = self._delete_chunk_index(conn, document_id)
             conn.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))  # cặp khái niệm theo CASCADE
-            conn.execute("DELETE FROM pages WHERE document_id = ?", (document_id,))  # lịch sử sửa trang theo CASCADE
+            # lịch sử sửa trang, khối, ledger, đề xuất cấu trúc theo CASCADE của `pages`
+            conn.execute("DELETE FROM pages WHERE document_id = ?", (document_id,))
+            conn.execute("DELETE FROM sections WHERE document_id = ?", (document_id,))
+            conn.execute("DELETE FROM crop_images WHERE document_id = ?", (document_id,))
             conn.execute(
                 f"UPDATE documents SET filename = ?, media_type = ?, size_bytes = ?, uploaded_at = ?, "
                 f"{self._IMPORT_ONLY_RESET}, version = version + 1 WHERE document_id = ?",
@@ -796,11 +877,12 @@ class SQLiteStore:
         return True
 
     # Cột chỉ bộ nhập §6.5 ghi; dòng chỉ do upload đề §6.1 tạo có mọi cột này là NULL (cột có mặc định của migration
-    # 0004 trở về mặc định: `chapter_flags_json = '[]'`, `auto_confirm = 1`).
+    # 0004 và của migration khối trở về mặc định: `chapter_flags_json = '[]'`, `auto_confirm = 1`, cột khối null/0).
     _IMPORT_ONLY_RESET = (
         "subject_code = NULL, title = NULL, source_kind = NULL, output_language = NULL, page_count = NULL, "
         "has_text_layer = NULL, status = NULL, chapter_code = NULL, chapter_title = NULL, chapter_code_source = NULL, "
-        "chapter_title_source = NULL, chapter_flags_json = '[]', auto_confirm = 1"
+        "chapter_title_source = NULL, chapter_flags_json = '[]', auto_confirm = 1, layout_version = NULL, "
+        "layout_settings_sha256 = NULL, blocks_after_close = 0, import_generation = 0"
     )
 
     def add_page(
@@ -826,14 +908,26 @@ class SQLiteStore:
         confirmed: bool,
         expected_version: int,
         audit: PageEditAudit | None = None,
+        geometry: PageGeometry | None = None,
     ) -> int:
         if audit is not None:
             check_page_audit(audit, document_id, page_number, expected_version)
+        geometry_json = None if geometry is None else geometry.model_dump_json()
         with self._write() as conn:
             cursor = conn.execute(
                 "UPDATE pages SET status = ?, extraction_json = ?, confirmed = ?, updated_at = ?, "
-                "version = version + 1 WHERE document_id = ? AND page_number = ? AND version = ?",
-                (status, _dump(page), int(confirmed), _now(), document_id, page_number, expected_version),
+                "geometry_json = COALESCE(?, geometry_json), version = version + 1 "
+                "WHERE document_id = ? AND page_number = ? AND version = ?",
+                (
+                    status,
+                    _dump(page),
+                    int(confirmed),
+                    _now(),
+                    geometry_json,
+                    document_id,
+                    page_number,
+                    expected_version,
+                ),
             )
             if cursor.rowcount == 0:
                 raise _version_conflict(
@@ -895,15 +989,19 @@ class SQLiteStore:
         `page_role`, `dropped`; JSON trang lưu trước GĐ0 không có hai field này ⇒ `content`, không bỏ mềm. GĐ1 1B thêm
         `confirmed_by`; JSON trước GĐ1 không có ⇒ null)."""
         with self._read() as conn:
-            rows = conn.execute(
-                "SELECT page_number, status, confirmed, json_extract(extraction_json, '$.tier_used') AS tier_used, "
-                "json_extract(extraction_json, '$.review_reasons') AS review_reasons, "
-                "json_extract(extraction_json, '$.page_role') AS page_role, "
-                "json_extract(extraction_json, '$.dropped') AS dropped, "
-                "json_extract(extraction_json, '$.confirmed_by') AS confirmed_by "
-                "FROM pages WHERE document_id = ? ORDER BY page_number",
-                (document_id,),
-            ).fetchall()
+            return self._page_summaries(conn, document_id)
+
+    @staticmethod
+    def _page_summaries(conn: sqlite3.Connection, document_id: str) -> list[PageSummary]:
+        rows = conn.execute(
+            "SELECT page_number, status, confirmed, json_extract(extraction_json, '$.tier_used') AS tier_used, "
+            "json_extract(extraction_json, '$.review_reasons') AS review_reasons, "
+            "json_extract(extraction_json, '$.page_role') AS page_role, "
+            "json_extract(extraction_json, '$.dropped') AS dropped, "
+            "json_extract(extraction_json, '$.confirmed_by') AS confirmed_by "
+            "FROM pages WHERE document_id = ? ORDER BY page_number",
+            (document_id,),
+        ).fetchall()
         return [
             PageSummary.model_validate(
                 {
@@ -943,7 +1041,8 @@ class SQLiteStore:
             conn.execute(
                 "INSERT INTO chunks (chunk_id, document_id, subject_code, chapter_code, category, page_number, "
                 "page_end, raw_text, verbatim_quote, tags_json, linked_chunk_ids_json, token_count, label_status, "
-                "mapping_confidence, version, is_exercise) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "mapping_confidence, version, is_exercise, section_id, block_ids_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     chunk.chunk_id,
                     chunk.doc_id,
@@ -961,6 +1060,8 @@ class SQLiteStore:
                     chunk.mapping_confidence,
                     chunk.version,
                     None if chunk.is_exercise is None else int(chunk.is_exercise),
+                    chunk.section_id,
+                    json.dumps(chunk.block_ids),
                 ),
             )
         except sqlite3.IntegrityError as exc:
@@ -1024,13 +1125,15 @@ class SQLiteStore:
                 "mapping_confidence": row["mapping_confidence"],
                 "version": row["version"],
                 "is_exercise": None if row["is_exercise"] is None else bool(row["is_exercise"]),
+                "section_id": row["section_id"],
+                "block_ids": json.loads(str(row["block_ids_json"])),
             }
         )
 
     _CHUNK_SELECT = (
         "SELECT chunk_id, document_id, subject_code, chapter_code, category, page_number, page_end, raw_text, "
         "verbatim_quote, tags_json, linked_chunk_ids_json, token_count, label_status, mapping_confidence, version, "
-        "is_exercise FROM chunks"
+        "is_exercise, section_id, block_ids_json FROM chunks"
     )
 
     def _load_chunks(self, conn: sqlite3.Connection, where: str, params: Sequence[object]) -> list[KnowledgeChunk]:
@@ -1326,3 +1429,372 @@ class SQLiteStore:
         if row is None or row["edited_by"] is None:
             return None
         return VaultEdit(editor_id=str(row["edited_by"]), at=datetime.fromisoformat(str(row["edited_at"])))
+
+    # ------------------------------------------------------------------ #
+    # BlockRepository (§5.13 migration khối; ADR-010 mục 13, 17, 19)
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _require_imported(conn: sqlite3.Connection, document_id: str) -> sqlite3.Row:
+        row: sqlite3.Row | None = conn.execute(
+            "SELECT document_id, source_kind FROM documents WHERE document_id = ? AND subject_code IS NOT NULL",
+            (document_id,),
+        ).fetchone()
+        if row is None:
+            raise RecordNotFoundError("tài liệu", document_id)
+        return row
+
+    @staticmethod
+    def _require_page(conn: sqlite3.Connection, document_id: str, page_number: int) -> None:
+        row = conn.execute(
+            "SELECT 1 FROM pages WHERE document_id = ? AND page_number = ?", (document_id, page_number)
+        ).fetchone()
+        if row is None:
+            raise RecordNotFoundError("trang", f"{document_id}#{page_number}")
+
+    @staticmethod
+    def _load_block(conn: sqlite3.Connection, document_id: str, block_id: str) -> Block:
+        row = conn.execute(
+            "SELECT block_json FROM blocks WHERE document_id = ? AND block_id = ?", (document_id, block_id)
+        ).fetchone()
+        if row is None:
+            raise RecordNotFoundError("khối", f"{document_id}#{block_id}")
+        return Block.model_validate_json(str(row["block_json"]))
+
+    @staticmethod
+    def _store_block(conn: sqlite3.Connection, block: Block) -> None:
+        """Ghi lại `block_json` (và các cột lọc) của một khối đã có; cột `eligible` giữ nguyên."""
+        conn.execute(
+            "UPDATE blocks SET page_number = ?, reading_order = ?, type = ?, block_json = ? "
+            "WHERE document_id = ? AND block_id = ?",
+            (
+                block.page_number,
+                block.reading_order,
+                block.type,
+                block.model_dump_json(),
+                block.document_id,
+                block.block_id,
+            ),
+        )
+
+    def get_page_geometry(self, document_id: str, page_number: int) -> PageGeometry | None:
+        with self._read() as conn:
+            row = conn.execute(
+                "SELECT geometry_json FROM pages WHERE document_id = ? AND page_number = ?",
+                (document_id, page_number),
+            ).fetchone()
+        if row is None or row["geometry_json"] is None:
+            return None
+        return PageGeometry.model_validate_json(str(row["geometry_json"]))
+
+    def save_document_layout(self, document_id: str, layout: DocumentLayout) -> None:
+        with self._lock:
+            with self._write() as conn:
+                self._require_imported(conn, document_id)
+                for rewrite in layout.page_rewrites:
+                    page = rewrite.page
+                    if page.document_id != document_id:
+                        raise ValueError("trang ghi lại không thuộc tài liệu")
+                    cursor = conn.execute(
+                        "UPDATE pages SET status = ?, extraction_json = ?, confirmed = ?, updated_at = ?, "
+                        "version = version + 1 WHERE document_id = ? AND page_number = ? AND version = ?",
+                        (
+                            page.status,
+                            _dump(page),
+                            int(page.confirmed),
+                            _now(),
+                            document_id,
+                            page.page_number,
+                            rewrite.expected_version,
+                        ),
+                    )
+                    if cursor.rowcount == 0:
+                        raise _version_conflict(
+                            conn,
+                            "trang",
+                            f"{document_id}#{page.page_number}",
+                            rewrite.expected_version,
+                            "SELECT version FROM pages WHERE document_id = ? AND page_number = ?",
+                            (document_id, page.page_number),
+                        )
+                for page_layout in layout.pages:
+                    number = page_layout.page_number
+                    self._require_page(conn, document_id, number)
+                    if any(block.document_id != document_id for block in page_layout.blocks) or (
+                        page_layout.ledger is not None and page_layout.ledger.document_id != document_id
+                    ):
+                        raise ValueError("khối hoặc ledger không thuộc tài liệu")
+                    conn.execute("DELETE FROM blocks WHERE document_id = ? AND page_number = ?", (document_id, number))
+                    conn.executemany(
+                        "INSERT INTO blocks (document_id, block_id, page_number, reading_order, type, eligible, "
+                        "block_json) VALUES (?, ?, ?, ?, ?, 0, ?)",
+                        [
+                            (document_id, b.block_id, number, b.reading_order, b.type, b.model_dump_json())
+                            for b in page_layout.blocks
+                        ],
+                    )
+                    conn.execute(
+                        "DELETE FROM extraction_ledgers WHERE document_id = ? AND page_number = ?",
+                        (document_id, number),
+                    )
+                    if page_layout.ledger is not None:
+                        conn.execute(
+                            "INSERT INTO extraction_ledgers (document_id, page_number, balanced, ledger_json) "
+                            "VALUES (?, ?, ?, ?)",
+                            (
+                                document_id,
+                                number,
+                                int(page_layout.ledger.balanced),
+                                page_layout.ledger.model_dump_json(),
+                            ),
+                        )
+                after_close = None if layout.blocks_after_close is None else int(layout.blocks_after_close)
+                conn.execute(
+                    "UPDATE documents SET layout_version = ?, layout_settings_sha256 = ?, "
+                    "blocks_after_close = COALESCE(?, blocks_after_close) WHERE document_id = ?",
+                    (layout.layout_version, layout.layout_settings_sha256, after_close, document_id),
+                )
+                stale_refs = self._drop_stale_crop_rows(conn, document_id)
+            self._release_crop_files(document_id, stale_refs)
+
+    @staticmethod
+    def _drop_stale_crop_rows(conn: sqlite3.Connection, document_id: str) -> set[str]:
+        """Xoá hàng ảnh cắt có `block_id` không còn trong `blocks`; trả các `crop_ref` của hàng đã xoá."""
+        stale = "document_id = ? AND block_id NOT IN (SELECT block_id FROM blocks WHERE document_id = ?)"
+        refs = {
+            str(row["crop_ref"])
+            for row in conn.execute(f"SELECT crop_ref FROM crop_images WHERE {stale}", (document_id, document_id))
+        }
+        conn.execute(f"DELETE FROM crop_images WHERE {stale}", (document_id, document_id))
+        return refs
+
+    def list_blocks(self, document_id: str, page_number: int | None = None) -> list[Block]:
+        where: str = "document_id = ?"
+        params: list[object] = [document_id]
+        if page_number is not None:
+            where, params = "document_id = ? AND page_number = ?", [document_id, page_number]
+        return self._blocks_where(where, params)
+
+    def _blocks_where(self, where: str, params: Sequence[object]) -> list[Block]:
+        with self._read() as conn:
+            rows = conn.execute(
+                f"SELECT block_json FROM blocks WHERE {where} ORDER BY page_number, reading_order, block_id", params
+            ).fetchall()
+        return [Block.model_validate_json(str(row["block_json"])) for row in rows]
+
+    def list_extraction_ledgers(self, document_id: str) -> list[ExtractionLedger]:
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT ledger_json FROM extraction_ledgers WHERE document_id = ? ORDER BY page_number",
+                (document_id,),
+            ).fetchall()
+        return [ExtractionLedger.model_validate_json(str(row["ledger_json"])) for row in rows]
+
+    def replace_sections(self, document_id: str, sections: Sequence[Section]) -> None:
+        if any(section.document_id != document_id for section in sections):
+            raise ValueError("Section không thuộc tài liệu")
+        if len({section.section_id for section in sections}) != len(sections):
+            raise ValueError("section_id trùng")
+        with self._write() as conn:
+            self._require_imported(conn, document_id)
+            conn.execute("DELETE FROM sections WHERE document_id = ?", (document_id,))
+            conn.executemany(
+                "INSERT INTO sections (document_id, section_id, parent_id, ordinal, section_json) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [(document_id, s.section_id, s.parent_id, s.ordinal, s.model_dump_json()) for s in sections],
+            )
+            for block_id, level in heading_levels(sections):
+                block = self._load_block(conn, document_id, block_id)
+                if block.type != "heading":
+                    raise ValueError(f"khối tiêu đề {block_id} không phải heading")
+                if block.level != level:
+                    self._store_block(conn, block.model_copy(update={"level": level}))
+
+    def list_sections(self, document_id: str) -> list[Section]:
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT section_json FROM sections WHERE document_id = ? ORDER BY ordinal, section_id", (document_id,)
+            ).fetchall()
+        return [Section.model_validate_json(str(row["section_json"])) for row in rows]
+
+    def update_imported_document_and_root_section(
+        self, document: ImportedDocument, expected_version: int
+    ) -> ImportedDocument:
+        document_id = document.meta.doc_id
+        with self._write() as conn:
+            updated = self._update_imported_row(conn, document, expected_version)
+            row = conn.execute(
+                "SELECT section_json FROM sections WHERE document_id = ? AND parent_id IS NULL", (document_id,)
+            ).fetchone()
+            if row is not None:
+                root = with_root_chapter(
+                    Section.model_validate_json(str(row["section_json"])), document.chapter_code, document.chapter_title
+                )
+                conn.execute(
+                    "UPDATE sections SET section_json = ? WHERE document_id = ? AND section_id = ?",
+                    (root.model_dump_json(), document_id, root.section_id),
+                )
+        return updated
+
+    def update_block_flags(self, document_id: str, updates: Sequence[BlockFlagUpdate]) -> list[Block]:
+        written: list[Block] = []
+        with self._write() as conn:
+            for update in updates:
+                block = with_flags(self._load_block(conn, document_id, update.block_id), update)
+                self._store_block(conn, block)
+                written.append(block)
+        return written
+
+    def save_structure_proposal(self, record: StructureProposalRecord) -> None:
+        with self._write() as conn:
+            self._require_page(conn, record.document_id, record.page_number)
+            conn.execute(
+                "INSERT INTO structure_proposals (document_id, page_number, input_sha256, model, prompt_version, "
+                "status, ops_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (document_id, page_number) DO UPDATE SET input_sha256 = excluded.input_sha256, "
+                "model = excluded.model, prompt_version = excluded.prompt_version, status = excluded.status, "
+                "ops_json = excluded.ops_json, created_at = excluded.created_at",
+                (
+                    record.document_id,
+                    record.page_number,
+                    record.input_sha256,
+                    record.model,
+                    record.prompt_version,
+                    record.status,
+                    record.ops_json,
+                    _ts(record.created_at),
+                ),
+            )
+
+    def list_structure_proposals(self, document_id: str) -> list[StructureProposalRecord]:
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT document_id, page_number, input_sha256, model, prompt_version, status, ops_json, created_at "
+                "FROM structure_proposals WHERE document_id = ? ORDER BY page_number",
+                (document_id,),
+            ).fetchall()
+        return [StructureProposalRecord.model_validate(dict(row)) for row in rows]
+
+    def refresh_eligible_blocks(self, document_id: str) -> int:
+        with self._write() as conn:
+            source_kind = SourceKind(self._require_imported(conn, document_id)["source_kind"])
+            pages = {page.page_number: page for page in self._page_summaries(conn, document_id)}
+            rows = conn.execute("SELECT block_json FROM blocks WHERE document_id = ?", (document_id,)).fetchall()
+            flags: list[tuple[int, str, str]] = []
+            for row in rows:
+                block = Block.model_validate_json(str(row["block_json"]))
+                eligible = is_candidate_block(block, pages[block.page_number], source_kind)
+                flags.append((int(eligible), document_id, block.block_id))
+            conn.executemany("UPDATE blocks SET eligible = ? WHERE document_id = ? AND block_id = ?", flags)
+        return sum(eligible for eligible, _, _ in flags)
+
+    def list_eligible_blocks(self, document_id: str) -> list[Block]:
+        return self._blocks_where("document_id = ? AND eligible = 1", [document_id])
+
+    def save_crop_image(self, crop: CropImage, png: bytes) -> CropWriteResult:
+        check_crop_bytes(crop, png)
+        document_id = crop.document_id
+        replaced: set[str] = set()
+        with self._lock:
+            with self._write() as conn:
+                block = self._load_block(conn, document_id, crop.block_id)
+                if block.page_number != crop.page_number:
+                    raise ValueError("ảnh cắt khác trang của khối")
+                if self._crops is None:
+                    self._store_block(conn, capped(block))
+                    return "capped"
+                previous = conn.execute(
+                    "SELECT crop_ref FROM crop_images WHERE document_id = ? AND block_id = ?",
+                    (document_id, crop.block_id),
+                ).fetchone()
+                if previous is not None and previous["crop_ref"] != crop.crop_ref:
+                    replaced.add(str(previous["crop_ref"]))
+                self._crops.write(document_id, crop.crop_ref, png)  # file TRƯỚC commit hàng (mồ côi dọn khi mở kho)
+                conn.execute(
+                    "INSERT INTO crop_images (document_id, block_id, crop_ref, page_number, bbox_json, width_px, "
+                    "height_px, size_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT (document_id, block_id) DO UPDATE SET crop_ref = excluded.crop_ref, "
+                    "page_number = excluded.page_number, bbox_json = excluded.bbox_json, "
+                    "width_px = excluded.width_px, height_px = excluded.height_px, "
+                    "size_bytes = excluded.size_bytes, created_at = excluded.created_at",
+                    (
+                        document_id,
+                        crop.block_id,
+                        crop.crop_ref,
+                        crop.page_number,
+                        json.dumps(list(crop.bbox)),
+                        crop.width_px,
+                        crop.height_px,
+                        crop.size_bytes,
+                        _now(),
+                    ),
+                )
+                self._store_block(conn, cropped(block, crop.crop_ref))
+            self._release_crop_files(document_id, replaced)
+        return "stored"
+
+    def list_crop_images(self, document_id: str) -> list[CropImage]:
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT document_id, block_id, crop_ref, page_number, bbox_json, width_px, height_px, size_bytes "
+                "FROM crop_images WHERE document_id = ? ORDER BY block_id",
+                (document_id,),
+            ).fetchall()
+        return [
+            CropImage.model_validate(
+                {
+                    "document_id": row["document_id"],
+                    "block_id": row["block_id"],
+                    "crop_ref": row["crop_ref"],
+                    "page_number": row["page_number"],
+                    "bbox": json.loads(str(row["bbox_json"])),
+                    "width_px": row["width_px"],
+                    "height_px": row["height_px"],
+                    "size_bytes": row["size_bytes"],
+                }
+            )
+            for row in rows
+        ]
+
+    def get_crop_bytes(self, document_id: str, crop_ref: str) -> bytes | None:
+        if self._crops is None:
+            return None
+        with self._lock:
+            with self._read() as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM crop_images WHERE document_id = ? AND crop_ref = ?", (document_id, crop_ref)
+                ).fetchone()
+            return None if row is None else self._crops.read(document_id, crop_ref)
+
+    def _release_crop_files(self, document_id: str, crop_refs: set[str]) -> None:
+        """SAU commit: xoá file của các `crop_ref` không còn hàng `crop_images` nào của tài liệu (đếm bằng truy vấn,
+        dưới khoá kho để không chen với một lần ghi ảnh)."""
+        if self._crops is None or not crop_refs:
+            return
+        with self._lock:
+            with self._read() as conn:
+                unused = [
+                    ref
+                    for ref in sorted(crop_refs)
+                    if conn.execute(
+                        "SELECT 1 FROM crop_images WHERE document_id = ? AND crop_ref = ?", (document_id, ref)
+                    ).fetchone()
+                    is None
+                ]
+            for ref in unused:
+                self._crops.delete(document_id, ref)
+
+    def _delete_crop_dir(self, document_id: str) -> None:
+        """SAU commit xoá tài liệu: xoá thư mục ảnh `crops/<document_id>/`."""
+        if self._crops is not None:
+            self._crops.delete_document(document_id)
+
+    def _sweep_orphan_crops(self) -> None:
+        """Lúc mở kho: dọn file/thư mục ảnh không có hàng `crop_images` tương ứng (không có thư mục ảnh ⇒ bỏ qua)."""
+        if self._crops is None:
+            return
+        keep: dict[str, set[str]] = {}
+        with self._read() as conn:
+            for row in conn.execute("SELECT document_id, crop_ref FROM crop_images"):
+                keep.setdefault(str(row["document_id"]), set()).add(str(row["crop_ref"]))
+        self._crops.sweep_orphans(keep)

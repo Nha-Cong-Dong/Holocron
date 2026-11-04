@@ -44,12 +44,14 @@ __all__ = [
 ]
 
 # Tăng đúng một lần trong PR nào làm đầu ra của bộ dựng đổi với tài liệu đã lưu (ADR-010 mục 15 (g'')).
-LAYOUT_VERSION = 1
+LAYOUT_VERSION = 2
 
 # Sổ đăng ký cộng dồn: version → `layout_settings_sha256` của cấu hình mặc định (ADR-010 mục 15). PR tăng
 # `LAYOUT_VERSION` THÊM đúng một mục mới, KHÔNG sửa mục cũ.
 LAYOUT_HASH_REGISTRY: dict[int, str] = {
     1: "6dbbacb166ac527442c052009189b0b50f2e024b55d1762baac69175f9414ae6",
+    # v2: đăng ký `code_blocks` (X06) vào `PAGE_STAGES` và `section_tree` (X08) sau `page_numbers` vào hash.
+    2: "084b4a5a06c692e2f275b4ac982476aaf8bd59573d495d08d52b66033906da5f",
 }
 
 # Trần độ dài `Block.text` (ADR-010 mục 7): `paragraph` dài hơn được tách tại ranh giới dòng; loại khác ⇒ LAYOUT_FAILED.

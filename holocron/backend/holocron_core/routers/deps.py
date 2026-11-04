@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import os
 import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
@@ -16,20 +16,23 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException, Request
 
 from ..domain.ai import AiConsent, AiConsentStore
+from ..domain.capabilities import Capability, CapabilityName, CapabilityReason
 from ..domain.repositories import AppStore, VaultRepository
 from ..infrastructure.ai_consent_store import AiSettingsFile, FileAiConsentStore, UnpersistedAiConsentStore
 from ..infrastructure.ai_runtime import EnvAiConsent, EnvProviderSource, FileSpendLedger, InMemorySpendLedger
 from ..infrastructure.llm_config import RuntimeConfig, load_runtime_config_lenient
-from ..infrastructure.provider_probe import ProviderProbe
+from ..infrastructure.provider_probe import ProviderProbe, guarded_transport
 from ..infrastructure.provider_store import (
     CombinedProviderSource,
     FileProviderStore,
     ProviderStore,
     UnpersistedProviderStore,
 )
+from ..infrastructure.selected_llm_client import TransportFactory
 from ..infrastructure.storage import data_dir_from_env, open_store_from_env
 from ..infrastructure.template_library import InMemoryTemplateRegistry
 from ..launcher_logging import LOG_DIR_ENV, BuildInfo, read_build_info
+from ..services.capabilities import compute_capabilities
 from ..services.concept_proposal_job import ProposalJobRuntime
 from ..services.extraction import DocumentExtractor, MockDualPassExtractor
 from ..services.pipeline import TemplateAuthor
@@ -170,6 +173,36 @@ def get_provider_selection() -> ProviderSelection:
     return _provider_selection_for(data_dir_from_env())
 
 
+def merged_ai_configured(config: RuntimeConfig, view: ProviderSelection) -> tuple[bool, bool]:
+    """`(llm_configured, vlm_configured)` theo nguồn hợp nhất env + nhà cung cấp người dùng (ADR-009 mục 12.11).
+
+    Nguồn DUY NHẤT cho `GET /v1/runtime`, cho phụ thuộc client LLM (`vault.get_chat_client`) và cho job đề xuất tự
+    tạo, để khả năng báo ra luôn khớp việc endpoint có dựng được client. Không có nhà cung cấp người dùng ⇒ trùng
+    nghĩa env."""
+    return (
+        config.llm_configured or view.configured("llm"),
+        config.vlm is not None or view.configured("vlm"),
+    )
+
+
+def merged_capabilities(
+    config: RuntimeConfig,
+    view: ProviderSelection,
+    local_failures: Mapping[CapabilityName, CapabilityReason] | None = None,
+) -> list[Capability]:
+    """`compute_capabilities` với cờ cấu hình theo `merged_ai_configured`."""
+    llm_configured, vlm_configured = merged_ai_configured(config, view)
+    return compute_capabilities(
+        config, local_failures=local_failures, llm_configured=llm_configured, vlm_configured=vlm_configured
+    )
+
+
+def get_llm_transport_factory() -> TransportFactory:
+    """Transport của client LLM tới nhà cung cấp đã chọn: `guarded_transport(ip_policy, limits)` (ADR-009 mục 12.8).
+    Test thay bằng transport giả (không gọi mạng)."""
+    return guarded_transport
+
+
 def get_provider_probe() -> ProviderProbe:
     """Kiểm thử nhà cung cấp qua mạng có chặn địa chỉ (ADR-009 mục 12.8); test thay bằng transport giả."""
     return ProviderProbe()
@@ -207,5 +240,6 @@ AiConsentDep = Annotated[AiConsent, Depends(get_ai_consent)]
 ProviderSelectionDep = Annotated[ProviderSelection, Depends(get_provider_selection)]
 ProviderStoreDep = Annotated[ProviderStore, Depends(get_provider_store)]
 ProviderProbeDep = Annotated[ProviderProbe, Depends(get_provider_probe)]
+LlmTransportFactoryDep = Annotated[TransportFactory, Depends(get_llm_transport_factory)]
 ProposalJobsDep = Annotated[ProposalJobRuntime, Depends(get_proposal_jobs)]
 OptionalProposalJobsDep = Annotated[ProposalJobRuntime | None, Depends(get_optional_proposal_jobs)]

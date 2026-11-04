@@ -12,8 +12,8 @@ Phụ thuộc cấp qua `Depends`, test thay bằng `app.dependency_overrides`:
   `OCR_ENGINE_MISSING`, ADR-008 mục 8), kèm cảnh báo chỉ nêu tên biến.
 - `get_document_proposals` (T1b, T1e; spec §5.7, §5.8 "Khi nào chạy", §6.5): runtime job đề xuất cặp của app
   (`get_optional_proposal_jobs`, `None` khi không qua `lifespan`), khả năng `concept_pair_llm_proposal` tính bằng CÙNG
-  hàm của `GET /v1/runtime` (`compute_capabilities` với `RuntimeConfig` và kết quả kiểm cục bộ `get_local_failures`), và
-  hàm dựng client của `POST /v1/vault/concept-pairs/jobs` (`get_client_factory_builder` →
+  hàm của `GET /v1/runtime` (`deps.merged_capabilities` với `RuntimeConfig`, nhà cung cấp người dùng và kết quả kiểm
+  cục bộ `get_local_failures`), và hàm dựng client của `POST /v1/vault/concept-pairs/jobs` (`get_client_factory_builder` →
   `vault.get_chat_client_factory`). Mọi route trả `DocumentImport` dùng nó để điền `proposal_job` hoặc
   `proposal_job_absent_reason`; xác nhận vừa đóng tài liệu thì tự tạo job. Đường chốt chạy nền (cuối lần đọc, đường
   `failed`) dùng hook của `ImportRuntime` do `lifespan` cấp (`background_proposal_hook`), cùng các hàm trên.
@@ -58,7 +58,7 @@ from ..infrastructure.document_readers.config import MIB, PdfReaderConfig, load_
 from ..infrastructure.document_readers.pdf_reader import PdfReader, PdfWorkerError, WorkerPdfReader
 from ..infrastructure.llm_config import ConfigError, RuntimeConfig
 from ..infrastructure.storage.original_files import OriginalFileStore
-from ..services.capabilities import compute_capabilities, unavailable_error
+from ..services.capabilities import unavailable_error
 from ..services.concept_proposal_job import ClientFactory, DocumentProposals, ProposalJobRuntime
 from ..services.document_chapter import ChapterCodeLockedError, update_document_chapter
 from ..services.document_import import (
@@ -90,6 +90,7 @@ from ..services.document_import import (
     restore_page,
     unconfirm_page,
 )
+from ..services.provider_selection import ProviderSelection
 from .deps import (
     ClockDep,
     OptionalProposalJobsDep,
@@ -98,7 +99,9 @@ from .deps import (
     VaultDep,
     find_proposal_jobs,
     get_clock,
+    get_provider_selection,
     get_runtime_config,
+    merged_capabilities,
 )
 
 SUBJECT_CODE_PATTERN = r"^[A-Z]{2,6}[0-9]{2,4}$"
@@ -241,11 +244,14 @@ def document_proposals(
     clock: Callable[[], datetime],
     jobs: ProposalJobRuntime | None,
     build_client_factory: ClientFactoryBuilder,
+    providers: ProviderSelection | None = None,
 ) -> DocumentProposals:
     """`DocumentProposals` của một request hoặc một lần hook nền chạy. Khả năng LLM lấy từ CÙNG hàm của
-    `GET /v1/runtime` (`compute_capabilities` + `unavailable_error`), không có nguồn thứ hai; client chỉ dựng khi thật
-    sự tạo job."""
-    error = unavailable_error(compute_capabilities(config, local_failures=local_failures), "concept_pair_llm_proposal")
+    `GET /v1/runtime` (`deps.merged_capabilities`: env + nhà cung cấp người dùng, rồi `unavailable_error`), không có
+    nguồn thứ hai; client chỉ dựng khi thật sự tạo job. `providers` là `None` ⇒ bộ chọn mặc định của app."""
+    selection = providers if providers is not None else get_provider_selection()
+    capabilities = merged_capabilities(config, selection.snapshot(), local_failures)
+    error = unavailable_error(capabilities, "concept_pair_llm_proposal")
     return DocumentProposals(
         store=store,
         jobs=jobs,
@@ -264,8 +270,9 @@ def get_document_proposals(
     jobs: OptionalProposalJobsDep,
     local_failures: Annotated[LocalFailures, Depends(get_capability_local_failures)],
     build_client_factory: Annotated[ClientFactoryBuilder, Depends(get_client_factory_builder)],
+    providers: Annotated[ProviderSelection, Depends(get_provider_selection)],
 ) -> DocumentProposals:
-    return document_proposals(store, config, local_failures, clock, jobs, build_client_factory)
+    return document_proposals(store, config, local_failures, clock, jobs, build_client_factory, providers)
 
 
 DocumentProposalsDep = Annotated[DocumentProposals, Depends(get_document_proposals)]
@@ -291,6 +298,9 @@ def background_proposal_hook(application: FastAPI, store: AppStore) -> DocumentC
         builder_provider: Callable[[], ClientFactoryBuilder] = overrides.get(
             get_client_factory_builder, get_client_factory_builder
         )
+        selection_provider: Callable[[], ProviderSelection] = overrides.get(
+            get_provider_selection, get_provider_selection
+        )
         proposals = document_proposals(
             store,
             config_provider(),
@@ -298,6 +308,7 @@ def background_proposal_hook(application: FastAPI, store: AppStore) -> DocumentC
             clock_provider(),
             find_proposal_jobs(application),
             builder_provider(),
+            selection_provider(),
         )
         return proposals.start(document_id)
 

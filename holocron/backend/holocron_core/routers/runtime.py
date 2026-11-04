@@ -33,12 +33,20 @@ from ..domain.capabilities import Capability, CapabilityName, CapabilityReason
 from ..infrastructure.ai_runtime import build_ai_status, read_consent_state
 from ..infrastructure.document_readers.config import PdfReaderConfig, load_ocr_settings
 from ..infrastructure.document_readers.secondary_probe import error_name, probe_secondary_ocr
-from ..services.capabilities import compute_capabilities
 from ..services.capability_checks import check_local_capabilities, probe_tesseract
 from ..services.document_import import ImportRuntime
 from ..services.extraction import MockDualPassExtractor
 from .access import get_required_token
-from .deps import AiConsentStoreDep, BuildInfoDep, ExtractorDep, LogDirDep, ProviderSelectionDep, RuntimeConfigDep
+from .deps import (
+    AiConsentStoreDep,
+    BuildInfoDep,
+    ExtractorDep,
+    LogDirDep,
+    ProviderSelectionDep,
+    RuntimeConfigDep,
+    merged_ai_configured,
+    merged_capabilities,
+)
 from .documents import RUNTIME_STATE_ATTR
 
 router = APIRouter()
@@ -247,9 +255,8 @@ def get_runtime(
         view,
         "token_not_configured" if required_token is None else "token",
     )
-    # Nguồn hợp nhất env + người dùng (ADR-009 mục 12.11); không có nhà cung cấp người dùng ⇒ trùng nghĩa env.
-    llm_configured = config.llm_configured or view.configured("llm")
-    vlm_configured = config.vlm is not None or view.configured("vlm")
+    # Nguồn hợp nhất env + người dùng (ADR-009 mục 12.11), CÙNG hàm với phụ thuộc client LLM (`vault.get_chat_client`).
+    llm_configured, vlm_configured = merged_ai_configured(config, view)
     return RuntimeInfo(
         demo_mode=isinstance(extractor, MockDualPassExtractor),
         llm_configured=llm_configured,
@@ -257,11 +264,6 @@ def get_runtime(
         app_version=build.version,
         commit=build.commit,
         log_dir=log_dir,
-        capabilities=compute_capabilities(
-            config,
-            local_failures=local_failures,
-            llm_configured=llm_configured,
-            vlm_configured=vlm_configured,
-        ),
+        capabilities=merged_capabilities(config, view, local_failures),
         ai_status=ai_status,
     )

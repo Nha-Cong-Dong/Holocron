@@ -17,9 +17,16 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 
 from ..domain.ai import AiConsent, AiConsentStore
 from ..domain.repositories import AppStore, VaultRepository
-from ..infrastructure.ai_consent_store import FileAiConsentStore, UnpersistedAiConsentStore
+from ..infrastructure.ai_consent_store import AiSettingsFile, FileAiConsentStore, UnpersistedAiConsentStore
 from ..infrastructure.ai_runtime import EnvAiConsent, EnvProviderSource, InMemorySpendLedger
 from ..infrastructure.llm_config import RuntimeConfig, load_runtime_config_lenient
+from ..infrastructure.provider_probe import ProviderProbe
+from ..infrastructure.provider_store import (
+    CombinedProviderSource,
+    FileProviderStore,
+    ProviderStore,
+    UnpersistedProviderStore,
+)
 from ..infrastructure.storage import data_dir_from_env, open_store_from_env
 from ..infrastructure.template_library import InMemoryTemplateRegistry
 from ..launcher_logging import LOG_DIR_ENV, BuildInfo, read_build_info
@@ -112,9 +119,15 @@ def get_log_dir() -> str | None:
 
 
 @cache
+def _settings_file(data_dir: Path) -> AiSettingsFile:
+    """Một file cài đặt AI (một khoá) cho mỗi thư mục dữ liệu, dùng chung cho công tắc và nhà cung cấp người dùng."""
+    return AiSettingsFile(data_dir)
+
+
+@cache
 def _file_consent_store(data_dir: Path) -> FileAiConsentStore:
-    """Một kho cho mỗi thư mục dữ liệu, để khoá ghi của instance kho dùng chung cho mọi request."""
-    return FileAiConsentStore(data_dir)
+    """Một kho cho mỗi thư mục dữ liệu, để khoá ghi của file cài đặt dùng chung cho mọi request."""
+    return FileAiConsentStore(data_dir, _settings_file(data_dir))
 
 
 def get_ai_consent_store() -> AiConsentStore:
@@ -133,14 +146,32 @@ def get_ai_consent(store: AiConsentStoreDep) -> AiConsent:
 
 
 @cache
+def _file_provider_store(data_dir: Path) -> FileProviderStore:
+    return FileProviderStore(_settings_file(data_dir))
+
+
+def get_provider_store() -> ProviderStore:
+    """Kho nhà cung cấp người dùng (spec §5.16): file cài đặt khi đặt `HOLOCRON_DATA_DIR`, không thì chỉ nhà cung cấp
+    env và mọi endpoint ghi trả 409 `settings_not_persistent`. Test thay bằng `dependency_overrides`."""
+    data_dir = data_dir_from_env()
+    return UnpersistedProviderStore() if data_dir is None else _file_provider_store(data_dir)
+
+
+@cache
 def _default_provider_selection() -> ProviderSelection:
-    """Bộ chọn của tiến trình: nguồn env đọc lại mỗi lần gọi; sổ chi tiêu trong RAM dùng chung (reset khi khởi động)."""
-    return ProviderSelection(EnvProviderSource(), InMemorySpendLedger())
+    """Bộ chọn của tiến trình: nguồn env và kho người dùng đọc lại mỗi lần gọi; sổ chi tiêu trong RAM dùng chung
+    (reset khi khởi động)."""
+    return ProviderSelection(CombinedProviderSource(EnvProviderSource(), get_provider_store), InMemorySpendLedger())
 
 
 def get_provider_selection() -> ProviderSelection:
     """Bộ chọn nhà cung cấp (cài DUY NHẤT ở `services/provider_selection.py`); test thay bằng `dependency_overrides`."""
     return _default_provider_selection()
+
+
+def get_provider_probe() -> ProviderProbe:
+    """Kiểm thử nhà cung cấp qua mạng có chặn địa chỉ (ADR-009 mục 12.8); test thay bằng transport giả."""
+    return ProviderProbe()
 
 
 def get_template_author() -> TemplateAuthor:
@@ -173,5 +204,7 @@ CitationDep = Annotated[CitationProvider, Depends(get_citation_provider)]
 ClockDep = Annotated[Callable[[], datetime], Depends(get_clock)]
 AiConsentDep = Annotated[AiConsent, Depends(get_ai_consent)]
 ProviderSelectionDep = Annotated[ProviderSelection, Depends(get_provider_selection)]
+ProviderStoreDep = Annotated[ProviderStore, Depends(get_provider_store)]
+ProviderProbeDep = Annotated[ProviderProbe, Depends(get_provider_probe)]
 ProposalJobsDep = Annotated[ProposalJobRuntime, Depends(get_proposal_jobs)]
 OptionalProposalJobsDep = Annotated[ProposalJobRuntime | None, Depends(get_optional_proposal_jobs)]

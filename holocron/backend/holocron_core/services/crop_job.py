@@ -118,8 +118,14 @@ def _key_of(document: ImportedDocument) -> CropJobKey | None:
 
 
 def _targets(store: DocumentRepository, document_id: str) -> list[Block]:
-    cropped = {row.block_id for row in store.list_crop_images(document_id)}
-    return blocks_needing_crop(store.list_blocks(document_id), cropped)
+    return _targets_and_existing(store, document_id)[0]
+
+
+def _targets_and_existing(store: DocumentRepository, document_id: str) -> tuple[list[Block], list[CropImage]]:
+    """Khối cần ảnh và các hàng `crop_images` đã có của tài liệu (đọc cùng lúc, dùng cho trần số vùng)."""
+    existing = store.list_crop_images(document_id)
+    cropped = {row.block_id for row in existing}
+    return blocks_needing_crop(store.list_blocks(document_id), cropped), existing
 
 
 def plan_crop_job(store: DocumentRepository, document_id: str, files: OriginalPaths) -> CropJob | None:
@@ -165,7 +171,7 @@ class CropRunner:
             result.cancelled = True
             return result
         deadline = self.monotonic() + self.config.effective_crop_budget_s
-        admitted, over_cap = self._admit(_targets(store, key.document_id))
+        admitted, over_cap = self._admit(*_targets_and_existing(store, key.document_id))
         size = self.config.crop_max_regions_per_request
         batches = [admitted[start : start + size] for start in range(0, len(admitted), size)]
         for position, batch in enumerate(batches):
@@ -192,14 +198,18 @@ class CropRunner:
                 return result
         return result
 
-    def _admit(self, targets: Sequence[Block]) -> tuple[list[Block], list[Block]]:
-        """Trần số vùng mỗi trang (`crop_max_per_page`) và mỗi job (`crop_max_per_document`); vượt ⇒ `crop_capped`."""
+    def _admit(self, targets: Sequence[Block], existing: Sequence[CropImage]) -> tuple[list[Block], list[Block]]:
+        """Trần số vùng mỗi trang (`crop_max_per_page`) và mỗi tài liệu (`crop_max_per_document`), tính cả các hàng
+        `crop_images` đã có (ví dụ ảnh của khối cũ còn lại sau PATCH đổi id khối); vượt ⇒ `crop_capped`."""
         per_page: dict[int, int] = {}
+        for row in existing:
+            per_page[row.page_number] = per_page.get(row.page_number, 0) + 1
+        total = len(existing)
         admitted: list[Block] = []
         over: list[Block] = []
         for block in targets:
             count = per_page.get(block.page_number, 0)
-            if count >= self.config.crop_max_per_page or len(admitted) >= self.config.crop_max_per_document:
+            if count >= self.config.crop_max_per_page or total + len(admitted) >= self.config.crop_max_per_document:
                 over.append(block)
                 continue
             per_page[block.page_number] = count + 1
@@ -258,7 +268,14 @@ class CropRunner:
             )
         except ValidationError:
             return "crop_failed"
-        return "stored" if store.save_crop_image(crop, outcome.png) == "stored" else "store_capped"
+        try:
+            written = store.save_crop_image(crop, outcome.png)
+        except (ValueError, OSError) as exc:  # byte ảnh bị kho từ chối hay đĩa lỗi: lỗi của khối này, không huỷ lô
+            _LOGGER.warning(
+                "không ghi được ảnh cắt của khối %s (%s); đánh dấu crop_failed", block.block_id, type(exc).__name__
+            )
+            return "crop_failed"
+        return "stored" if written == "stored" else "store_capped"
 
 
 class CropJobs(Protocol):

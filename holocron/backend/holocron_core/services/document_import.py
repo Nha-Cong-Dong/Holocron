@@ -1560,8 +1560,10 @@ def schedule_crops(crops: CropJobs | None, store: DocumentRepository, document_i
         return
     try:
         crops.schedule(store, document_id)
-    except (StorageError, RuntimeError, OSError) as exc:
+    except StorageError as exc:
         _LOGGER.warning("chưa xếp được job cắt ảnh của tài liệu %s (%s)", document_id, type(exc).__name__)
+    except Exception:  # lỗi dữ liệu khi lập job không được đổi kết quả đã commit của người gọi (SPEC §5.15)
+        _LOGGER.exception("lỗi khi xếp job cắt ảnh của tài liệu %s; khối giữ crop_pending", document_id)
 
 
 def mark_document_failed(

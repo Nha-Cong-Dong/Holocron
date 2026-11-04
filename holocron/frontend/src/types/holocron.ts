@@ -1067,3 +1067,120 @@ export interface AiStatus {
   /** Đúng 2 phần tử, thứ tự "vlm", "llm". */
   roles: AiRoleStatus[];
 }
+
+export type ProviderTemplate = "gemini" | "organizer_gateway" | "custom";
+export type KeyStorage = "dpapi" | "plaintext_file" | "env" | "none";
+export type ProviderTestAction = "chat" | "list_models";
+/** Mã đã làm sạch của `POST …/test`: không thân phản hồi, không URL, không khoá (§6.11). */
+export type ProviderTestCode =
+  | "ok"
+  | "auth_failed"
+  | "not_found"
+  | "rate_limited"
+  | "upstream_error"
+  | "timeout"
+  | "blocked_address"
+  | "redirect_blocked"
+  | "invalid_response"
+  | "image_rejected"
+  | "key_unreadable"
+  | "no_model_for_role"
+  | "budget_exhausted";
+
+/** Model theo vai (khớp `domain/ai.py` `ProviderModels`). */
+export interface ProviderModels {
+  vlm: string | null;
+  llm: string | null;
+}
+
+/** Giá USD (khớp `domain/ai.py` `ProviderPrices`). */
+export interface ProviderPrices {
+  input_per_1k_usd: number;
+  output_per_1k_usd: number;
+  per_image_usd: number;
+  source: "user" | "env" | "template_default";
+}
+
+/** Một nhà cung cấp (khớp `domain/ai.py` `ProviderConfig`); không bao giờ có khoá đầy đủ. */
+export interface ProviderConfig {
+  id: string;
+  kind: "openai_compatible";
+  source: "user" | "env";
+  template: ProviderTemplate;
+  label: string;
+  /** null với nhà cung cấp env (không lộ endpoint). */
+  base_url: string | null;
+  local: boolean;
+  models: ProviderModels;
+  key_set: boolean;
+  /** 4 ký tự cuối chỉ khi khoá dài ≥ 12 ký tự. */
+  key_last4: string | null;
+  /** "plaintext_file" ⇒ UI hiện cảnh báo. */
+  key_storage: KeyStorage;
+  key_unreadable: boolean;
+  enabled: boolean;
+  priority: number;
+  budget_usd: number;
+  /** Số backend tính; UI chỉ hiển thị. */
+  spent_usd: number;
+  budget_exhausted: boolean;
+  budget_shared_with: string[];
+  prices: ProviderPrices;
+}
+
+/** Response `GET /v1/settings/providers` (khớp `domain/ai.py` `ProviderList`). */
+export interface ProviderList {
+  providers: ProviderConfig[];
+  settings_persistent: boolean;
+  write_protection: WriteProtection;
+}
+
+/** Giá người dùng nhập (khớp `domain/ai.py` `ProviderPricesInput`). */
+export interface ProviderPricesInput {
+  input_per_1k_usd: number;
+  output_per_1k_usd: number;
+  per_image_usd: number;
+}
+
+/** Body `POST /v1/settings/providers` (khớp `domain/ai.py` `ProviderCreate`). */
+export interface ProviderCreate {
+  template: ProviderTemplate;
+  label: string;
+  base_url: string;
+  /** Không bao giờ được trả lại; bắt buộc trừ base URL loopback. */
+  api_key?: string | null;
+  models: ProviderModels;
+  enabled?: boolean;
+  priority?: number;
+  budget_usd?: number | null;
+  prices?: ProviderPricesInput | null;
+}
+
+/** Body `PATCH /v1/settings/providers/{id}`: field vắng = giữ nguyên; gửi null ⇒ 422 (trừ `budget_usd`). */
+export interface ProviderUpdate {
+  label?: string;
+  base_url?: string;
+  api_key?: string;
+  models?: ProviderModels;
+  enabled?: boolean;
+  priority?: number;
+  /** null tường minh ⇒ về trần mặc định theo template. */
+  budget_usd?: number | null;
+  prices?: ProviderPricesInput;
+  clear_prices?: boolean;
+}
+
+/** Body `POST /v1/settings/providers/{id}/test`: `role` bắt buộc ⇔ `action = "chat"`. */
+export interface ProviderTestRequest {
+  action: ProviderTestAction;
+  role?: AiRole | null;
+}
+
+/** Response `POST /v1/settings/providers/{id}/test` (khớp `domain/ai.py` `ProviderTestResult`). */
+export interface ProviderTestResult {
+  ok: boolean;
+  code: ProviderTestCode;
+  http_status: number | null;
+  latency_ms: number;
+  models: string[];
+}

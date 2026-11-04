@@ -20,7 +20,7 @@ from ..infrastructure.memory_store import IDEMPOTENCY_TTL, IngestionStore
 from ..infrastructure.storage import SQLiteStore, data_dir_from_env
 from ..services.concept_proposal_job import ProposalJobRuntime
 from ..services.document_import import ImportRuntime
-from . import blueprints, documents, ingestion, runtime, static_site, subjects, vault
+from . import blueprints, documents, ingestion, runtime, settings, static_site, subjects, vault
 from .access import LocalAccessMiddleware, check_token_config, get_allowed_hosts, get_required_token
 from .blueprints import create_twins
 from .deps import (
@@ -180,6 +180,7 @@ app.include_router(blueprints.router)
 app.include_router(vault.router)
 app.include_router(documents.router)
 app.include_router(subjects.router)
+app.include_router(settings.router)
 
 # Bản export tĩnh của frontend (chế độ portable): chỉ gắn khi đặt `HOLOCRON_WEB_DIR`, sau mọi `include_router`.
 _web_dir = static_site.web_dir_from_env()

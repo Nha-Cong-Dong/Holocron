@@ -1130,3 +1130,8 @@ export interface BlockSearchPage {
   pages_without_blocks: number;
   pages_unconfirmable_with_blocks: number;
 }
+
+/** Response `DELETE /v1/settings/ai-cache` (khớp `routers/settings.py` `AiCacheCleared`). */
+export interface AiCacheCleared {
+  deleted_entries: number;
+}

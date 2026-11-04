@@ -1202,3 +1202,8 @@ export interface PageBlockList {
   blocks: Block[];
   ledger: ExtractionLedger | null;
 }
+
+/** Response `DELETE /v1/settings/ai-cache` (khớp `routers/settings.py` `AiCacheCleared`). */
+export interface AiCacheCleared {
+  deleted_entries: number;
+}

@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pytest
 
+from holocron_core.infrastructure.document_readers._pdf_worker import crop_cpu_seconds
 from holocron_core.infrastructure.document_readers.config import PdfReaderConfig
 from holocron_core.infrastructure.document_readers.pdf_reader import (
+    CropFailure,
     PdfInputError,
+    RenderedCrop,
     WorkerPdfReader,
+    WorkerRegionRenderer,
     check_pdf_input,
 )
+from holocron_core.infrastructure.document_readers.protocol import CropRegion, WorkerRequest
 from tests.pdf_samples import Page, slow_page, text_lines, write_pdf
 
 DOC_ID = "doc_00000000000000bb"
@@ -109,3 +115,51 @@ def test_corrupted_pdf_cannot_be_opened(tmp_path: Path) -> None:
     broken = tmp_path / "broken.pdf"
     broken.write_bytes(b"%PDF-1.4\n" + b"\x00garbage" * 200)
     _expect("OPEN_FAILED", WorkerPdfReader(), broken)
+
+
+# --------------------------------------------------------------------------- #
+# Trần của `CropRequest` (ADR-010 mục 9; ADR-009 mục 5): ảnh, thông điệp đã mã hoá, CPU của worker cắt ảnh
+# --------------------------------------------------------------------------- #
+
+
+def _crop_regions(count: int) -> list[CropRegion]:
+    return [CropRegion(region_id=k, page_index=0, bbox=(0.0, 0.0, 1.0, 1.0)) for k in range(count)]
+
+
+def test_crop_over_image_bytes_is_rejected_before_reaching_the_parent(tmp_path: Path) -> None:
+    path = write_pdf(tmp_path / "crop.pdf", [Page(texts=text_lines(BODY))])
+    config = PdfReaderConfig(crop_max_image_bytes=1024)
+    outcomes = WorkerRegionRenderer(config).render_regions(path, _crop_regions(1), max_edge_px=1024)
+    assert outcomes == [CropFailure(0, "over_image_bytes")]
+
+
+def test_crop_batch_stays_under_the_message_cap(tmp_path: Path) -> None:
+    path = write_pdf(tmp_path / "crop.pdf", [Page(texts=text_lines(BODY))])
+    config = PdfReaderConfig(max_message_bytes=48 * 1024)
+    outcomes = WorkerRegionRenderer(config).render_regions(path, _crop_regions(8), max_edge_px=1024)
+    rendered = [outcome for outcome in outcomes if isinstance(outcome, RenderedCrop)]
+    failed = [outcome for outcome in outcomes if isinstance(outcome, CropFailure)]
+    assert rendered and failed
+    assert {failure.code for failure in failed} == {"over_message_bytes"}
+
+
+def test_crop_worker_cpu_budget_grows_with_crop_budget(tmp_path: Path) -> None:
+    config = PdfReaderConfig()
+    plain = WorkerRequest(path=str(tmp_path / "x.pdf"), page_budget=0, config=config)
+    cropping = WorkerRequest(path=str(tmp_path / "x.pdf"), page_budget=0, config=config, crop_budget=33)
+    assert crop_cpu_seconds(plain) == 0
+    assert crop_cpu_seconds(cropping) == 2 * math.ceil(config.crop_request_timeout_s)
+
+
+def test_crop_config_caps_follow_crop_image_limits() -> None:
+    config = PdfReaderConfig()
+    assert (config.crop_max_edge_px, config.crop_max_image_bytes) == (1024, MIB)
+    assert (config.crop_max_regions_per_request, config.crop_max_per_page, config.crop_max_per_document) == (
+        32,
+        64,
+        3000,
+    )
+    with pytest.raises(ValueError, match="crop_max_edge_px"):
+        PdfReaderConfig(crop_max_edge_px=2048)
+    with pytest.raises(ValueError, match="crop_max_image_bytes"):
+        PdfReaderConfig(crop_max_image_bytes=2 * MIB)

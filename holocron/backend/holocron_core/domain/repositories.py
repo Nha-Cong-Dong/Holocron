@@ -15,6 +15,7 @@ from typing import Literal, Protocol, get_args
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .ai import AiCacheEntry
 from .blocks import Block, BlockFlag, CropImage, ExtractionLedger, Section, SectionFlag
 from .documents import (
     CHAPTER_CODE_PATTERN,
@@ -35,6 +36,9 @@ from .twins import IdempotencyRecord, TwinBatch
 from .vault import ConceptPair, ConceptPairStatus, VaultEdit
 
 IDEMPOTENCY_TTL = timedelta(hours=24)
+# Trần cache AI (spec §5.16; ADR-009 mục 8): field có mặc định của store, không phải biến môi trường.
+AI_CACHE_MAX_ROWS = 20_000
+AI_CACHE_TTL_DAYS = 90
 
 DocumentStatus = Literal["processing", "review", "confirmed", "failed"]
 PageStatus = Literal["pending", "ok", "needs_review", "failed"]
@@ -743,6 +747,29 @@ class VaultRepository(Protocol):
         ...
 
 
+class AiCacheRepository(Protocol):
+    """Cache AI gắn tài liệu (spec §5.16; ADR-009 mục 8). Chỉ lưu JSON đã validate; người đọc validate lại, hỏng thì
+    gọi `drop_ai_cache_entry`. `delete_document` của store xoá liên kết của tài liệu và dòng không còn liên kết trong
+    CÙNG giao dịch."""
+
+    def get_ai_cache(self, cache_key: str, document_id: str, *, now: datetime) -> AiCacheEntry | None:
+        """Trúng ⇒ cập nhật `last_used_at = now` và gắn dòng với `document_id`; dòng quá TTL coi như trượt."""
+        ...
+
+    def put_ai_cache(self, entry: AiCacheEntry, document_id: str, *, now: datetime) -> None:
+        """Ghi (thay dòng cùng khoá) và gắn `document_id`. Cùng giao dịch: xoá dòng quá TTL, rồi xoá dòng
+        `last_used_at` cũ nhất khi vượt trần số dòng."""
+        ...
+
+    def drop_ai_cache_entry(self, cache_key: str) -> None:
+        """Xoá một dòng (kèm liên kết), ví dụ khi JSON đọc lại không còn hợp lệ."""
+        ...
+
+    def clear_ai_cache(self) -> int:
+        """Xoá toàn bộ cache AI; trả số dòng `ai_cache` đã xoá (liên kết xoá theo)."""
+        ...
+
+
 class AppStore(
     IngestionRepository,
     BlueprintRepository,
@@ -750,6 +777,7 @@ class AppStore(
     DocumentRepository,
     VaultRepository,
     SubjectRepository,
+    AiCacheRepository,
     Protocol,
 ):
     """Kho mà các router dùng, cấp qua `Depends(get_store)`."""

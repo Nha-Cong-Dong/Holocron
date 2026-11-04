@@ -3,10 +3,11 @@
 
 from __future__ import annotations
 
+import sqlite3
 import unicodedata
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,9 +15,15 @@ from fastapi.testclient import TestClient
 from holocron_core.domain.blocks import Block, TableCell, WordRef
 from holocron_core.domain.documents import PageExtraction
 from holocron_core.domain.ingestion import UploadedDocument
+from holocron_core.domain.repositories import AppStore
 from holocron_core.domain.schemas import SourceKind
 from holocron_core.domain.search_text import fold_text, utf16_offsets
-from holocron_core.domain.vault import BLOCK_CONTEXT_MAX_CHARS, block_contexts
+from holocron_core.domain.vault import (
+    BLOCK_CONTEXT_MAX_CHARS,
+    BLOCK_CONTEXT_TYPES,
+    block_contexts,
+    block_search_fields,
+)
 from holocron_core.infrastructure.memory_store import IngestionStore
 from holocron_core.infrastructure.storage import SQLiteStore
 from holocron_core.routers.api import app, get_store
@@ -64,7 +71,9 @@ def build_doc(
     return Scoped(store, doc), doc, blocks
 
 
-def put_blocks(engine: Engine, builder: Any, *, n_pages: int = 1) -> tuple[Scoped, str, dict[str, Block]]:
+def put_blocks(
+    engine: Engine, builder: Callable[[str], dict[str, Block]], *, n_pages: int = 1
+) -> tuple[Scoped, str, dict[str, Block]]:
     """`builder(doc) -> dict[key, Block]`; khối đặt theo `block.page_number`."""
     store, doc = engine.store, new_doc(engine)
     seed(store, doc, pages=n_pages)
@@ -434,16 +443,13 @@ def test_endpoint_rejects_excluded_types_derived_from_block_types(client_with_do
     assert ok.status_code == 200
 
 
-class _ProxyStore:
-    """Bọc kho in-memory; `match_block_index` trả `[]` ở lần gọi đầu rồi `None` (kho mất bảng giữa chừng)."""
+class _ProxyStore(IngestionStore):
+    """Kho in-memory; `match_block_index` trả `[]` ở lần gọi đầu rồi `None` (kho mất bảng giữa chừng)."""
 
-    def __init__(self, inner: IngestionStore, *, none_after: int) -> None:
-        self._inner = inner
+    def __init__(self, *, none_after: int) -> None:
+        super().__init__()
         self._calls = 0
         self._none_after = none_after
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._inner, name)
 
     def match_block_index(
         self, subject_code: str, terms: Sequence[str], *, trigram: bool
@@ -452,32 +458,35 @@ class _ProxyStore:
         return None if self._calls > self._none_after else []
 
     def load_eligible_blocks(self, document_id: str, block_ids: Sequence[str]) -> list[Block]:
-        return self._inner.load_eligible_blocks(document_id, block_ids)
+        wanted = set(block_ids)
+        return [b for b in self.list_eligible_blocks(document_id) if b.block_id in wanted]
 
 
 def test_index_returning_none_midway_falls_back_to_scan() -> None:
-    inner = IngestionStore()
-    _, doc, blocks = build_doc(Engine("memory", inner, {}), texts=["alpha beta"])
-    proxy = _ProxyStore(inner, none_after=1)
+    proxy = _ProxyStore(none_after=1)
+    _, doc, blocks = build_doc(Engine("memory", proxy, {}), texts=["alpha beta"])
     assert isinstance(proxy, search_index.BlockIndexSource)
-    store: Any = proxy
-    page = search_blocks(store, subject_code=SUBJECT, query="alpha beta", document_ids=[doc])
+    page = search_blocks(proxy, subject_code=SUBJECT, query="alpha beta", document_ids=[doc])
     assert [h.block.block_id for h in page.hits] == [blocks[0].block_id]
     assert page.engine == "python"
+
+
+class _PlainStore:
+    """Kho không có chỉ mục khối: ủy quyền mọi method trừ hai method của `BlockIndexSource`."""
+
+    def __init__(self, inner: IngestionStore) -> None:
+        self._inner = inner
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
 
 
 def test_store_without_block_index_uses_python_path() -> None:
     inner = IngestionStore()
     _, doc, blocks = build_doc(Engine("memory", inner, {}), texts=["alpha beta"])
-
-    class Plain:
-        def __getattr__(self, name: str) -> Any:
-            if name in ("match_block_index", "load_eligible_blocks"):
-                raise AttributeError(name)
-            return getattr(inner, name)
-
-    plain: Any = Plain()
-    assert not isinstance(plain, search_index.BlockIndexSource)
+    wrapper = _PlainStore(inner)
+    assert not isinstance(wrapper, search_index.BlockIndexSource)
+    plain = cast("AppStore", wrapper)  # chỉ dùng các method mà `search_blocks` gọi, đều được ủy quyền
     page = search_blocks(plain, subject_code=SUBJECT, query="alpha", document_ids=[doc])
     assert [h.block.block_id for h in page.hits] == [blocks[0].block_id]
     assert page.engine == "python"
@@ -589,7 +598,7 @@ def test_sqlite_backfill_skips_documents_without_subject(
     calls: list[str] = []
     original = SQLiteStore._index_eligible_blocks
 
-    def spy(self: SQLiteStore, conn: Any, document_id: str) -> None:
+    def spy(self: SQLiteStore, conn: sqlite3.Connection, document_id: str) -> None:
         calls.append(document_id)
         original(self, conn, document_id)
 
@@ -608,3 +617,47 @@ def test_sqlite_index_body_includes_context(sqlite_store: SQLiteStore) -> None:
     hits = store.match_block_index(SUBJECT, ["hinh"], trigram=False)
     assert hits == sorted([(doc, figure.block_id), (doc, caption.block_id)])
     assert store.match_block_index(SUBJECT, ["hinh"], trigram=True) == hits
+
+
+# --------------------------------------------------------------------------- #
+# Bất biến match_spans (SPEC §6.10): rỗng chỉ khi khối khớp qua chữ kề
+# --------------------------------------------------------------------------- #
+
+
+def mixed_page(doc: str) -> dict[str, Block]:
+    return {
+        "p0": make_block(doc, 1, 0, text="Bộ nhớ đệm giảm độ trễ truy cập", key="p0"),
+        "figure": make_block(doc, 1, 1, "figure", key="figure"),
+        "caption": make_block(doc, 1, 2, "caption", text="Hình 3: Sơ đồ khối của bộ vi xử lý", key="caption"),
+        "code": make_block(doc, 1, 3, "code", text="mov r1, r2 độ trễ", key="code"),
+        "p1": make_block(doc, 1, 4, text="Khối điều khiển giải mã lệnh trễ", key="p1"),
+        "formula": make_block(doc, 1, 5, "formula", text="x = y + z", key="formula"),
+    }
+
+
+def test_empty_spans_only_for_context_only_blocks(eng: Engine) -> None:
+    scope, _, _ = put_blocks(eng, mixed_page)
+    queries = ["Hình 3", "trễ", "độ trễ truy cập", "giải mã", "khối", "mov", "x", "bộ vi xử lý", "điều khiển lệnh"]
+    for query in queries:
+        for hit in scope.search(query, limit=50).hits:
+            if not hit.match_spans:
+                assert hit.block.type in BLOCK_CONTEXT_TYPES, (query, hit.block.type)
+                own = [f.text for f in block_search_fields(hit.block)]
+                own_tokens = {t for text in own for t in fold_text(text).folded.split()}
+                assert not own_tokens & set(fold_text(query).folded.split()), (query, own)
+
+
+def test_lower_rank_own_field_keeps_span_when_best_rank_only_in_context(eng: Engine) -> None:
+    def builder(doc: str) -> dict[str, Block]:
+        return {
+            "before": make_block(doc, 1, 0, text="giải mã lệnh", key="before"),
+            "code": make_block(doc, 1, 1, "code", text="giai ma", key="code"),
+        }
+
+    scope, _, named = put_blocks(eng, builder)
+    hit = next(h for h in scope.search("giải mã", types=["code"]).hits if h.block.block_id == named["code"].block_id)
+    assert hit.match_kind == "exact"  # hạng cao nhất đến từ chữ kề
+    assert [(s.target, s.start, s.end) for s in hit.match_spans] == [
+        ("text", 0, 4),
+        ("text", 5, 7),
+    ]  # field gốc hạng thấp vẫn được tô

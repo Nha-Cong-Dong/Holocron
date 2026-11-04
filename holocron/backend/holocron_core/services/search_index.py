@@ -274,6 +274,11 @@ def _match_block(
             if field_kind == kind:
                 occurrences += len(hit_tokens)
                 spans.extend(_spans(item, hit_tokens))
+        if not any(f.field.target != "context" and k[0] == kind for f, k in per_field):
+            # Hạng cao nhất chỉ ở chữ kề: vẫn tô field gốc khớp ở hạng thấp hơn (span chỉ rỗng khi không field gốc nào khớp).
+            for item, (field_kind, hit_tokens) in per_field:
+                if item.field.target != "context" and field_kind != kind:
+                    spans.extend(_spans(item, hit_tokens))
     if matched == 0 or matched < math.ceil(settings.min_token_coverage * len(tokens)):
         return None
     block_tokens = sum(len(item.folded_tokens) for item in analyzed)

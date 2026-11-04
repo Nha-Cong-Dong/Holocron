@@ -65,11 +65,13 @@ from ..infrastructure.document_readers.pdf_reader import (
     PdfReader,
     PdfWorkerError,
     WorkerPdfReader,
+    WorkerRegionRenderer,
 )
 from ..infrastructure.llm_config import ConfigError, RuntimeConfig
 from ..infrastructure.storage.original_files import OriginalFileStore
 from ..services.capabilities import compute_capabilities, unavailable_error
 from ..services.concept_proposal_job import ClientFactory, DocumentProposals, ProposalJobRuntime
+from ..services.crop_job import BackgroundCropJobs, CropRunner, schedule_pending_crops
 from ..services.document_chapter import ChapterCodeLockedError, update_document_chapter
 from ..services.document_import import (
     IMPORT_UNAVAILABLE_DETAIL,
@@ -85,6 +87,7 @@ from ..services.document_import import (
     ImportRuntime,
     ImportUnavailableError,
     InvalidPageEditError,
+    KeyedLocks,
     PageStateError,
     PageTooLargeError,
     accept_document,
@@ -174,12 +177,22 @@ def create_import_runtime(data_dir: Path | None, config: PdfReaderConfig | None 
     """Kho file gốc (`HOLOCRON_DATA_DIR/files` hoặc thư mục tạm) và hàng đợi đọc nền; gọi trong `lifespan`.
 
     Kho file gốc nhận đúng `max_bytes` của cấu hình bộ đọc mà runtime giữ (một đối tượng cấu hình cho cả app).
-    Hook "đề xuất sau khi đóng" (T1b) do `lifespan` gắn sau (`with_proposal_hook`).
+    Hook "đề xuất sau khi đóng" (T1b) do `lifespan` gắn sau (`with_proposal_hook`). XCROP: hàng đợi job cắt ảnh nền
+    (`crop_max_parallel_jobs` luồng, `WorkerRegionRenderer` cùng giới hạn OS của worker PDF) dùng CÙNG khoá theo tài
+    liệu của runtime.
     """
     reader_config = PdfReaderConfig() if config is None else config
     files = OriginalFileStore.open(data_dir, max_bytes=reader_config.max_bytes)
     files.clean_staging()
-    return ImportRuntime(files=files, queue=BackgroundImportQueue(), reader_config=reader_config)
+    locks = KeyedLocks()
+    runner = CropRunner(renderer=WorkerRegionRenderer(reader_config), locks=locks, config=reader_config)
+    return ImportRuntime(
+        files=files,
+        queue=BackgroundImportQueue(),
+        reader_config=reader_config,
+        locks=locks,
+        crops=BackgroundCropJobs(runner, files),
+    )
 
 
 def with_proposal_hook(runtime: ImportRuntime, hook: DocumentConfirmedHook) -> ImportRuntime:
@@ -195,8 +208,13 @@ def requeue_on_startup(store: AppStore, runtime: ImportRuntime) -> list[str]:
     Cấu hình OCR sai thì không xếp lại (khác với `POST`, nơi bộ đọc chạy không có OCR): đọc lại khi cấu hình đang sai
     sẽ làm trang cần OCR thành `failed` vĩnh viễn. Ghi cảnh báo (chỉ nêu tên biến, không nêu giá trị) và để app vẫn
     khởi động; tài liệu giữ `processing` tới lần khởi động sau với cấu hình đúng.
+
+    XCROP (ADR-010 mục 13): quét khối còn chờ ảnh cắt (`schedule_pending_crops`, KHÔNG dựa `requeue_pending`) và xếp
+    job cắt ảnh cho tài liệu của chúng, kể cả khi cấu hình OCR sai (cắt ảnh không cần OCR).
     """
     remove_orphan_files(store, runtime.files)
+    if runtime.crops is not None:
+        schedule_pending_crops(store, runtime.crops)
     try:
         reader = load_pdf_reader(runtime.reader_config)
     except ConfigError as exc:
@@ -214,6 +232,7 @@ def requeue_on_startup(store: AppStore, runtime: ImportRuntime) -> list[str]:
         on_document_confirmed=runtime.on_document_confirmed,
         geometry_reader=_geometry_of(reader),
         layout=runtime.layout,
+        crops=runtime.crops,
     )
 
 

@@ -67,6 +67,8 @@ import { isImportResultMock, mockImportResultApi } from "@/mocks/import-result";
 import { isMockDocument } from "@/mocks/store";
 import type { EssayGradeRequest, ProposalJobCreate } from "@/types/contract-pending";
 import type {
+  BlockSearchPage,
+  BlockType,
   BlueprintCreate,
   CellPatch,
   ChunkLabelsPatch,
@@ -84,8 +86,10 @@ import type {
   PageRestoreRequest,
   PracticeAttempt,
   PracticeAttemptCreate,
+  SectionBlocks,
   Subject,
   SubjectCreate,
+  SubjectTree,
   TablePatchRequest,
   TwinBatch,
   TwinBatchRequest,
@@ -180,6 +184,16 @@ export interface ConceptPairEdits {
   definitionQuote?: string;
 }
 
+/** Tham số của `GET /v1/vault/blocks/search` (§6.10). */
+export interface BlockSearchQuery {
+  q: string;
+  subjectCode: string;
+  /** Rỗng là không lọc theo loại. */
+  types: readonly BlockType[];
+  offset: number;
+  limit: number;
+}
+
 /** Dữ liệu của form nhập tài liệu, đã kiểm ở `lib/documents.ts`. */
 export interface DocumentImportInput {
   file: File;
@@ -246,6 +260,14 @@ export interface HolocronApi {
   getDocument: (documentId: string) => Promise<DocumentView>;
   /** `GET /v1/documents/{document_id}/pages/{page_number}` (§6.5). */
   getDocumentPage: (documentId: string, pageNumber: number) => Promise<PageView>;
+  /** `GET /v1/vault/tree` (§6.10): cây Môn → Nguồn → Chương → Mục. */
+  getSubjectTree: (subjectCode: string) => Promise<SubjectTree>;
+  /** `GET /v1/documents/{id}/sections/{section_id}/blocks` (§6.10). */
+  getSectionBlocks: (documentId: string, sectionId: string, offset: number, limit: number) => Promise<SectionBlocks>;
+  /** `GET /v1/vault/blocks/search` (§6.10). */
+  searchBlocks: (query: BlockSearchQuery) => Promise<BlockSearchPage>;
+  /** `GET /v1/documents/{id}/crops/{crop_ref}` (§6.10): byte PNG qua header token; component tự tạo/thu hồi object URL. */
+  getCropImage: (documentId: string, cropRef: string) => Promise<Blob>;
   /** `PATCH /v1/documents/{document_id}/pages/{page_number}/lines` (§6.5; chưa có ở backend của nhánh). */
   patchPageLines: (
     documentId: string,
@@ -453,6 +475,26 @@ export const realApi: HolocronApi = {
     );
     return validated(parseDocumentImport(raw));
   },
+
+  getSubjectTree: (subjectCode) =>
+    request<SubjectTree>(`/v1/vault/tree?subject_code=${segment(subjectCode)}`, { method: "GET" }),
+
+  getSectionBlocks: (documentId, sectionId, offset, limit) =>
+    request<SectionBlocks>(
+      `/v1/documents/${segment(documentId)}/sections/${segment(sectionId)}/blocks?offset=${offset}&limit=${limit}`,
+      { method: "GET" },
+    ),
+
+  searchBlocks: (query) => {
+    const params = new URLSearchParams({ q: query.q, subject_code: query.subjectCode });
+    for (const type of query.types) params.append("type", type);
+    params.set("offset", String(query.offset));
+    params.set("limit", String(query.limit));
+    return request<BlockSearchPage>(`/v1/vault/blocks/search?${params.toString()}`, { method: "GET" });
+  },
+
+  getCropImage: async (documentId, cropRef) =>
+    (await send(`/v1/documents/${segment(documentId)}/crops/${segment(cropRef)}`, { method: "GET" })).blob(),
 
   getDocumentPage: async (documentId, pageNumber) => {
     const raw = await request<unknown>(

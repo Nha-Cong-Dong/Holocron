@@ -36,6 +36,7 @@ from .extraction_ledger import with_page_drop_reason
 
 __all__ = [
     "LAYOUT_FAILED",
+    "blocks_needing_crop",
     "build_document_blocks",
     "effective_role",
     "is_text_layer_page",
@@ -50,6 +51,23 @@ _LOGGER = logging.getLogger(__name__)
 
 LAYOUT_FAILED: ReviewReason = "LAYOUT_FAILED"
 _CROP_FLAGS: frozenset[BlockFlag] = frozenset({"crop_pending", "crop_failed", "crop_capped"})
+_CROP_GIVEN_UP: frozenset[BlockFlag] = frozenset({"crop_failed", "crop_capped"})
+
+
+def blocks_needing_crop(blocks: Iterable[Block], cropped_block_ids: Iterable[str] = ()) -> list[Block]:
+    """Khối cần ảnh cắt mà chưa có (ADR-010 mục 13 "Job cắt ảnh nền"; XCROP), giữ thứ tự vào: `type` thuộc
+    `CROPPED_TYPES`, có `bbox`, mang `crop_pending`, KHÔNG mang `crop_failed`/`crop_capped` (không tự thử lại) và chưa
+    có hàng `crop_images` (`cropped_block_ids`). Khối `bbox = null` không bao giờ được cắt."""
+    cropped = set(cropped_block_ids)
+    return [
+        block
+        for block in blocks
+        if block.type in CROPPED_TYPES
+        and block.bbox is not None
+        and "crop_pending" in block.flags
+        and not _CROP_GIVEN_UP.intersection(block.flags)
+        and block.block_id not in cropped
+    ]
 
 
 def is_text_layer_page(page: PageExtraction) -> bool:

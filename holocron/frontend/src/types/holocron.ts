@@ -679,6 +679,10 @@ export interface PageLinesPatch {
   expected_version: number;
   edits?: LineEdit[];
   appended_lines?: string[];
+  /** ADR-009 mục 3.4: `mismatch_id` từng chỗ lệch "Giữ giá trị này" (không có "giữ tất cả"). */
+  kept_mismatches?: string[];
+  /** ADR-009 mục 3.4: `block_id` của khối `source = "vlm"` người dùng bỏ (khối về offline). */
+  rejected_vlm_blocks?: string[];
 }
 
 /** Body của `POST /v1/documents/{document_id}/pages/{page_number}/confirm`; trả `PageExtraction`. */

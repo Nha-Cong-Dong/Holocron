@@ -464,7 +464,9 @@ export type ReviewReason =
   | "IMAGE_NEEDS_READING"
   | "PAGE_ROLE_UNCERTAIN"
   | "DENOISE_UNAVAILABLE"
-  | "LAYOUT_FAILED";
+  | "LAYOUT_FAILED"
+  | "VLM_REGION"
+  | "TABLE_TOKEN_MISMATCH";
 
 export type FailureReason = "PAGE_TIMEOUT" | "PAGE_ERROR" | "OCR_ENGINE_MISSING" | "TOO_MANY_LINES";
 
@@ -517,6 +519,18 @@ export interface CrossCheck {
   mismatches: TokenMismatch[];
 }
 
+/** Chỗ lệch token số/mã chưa giải quyết của một khối bảng nguồn `vlm` (§5.7; ADR-009 mục 3.4). VLM thừa có
+ * `row`/`col`/`vlm_value`; VLM bỏ sót chỉ có `ocr_value`. */
+export interface VlmTokenMismatch {
+  mismatch_id: string;
+  block_id: string;
+  token_kind: "number" | "code";
+  row: number | null;
+  col: number | null;
+  vlm_value: string | null;
+  ocr_value: string | null;
+}
+
 /** Kết quả đọc một trang PDF (§5.7); mọi điểm và cờ do backend tính, frontend chỉ hiển thị. */
 export interface PageExtraction {
   document_id: string;
@@ -553,6 +567,12 @@ export interface PageExtraction {
   confirm_rule: string | null;
   /** True sau khi người dùng hoàn tác tự xác nhận (`POST …/unconfirm`); trang này không bao giờ tự xác nhận lại. */
   auto_confirm_undone: boolean;
+  /** ADR-009 mục 3.4: chỗ lệch ô bảng VLM chưa giải quyết; không rỗng ⇔ có `TABLE_TOKEN_MISMATCH` (xác nhận trang 409). */
+  vlm_mismatches: VlmTokenMismatch[];
+  /** ADR-009 mục 3.5: `mismatch_id` người dùng đã "Giữ giá trị này". */
+  kept_vlm_mismatch_ids: string[];
+  /** ADR-009 mục 3.5: `block_id` của khối VLM người dùng đã bỏ. */
+  vlm_rejected_block_ids: string[];
 }
 
 /** Người xác nhận một trang (GĐ1 1B). */
@@ -1433,7 +1453,7 @@ export type GateReason =
   | "code_tokens"
   | "figure_only";
 
-/** Mã trong `detail.code` của lỗi 409/503 của `POST …/blocks/{block_id}/ai-reread`. */
+/** Mã trong `detail.code` của lỗi 409/503 của `POST …/blocks/{block_id}/ai-reread` và 409 của `…/accept`. */
 export type AiRereadErrorCode =
   | "BLOCK_NOT_ELIGIBLE"
   | "AI_NOT_CONFIGURED"
@@ -1441,7 +1461,10 @@ export type AiRereadErrorCode =
   | "AI_BUDGET_EXHAUSTED"
   | "VLM_TIMEOUT"
   | "VLM_RATE_LIMITED"
-  | "VLM_UPSTREAM_ERROR";
+  | "VLM_UPSTREAM_ERROR"
+  | "VERSION_CONFLICT"
+  | "PROPOSAL_STALE"
+  | "PROPOSAL_NOT_PENDING";
 
 /** Chỗ lệch token số/mã của ứng viên bảng: VLM thừa có `row`/`col`/`vlm_value`; VLM bỏ sót chỉ có `ocr_value`. */
 export interface AiRereadMismatch {

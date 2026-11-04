@@ -73,6 +73,8 @@ export const REVIEW_REASONS: readonly ReviewReasonPending[] = [
   "PAGE_ROLE_UNCERTAIN",
   "DENOISE_UNAVAILABLE",
   "LAYOUT_FAILED",
+  "VLM_REGION",
+  "TABLE_TOKEN_MISMATCH",
 ];
 
 /** `PageSummary` với `ReviewReason` của §5.7 v0.7 (có `LOW_TEXT_SCORE`). */

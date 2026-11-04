@@ -62,6 +62,8 @@ export const REVIEW_REASON_LABEL_VI: Record<ReviewReasonPending, string> = {
   PAGE_ROLE_UNCERTAIN: "Trang gần giống trang kế tiếp nhưng hình hơi khác; hãy xem có phải bước trình chiếu trùng lặp",
   DENOISE_UNAVAILABLE: "Chưa lọc được phần khung lặp của tài liệu nên trang có hình cần xem kỹ",
   LAYOUT_FAILED: "Chưa tách được trang thành các khối nội dung; trang dùng văn bản theo dòng và cần xem kỹ",
+  VLM_REGION: "Trang có vùng đã nhận chữ do AI đọc từ ảnh; hãy tự xem lại và xác nhận trang",
+  TABLE_TOKEN_MISMATCH: "Bảng do AI đọc còn số hoặc mã lệch với bản OCR; hãy xử lý từng chỗ lệch trước khi xác nhận",
 };
 
 export const UNKNOWN_REVIEW_REASON_VI = "Trang cần xem kỹ vì một lý do giao diện này chưa nhận ra";

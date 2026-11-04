@@ -110,6 +110,9 @@ function page(pageNumber: number, overrides: Partial<PageExtractionPending>): Pa
     confirmed_by: null,
     confirm_rule: null,
     auto_confirm_undone: false,
+    vlm_mismatches: [],
+    kept_vlm_mismatch_ids: [],
+    vlm_rejected_block_ids: [],
     ...overrides,
   };
 }

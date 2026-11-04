@@ -109,3 +109,34 @@ Dùng cho: font đoạn trích nguyên văn của frontend (thêm ở PR #89), �
 Nguồn: https://github.com/productiontype/Newsreader (gói npm: https://github.com/fontsource/font-files).
 Giấy phép: SIL Open Font License 1.1 (OFL-1.1). "Copyright 2020 The Newsreader Project Authors".
 Bản zip kèm toàn văn OFL-1.1 (file LICENSE của gói) trong `licenses/`.
+
+
+Vỏ desktop Tauri (holocron/desktop, chỉ có trong bộ cài NSIS Windows)
+---------------------------------------------------------------------
+Dùng cho: cửa sổ ứng dụng (WebView2) chạy backend Python portable làm tiến trình nền. Crate ghim trong
+`holocron/desktop/src-tauri/Cargo.lock`, biên dịch tĩnh vào `Holocron.exe`. Cây phụ thuộc trên Windows (227 crate,
+kiểm bằng `cargo tree --target x86_64-pc-windows-msvc` ngày 2026-11-04) không có GPL/AGPL; còn lại là MIT, Apache-2.0,
+BSD, Zlib, Unicode-3.0, Unlicense, CC0 và 5 crate MPL-2.0 dưới đây. Toàn văn giấy phép của từng crate nằm trong mã
+nguồn của crate trên crates.io.
+
+  Crate chính                       Version   Giấy phép
+  --------------------------------  --------  ------------------
+  tauri                             2.12.5    Apache-2.0 OR MIT
+  tauri-build                       2.7.4     Apache-2.0 OR MIT
+  tauri-plugin-single-instance      2.5.5     Apache-2.0 OR MIT
+  webview2-com                      0.39.1    MIT
+  windows, windows-core             0.62.2    MIT OR Apache-2.0
+  getrandom                         0.3.4     MIT OR Apache-2.0
+  @tauri-apps/cli (chỉ lúc build)   2.12.4    Apache-2.0 OR MIT
+
+Crate MPL-2.0 (copyleft yếu theo file; đi theo Tauri, dùng nguyên bản không sửa; mã nguồn tại crates.io), người
+dùng chấp nhận ngày 2026-11-04:
+
+  cssparser          0.37.0   MPL-2.0   https://crates.io/crates/cssparser/0.37.0
+  cssparser-macros   0.7.1    MPL-2.0   https://crates.io/crates/cssparser-macros/0.7.1
+  dtoa-short         0.3.5    MPL-2.0   https://crates.io/crates/dtoa-short/0.3.5
+  selectors          0.38.0   MPL-2.0   https://crates.io/crates/selectors/0.38.0
+  option-ext         0.2.0    MPL-2.0   https://crates.io/crates/option-ext/0.2.0
+
+Bộ cài dựng bằng NSIS 3.13 (zlib/libpng license) và nsis_tauri_utils 0.5.3 (MIT OR Apache-2.0), do tauri-cli tải lúc
+build; phần runtime NSIS nằm trong bộ cài và trình gỡ cài đặt.

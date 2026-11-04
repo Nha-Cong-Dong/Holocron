@@ -25,6 +25,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ..domain.ai_reread import GateReason
 from ..domain.blocks import BlockFlag, BlockType
 from ..infrastructure.document_readers.cross_check import TOKEN_PATTERN
 from ..infrastructure.vision_reader import UNREADABLE_MARKER, VlmRegionBlock, VlmRegionResult
@@ -36,23 +37,6 @@ TokenKind = Literal["number", "code"]
 MAX_TOKEN_CHARS = 200
 
 GateOutcome = Literal["accepted_text", "accepted_table", "rejected", "keep_offline", "figure_confirmed"]
-GateReason = Literal[
-    "ok",
-    "status_invalid",
-    "status_unavailable",
-    "text_layer_overlap",
-    "invalid_overlap",
-    "ocr_missing",
-    "unreadable_marker",
-    "empty",
-    "mixed_table",
-    "too_long",
-    "cer",
-    "jaccard",
-    "number_tokens",
-    "code_tokens",
-    "figure_only",
-]
 
 
 class VisionGateSettings(BaseModel):

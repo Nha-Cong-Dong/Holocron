@@ -1600,6 +1600,12 @@ def _check_editable(document: ImportedDocument, page: PageExtraction, vault: Vau
     _check_text_open(document, vault)
 
 
+def check_page_editable(document: ImportedDocument, page: PageExtraction, vault: VaultRepository) -> None:
+    """Điều kiện 409 của `PATCH …/lines` (§6.5) cho một trang; dùng chung với đọc lại bằng AI (§6.10a "Khối đủ điều
+    kiện"). Không cho sửa ⇒ `PageStateError`."""
+    _check_editable(document, page, vault)
+
+
 def _check_version(page: PageExtraction, expected_version: int) -> None:
     if page.version != expected_version:
         key = _page_key(page.document_id, page.page_number)

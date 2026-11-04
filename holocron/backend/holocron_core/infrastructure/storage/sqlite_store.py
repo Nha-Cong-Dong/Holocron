@@ -21,6 +21,7 @@ from pathlib import Path
 from pydantic import BaseModel, TypeAdapter
 
 from ...domain.ai import AiCacheEntry
+from ...domain.ai_reread import AiRereadProposal, AiRereadProposalRecord
 from ...domain.block_eligibility import is_candidate_block
 from ...domain.blocks import Block, CropImage, ExtractionLedger, Section
 from ...domain.documents import PageEditAudit, PageGeometry, PageSummary
@@ -78,6 +79,7 @@ from ...domain.vault import (
     check_definition_quote,
     link_practice_chunks,
 )
+from ..ai_reread_proposals import AiRereadProposalCache
 from .connection import connect, fts5_available, immediate_transaction, is_busy, read_transaction
 from .crop_files import CropFiles
 from .migrator import (
@@ -192,6 +194,7 @@ class SQLiteStore:
         self._lock = threading.RLock()
         self._ai_cache_max_rows = ai_cache_max_rows
         self._ai_cache_ttl = timedelta(days=ai_cache_ttl_days)
+        self._ai_reread = AiRereadProposalCache()
         self._crops = None if crops_dir is None else CropFiles(crops_dir)
         with self._lock:
             migrate(conn)
@@ -983,6 +986,7 @@ class SQLiteStore:
                     return False
                 self._delete_document_row(conn, document_id)
             self._delete_crop_dir(document_id)
+            self._ai_reread.drop_document(document_id)
         return True
 
     def revert_imported_document(self, document_id: str, upload: UploadedDocument | None) -> bool:
@@ -990,6 +994,7 @@ class SQLiteStore:
             reverted = self._revert_rows(document_id, upload)
             if reverted:
                 self._delete_crop_dir(document_id)
+                self._ai_reread.drop_document(document_id)
         return reverted
 
     def _revert_rows(self, document_id: str, upload: UploadedDocument | None) -> bool:
@@ -1585,6 +1590,16 @@ class SQLiteStore:
             "DELETE FROM ai_cache WHERE NOT EXISTS "
             "(SELECT 1 FROM ai_cache_documents AS link WHERE link.cache_key = ai_cache.cache_key)"
         )
+
+    # AiRereadProposalRepository: kho tạm theo instance (spec §6.10a), không ghi DB.
+    def put_ai_reread_proposal(self, proposal: AiRereadProposal) -> None:
+        self._ai_reread.put(proposal)
+
+    def get_ai_reread_proposal(self, proposal_id: str) -> AiRereadProposalRecord | None:
+        return self._ai_reread.get(proposal_id)
+
+    def discard_ai_reread_proposal(self, proposal_id: str) -> bool:
+        return self._ai_reread.discard(proposal_id)
 
     def get_ai_cache(self, cache_key: str, document_id: str, *, now: datetime) -> AiCacheEntry | None:
         with self._write() as conn:

@@ -51,6 +51,7 @@ from ..domain.llm import (
     ImageTooLargeError,
     ImageUrl,
     ImageUrlPart,
+    LlmRateLimitedError,
     LlmTimeoutError,
     LlmUpstreamError,
     TextPart,
@@ -59,7 +60,17 @@ from ..domain.repositories import AiCacheRepository
 from .document_readers.config import PdfReaderConfig
 from .document_readers.raster import png_dimensions
 from .llm_client import OpenAiChatClient, Transport
-from .llm_config import ENV_VLM_API_KEY, ENV_VLM_BASE_URL, ConfigError, LlmHttpLimits, VlmSettings
+from .llm_config import (
+    DEFAULT_VLM_MAX_EDGE_PX,
+    DEFAULT_VLM_MAX_IMAGE_BYTES,
+    ENV_VLM_API_KEY,
+    ENV_VLM_BASE_URL,
+    VLM_TIMEOUT_CLOUD_S,
+    VLM_TIMEOUT_LOOPBACK_S,
+    ConfigError,
+    LlmHttpLimits,
+    VlmSettings,
+)
 from .provider_probe import guarded_transport
 
 PROMPT_VERSION = "v1"
@@ -132,10 +143,13 @@ class VisionReaderSettings(BaseModel):
     limits: VlmTaskLimits = Field(default_factory=VlmTaskLimits)
 
     @classmethod
-    def from_config(cls, vlm: VlmSettings, pdf: PdfReaderConfig) -> VisionReaderSettings:
+    def from_config(cls, vlm: VlmSettings | None, pdf: PdfReaderConfig) -> VisionReaderSettings:
+        """`vlm` None ⇒ trần mặc định của `HOLOCRON_VLM_MAX_EDGE_PX`/`HOLOCRON_VLM_MAX_IMAGE_BYTES` (không đặt biến)."""
+        edge = DEFAULT_VLM_MAX_EDGE_PX if vlm is None else vlm.max_edge_px
+        image_bytes = DEFAULT_VLM_MAX_IMAGE_BYTES if vlm is None else vlm.max_image_bytes
         return cls(
-            max_edge_px=min(vlm.max_edge_px, pdf.crop_max_edge_px),
-            max_image_bytes=min(vlm.max_image_bytes, pdf.crop_max_image_bytes),
+            max_edge_px=min(edge, pdf.crop_max_edge_px),
+            max_image_bytes=min(image_bytes, pdf.crop_max_image_bytes),
         )
 
 
@@ -181,6 +195,9 @@ class VlmRegionResult(BaseModel):
     blocks: list[VlmRegionBlock] = []
     attempts: int = Field(ge=0, le=2)
     from_cache: bool = False
+    # Code: lần gọi thất bại vì nhà cung cấp trả HTTP 429 ở lần thử cuối (`LlmRateLimitedError`); `status` vẫn là
+    # `upstream_error`. Dùng cho 503 `VLM_RATE_LIMITED` của đọc lại theo yêu cầu (spec §6.10a).
+    rate_limited: bool = False
 
 
 class VisionSkipped(BaseModel):
@@ -324,7 +341,7 @@ TransportFactory = Callable[[IpPolicy, LlmHttpLimits], Transport]
 
 
 def openai_client_factory(
-    vlm: VlmSettings,
+    vlm: VlmSettings | None,
     max_image_bytes: int,
     *,
     transport: Transport | None = None,
@@ -336,10 +353,17 @@ def openai_client_factory(
     Mạng theo `ip_policy` của nhà cung cấp đã chọn (ADR-009 mục 12.8, spec §13.1): mặc định
     `provider_probe.guarded_transport(ip_policy, limits)` (phân giải và kiểm mọi địa chỉ ở mỗi kết nối, ghim IP, không
     redirect, không proxy), nên nhà cung cấp người dùng có tên miền trỏ về dải nội bộ không nhận request kèm khoá.
-    `transport` (cố định), `transport_for` và `sleep` cấp cho test (không gọi mạng)."""
+    `transport` (cố định), `transport_for` và `sleep` cấp cho test (không gọi mạng).
+
+    `vlm` None (chưa đặt nhóm biến `HOLOCRON_VLM_*`, chỉ có nhà cung cấp người dùng) ⇒ giới hạn HTTP mặc định và thời
+    gian mặc định theo nhà cung cấp đã chọn (loopback `VLM_TIMEOUT_LOOPBACK_S`, cloud `VLM_TIMEOUT_CLOUD_S`)."""
 
     def build(provider: SelectedProvider) -> ChatCompletionClient:
-        limits = vlm.http_limits
+        limits = vlm.http_limits if vlm is not None else LlmHttpLimits()
+        if vlm is not None:
+            timeout_s = vlm.timeout_s
+        else:
+            timeout_s = VLM_TIMEOUT_LOOPBACK_S if provider.local else VLM_TIMEOUT_CLOUD_S
         if transport is not None:
             chosen = transport
         elif transport_for is not None:
@@ -350,10 +374,10 @@ def openai_client_factory(
             base_url=provider.base_url,
             api_key=provider.api_key,
             model=provider.model,
-            timeout_s=vlm.timeout_s,
+            timeout_s=timeout_s,
             retry_max=limits.retry_max,
             backoff_base_s=limits.backoff_base_s,
-            call_budget_s=vlm.timeout_s,
+            call_budget_s=timeout_s,
             max_image_bytes=max_image_bytes,
             base_url_variable=ENV_VLM_BASE_URL,
             key_variable=ENV_VLM_API_KEY,
@@ -470,7 +494,27 @@ class VisionReader:
             return cached
         if not self._take_region_slot(document_id, page_number):
             return self._region_capped(provider)
-        return self._call(document_id, image, provider, estimate)
+        return self._call(document_id, image, provider, estimate, on_request=False)
+
+    def read_region_on_request(self, document_id: str, image: RegionImage) -> VlmRegionResult | VisionSkipped:
+        """Đọc một vùng do NGƯỜI DÙNG bấm "Đọc lại bằng AI" (spec §6.10a; ADR-009 mục 7, 15).
+
+        Khác `read_region`: không xét công tắc đồng ý (thao tác tự bấm; nơi gọi đã chặn `HOLOCRON_VLM_MODE = off`)
+        và không trừ trần vùng của lần nhập (trần vùng giới hạn lần gửi tự động). Vẫn kiểm ảnh, chọn nhà cung cấp
+        có giữ chỗ chi phí, tra/ghi cache AI gắn tài liệu và gọi lại tối đa một lần như `read_region`."""
+        if not check_region_image(image, self._settings):
+            logger.info("ảnh vùng không qua kiểm, không gửi VLM: image_rejected")
+            return VisionSkipped(reason="image_rejected")
+        estimate = self._estimate()
+        provider = self._selector.select("vlm", estimate)
+        if provider is None:
+            return VisionSkipped(reason="no_provider")
+        key = ai_cache_key(KIND, image.sha256, provider.model, PROMPT_VERSION)
+        cached = self._from_cache(key, document_id, image.sha256)
+        if cached is not None:
+            self._recorder.release(provider.reservation_id)
+            return cached
+        return self._call(document_id, image, provider, estimate, on_request=True)
 
     def _region_capped(self, provider: SelectedProvider) -> VisionSkipped:
         self._recorder.release(provider.reservation_id)
@@ -503,18 +547,19 @@ class VisionReader:
 
     def _complete_once(
         self, provider: SelectedProvider, image: RegionImage, estimate: CostEstimate, *, retry: bool
-    ) -> ChatCompletionResult | VlmStatus:
-        """Một lời gọi; chi phí được ghi ngay (thiếu `usage` ⇒ ước tính bảo thủ). Lỗi ⇒ mã trạng thái."""
+    ) -> ChatCompletionResult | VlmRegionResult:
+        """Một lời gọi; chi phí được ghi ngay (thiếu `usage` ⇒ ước tính bảo thủ). Lỗi ⇒ kết quả lỗi (chưa có
+        `attempts` thật; nơi gọi điền)."""
         try:
             client = self._client_factory(provider)
             result = client.complete([_message(image, retry=retry)], max_tokens=self._settings.limits.max_tokens)
         except ConfigError:
             self._recorder.release(provider.reservation_id)
             logger.warning("cấu hình nhà cung cấp VLM không dùng được: upstream_error")
-            return "upstream_error"
+            return _failed(image, "upstream_error")
         except ImageTooLargeError:
             self._recorder.release(provider.reservation_id)
-            return "upstream_error"
+            return _failed(image, "upstream_error")
         except LlmUpstreamError as exc:
             if exc.attempts > 0:  # đã gửi: ghi chi phí ước tính bảo thủ
                 self._recorder.record(provider.reservation_id, _worst_case(estimate))
@@ -522,7 +567,7 @@ class VisionReader:
                 self._recorder.release(provider.reservation_id)
             status = _failure_status(exc)
             logger.warning("gọi VLM thất bại: %s", status)
-            return status
+            return _failed(image, status, rate_limited=isinstance(exc, LlmRateLimitedError))
         usage = result.usage
         recorded = (
             AiUsage(input_tokens=usage.prompt_tokens, output_tokens=usage.completion_tokens, images=1, estimated=False)
@@ -533,13 +578,20 @@ class VisionReader:
         return result
 
     def _call(
-        self, document_id: str, image: RegionImage, provider: SelectedProvider, estimate: CostEstimate
+        self,
+        document_id: str,
+        image: RegionImage,
+        provider: SelectedProvider,
+        estimate: CostEstimate,
+        *,
+        on_request: bool,
     ) -> VlmRegionResult:
         attempts = 0
         current = provider
         for attempt in range(self._settings.limits.json_retry_max + 1):
             if attempt > 0:
-                if not self._consent.auto_send_allowed("image"):  # công tắc đọc lại ở CHÍNH lần gửi lại
+                # Công tắc đọc lại ở CHÍNH lần gửi lại (lần gửi tự động; thao tác người dùng bấm không xét công tắc).
+                if not on_request and not self._consent.auto_send_allowed("image"):
                     break
                 again = self._selector.select("vlm", estimate)
                 if again is None:
@@ -547,10 +599,8 @@ class VisionReader:
                 current = again
             attempts += 1
             outcome = self._complete_once(current, image, estimate, retry=attempt > 0)
-            if isinstance(outcome, str):
-                return VlmRegionResult(
-                    input_sha256=image.sha256, prompt_version=PROMPT_VERSION, status=outcome, attempts=attempts
-                )
+            if isinstance(outcome, VlmRegionResult):
+                return outcome.model_copy(update={"attempts": attempts})
             blocks = parse_vlm_blocks(outcome.content, self._settings.limits)
             if blocks is not None:
                 self._store(current, image, blocks, document_id)
@@ -580,6 +630,16 @@ class VisionReader:
             result_json=_CachedBlocks(blocks=blocks).model_dump_json(),
         )
         self._cache.put_ai_cache(entry, document_id, now=self._clock())
+
+
+def _failed(image: RegionImage, status: VlmStatus, *, rate_limited: bool = False) -> VlmRegionResult:
+    return VlmRegionResult(
+        input_sha256=image.sha256,
+        prompt_version=PROMPT_VERSION,
+        status=status,
+        attempts=1,
+        rate_limited=rate_limited,
+    )
 
 
 def _worst_case(estimate: CostEstimate) -> AiUsage:

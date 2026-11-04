@@ -30,6 +30,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import logging
+import os
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
@@ -37,7 +38,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 
-from ..domain.ai import AiConsent, AiConsentStore
+from ..domain.ai import AiConsent, AiConsentStore, AiVlmMode
+from ..domain.ai_reread import AiRereadErrorCode, AiRereadProposal
 from ..domain.capabilities import CapabilityName, CapabilityReason
 from ..domain.documents import (
     CHAPTER_CODE_PATTERN,
@@ -55,11 +57,26 @@ from ..domain.documents import (
 from ..domain.repositories import AppStore, DocumentExistsError, VersionConflictError
 from ..domain.schemas import SourceKind
 from ..domain.vault import ProposalJob
+from ..infrastructure.ai_runtime import read_consent_state
 from ..infrastructure.document_readers.config import MIB, PdfReaderConfig, load_ocr_settings
-from ..infrastructure.document_readers.pdf_reader import PdfReader, PdfWorkerError, WorkerPdfReader
+from ..infrastructure.document_readers.pdf_reader import (
+    PdfReader,
+    PdfWorkerError,
+    RegionRenderer,
+    WorkerPdfReader,
+    WorkerRegionRenderer,
+)
 from ..infrastructure.llm_config import ConfigError, RuntimeConfig
 from ..infrastructure.selected_llm_client import TransportFactory
 from ..infrastructure.storage.original_files import OriginalFileStore
+from ..infrastructure.vision_reader import VisionReaderSettings, openai_client_factory
+from ..services.ai_reread import (
+    AiRereadError,
+    AiRereadRuntime,
+    ProposalNotFoundError,
+    create_proposal,
+    reject_proposal,
+)
 from ..services.capabilities import unavailable_error
 from ..services.concept_proposal_job import ClientFactory, DocumentProposals, ProposalJobRuntime
 from ..services.document_chapter import ChapterCodeLockedError, update_document_chapter
@@ -587,4 +604,93 @@ def delete_document(store: StoreDep, runtime: RuntimeDep, document_id: str) -> R
         raise HTTPException(status_code=404, detail=NOT_FOUND_DETAIL) from exc
     except DocumentBusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return Response(status_code=204)
+
+
+# --------------------------------------------------------------------------- #
+# Đọc lại khối bằng AI theo yêu cầu (spec §6.10a; ADR-009 mục 15)
+# --------------------------------------------------------------------------- #
+
+AI_REREAD_STATUS: dict[AiRereadErrorCode, int] = {
+    "BLOCK_NOT_ELIGIBLE": 409,
+    "AI_NOT_CONFIGURED": 409,
+    "AI_MODE_OFF": 409,
+    "AI_BUDGET_EXHAUSTED": 409,
+    "VLM_TIMEOUT": 503,
+    "VLM_RATE_LIMITED": 503,
+    "VLM_UPSTREAM_ERROR": 503,
+}
+PROPOSAL_NOT_FOUND_DETAIL = "không tìm thấy đề xuất đọc lại (đề xuất mất khi khởi động lại hoặc đã bị thay)"
+
+
+def get_vlm_mode(consent_store: Annotated[AiConsentStore, Depends(get_ai_consent_store)]) -> AiVlmMode:
+    """`HOLOCRON_VLM_MODE` đang hiệu lực, đọc ở MỖI request (cùng hàm của `GET /v1/settings/ai-consent`)."""
+    return read_consent_state(os.environ, consent_store).vlm_mode
+
+
+def get_region_renderer(runtime: RuntimeDep) -> RegionRenderer:
+    """Bộ cắt ảnh vùng qua worker PDF (giới hạn OS của ADR-008 mục 3) với cấu hình bộ đọc của runtime."""
+    return WorkerRegionRenderer(runtime.reader_config)
+
+
+def get_ai_reread_runtime(
+    store: StoreDep,
+    vault: VaultDep,
+    runtime: RuntimeDep,
+    config: RuntimeConfigDep,
+    clock: ClockDep,
+    renderer: Annotated[RegionRenderer, Depends(get_region_renderer)],
+    selection: Annotated[ProviderSelection, Depends(get_provider_selection)],
+    consent: Annotated[AiConsent, Depends(get_ai_consent)],
+    transport_for: Annotated[TransportFactory, Depends(get_llm_transport_factory)],
+    vlm_mode: Annotated[AiVlmMode, Depends(get_vlm_mode)],
+) -> AiRereadRuntime:
+    """Phụ thuộc của đọc lại: client VLM tới nhà cung cấp đã chọn qua transport có chặn địa chỉ (ADR-009 mục 12.8);
+    trần ảnh = min(trần VLM, trần ảnh cắt). Không gọi mạng khi dựng."""
+    settings = VisionReaderSettings.from_config(config.vlm, runtime.reader_config)
+    return AiRereadRuntime(
+        store=store,
+        vault=vault,
+        files=runtime.files,
+        renderer=renderer,
+        selection=selection,
+        consent=consent,
+        client_factory=openai_client_factory(config.vlm, settings.max_image_bytes, transport_for=transport_for),
+        settings=settings,
+        vlm_mode=vlm_mode,
+        clock=clock,
+    )
+
+
+def _ai_reread_error(exc: AiRereadError) -> HTTPException:
+    return HTTPException(status_code=AI_REREAD_STATUS[exc.code], detail={"code": exc.code, "message": exc.message})
+
+
+@router.post(
+    "/v1/documents/{document_id}/pages/{page_number}/blocks/{block_id}/ai-reread", response_model=AiRereadProposal
+)
+def ai_reread_block(
+    reread: Annotated[AiRereadRuntime, Depends(get_ai_reread_runtime)],
+    document_id: str,
+    page_number: int,
+    block_id: str,
+) -> AiRereadProposal:
+    try:
+        return create_proposal(reread, document_id, page_number, block_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=PAGE_NOT_FOUND_DETAIL) from exc
+    except AiRereadError as exc:
+        raise _ai_reread_error(exc) from exc
+
+
+@router.post(
+    "/v1/documents/{document_id}/pages/{page_number}/blocks/{block_id}/ai-reread/{proposal_id}/reject",
+    status_code=204,
+    response_class=Response,
+)
+def reject_ai_reread(store: StoreDep, document_id: str, page_number: int, block_id: str, proposal_id: str) -> Response:
+    try:
+        reject_proposal(store, document_id, page_number, block_id, proposal_id)
+    except ProposalNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=PROPOSAL_NOT_FOUND_DETAIL) from exc
     return Response(status_code=204)

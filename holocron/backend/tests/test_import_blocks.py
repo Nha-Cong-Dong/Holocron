@@ -28,6 +28,7 @@ from holocron_core.domain.documents import (
 )
 from holocron_core.domain.repositories import AppStore, VersionConflictError
 from holocron_core.domain.schemas import quote_in_text
+from holocron_core.infrastructure.document_readers.config import ENV_PDF_OCR_SECONDARY, ENV_TESSERACT_CMD
 from holocron_core.infrastructure.memory_store import IngestionStore
 from holocron_core.routers import documents as documents_router
 from holocron_core.routers.api import app, get_clock, get_store
@@ -379,7 +380,18 @@ def test_second_finish_on_open_document_keeps_blocks_and_hash(store: AppStore, t
 
 
 @pytest.fixture
-def client_env(tmp_path: Path) -> Iterator[tuple[TestClient, AppStore, list[ImportRuntime]]]:
+def client_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[tuple[TestClient, AppStore, list[ImportRuntime]]]:
+    """App với bộ đọc PDF thật (worker thật) nhưng KHÔNG có engine OCR, bất kể máy chạy test cài gì.
+
+    `load_pdf_reader` đọc cấu hình OCR từ biến môi trường của máy; khi máy có Tesseract và RapidOCR, MỖI worker (thăm
+    dò, đọc, cắt ảnh) chạy `tesseract --version`/`--list-langs` và nạp model RapidOCR (onnxruntime) TRƯỚC khi báo
+    `ready`. Dưới `pytest -n 4` hoặc máy bận, phần nạp này vượt hạn `worker_startup_timeout_s` (30 s) ⇒ 500
+    "không khởi động được bộ đọc PDF". PDF của các test này đều có lớp chữ, không trang nào cần OCR, nên ghim Tesseract
+    vào một đường dẫn không tồn tại và tắt lượt thứ hai: worker coi như thiếu engine ngay, không phụ thuộc máy."""
+    monkeypatch.setenv(ENV_TESSERACT_CMD, str(tmp_path / "khong-co-tesseract" / "tesseract"))
+    monkeypatch.setenv(ENV_PDF_OCR_SECONDARY, "")
     store = IngestionStore()
     holder: list[ImportRuntime] = [runtime_for(tmp_path)]
     app.dependency_overrides[get_store] = lambda: store

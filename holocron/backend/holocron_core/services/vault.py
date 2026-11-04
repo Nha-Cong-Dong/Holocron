@@ -1,8 +1,8 @@
 """Knowledge Vault (SPECIFICATION §5.8, §6.6, §12; ADR-006, ADR-007): nhập chunk, liệt kê, tìm kiếm BM25, sửa nhãn,
 cặp khái niệm và nguồn trích dẫn theo môn.
 
-- **Nhập:** chỉ từ văn bản người dùng đã xác nhận (`ConfirmedDocumentText`), cắt tất định ở `vault_chunking`, ghi
-  nguyên tử theo lô (`VaultRepository.add_chunks`).
+- **Nhập:** chỉ từ văn bản người dùng đã xác nhận (`ConfirmedDocumentText`; tài liệu có khối: khối ứng viên theo
+  Section, `BlockDocumentText`), cắt tất định ở `vault_chunking`, ghi nguyên tử theo lô (`VaultRepository.add_chunks`).
 - **Tìm kiếm (ADR-006 mục 4–5):** truy vấn và văn bản chunk qua cùng bộ tách từ (`domain.search_text`). Tập ứng viên
   lấy từ FTS5 khi kho có (`match_chunk_ids`), ngược lại so token trực tiếp; điểm luôn là BM25 tự tính trên cùng bộ
   token, nên kho SQLite có hay không có FTS5 và kho in-memory cho cùng kết quả: FTS5 chỉ lọc ứng viên và nhận đúng
@@ -46,6 +46,7 @@ __all__ = [
     "confirm_concept_pair",
     "create_concept_pair",
     "fts_query",
+    "ingest_block_chunks",
     "ingest_confirmed_text",
     "list_chunks",
     "reject_concept_pair",
@@ -79,6 +80,15 @@ def ingest_confirmed_text(vault: VaultRepository, document: ConfirmedDocumentTex
     (cùng `chunk_id`) giữ nguyên bản đang lưu, kể cả nhãn đã sửa. Tài liệu không có ⇒ `MissingReferenceError` từ kho.
     """
     return vault.add_chunks(build_chunks(document))
+
+
+def ingest_block_chunks(vault: VaultRepository, chunks: Sequence[KnowledgeChunk]) -> list[KnowledgeChunk]:
+    """Ghi chunk đã cắt theo khối/mục (`vault_chunking.build_block_chunks`, ADR-010 mục 16) cùng chỉ mục tìm kiếm
+    trong MỘT giao dịch; trả bản đang lưu theo thứ tự vào. Nguyên tử và idempotent như `ingest_confirmed_text`;
+    danh sách rỗng ⇒ không ghi gì."""
+    if not chunks:
+        return []
+    return vault.add_chunks(chunks)
 
 
 def _matches_topics(chunk: KnowledgeChunk, topic_keys: Sequence[str]) -> bool:

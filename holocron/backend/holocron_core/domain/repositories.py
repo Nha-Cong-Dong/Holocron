@@ -8,12 +8,14 @@ trên đổi thành mã HTTP mà không biết kho cụ thể: `VersionConflictE
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 from datetime import datetime, timedelta
-from typing import Literal, Protocol
+from typing import Literal, Protocol, get_args
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .blocks import Block, BlockFlag, CropImage, ExtractionLedger, Section, SectionFlag
 from .documents import (
     CHAPTER_CODE_PATTERN,
     CHAPTER_FLAG_ORDER,
@@ -21,8 +23,11 @@ from .documents import (
     ChapterCodeSource,
     ChapterTitleSource,
     PageEditAudit,
+    PageExtraction,
+    PageGeometry,
     PageSummary,
     StoredChapterFlag,
+    normalize_chapter_title,
 )
 from .ingestion import IngestionItem, UploadedDocument
 from .schemas import BlueprintSummary, DocumentMeta, ExamBlueprint, ExamFormat, KnowledgeChunk, Subject
@@ -115,6 +120,12 @@ class ImportedDocument(BaseModel):
     bản ghi cũ có `chapter_code` mà thiếu nguồn là `"user"`, §5.7), `chapter_title` cùng `chapter_title_source`
     (cùng `None` với bản ghi cũ), `chapter_flags` (sắp theo thứ tự khai báo, không trùng; bản ghi cũ có thể còn cờ `CHAPTER_NUMBER_TAKEN`, giữ
     nguyên) và `auto_confirm`.
+
+    Cột của migration khối (§5.13; ADR-010 mục 13, 17): `layout_version`, `layout_settings_sha256` (cùng null với tài
+    liệu chưa có khối lưu), `blocks_after_close` và `import_generation` (thế hệ nhập, nội bộ, KHÔNG ra
+    `DocumentImport`; 0 = tài liệu nhập trước migration khối). Bốn field này chỉ do `create_imported_document` (thế
+    hệ) và `save_document_layout` (ba field còn lại) ghi; `save_imported_document`/`update_imported_document` giữ
+    nguyên giá trị đang lưu, để bản ghi đọc trước một lần lưu khối không ghi đè khối đã lưu.
     """
 
     meta: DocumentMeta
@@ -129,6 +140,10 @@ class ImportedDocument(BaseModel):
     chapter_title_source: ChapterTitleSource | None = None
     chapter_flags: list[StoredChapterFlag] = Field(default_factory=list)
     auto_confirm: bool = True
+    layout_version: int | None = Field(default=None, ge=1)
+    layout_settings_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    blocks_after_close: bool = False
+    import_generation: int = Field(default=0, ge=0)
 
     @field_validator("chapter_flags")
     @classmethod
@@ -140,6 +155,8 @@ class ImportedDocument(BaseModel):
     def _title_has_a_source(self) -> ImportedDocument:
         if (self.chapter_title is None) != (self.chapter_title_source is None):
             raise ValueError("chapter_title và chapter_title_source cùng null hoặc cùng có giá trị")
+        if (self.layout_version is None) != (self.layout_settings_sha256 is None):
+            raise ValueError("layout_version và layout_settings_sha256 cùng null hoặc cùng có giá trị")
         return self
 
 
@@ -261,7 +278,241 @@ class TwinBatchRepository(Protocol):
         ...
 
 
-class DocumentRepository(Protocol):
+class PageLayout(BaseModel):
+    """Khối và sổ bảo toàn của MỘT trang để lưu bằng `save_document_layout` (thay toàn bộ khối/ledger của trang).
+
+    `ledger` None ⇒ trang không còn ledger (ví dụ `LAYOUT_FAILED` vì thiếu geometry).
+    """
+
+    page_number: int = Field(ge=1)
+    blocks: list[Block] = Field(default_factory=list)
+    ledger: ExtractionLedger | None = None
+
+    @model_validator(mode="after")
+    def _same_page(self) -> PageLayout:
+        if any(block.page_number != self.page_number for block in self.blocks):
+            raise ValueError("mọi khối phải thuộc đúng trang page_number")
+        if self.ledger is not None and self.ledger.page_number != self.page_number:
+            raise ValueError("ledger phải thuộc đúng trang page_number")
+        if len({block.block_id for block in self.blocks}) != len(self.blocks):
+            raise ValueError("block_id trùng trong một trang")
+        return self
+
+
+class PageRewrite(BaseModel):
+    """Một hàng trang ghi lại cùng giao dịch lưu khối (`LAYOUT_FAILED`, bỏ tự xác nhận khi dựng lại; x09c).
+
+    Cột `status`/`confirmed` lấy từ `page`; so-và-ghi theo `expected_version` như `update_page`.
+    """
+
+    page: PageExtraction
+    expected_version: int = Field(ge=1)
+
+
+class DocumentLayout(BaseModel):
+    """Một lần lưu khối của tài liệu (ADR-010 mục 13 "Lưu hình học"): khối, ledger của các trang trong `pages`,
+    `layout_version`/`layout_settings_sha256` của tài liệu, cờ `blocks_after_close` (None ⇒ giữ giá trị đang lưu) và
+    các trang ghi lại `page_rewrites`."""
+
+    layout_version: int = Field(ge=1)
+    layout_settings_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    blocks_after_close: bool | None = None
+    pages: list[PageLayout] = Field(default_factory=list)
+    page_rewrites: list[PageRewrite] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _unique_pages(self) -> DocumentLayout:
+        numbers = [page.page_number for page in self.pages]
+        if len(set(numbers)) != len(numbers):
+            raise ValueError("mỗi trang tối đa một PageLayout")
+        rewrites = [rewrite.page.page_number for rewrite in self.page_rewrites]
+        if len(set(rewrites)) != len(rewrites):
+            raise ValueError("mỗi trang tối đa một PageRewrite")
+        return self
+
+
+class BlockFlagUpdate(BaseModel):
+    """Thêm/gỡ cờ của MỘT khối (`update_block_flags`); một cờ không được vừa thêm vừa gỡ."""
+
+    block_id: str = Field(pattern=r"^blk_[0-9a-f]{16}$")
+    add: list[BlockFlag] = Field(default_factory=list)
+    remove: list[BlockFlag] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _disjoint(self) -> BlockFlagUpdate:
+        if set(self.add) & set(self.remove):
+            raise ValueError("một cờ không được vừa thêm vừa gỡ")
+        return self
+
+
+class StructureProposalRecord(BaseModel):
+    """Một hàng `structure_proposals` (§5.13; V03 ghi). `model` chỉ nằm trong DB cục bộ, không ra response hay log;
+    `ops_json` là JSON thao tác của V03, kho lưu nguyên văn."""
+
+    document_id: str = Field(pattern=r"^doc_[0-9a-f]{16}$")
+    page_number: int = Field(ge=1)
+    input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model: str = Field(min_length=1)
+    prompt_version: str = Field(min_length=1)
+    status: Literal["applied", "rejected"]
+    ops_json: str
+    created_at: datetime
+
+
+CropWriteResult = Literal["stored", "capped"]
+_CROP_FLAGS: frozenset[BlockFlag] = frozenset({"crop_pending", "crop_failed", "crop_capped"})
+_SECTION_FLAG_ORDER: tuple[SectionFlag, ...] = get_args(SectionFlag)
+
+
+def heading_levels(sections: Sequence[Section]) -> list[tuple[str, int]]:
+    """`(block_id, level)` của mọi khối tiêu đề trong cây: khối tiêu đề của một Section (không phải gốc) nhận `level`
+    của Section đó (`replace_sections` ghi vào `Block.level`). Một khối tiêu đề thuộc hai Section ⇒ `ValueError`."""
+    levels: dict[str, int] = {}
+    for section in sections:
+        if section.kind == "chapter":
+            continue
+        for block_id in section.heading_block_ids:
+            if block_id in levels:
+                raise ValueError(f"khối tiêu đề {block_id} thuộc hai Section")
+            levels[block_id] = section.level
+    return sorted(levels.items())
+
+
+def with_root_chapter(root: Section, chapter_code: str | None, chapter_title: str | None) -> Section:
+    """Section gốc với `chapter_code` và `title` mới (NFC + gộp khoảng trắng, cắt 300 ký tự; rỗng/None ⇒ `title`
+    None + cờ `untitled`); `section_id` và mọi field khác giữ nguyên."""
+    title = normalize_chapter_title(chapter_title)[:MAX_CHAPTER_TITLE_CHARS].strip() if chapter_title else ""
+    flags = set(root.flags) - {"untitled"} if title else set(root.flags) | {"untitled"}
+    return Section.model_validate(
+        {
+            **root.model_dump(),
+            "chapter_code": chapter_code,
+            "title": title or None,
+            "flags": [flag for flag in _SECTION_FLAG_ORDER if flag in flags],
+        }
+    )
+
+
+def with_flags(block: Block, update: BlockFlagUpdate) -> Block:
+    """Khối sau khi thêm/gỡ cờ theo `update`; vi phạm ràng buộc của `Block` ⇒ `ValueError` (pydantic)."""
+    flags = (set(block.flags) | set(update.add)) - set(update.remove)
+    return Block.model_validate({**block.model_dump(), "flags": sorted(flags)})
+
+
+def capped(block: Block) -> Block:
+    """Khối không lưu được ảnh cắt: giữ `crop_pending` (nếu có), thêm `crop_capped`."""
+    return with_flags(block, BlockFlagUpdate(block_id=block.block_id, add=["crop_capped"]))
+
+
+def cropped(block: Block, crop_ref: str) -> Block:
+    """Khối đã có ảnh cắt `crop_ref`: gỡ `crop_pending`, `crop_failed`, `crop_capped`."""
+    flags = [flag for flag in block.flags if flag not in _CROP_FLAGS]
+    return Block.model_validate({**block.model_dump(), "crop_ref": crop_ref, "flags": flags})
+
+
+def check_crop_bytes(crop: CropImage, png: bytes) -> None:
+    """`crop_ref` là sha256 của `png` và `size_bytes` là độ dài của nó; sai ⇒ `ValueError`."""
+    if hashlib.sha256(png).hexdigest() != crop.crop_ref:
+        raise ValueError("crop_ref phải là sha256 của byte PNG")
+    if len(png) != crop.size_bytes:
+        raise ValueError("size_bytes phải bằng độ dài byte PNG")
+
+
+class BlockRepository(Protocol):
+    """Khối, mục, sổ bảo toàn, ảnh cắt, đề xuất cấu trúc và thế hệ nhập của tài liệu (§5.13, §5.15; ADR-010 mục 13,
+    17, 19). Base của `DocumentRepository`: mọi hàm nhận `DocumentRepository` gọi thẳng các method này.
+
+    Model qua ranh giới là model domain (`Block`, `ExtractionLedger`, `Section`, `CropImage`). Tài liệu không có ⇒
+    `RecordNotFoundError` ở mọi method ghi.
+    """
+
+    def get_page_geometry(self, document_id: str, page_number: int) -> PageGeometry | None:
+        """Hình học đã lưu của trang (cột `pages.geometry_json`); trang không có hoặc chưa có hình học ⇒ `None`."""
+        ...
+
+    def save_document_layout(self, document_id: str, layout: DocumentLayout) -> None:
+        """Lưu NGUYÊN TỬ trong MỘT giao dịch: thay khối và ledger của mọi trang trong `layout.pages` (khối mới có
+        `eligible = 0`), ghi `layout_version`/`layout_settings_sha256` (và `blocks_after_close` khi khác None) của
+        tài liệu (KHÔNG tăng `version` của tài liệu), ghi lại các trang trong `layout.page_rewrites`, rồi xoá hàng
+        ảnh cắt có `block_id` không còn trong khối của tài liệu.
+
+        Một trang ghi lại lệch version ⇒ `VersionConflictError`; trang thiếu (khối hay ghi lại) ⇒
+        `RecordNotFoundError`; cả hai trường hợp KHÔNG ghi gì. File ảnh không còn hàng nào trỏ tới bị xoá SAU commit.
+        """
+        ...
+
+    def list_blocks(self, document_id: str, page_number: int | None = None) -> list[Block]:
+        """Khối đã lưu của tài liệu (hoặc của một trang), sắp theo `(page_number, reading_order, block_id)`."""
+        ...
+
+    def list_extraction_ledgers(self, document_id: str) -> list[ExtractionLedger]:
+        """Sổ bảo toàn đã lưu của tài liệu, sắp theo `page_number`."""
+        ...
+
+    def replace_sections(self, document_id: str, sections: Sequence[Section]) -> None:
+        """Thay TOÀN BỘ Section của tài liệu (xoá rồi ghi) và, cùng giao dịch, ghi `Block.level` của khối `heading`
+        = `level` của Section mà khối là tiêu đề (`heading_block_ids`; Section gốc không có tiêu đề), để `Block.level`
+        và `Section.level` luôn khớp. Section khác tài liệu, id trùng hay khối tiêu đề không phải `heading` đã lưu
+        ⇒ `ValueError`, không ghi gì."""
+        ...
+
+    def list_sections(self, document_id: str) -> list[Section]:
+        """Section đã lưu, sắp theo `ordinal`."""
+        ...
+
+    def update_imported_document_and_root_section(
+        self, document: ImportedDocument, expected_version: int
+    ) -> ImportedDocument:
+        """`update_imported_document` và, cùng giao dịch, cập nhật `title` (chuẩn hoá NFC + gộp khoảng trắng; None ⇒
+        cờ `untitled`) và `chapter_code` của Section gốc (nếu có) theo `document`; `section_id` không đổi.
+
+        Lệch version ⇒ `VersionConflictError`, không ghi gì.
+        """
+        ...
+
+    def update_block_flags(self, document_id: str, updates: Sequence[BlockFlagUpdate]) -> list[Block]:
+        """Thêm/gỡ cờ của các khối trong MỘT giao dịch; trả khối đã ghi theo thứ tự vào. Khối không có ⇒
+        `RecordNotFoundError`; kết quả vi phạm ràng buộc của `Block` ⇒ `ValueError`; cả hai không ghi gì."""
+        ...
+
+    def save_structure_proposal(self, record: StructureProposalRecord) -> None:
+        """Ghi (hoặc thay) đề xuất cấu trúc của trang; trang không có ⇒ `RecordNotFoundError`."""
+        ...
+
+    def list_structure_proposals(self, document_id: str) -> list[StructureProposalRecord]:
+        """Đề xuất cấu trúc đã lưu của tài liệu, sắp theo `page_number`."""
+        ...
+
+    def refresh_eligible_blocks(self, document_id: str) -> int:
+        """Hàm DUY NHẤT ghi `blocks.eligible`: trong MỘT giao dịch, đặt `eligible` của mọi khối theo
+        `domain.block_eligibility.is_candidate_block` trên trạng thái trang HIỆN TẠI và `source_kind` của tài liệu.
+        Trả số khối `eligible = 1`."""
+        ...
+
+    def list_eligible_blocks(self, document_id: str) -> list[Block]:
+        """Khối có `eligible = 1`, sắp như `list_blocks`."""
+        ...
+
+    def save_crop_image(self, crop: CropImage, png: bytes) -> CropWriteResult:
+        """Ghi ảnh cắt của VÙNG một khối: hàng `crop_images` (file PNG ghi TRƯỚC commit) và, cùng giao dịch, đặt
+        `crop_ref` của khối, gỡ `crop_pending`/`crop_failed`/`crop_capped` ⇒ `"stored"`.
+
+        Không có chỗ lưu (kho SQLite mở không có thư mục ảnh) hoặc vượt trần byte của kho in-memory ⇒ không ghi
+        hàng/file, khối giữ `crop_pending` và thêm `crop_capped` ⇒ `"capped"`. `crop_ref` khác sha256 của `png`,
+        `size_bytes` khác độ dài hay trang khác trang của khối ⇒ `ValueError`; khối không có ⇒ `RecordNotFoundError`.
+        """
+        ...
+
+    def list_crop_images(self, document_id: str) -> list[CropImage]:
+        """Hàng ảnh cắt của tài liệu, sắp theo `block_id`."""
+        ...
+
+    def get_crop_bytes(self, document_id: str, crop_ref: str) -> bytes | None:
+        """Byte PNG khi tài liệu có ít nhất một hàng với `crop_ref` này và file còn; ngược lại `None`."""
+        ...
+
+
+class DocumentRepository(BlockRepository, Protocol):
     """Tài liệu nhập qua §6.5 và trang của nó. Trang lưu dạng JSON của model trang do tầng gọi chọn (§5.7); bộ nhập
     dùng `PageExtraction`, và `list_page_summaries` đọc các field tóm tắt của model đó."""
 
@@ -285,6 +536,10 @@ class DocumentRepository(Protocol):
 
         Môn của tài liệu chưa có thì được tạo ngầm trong CÙNG giao dịch (§5.14, `Subject.implicit(subject_code,
         meta.uploaded_at)`); môn đã có giữ nguyên. Lỗi ⇒ không có môn nào được tạo.
+
+        Cùng giao dịch: bộ đếm thế hệ nhập của `document_id` tăng 1 (tạo = 1; bộ đếm sống qua xoá tài liệu) và
+        `import_generation` của bản ghi trả về bằng giá trị đó. Bốn field khối của `document` (`layout_version`, …)
+        bị bỏ qua: tài liệu mới chưa có khối.
         """
         ...
 
@@ -301,7 +556,8 @@ class DocumentRepository(Protocol):
         ...
 
     def delete_document(self, document_id: str) -> bool:
-        """Xoá tài liệu cùng trang, chunk, chỉ mục và cặp khái niệm; `False` khi không có.
+        """Xoá tài liệu cùng trang, chunk, chỉ mục, cặp khái niệm, khối, mục, ledger, đề xuất cấu trúc và ảnh cắt
+        (hàng trong giao dịch, file/byte ảnh SAU commit); `False` khi không có. Bộ đếm thế hệ nhập KHÔNG bị xoá.
 
         Còn item tham chiếu ⇒ `RecordInUseError`.
         """
@@ -314,7 +570,8 @@ class DocumentRepository(Protocol):
         gọi `create_imported_document`), hoặc `None` khi lần nhập tạo dòng mới:
         - `None` ⇒ xoá hẳn như `delete_document` (còn item tham chiếu ⇒ `RecordInUseError`, không xoá gì);
         - có giá trị ⇒ giữ dòng (item của §6.1 vẫn trỏ được tới), trả các cột về đúng `upload`, bỏ mọi thông tin
-          của bộ nhập (môn, chương, tiêu đề, trạng thái…) cùng trang, lịch sử sửa trang và chunk; version tăng 1.
+          của bộ nhập (môn, chương, tiêu đề, trạng thái, cột khối…) cùng trang, lịch sử sửa trang, chunk, khối, mục,
+          ledger, đề xuất cấu trúc và ảnh cắt; version tăng 1. Bộ đếm thế hệ nhập không giảm.
 
         Trong cùng giao dịch, môn của tài liệu bị xoá nếu nó vẫn đúng là bản ghi mà `create_imported_document` của
         lần nhập này tạo ngầm (`Subject.implicit(subject_code, meta.uploaded_at)`, `version = 1`) và không còn tài
@@ -338,11 +595,13 @@ class DocumentRepository(Protocol):
         confirmed: bool,
         expected_version: int,
         audit: PageEditAudit | None = None,
+        geometry: PageGeometry | None = None,
     ) -> int:
         """So-và-ghi nguyên tử; trả version mới (`expected_version + 1`).
 
         `audit` (lần sửa dòng, §6.5) được ghi trong cùng giao dịch với trang; nó phải thuộc đúng trang này và có
-        `from_version = expected_version` (`check_page_audit`), sai ⇒ `ValueError`, không ghi gì.
+        `from_version = expected_version` (`check_page_audit`), sai ⇒ `ValueError`, không ghi gì. `geometry` khác None
+        được ghi vào `pages.geometry_json` cùng giao dịch với JSON trang; None ⇒ giữ hình học đã lưu.
         """
         ...
 

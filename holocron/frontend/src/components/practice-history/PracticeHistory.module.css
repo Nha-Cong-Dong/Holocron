@@ -1,0 +1,135 @@
+/* Lịch sử làm bài và ôn câu sai (spec §5.17, §6.12). Màu và cỡ chữ theo biến ở globals.css/tokens.css. */
+
+.root {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--fs-h3);
+  line-height: var(--lh-h3);
+  font-weight: var(--fw-semibold);
+}
+
+.list {
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  transition: border-color 150ms ease;
+}
+
+.row:hover {
+  border-color: var(--line-strong);
+}
+
+.rowMain {
+  display: grid;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.when {
+  color: var(--ink);
+  font-weight: var(--fw-semibold);
+}
+
+.meta {
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+}
+
+.stemPreview {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.badge {
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: var(--fs-caption);
+}
+
+.correct {
+  color: var(--ok);
+}
+
+.incorrect {
+  color: var(--err);
+}
+
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+}
+
+.notice {
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--warn-soft);
+  font-size: var(--fs-small);
+}
+
+.card {
+  display: grid;
+  gap: var(--sp-4);
+  padding: var(--sp-6);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--sh-1);
+}
+
+.stem {
+  margin: 0;
+  font-size: var(--fs-h3);
+  line-height: var(--lh-h3);
+  font-weight: var(--fw-semibold);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.quote {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.quoteLabel {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  font-weight: var(--fw-semibold);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .row {
+    transition: none;
+  }
+}

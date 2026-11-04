@@ -11,6 +11,7 @@ import { localError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
 import { essaySubmission, initialPracticeState, isAnswered, type PracticeState, practiceScope } from "@/lib/practice";
 import type { PracticeBlueprint, PracticeQuestion } from "@/lib/practice-data";
+import { buildAttemptCreate } from "@/lib/practice-history";
 import { essayErrorPlacement, nextLabel, quizHint, quizKeyEffect, quizReducer, resultRows } from "@/lib/quiz";
 import { resolveShortcut, targetKindOf } from "@/lib/shortcuts";
 import { chapterLabel } from "@/lib/sky";
@@ -28,6 +29,8 @@ interface PracticeSessionProps {
   blueprint: PracticeBlueprint;
   /** Môn của đề (ADR-006 mục 6): để tìm đoạn nguồn và tên tài liệu. */
   subjectCode: string;
+  /** Mã batch backend đã lưu; `null` (không có) thì không ghi lịch sử làm bài. */
+  batchId: string | null;
   /** "Thoát" khi đang làm hoặc "Làm đề mới" ở Kết quả: về thiết lập đề. */
   onExit: () => void;
   /** Báo bài làm đang ở màn làm đề hay màn kết quả. */
@@ -43,7 +46,14 @@ const NEXT_BUTTON_ID = "quiz-next";
  * ô trả lời. Trả lời xong thì focus sang nút chính, nên Enter là cú bấm gốc của nút đó; giữ Enter không nhảy qua câu
  * chưa làm vì nút chỉ có khi câu đã trả lời và reducer chỉ sang câu khi câu đang mở đã trả lời.
  */
-export function PracticeSession({ questions, blueprint, subjectCode, onExit, onPhaseChange }: PracticeSessionProps) {
+export function PracticeSession({
+  questions,
+  blueprint,
+  subjectCode,
+  batchId,
+  onExit,
+  onPhaseChange,
+}: PracticeSessionProps) {
   const { overlayOpen } = useShell();
   const [state, dispatch] = useReducer(quizReducer, questions, initialPracticeState);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -69,6 +79,37 @@ export function PracticeSession({ questions, blueprint, subjectCode, onExit, onP
       alive = false;
     };
   }, [subjectCode]);
+
+  // Ghi lượt làm bài (§6.12). Lỗi ghi không chặn luyện tập: báo nhẹ ở màn kết quả và cho thử lại.
+  const recorded = useRef(false);
+  const recording = useRef(false);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "failed" | "saved">("idle");
+  const record = useCallback(() => {
+    if (recorded.current || recording.current) return;
+    const current = stateRef.current;
+    const body = buildAttemptCreate("batch", batchId, current.questions, current.entries);
+    if (body === null) return;
+    recording.current = true;
+    setSaveStatus("saving");
+    api.recordPracticeAttempt(body).then(
+      () => {
+        recorded.current = true;
+        recording.current = false;
+        setSaveStatus("saved");
+      },
+      () => {
+        recording.current = false;
+        setSaveStatus("failed");
+      },
+    );
+  }, [batchId]);
+  useEffect(() => {
+    if (state.finished) record();
+  }, [state.finished, record]);
+  const exit = useCallback(() => {
+    if (!stateRef.current.finished) record();
+    onExit();
+  }, [record, onExit]);
 
   useEffect(() => {
     onPhaseChange(state.finished ? "result" : "quiz");
@@ -142,7 +183,26 @@ export function PracticeSession({ questions, blueprint, subjectCode, onExit, onP
     if (answered && !state.finished) document.getElementById(NEXT_BUTTON_ID)?.focus();
   }, [answered, state.finished]);
 
-  if (state.finished) return <ResultScreen rows={resultRows(state)} onNewExam={onExit} />;
+  if (state.finished) {
+    return (
+      <>
+        <ResultScreen rows={resultRows(state)} onNewExam={onExit} />
+        {saveStatus === "failed" && (
+          <p className={styles.saveNotice} role="status">
+            Chưa lưu được lượt làm bài vào lịch sử.{" "}
+            <Button variant="secondary" onClick={record}>
+              Thử lại
+            </Button>
+          </p>
+        )}
+        {saveStatus === "saved" && (
+          <p className={styles.saveNotice} role="status">
+            Đã lưu lượt làm bài vào lịch sử.
+          </p>
+        )}
+      </>
+    );
+  }
   if (question === undefined || entry === undefined) return null;
 
   const chapterCode = chapterOf(question.slotIndex);
@@ -153,7 +213,7 @@ export function PracticeSession({ questions, blueprint, subjectCode, onExit, onP
 
   return (
     <section className={styles.screen} aria-label="Làm bài">
-      <QuizHeader index={state.index} total={state.questions.length} answered={answered} onExit={onExit} />
+      <QuizHeader index={state.index} total={state.questions.length} answered={answered} onExit={exit} />
       <div key={question.twinId} ref={boxRef} className={styles.grid} tabIndex={-1}>
         <article className={styles.card} aria-labelledby={`stem-${question.twinId}`}>
           {chapterCode !== null && <span className={styles.chapter}>{chapterLabel(chapterCode)}</span>}

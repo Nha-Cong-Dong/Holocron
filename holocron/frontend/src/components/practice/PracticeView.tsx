@@ -18,7 +18,8 @@ import { freshRuntime } from "@/lib/runtime";
 import type { PracticeSessionKind } from "@/lib/subject-route";
 import { selectedSubject } from "@/lib/subjects";
 import type { BlueprintCreate } from "@/types/holocron";
-
+import { AttemptHistory } from "../practice-history/AttemptHistory";
+import { ReviewWrongQuestions } from "../practice-history/ReviewWrongQuestions";
 import styles from "./Practice.module.css";
 import { PracticeSession } from "./PracticeSession";
 import { PracticeSetup } from "./PracticeSetup";
@@ -28,6 +29,8 @@ const TWINS_PER_SLOT = 1;
 
 type Stage =
   | { kind: "setup" }
+  | { kind: "history" }
+  | { kind: "review" }
   | { kind: "creating" }
   | { kind: "create_failed"; error: UiError; payload: BlueprintCreate }
   | { kind: "generating"; blueprint: PracticeBlueprint }
@@ -142,6 +145,18 @@ export function PracticeView({ subjectCode, hrefFor, urlSession = null, onSessio
   return (
     <div className={styles.page}>
       {stage.kind === "setup" && (
+        <div className={styles.actions}>
+          <Button variant="secondary" onClick={() => setStage({ kind: "history" })}>
+            Lịch sử làm bài
+          </Button>
+          <Button variant="secondary" onClick={() => setStage({ kind: "review" })}>
+            Ôn câu sai
+          </Button>
+        </div>
+      )}
+      {stage.kind === "history" && <AttemptHistory subjectCode={subject.subject_code} onBack={restart} />}
+      {stage.kind === "review" && <ReviewWrongQuestions subjectCode={subject.subject_code} onBack={restart} />}
+      {stage.kind === "setup" && (
         <PracticeSetup
           key={subject.subject_code}
           subject={subject}
@@ -228,6 +243,7 @@ function ReadyBatch({ batch, blueprint, onNewExam, onPhaseChange, conceptsHref }
         questions={batch.questions}
         blueprint={blueprint}
         subjectCode={blueprint.subjectCode}
+        batchId={batch.batchId}
         onExit={onNewExam}
         onPhaseChange={onPhaseChange}
       />

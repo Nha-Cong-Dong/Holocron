@@ -1,0 +1,126 @@
+/*
+ * Phần "Đọc lại bằng AI" ở màn Xem lại trang: danh sách khối có cờ, xem trước đề xuất (ảnh cắt, chữ OCR, chữ AI) và
+ * tô chỗ lệch. Màu lấy từ biến của globals.css (có dark mode); chỗ lệch tô bằng nền + viền + gạch chân nên không chỉ
+ * dựa vào màu. Không có chuyển động.
+ */
+
+.list {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.itemHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.reasons {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.preview {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+@media (max-width: 1100px) {
+  .preview {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.column {
+  display: grid;
+  align-content: start;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.columnTitle {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.crop {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #ffffff;
+}
+
+.text {
+  margin: 0;
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tableWrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.table {
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.table td {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+}
+
+.mismatch {
+  background: var(--danger-soft);
+  outline: 2px solid var(--danger);
+  outline-offset: -2px;
+  text-decoration: underline wavy var(--danger);
+}
+
+.missed {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.missed li {
+  padding: 0 var(--space-2);
+  border: 1px dashed var(--danger);
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.disclosure {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}

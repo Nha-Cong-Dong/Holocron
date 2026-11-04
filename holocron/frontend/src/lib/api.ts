@@ -9,6 +9,7 @@
  * - Thân `/v1/runtime` được kiểm dạng ở đây (`normalizeRuntimeInfo`) trước khi tới component.
  */
 
+import { isCropRef, type PageBlockView, parseAiRereadProposal, parsePageBlocks } from "@/lib/ai-reread";
 import { parseAiStatus, parseConsentState, parseProvider, parseProviderList, parseTestResult } from "@/lib/ai-settings";
 import { parseProposalJobList } from "@/lib/concept-proposals";
 import { apiBase, authHeaders, TOKEN_HEADER, USE_MOCKS } from "@/lib/config";
@@ -63,6 +64,8 @@ import type { EssayGradeRequest, ProposalJobCreate } from "@/types/contract-pend
 import type {
   AiConsentState,
   AiConsentUpdate,
+  AiRereadAcceptRequest,
+  AiRereadProposal,
   AiStatus,
   BlueprintCreate,
   CellPatch,
@@ -237,6 +240,25 @@ export interface HolocronApi {
   deleteProvider: (id: string) => Promise<void>;
   /** `POST /v1/settings/providers/{id}/test`. */
   testProvider: (id: string, body: ProviderTestRequest) => Promise<ProviderTestResult>;
+  /** `GET /v1/documents/{document_id}/pages/{page_number}/blocks` (§6.10): khối của trang cho màn xem lại. */
+  getPageBlocks: (documentId: string, pageNumber: number) => Promise<PageBlockView[]>;
+  /**
+   * `GET /v1/documents/{document_id}/crops/{crop_ref}` (§6.10): byte PNG của ảnh cắt, tải qua `fetch` có header xác thực
+   * (không đặt token vào URL). Nơi gọi tự tạo và thu hồi object URL.
+   */
+  getCropImage: (documentId: string, cropRef: string) => Promise<Blob>;
+  /** `POST …/blocks/{block_id}/ai-reread` (§6.10a): gửi ảnh vùng tới nhà cung cấp AI; không ghi trang. */
+  requestAiReread: (documentId: string, pageNumber: number, blockId: string) => Promise<AiRereadProposal>;
+  /** `POST …/ai-reread/{proposal_id}/accept` (§6.10a): ghi khối `vlm`, trả trang mới. */
+  acceptAiReread: (
+    documentId: string,
+    pageNumber: number,
+    blockId: string,
+    proposalId: string,
+    expectedVersion: number,
+  ) => Promise<PageView>;
+  /** `POST …/ai-reread/{proposal_id}/reject` (§6.10a): 204. */
+  rejectAiReread: (documentId: string, pageNumber: number, blockId: string, proposalId: string) => Promise<void>;
   /** `GET /v1/runtime` (§5.12), đã kiểm dạng. */
   getRuntime: () => Promise<RuntimeView>;
   /** `GET /v1/subjects` (§6.8), đã kiểm dạng từng phần tử. */
@@ -354,6 +376,56 @@ const AI_SETTINGS: ClassifyOptions = { context: "ai_settings" };
 
 export const realApi: HolocronApi = {
   getRuntime: () => loadRuntime((raw) => raw),
+
+  getPageBlocks: async (documentId, pageNumber) => {
+    const raw = await request<unknown>(
+      `/v1/documents/${segment(documentId)}/pages/${pageNumber}/blocks`,
+      { method: "GET" },
+      { context: "document_review" },
+    );
+    return validated(parsePageBlocks(raw));
+  },
+
+  getCropImage: async (documentId, cropRef) => {
+    if (!isCropRef(cropRef)) throw new ApiError(200, invalidResponseError());
+    const response = await send(
+      `/v1/documents/${segment(documentId)}/crops/${cropRef}`,
+      { method: "GET" },
+      { context: "document_review" },
+    );
+    try {
+      return await response.blob();
+    } catch {
+      throw new ApiError(response.status, invalidResponseError());
+    }
+  },
+
+  requestAiReread: async (documentId, pageNumber, blockId) => {
+    const raw = await request<unknown>(
+      `/v1/documents/${segment(documentId)}/pages/${pageNumber}/blocks/${segment(blockId)}/ai-reread`,
+      { method: "POST" },
+      { context: "ai_reread" },
+    );
+    return validated(parseAiRereadProposal(raw));
+  },
+
+  acceptAiReread: async (documentId, pageNumber, blockId, proposalId, expectedVersion) => {
+    const payload: AiRereadAcceptRequest = { editor_id: LOCAL_EDITOR_ID, expected_version: expectedVersion };
+    const raw = await request<unknown>(
+      `/v1/documents/${segment(documentId)}/pages/${pageNumber}/blocks/${segment(blockId)}/ai-reread/${segment(proposalId)}/accept`,
+      jsonSpec("POST", payload),
+      { versioned: true, context: "ai_reread" },
+    );
+    return validated(parsePageExtraction(raw));
+  },
+
+  rejectAiReread: async (documentId, pageNumber, blockId, proposalId) => {
+    await send(
+      `/v1/documents/${segment(documentId)}/pages/${pageNumber}/blocks/${segment(blockId)}/ai-reread/${segment(proposalId)}/reject`,
+      { method: "POST" },
+      { context: "ai_reread" },
+    );
+  },
 
   getAiStatus: async () =>
     validated(parseAiStatus(await request<unknown>("/v1/runtime", { method: "GET" }, { context: "runtime" }))),
@@ -713,6 +785,9 @@ export function createApi(useMocks: boolean): HolocronApi {
         : isMockDocument(id)
           ? documents.getDocumentPage(id, page)
           : realApi.getDocumentPage(id, page),
+    // Tài liệu mẫu không có khối thật ở backend: không có khối nào để đọc lại bằng AI.
+    getPageBlocks: (id, page) =>
+      isImportResultMock(id) || isMockDocument(id) ? Promise.resolve([]) : realApi.getPageBlocks(id, page),
     deleteDocument: (id) =>
       isImportResultMock(id)
         ? result.deleteDocument(id)

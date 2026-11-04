@@ -9,6 +9,7 @@
  * Ngoại lệ duy nhất: danh sách `issues` của 409 BLOCKING là thông điệp Gate viết cho người dùng.
  */
 
+import { aiRereadErrorInfo } from "@/lib/ai-reread";
 import {
   DOCUMENT_MAX_PAGES,
   DOCUMENT_UPLOAD_MAX_MIB,
@@ -71,6 +72,8 @@ export interface UiError {
    * chứa nội dung người dùng nhập. Không có với lỗi dựng ở giao diện.
    */
   diagnostic?: string;
+  /** Mã nghiệp vụ đã biết của luồng "đọc lại bằng AI" (`detail.code`, §6.10a); chỉ có ở `context = "ai_reread"`. */
+  code?: string;
 }
 
 /** Luồng gọi API, để chọn câu riêng cho 400/404/409/413/415/422 thay vì câu chung. */
@@ -96,7 +99,8 @@ export type ErrorContext =
   | "pair_create"
   | "pair_confirm"
   | "pair_reject"
-  | "ai_settings";
+  | "ai_settings"
+  | "ai_reread";
 
 export interface ClassifyOptions {
   /** Request có gửi `expected_version`: 409 dạng chuỗi được hiểu là bản đã đổi ở nơi khác. */
@@ -238,6 +242,10 @@ const CONTEXT_MESSAGES: Record<ErrorContext, Partial<Record<ContextualKind, stri
   pair_confirm: { not_found: PAIR_NOT_FOUND_VI },
   pair_reject: { not_found: PAIR_NOT_FOUND_VI },
   ai_settings: { not_found: "Nhà cung cấp này không còn. Tải lại danh sách rồi thử lại." },
+  ai_reread: {
+    not_found: "Không tìm thấy khối hoặc đề xuất này (có thể trang vừa đổi). Tải lại trang rồi thử lại.",
+    validation: "Chưa nhận được chữ AI: yêu cầu không hợp lệ. Tải lại trang rồi đọc lại.",
+  },
 };
 
 /**
@@ -455,6 +463,14 @@ function classifyHttpStatus(status: number, body: unknown, options: ClassifyOpti
     if (known !== null) return known;
     if (status === 403)
       return build("forbidden", "Mã truy cập sai hoặc thiếu. Kiểm tra mã ở ô “Mã truy cập” rồi thử lại.");
+  }
+
+  if (options.context === "ai_reread" && (status === 409 || status === 503)) {
+    const code = isRecord(detail) && typeof detail.code === "string" ? detail.code : undefined;
+    const info = aiRereadErrorInfo(code);
+    if (info !== null && code !== undefined) {
+      return { ...build(status === 503 ? "busy" : "state_conflict", info.message), code };
+    }
   }
 
   if (hasCapabilityCode(detail)) {

@@ -232,3 +232,52 @@ export function nextOffset(offset: number, shown: number, total: number): number
   const next = offset + shown;
   return shown > 0 && next < total ? next : null;
 }
+
+// ------------------------------------------------------------------------- hàng đợi lượt chưa lưu
+
+export type PendingStatus = "saving" | "failed" | "saved";
+
+/** Một lượt làm bài đang gửi, gửi lỗi hoặc đã lưu; khoá theo bộ đề để mỗi bộ đề chỉ ghi một lượt. */
+export interface PendingAttempt {
+  key: string;
+  body: PracticeAttemptCreate;
+  status: PendingStatus;
+}
+
+export type PendingAction =
+  | { type: "enqueue"; key: string; body: PracticeAttemptCreate }
+  | { type: "retry"; key: string }
+  | { type: "saved"; key: string }
+  | { type: "failed"; key: string };
+
+function setStatus(queue: readonly PendingAttempt[], key: string, from: PendingStatus, to: PendingStatus) {
+  return queue.map((item) => (item.key === key && item.status === from ? { ...item, status: to } : item));
+}
+
+/**
+ * Hàng đợi lượt làm bài sống ở PracticeView (không mất khi rời màn làm bài). `enqueue` bỏ qua khoá đã có (đang gửi,
+ * lỗi hay đã lưu) nên rời bài nhiều đường không ghi trùng lượt; `retry` chỉ áp cho lượt đang lỗi.
+ */
+export function pendingReducer(queue: readonly PendingAttempt[], action: PendingAction): PendingAttempt[] {
+  switch (action.type) {
+    case "enqueue":
+      if (queue.some((item) => item.key === action.key)) return [...queue];
+      return [...queue, { key: action.key, body: action.body, status: "saving" }];
+    case "retry":
+      return setStatus(queue, action.key, "failed", "saving");
+    case "saved":
+      return setStatus(queue, action.key, "saving", "saved");
+    case "failed":
+      return setStatus(queue, action.key, "saving", "failed");
+  }
+}
+
+/** Các lượt chưa lưu xong (đang gửi hoặc lỗi), để báo ở màn thiết lập đề. */
+export function unsavedAttempts(queue: readonly PendingAttempt[]): PendingAttempt[] {
+  return queue.filter((item) => item.status !== "saved");
+}
+
+/** Trạng thái ghi của một bộ đề: `idle` khi chưa có lượt nào. */
+export function attemptStatusFor(queue: readonly PendingAttempt[], key: string): PendingStatus | "idle" {
+  return queue.find((item) => item.key === key)?.status ?? "idle";
+}

@@ -4,12 +4,15 @@ import type { AnswerEntry } from "@/lib/practice";
 import type { McqQuestion, PracticeQuestion } from "@/lib/practice-data";
 import {
   attemptCountsLine,
+  attemptStatusFor,
   buildAttemptCreate,
   formatSubmittedAt,
   nextOffset,
   parseAttempt,
   parseAttemptPage,
   parseReviewPage,
+  pendingReducer,
+  unsavedAttempts,
 } from "@/lib/practice-history";
 
 const citation = { doc_id: "d1", page_number: 2, verbatim_quote: "Trích nguyên văn", chunk_id: null };
@@ -127,5 +130,38 @@ describe("nhãn và phân trang", () => {
     expect(nextOffset(0, 20, 45)).toBe(20);
     expect(nextOffset(40, 5, 45)).toBeNull();
     expect(nextOffset(0, 0, 45)).toBeNull();
+  });
+});
+
+describe("pendingReducer", () => {
+  const body = { mode: "batch" as const, batch_id: "b1", answers: [{ twin_id: "t1", chosen_key: "A" as const }] };
+
+  it("enqueue thêm lượt đang gửi và bỏ qua khoá trùng", () => {
+    const once = pendingReducer([], { type: "enqueue", key: "b1", body });
+    expect(once).toEqual([{ key: "b1", body, status: "saving" }]);
+    expect(pendingReducer(once, { type: "enqueue", key: "b1", body })).toEqual(once);
+  });
+
+  it("gửi lỗi thì giữ lượt, retry đưa về đang gửi, thành công thì không còn chưa lưu", () => {
+    let queue = pendingReducer([], { type: "enqueue", key: "b1", body });
+    queue = pendingReducer(queue, { type: "failed", key: "b1" });
+    expect(attemptStatusFor(queue, "b1")).toBe("failed");
+    expect(unsavedAttempts(queue)).toHaveLength(1);
+    queue = pendingReducer(queue, { type: "retry", key: "b1" });
+    expect(attemptStatusFor(queue, "b1")).toBe("saving");
+    queue = pendingReducer(queue, { type: "saved", key: "b1" });
+    expect(attemptStatusFor(queue, "b1")).toBe("saved");
+    expect(unsavedAttempts(queue)).toEqual([]);
+  });
+
+  it("retry chỉ áp cho lượt đang lỗi; saved/failed chỉ áp cho lượt đang gửi", () => {
+    const saving = pendingReducer([], { type: "enqueue", key: "b1", body });
+    expect(pendingReducer(saving, { type: "retry", key: "b1" })).toEqual(saving);
+    const saved = pendingReducer(saving, { type: "saved", key: "b1" });
+    expect(pendingReducer(saved, { type: "failed", key: "b1" })).toEqual(saved);
+  });
+
+  it("khoá lạ: trạng thái idle", () => {
+    expect(attemptStatusFor([], "x")).toBe("idle");
   });
 });

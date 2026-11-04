@@ -11,11 +11,12 @@ import { localError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
 import { essaySubmission, initialPracticeState, isAnswered, type PracticeState, practiceScope } from "@/lib/practice";
 import type { PracticeBlueprint, PracticeQuestion } from "@/lib/practice-data";
-import { buildAttemptCreate } from "@/lib/practice-history";
+import { buildAttemptCreate, type PendingStatus } from "@/lib/practice-history";
 import { essayErrorPlacement, nextLabel, quizHint, quizKeyEffect, quizReducer, resultRows } from "@/lib/quiz";
 import { resolveShortcut, targetKindOf } from "@/lib/shortcuts";
 import { chapterLabel } from "@/lib/sky";
 import type { PracticeSessionKind } from "@/lib/subject-route";
+import type { PracticeAttemptCreate } from "@/types/holocron";
 
 import { EssayQuestionView } from "./EssayQuestionView";
 import { McqQuestionView } from "./McqQuestionView";
@@ -33,6 +34,12 @@ interface PracticeSessionProps {
   batchId: string | null;
   /** "Thoát" khi đang làm hoặc "Làm đề mới" ở Kết quả: về thiết lập đề. */
   onExit: () => void;
+  /** Gửi lượt làm bài vào hàng đợi ghi lịch sử (idempotent theo bộ đề). */
+  onRecord: (body: PracticeAttemptCreate) => void;
+  /** Trạng thái ghi lượt của bộ đề này. */
+  saveStatus: PendingStatus | "idle";
+  /** "Thử lại" khi ghi lượt lỗi. */
+  onRetrySave: () => void;
   /** Báo bài làm đang ở màn làm đề hay màn kết quả. */
   onPhaseChange: (phase: PracticeSessionKind) => void;
 }
@@ -51,6 +58,9 @@ export function PracticeSession({
   blueprint,
   subjectCode,
   batchId,
+  onRecord,
+  saveStatus,
+  onRetrySave,
   onExit,
   onPhaseChange,
 }: PracticeSessionProps) {
@@ -80,36 +90,22 @@ export function PracticeSession({
     };
   }, [subjectCode]);
 
-  // Ghi lượt làm bài (§6.12). Lỗi ghi không chặn luyện tập: báo nhẹ ở màn kết quả và cho thử lại.
-  const recorded = useRef(false);
-  const recording = useRef(false);
-  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "failed" | "saved">("idle");
+  // Ghi lượt làm bài (§6.12): hàng đợi ở PracticeView, nên rời bài bằng đường nào (Thoát, Làm đề mới, breadcrumb, hộp
+  // lệnh) lượt vẫn được gửi, và lỗi còn chỗ báo kèm "Thử lại" ở màn thiết lập đề.
+  const onRecordRef = useRef(onRecord);
+  useEffect(() => {
+    onRecordRef.current = onRecord;
+  }, [onRecord]);
   const record = useCallback(() => {
-    if (recorded.current || recording.current) return;
     const current = stateRef.current;
     const body = buildAttemptCreate("batch", batchId, current.questions, current.entries);
-    if (body === null) return;
-    recording.current = true;
-    setSaveStatus("saving");
-    api.recordPracticeAttempt(body).then(
-      () => {
-        recorded.current = true;
-        recording.current = false;
-        setSaveStatus("saved");
-      },
-      () => {
-        recording.current = false;
-        setSaveStatus("failed");
-      },
-    );
+    if (body !== null) onRecordRef.current(body);
   }, [batchId]);
   useEffect(() => {
     if (state.finished) record();
   }, [state.finished, record]);
-  const exit = useCallback(() => {
-    if (!stateRef.current.finished) record();
-    onExit();
-  }, [record, onExit]);
+  // Gỡ màn làm bài (mọi đường rời bài): ghi nốt những câu đã nộp. Trùng khoá thì hàng đợi bỏ qua.
+  useEffect(() => record, [record]);
 
   useEffect(() => {
     onPhaseChange(state.finished ? "result" : "quiz");
@@ -190,7 +186,7 @@ export function PracticeSession({
         {saveStatus === "failed" && (
           <p className={styles.saveNotice} role="status">
             Chưa lưu được lượt làm bài vào lịch sử.{" "}
-            <Button variant="secondary" onClick={record}>
+            <Button variant="secondary" onClick={onRetrySave}>
               Thử lại
             </Button>
           </p>
@@ -213,7 +209,7 @@ export function PracticeSession({
 
   return (
     <section className={styles.screen} aria-label="Làm bài">
-      <QuizHeader index={state.index} total={state.questions.length} answered={answered} onExit={exit} />
+      <QuizHeader index={state.index} total={state.questions.length} answered={answered} onExit={onExit} />
       <div key={question.twinId} ref={boxRef} className={styles.grid} tabIndex={-1}>
         <article className={styles.card} aria-labelledby={`stem-${question.twinId}`}>
           {chapterCode !== null && <span className={styles.chapter}>{chapterLabel(chapterCode)}</span>}

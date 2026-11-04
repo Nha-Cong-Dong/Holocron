@@ -39,6 +39,13 @@ import {
   parseEssayGradeResult,
   parsePracticeBatch,
 } from "@/lib/practice-data";
+import {
+  type AttemptPageView,
+  parseAttempt,
+  parseAttemptPage,
+  parseReviewPage,
+  type ReviewPageView,
+} from "@/lib/practice-history";
 import { normalizeRuntimeInfo, type RuntimeView } from "@/lib/runtime";
 import { parseSubject, parseSubjectList } from "@/lib/subjects";
 import {
@@ -75,6 +82,8 @@ import type {
   PageConfirmRequest,
   PageLinesPatch,
   PageRestoreRequest,
+  PracticeAttempt,
+  PracticeAttemptCreate,
   Subject,
   SubjectCreate,
   TablePatchRequest,
@@ -219,6 +228,12 @@ export interface HolocronApi {
   ) => Promise<PracticeBatch>;
   /** `POST /v1/twins/{twin_id}/essay-grade` (§6.9; chưa có ở backend), đã kiểm dạng. */
   gradeEssay: (twinId: string, answerText: string) => Promise<EssayGradeView>;
+  /** `POST /v1/practice/attempts` (§6.12): ghi lượt làm bài; đúng/sai và số đếm do backend trả, đã kiểm dạng. */
+  recordPracticeAttempt: (payload: PracticeAttemptCreate) => Promise<PracticeAttempt>;
+  /** `GET /v1/practice/attempts` (§6.12): lượt của môn, mới nhất trước, phân trang theo `offset`/`limit`. */
+  listPracticeAttempts: (subjectCode: string, offset: number, limit: number) => Promise<AttemptPageView>;
+  /** `GET /v1/practice/review-questions` (§6.12): câu sai còn mở của môn, theo luật của backend. */
+  listReviewQuestions: (subjectCode: string, offset: number, limit: number) => Promise<ReviewPageView>;
   /** `GET /v1/vault/chunks` (§6.6) cho màn luyện tập (tìm văn bản nguồn của trích dẫn), đã kiểm dạng. */
   listVaultChunks: (query: ChunkQuery) => Promise<ChunkPageView>;
   /** `POST /v1/subjects` (§6.8): 201 `Subject`, đã kiểm dạng. */
@@ -369,6 +384,23 @@ export const realApi: HolocronApi = {
       context: "essay_grade",
     });
     return validated(parseEssayGradeResult(raw));
+  },
+
+  recordPracticeAttempt: async (payload) => {
+    const raw = await request<unknown>("/v1/practice/attempts", jsonSpec("POST", payload));
+    return validated(parseAttempt(raw));
+  },
+
+  listPracticeAttempts: async (subjectCode, offset, limit) => {
+    const params = new URLSearchParams({ subject_code: subjectCode, offset: String(offset), limit: String(limit) });
+    const raw = await request<unknown>(`/v1/practice/attempts?${params.toString()}`, { method: "GET" });
+    return validated(parseAttemptPage(raw));
+  },
+
+  listReviewQuestions: async (subjectCode, offset, limit) => {
+    const params = new URLSearchParams({ subject_code: subjectCode, offset: String(offset), limit: String(limit) });
+    const raw = await request<unknown>(`/v1/practice/review-questions?${params.toString()}`, { method: "GET" });
+    return validated(parseReviewPage(raw));
   },
 
   listVaultChunks: async (query) => {

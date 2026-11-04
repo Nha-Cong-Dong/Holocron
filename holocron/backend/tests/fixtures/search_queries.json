@@ -1,0 +1,1169 @@
+{
+ "docs": [
+  {
+   "suffix": "a",
+   "title": "Giao trinh he dieu hanh",
+   "chapter_code": "ch2",
+   "pages": 4,
+   "blocks": [
+    {
+     "key": "b001",
+     "page": 1,
+     "order": 0,
+     "type": "paragraph",
+     "text": "duoc xu cua trong dương hạnh ganufexen"
+    },
+    {
+     "key": "b002",
+     "page": 1,
+     "order": 1,
+     "type": "paragraph",
+     "text": "the va thong cua kườn vuyển diluzefon"
+    },
+    {
+     "key": "b003",
+     "page": 1,
+     "order": 2,
+     "type": "paragraph",
+     "text": "the cua xu va R13 revezazer chẩu mềm"
+    },
+    {
+     "key": "b004",
+     "page": 1,
+     "order": 3,
+     "type": "paragraph",
+     "text": "cac ly mot trong suyển vuyển geracekuvan"
+    },
+    {
+     "key": "b005",
+     "page": 1,
+     "order": 4,
+     "type": "table",
+     "cells": [
+      [
+       "trữa tườn",
+       "ly cac khi xu"
+      ],
+      [
+       "dufapocisir",
+       "gia tri"
+      ]
+     ]
+    },
+    {
+     "key": "b006",
+     "page": 2,
+     "order": 0,
+     "type": "paragraph",
+     "text": "cua duoc trong he truyển moàn bisusekir"
+    },
+    {
+     "key": "b007",
+     "page": 2,
+     "order": 1,
+     "type": "figure",
+     "labels": [
+      "ciếp bống",
+      "xesucomox"
+     ]
+    },
+    {
+     "key": "b008",
+     "page": 2,
+     "order": 2,
+     "type": "paragraph",
+     "text": "he thong duoc xu sảng nhỗi vefuduzapux"
+    },
+    {
+     "key": "b009",
+     "page": 2,
+     "order": 3,
+     "type": "code",
+     "text": "pocabaxukar vỗi lệt",
+     "extra": "vỗi lệt"
+    },
+    {
+     "key": "b010",
+     "page": 2,
+     "order": 4,
+     "type": "paragraph",
+     "text": "trong he cua khi chợp dỗi moxabosur"
+    },
+    {
+     "key": "b011",
+     "page": 3,
+     "order": 0,
+     "type": "paragraph",
+     "text": "duoc xu the khi chữa vỗi renozumovur"
+    },
+    {
+     "key": "b012",
+     "page": 3,
+     "order": 1,
+     "type": "paragraph",
+     "text": "ly khi cac duoc roàn thiếp dudibavur"
+    },
+    {
+     "key": "b013",
+     "page": 3,
+     "order": 2,
+     "type": "paragraph",
+     "text": "duoc cua cac he CPSR moxuxikexor rống cương"
+    },
+    {
+     "key": "b014",
+     "page": 3,
+     "order": 3,
+     "type": "paragraph",
+     "text": "va cua thong ly cũng bắc rezubabinun"
+    },
+    {
+     "key": "b015",
+     "page": 3,
+     "order": 4,
+     "type": "table",
+     "cells": [
+      [
+       "vương xống",
+       "the thong ly cac"
+      ],
+      [
+       "duruzaricar",
+       "gia tri"
+      ]
+     ]
+    },
+    {
+     "key": "b016",
+     "page": 4,
+     "order": 0,
+     "type": "paragraph",
+     "text": "duoc khi thong xu đợp huyển susoculer"
+    },
+    {
+     "key": "b017",
+     "page": 4,
+     "order": 1,
+     "type": "figure",
+     "labels": [
+      "vợp cắc",
+      "mosasirar"
+     ]
+    },
+    {
+     "key": "b018",
+     "page": 4,
+     "order": 2,
+     "type": "paragraph",
+     "text": "he ly xu duoc hảng lữa nixazesesex"
+    },
+    {
+     "key": "b019",
+     "page": 4,
+     "order": 3,
+     "type": "code",
+     "text": "malelamalor truyển dạnh",
+     "extra": "truyển dạnh"
+    },
+    {
+     "key": "b020",
+     "page": 4,
+     "order": 4,
+     "type": "paragraph",
+     "text": "he cac the duoc kuyển sắc korefogor"
+    }
+   ]
+  },
+  {
+   "suffix": "b",
+   "title": "Bai giang kien truc may tinh",
+   "chapter_code": "ch3",
+   "pages": 4,
+   "blocks": [
+    {
+     "key": "b021",
+     "page": 1,
+     "order": 0,
+     "type": "paragraph",
+     "text": "ly mot xu trong lống ciếp pemitisobex"
+    },
+    {
+     "key": "b022",
+     "page": 1,
+     "order": 1,
+     "type": "paragraph",
+     "text": "mot xu ly thong cữa dũng kusadedavor"
+    },
+    {
+     "key": "b023",
+     "page": 1,
+     "order": 2,
+     "type": "paragraph",
+     "text": "cac he xu va MOV mupibexacux nảng diếp"
+    },
+    {
+     "key": "b024",
+     "page": 1,
+     "order": 3,
+     "type": "paragraph",
+     "text": "cac khi cua ly nỗi phỗi nebifinisar"
+    },
+    {
+     "key": "b025",
+     "page": 1,
+     "order": 4,
+     "type": "table",
+     "cells": [
+      [
+       "gống xạnh",
+       "va the duoc thong"
+      ],
+      [
+       "lufemasebar",
+       "gia tri"
+      ]
+     ]
+    },
+    {
+     "key": "b026",
+     "page": 2,
+     "order": 0,
+     "type": "paragraph",
+     "text": "trong xu he the phợp xệt cudifupubux"
+    },
+    {
+     "key": "b027",
+     "page": 2,
+     "order": 1,
+     "type": "figure",
+     "labels": [
+      "phạnh sườn",
+      "xekovikifor"
+     ]
+    },
+    {
+     "key": "b028",
+     "page": 2,
+     "order": 2,
+     "type": "paragraph",
+     "text": "ly mot khi va cương chẩu cexetipox"
+    },
+    {
+     "key": "b029",
+     "page": 2,
+     "order": 3,
+     "type": "code",
+     "text": "gopudecutir nườn liếp",
+     "extra": "nườn liếp"
+    },
+    {
+     "key": "b030",
+     "page": 2,
+     "order": 4,
+     "type": "paragraph",
+     "text": "ly he duoc va xoàn vống viperekex"
+    },
+    {
+     "key": "b031",
+     "page": 3,
+     "order": 0,
+     "type": "paragraph",
+     "text": "duoc trong cua va bũng vảng mosomarer"
+    },
+    {
+     "key": "b032",
+     "page": 3,
+     "order": 1,
+     "type": "paragraph",
+     "text": "cua duoc the va dắc bườn pofitifar"
+    },
+    {
+     "key": "b033",
+     "page": 3,
+     "order": 2,
+     "type": "paragraph",
+     "text": "xu he cua cac 0x1F tadocutar kảng soàn"
+    },
+    {
+     "key": "b034",
+     "page": 3,
+     "order": 3,
+     "type": "paragraph",
+     "text": "xu ly thong trong vềm kũng menepunun"
+    },
+    {
+     "key": "b035",
+     "page": 3,
+     "order": 4,
+     "type": "table",
+     "cells": [
+      [
+       "bệt mườn",
+       "mot va cac trong"
+      ],
+      [
+       "bocusaxetun",
+       "gia tri"
+      ]
+     ]
+    },
+    {
+     "key": "b036",
+     "page": 4,
+     "order": 0,
+     "type": "paragraph",
+     "text": "xu thong khi mot mềm mữa vitabepan"
+    },
+    {
+     "key": "b037",
+     "page": 4,
+     "order": 1,
+     "type": "figure",
+     "labels": [
+      "cữa dẩu",
+      "duxixoser"
+     ]
+    },
+    {
+     "key": "b038",
+     "page": 4,
+     "order": 2,
+     "type": "paragraph",
+     "text": "the trong va ly nhũng rắc sezovusisar"
+    },
+    {
+     "key": "b039",
+     "page": 4,
+     "order": 3,
+     "type": "code",
+     "text": "zecacanudux vũng mương",
+     "extra": "vũng mương"
+    },
+    {
+     "key": "b040",
+     "page": 4,
+     "order": 4,
+     "type": "paragraph",
+     "text": "ly khi the cac lữa bương rakudadan"
+    }
+   ]
+  },
+  {
+   "suffix": "c",
+   "title": "Tai lieu mang may tinh",
+   "chapter_code": "ch5",
+   "pages": 3,
+   "blocks": [
+    {
+     "key": "b041",
+     "page": 1,
+     "order": 0,
+     "type": "paragraph",
+     "text": "the duoc trong khi rương nhuyển getikabun"
+    },
+    {
+     "key": "b042",
+     "page": 1,
+     "order": 1,
+     "type": "paragraph",
+     "text": "trong cua thong khi cương hườn copozafin"
+    },
+    {
+     "key": "b043",
+     "page": 1,
+     "order": 2,
+     "type": "paragraph",
+     "text": "va he ly cua SP cetugadox thườn nỗi"
+    },
+    {
+     "key": "b044",
+     "page": 1,
+     "order": 3,
+     "type": "paragraph",
+     "text": "cac mot xu duoc xương thợp xibecosepir"
+    },
+    {
+     "key": "b045",
+     "page": 1,
+     "order": 4,
+     "type": "table",
+     "cells": [
+      [
+       "gợp lườn",
+       "va khi the duoc"
+      ],
+      [
+       "redukekix",
+       "gia tri"
+      ]
+     ]
+    },
+    {
+     "key": "b046",
+     "page": 2,
+     "order": 0,
+     "type": "paragraph",
+     "text": "trong the cac ly mợp gợp nesuzukilix"
+    },
+    {
+     "key": "b047",
+     "page": 2,
+     "order": 1,
+     "type": "figure",
+     "labels": [
+      "nhống thạnh",
+      "lalatakeben"
+     ]
+    },
+    {
+     "key": "b048",
+     "page": 2,
+     "order": 2,
+     "type": "paragraph",
+     "text": "he cua mot trong lương vạnh facoligomur"
+    },
+    {
+     "key": "b049",
+     "page": 2,
+     "order": 3,
+     "type": "code",
+     "text": "mepeduvotir lợp dảng",
+     "extra": "lợp dảng"
+    },
+    {
+     "key": "b050",
+     "page": 2,
+     "order": 4,
+     "type": "paragraph",
+     "text": "duoc va xu the moàn trữa fizurevovix"
+    },
+    {
+     "key": "b051",
+     "page": 3,
+     "order": 0,
+     "type": "paragraph",
+     "text": "he trong cua va vương coàn mefozicix"
+    },
+    {
+     "key": "b052",
+     "page": 3,
+     "order": 1,
+     "type": "paragraph",
+     "text": "ly trong he the sống nuyển zalikalux"
+    },
+    {
+     "key": "b053",
+     "page": 3,
+     "order": 2,
+     "type": "paragraph",
+     "text": "the cua duoc xu LR decixiser truyển lỗi"
+    },
+    {
+     "key": "b054",
+     "page": 3,
+     "order": 3,
+     "type": "paragraph",
+     "text": "va ly cua he cắc thạnh rubukuren"
+    },
+    {
+     "key": "b055",
+     "page": 3,
+     "order": 4,
+     "type": "table",
+     "cells": [
+      [
+       "phữa trảng",
+       "trong cua khi thong"
+      ],
+      [
+       "ranugebemur",
+       "gia tri"
+      ]
+     ]
+    }
+   ]
+  }
+ ],
+ "queries": [
+  {
+   "q": "duong hanh",
+   "expect": "b001",
+   "kind": "folded"
+  },
+  {
+   "q": "kuon vuyen",
+   "expect": "b002",
+   "kind": "folded"
+  },
+  {
+   "q": "diluzefln",
+   "expect": "b002",
+   "kind": "typo_long"
+  },
+  {
+   "q": "r13",
+   "expect": "b003",
+   "kind": "technical_lower"
+  },
+  {
+   "q": "R13",
+   "expect": "b003",
+   "kind": "technical_exact"
+  },
+  {
+   "q": "chau mem",
+   "expect": "b003",
+   "kind": "folded"
+  },
+  {
+   "q": "chẩu mềm",
+   "expect": "b003",
+   "kind": "exact"
+  },
+  {
+   "q": "suyen vuyen",
+   "expect": "b004",
+   "kind": "folded"
+  },
+  {
+   "q": "suyển vuyển",
+   "expect": "b004",
+   "kind": "nfd"
+  },
+  {
+   "q": "geracekusan",
+   "expect": "b004",
+   "kind": "typo_long"
+  },
+  {
+   "q": "trua tuon",
+   "expect": "b005",
+   "kind": "folded"
+  },
+  {
+   "q": "tura tuon",
+   "expect": "b005",
+   "kind": "typo_short"
+  },
+  {
+   "q": "truyen moan",
+   "expect": "b006",
+   "kind": "folded"
+  },
+  {
+   "q": "truyển moàn",
+   "expect": "b006",
+   "kind": "exact"
+  },
+  {
+   "q": "bisuzekir",
+   "expect": "b006",
+   "kind": "typo_long"
+  },
+  {
+   "q": "ciep bong",
+   "expect": "b007",
+   "kind": "folded"
+  },
+  {
+   "q": "sang nhoi",
+   "expect": "b008",
+   "kind": "folded"
+  },
+  {
+   "q": "sảng nhỗi",
+   "expect": "b008",
+   "kind": "nfd"
+  },
+  {
+   "q": "vpfuduzapux",
+   "expect": "b008",
+   "kind": "typo_long"
+  },
+  {
+   "q": "voi let",
+   "expect": "b009",
+   "kind": "folded"
+  },
+  {
+   "q": "vỗi lệt",
+   "expect": "b009",
+   "kind": "exact"
+  },
+  {
+   "q": "chop doi",
+   "expect": "b010",
+   "kind": "folded"
+  },
+  {
+   "q": "moxabosmr",
+   "expect": "b010",
+   "kind": "typo_long"
+  },
+  {
+   "q": "cohp doi",
+   "expect": "b010",
+   "kind": "typo_short"
+  },
+  {
+   "q": "chua voi",
+   "expect": "b011",
+   "kind": "folded"
+  },
+  {
+   "q": "roan thiep",
+   "expect": "b012",
+   "kind": "folded"
+  },
+  {
+   "q": "roàn thiếp",
+   "expect": "b012",
+   "kind": "exact"
+  },
+  {
+   "q": "roàn thiếp",
+   "expect": "b012",
+   "kind": "nfd"
+  },
+  {
+   "q": "dudibfvur",
+   "expect": "b012",
+   "kind": "typo_long"
+  },
+  {
+   "q": "cpsr",
+   "expect": "b013",
+   "kind": "technical_lower"
+  },
+  {
+   "q": "CPSR",
+   "expect": "b013",
+   "kind": "technical_exact"
+  },
+  {
+   "q": "rong cuong",
+   "expect": "b013",
+   "kind": "folded"
+  },
+  {
+   "q": "cung bac",
+   "expect": "b014",
+   "kind": "folded"
+  },
+  {
+   "q": "rezusabinun",
+   "expect": "b014",
+   "kind": "typo_long"
+  },
+  {
+   "q": "vuong xong",
+   "expect": "b015",
+   "kind": "folded"
+  },
+  {
+   "q": "vương xống",
+   "expect": "b015",
+   "kind": "exact"
+  },
+  {
+   "q": "vunog xong",
+   "expect": "b015",
+   "kind": "typo_short"
+  },
+  {
+   "q": "dop huyen",
+   "expect": "b016",
+   "kind": "folded"
+  },
+  {
+   "q": "đợp huyển",
+   "expect": "b016",
+   "kind": "nfd"
+  },
+  {
+   "q": "susocmler",
+   "expect": "b016",
+   "kind": "typo_long"
+  },
+  {
+   "q": "vop cac",
+   "expect": "b017",
+   "kind": "folded"
+  },
+  {
+   "q": "hang lua",
+   "expect": "b018",
+   "kind": "folded"
+  },
+  {
+   "q": "hảng lữa",
+   "expect": "b018",
+   "kind": "exact"
+  },
+  {
+   "q": "nixtzesesex",
+   "expect": "b018",
+   "kind": "typo_long"
+  },
+  {
+   "q": "truyen danh",
+   "expect": "b019",
+   "kind": "folded"
+  },
+  {
+   "q": "kuyen sac",
+   "expect": "b020",
+   "kind": "folded"
+  },
+  {
+   "q": "kuyển sắc",
+   "expect": "b020",
+   "kind": "nfd"
+  },
+  {
+   "q": "korefonor",
+   "expect": "b020",
+   "kind": "typo_long"
+  },
+  {
+   "q": "kyuen sac",
+   "expect": "b020",
+   "kind": "typo_short"
+  },
+  {
+   "q": "long ciep",
+   "expect": "b021",
+   "kind": "folded"
+  },
+  {
+   "q": "lống ciếp",
+   "expect": "b021",
+   "kind": "exact"
+  },
+  {
+   "q": "cua dung",
+   "expect": "b022",
+   "kind": "folded"
+  },
+  {
+   "q": "kupadedavor",
+   "expect": "b022",
+   "kind": "typo_long"
+  },
+  {
+   "q": "mov",
+   "expect": "b023",
+   "kind": "technical_lower"
+  },
+  {
+   "q": "MOV",
+   "expect": "b023",
+   "kind": "technical_exact"
+  },
+  {
+   "q": "nang diep",
+   "expect": "b023",
+   "kind": "folded"
+  },
+  {
+   "q": "noi phoi",
+   "expect": "b024",
+   "kind": "folded"
+  },
+  {
+   "q": "nỗi phỗi",
+   "expect": "b024",
+   "kind": "exact"
+  },
+  {
+   "q": "nỗi phỗi",
+   "expect": "b024",
+   "kind": "nfd"
+  },
+  {
+   "q": "nebifmnisar",
+   "expect": "b024",
+   "kind": "typo_long"
+  },
+  {
+   "q": "gong xanh",
+   "expect": "b025",
+   "kind": "folded"
+  },
+  {
+   "q": "gnog xanh",
+   "expect": "b025",
+   "kind": "typo_short"
+  },
+  {
+   "q": "phop xet",
+   "expect": "b026",
+   "kind": "folded"
+  },
+  {
+   "q": "cudifupubxx",
+   "expect": "b026",
+   "kind": "typo_long"
+  },
+  {
+   "q": "phanh suon",
+   "expect": "b027",
+   "kind": "folded"
+  },
+  {
+   "q": "phạnh sườn",
+   "expect": "b027",
+   "kind": "exact"
+  },
+  {
+   "q": "cuong chau",
+   "expect": "b028",
+   "kind": "folded"
+  },
+  {
+   "q": "cương chẩu",
+   "expect": "b028",
+   "kind": "nfd"
+  },
+  {
+   "q": "cexetifox",
+   "expect": "b028",
+   "kind": "typo_long"
+  },
+  {
+   "q": "nuon liep",
+   "expect": "b029",
+   "kind": "folded"
+  },
+  {
+   "q": "xoan vong",
+   "expect": "b030",
+   "kind": "folded"
+  },
+  {
+   "q": "xoàn vống",
+   "expect": "b030",
+   "kind": "exact"
+  },
+  {
+   "q": "vnperekex",
+   "expect": "b030",
+   "kind": "typo_long"
+  },
+  {
+   "q": "xona vong",
+   "expect": "b030",
+   "kind": "typo_short"
+  },
+  {
+   "q": "bung vang",
+   "expect": "b031",
+   "kind": "folded"
+  },
+  {
+   "q": "dac buon",
+   "expect": "b032",
+   "kind": "folded"
+  },
+  {
+   "q": "dắc bườn",
+   "expect": "b032",
+   "kind": "nfd"
+  },
+  {
+   "q": "pofdtifar",
+   "expect": "b032",
+   "kind": "typo_long"
+  },
+  {
+   "q": "0x1f",
+   "expect": "b033",
+   "kind": "technical_lower"
+  },
+  {
+   "q": "0x1F",
+   "expect": "b033",
+   "kind": "technical_exact"
+  },
+  {
+   "q": "kang soan",
+   "expect": "b033",
+   "kind": "folded"
+  },
+  {
+   "q": "kảng soàn",
+   "expect": "b033",
+   "kind": "exact"
+  },
+  {
+   "q": "vem kung",
+   "expect": "b034",
+   "kind": "folded"
+  },
+  {
+   "q": "mxnepunun",
+   "expect": "b034",
+   "kind": "typo_long"
+  },
+  {
+   "q": "bet muon",
+   "expect": "b035",
+   "kind": "folded"
+  },
+  {
+   "q": "bte muon",
+   "expect": "b035",
+   "kind": "typo_short"
+  },
+  {
+   "q": "mem mua",
+   "expect": "b036",
+   "kind": "folded"
+  },
+  {
+   "q": "mềm mữa",
+   "expect": "b036",
+   "kind": "exact"
+  },
+  {
+   "q": "mềm mữa",
+   "expect": "b036",
+   "kind": "nfd"
+  },
+  {
+   "q": "vitabppan",
+   "expect": "b036",
+   "kind": "typo_long"
+  },
+  {
+   "q": "cua dau",
+   "expect": "b037",
+   "kind": "folded"
+  },
+  {
+   "q": "nhung rac",
+   "expect": "b038",
+   "kind": "folded"
+  },
+  {
+   "q": "sezofusisar",
+   "expect": "b038",
+   "kind": "typo_long"
+  },
+  {
+   "q": "vung muong",
+   "expect": "b039",
+   "kind": "folded"
+  },
+  {
+   "q": "vũng mương",
+   "expect": "b039",
+   "kind": "exact"
+  },
+  {
+   "q": "lua buong",
+   "expect": "b040",
+   "kind": "folded"
+  },
+  {
+   "q": "lữa bương",
+   "expect": "b040",
+   "kind": "nfd"
+  },
+  {
+   "q": "rgkudadan",
+   "expect": "b040",
+   "kind": "typo_long"
+  },
+  {
+   "q": "ula buong",
+   "expect": "b040",
+   "kind": "typo_short"
+  },
+  {
+   "q": "ruong nhuyen",
+   "expect": "b041",
+   "kind": "folded"
+  },
+  {
+   "q": "cuong huon",
+   "expect": "b042",
+   "kind": "folded"
+  },
+  {
+   "q": "cương hườn",
+   "expect": "b042",
+   "kind": "exact"
+  },
+  {
+   "q": "copkzafin",
+   "expect": "b042",
+   "kind": "typo_long"
+  },
+  {
+   "q": "sp",
+   "expect": "b043",
+   "kind": "technical_lower"
+  },
+  {
+   "q": "SP",
+   "expect": "b043",
+   "kind": "technical_exact"
+  },
+  {
+   "q": "thuon noi",
+   "expect": "b043",
+   "kind": "folded"
+  },
+  {
+   "q": "xuong thop",
+   "expect": "b044",
+   "kind": "folded"
+  },
+  {
+   "q": "xương thợp",
+   "expect": "b044",
+   "kind": "nfd"
+  },
+  {
+   "q": "xibecofepir",
+   "expect": "b044",
+   "kind": "typo_long"
+  },
+  {
+   "q": "gop luon",
+   "expect": "b045",
+   "kind": "folded"
+  },
+  {
+   "q": "gợp lườn",
+   "expect": "b045",
+   "kind": "exact"
+  },
+  {
+   "q": "gpo luon",
+   "expect": "b045",
+   "kind": "typo_short"
+  },
+  {
+   "q": "mop gop",
+   "expect": "b046",
+   "kind": "folded"
+  },
+  {
+   "q": "nssuzukilix",
+   "expect": "b046",
+   "kind": "typo_long"
+  },
+  {
+   "q": "nhong thanh",
+   "expect": "b047",
+   "kind": "folded"
+  },
+  {
+   "q": "luong vanh",
+   "expect": "b048",
+   "kind": "folded"
+  },
+  {
+   "q": "lương vạnh",
+   "expect": "b048",
+   "kind": "exact"
+  },
+  {
+   "q": "lương vạnh",
+   "expect": "b048",
+   "kind": "nfd"
+  },
+  {
+   "q": "facoligbmur",
+   "expect": "b048",
+   "kind": "typo_long"
+  },
+  {
+   "q": "lop dang",
+   "expect": "b049",
+   "kind": "folded"
+  },
+  {
+   "q": "moan trua",
+   "expect": "b050",
+   "kind": "folded"
+  },
+  {
+   "q": "fizsrevovix",
+   "expect": "b050",
+   "kind": "typo_long"
+  },
+  {
+   "q": "oman trua",
+   "expect": "b050",
+   "kind": "typo_short"
+  },
+  {
+   "q": "vuong coan",
+   "expect": "b051",
+   "kind": "folded"
+  },
+  {
+   "q": "vương coàn",
+   "expect": "b051",
+   "kind": "exact"
+  },
+  {
+   "q": "song nuyen",
+   "expect": "b052",
+   "kind": "folded"
+  },
+  {
+   "q": "sống nuyển",
+   "expect": "b052",
+   "kind": "nfd"
+  },
+  {
+   "q": "zalikazux",
+   "expect": "b052",
+   "kind": "typo_long"
+  },
+  {
+   "q": "lr",
+   "expect": "b053",
+   "kind": "technical_lower"
+  },
+  {
+   "q": "LR",
+   "expect": "b053",
+   "kind": "technical_exact"
+  },
+  {
+   "q": "truyen loi",
+   "expect": "b053",
+   "kind": "folded"
+  },
+  {
+   "q": "cac thanh",
+   "expect": "b054",
+   "kind": "folded"
+  },
+  {
+   "q": "cắc thạnh",
+   "expect": "b054",
+   "kind": "exact"
+  },
+  {
+   "q": "rubuguren",
+   "expect": "b054",
+   "kind": "typo_long"
+  },
+  {
+   "q": "phua trang",
+   "expect": "b055",
+   "kind": "folded"
+  },
+  {
+   "q": "puha trang",
+   "expect": "b055",
+   "kind": "typo_short"
+  }
+ ]
+}

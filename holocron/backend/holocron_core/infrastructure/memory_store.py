@@ -952,6 +952,9 @@ class IngestionStore:
                 self._pages[(document_id, page.page_number)] = _StoredPage.of(
                     page, page.status, page.confirmed, rewrite.expected_version + 1
                 )
+                if rewrite.audit is not None:
+                    audits = self._page_audits.setdefault((document_id, page.page_number), [])
+                    audits.append(rewrite.audit.model_copy(deep=True))
             for page_layout in layout.pages:
                 number = page_layout.page_number
                 for key in [k for k, b in self._blocks.items() if k[0] == document_id and b.page_number == number]:
@@ -1065,6 +1068,16 @@ class IngestionStore:
 
     def list_eligible_blocks(self, document_id: str) -> list[Block]:
         return self._sorted_blocks(document_id, lambda key, _: key in self._eligible)
+
+    def match_block_index(
+        self, subject_code: str, terms: Sequence[str], *, trigram: bool
+    ) -> list[tuple[str, str]] | None:
+        """Kho in-memory không có bảng chỉ mục FTS: `None` ⇒ tra cứu khối dùng đường lùi Python (ADR-010 mục 18)."""
+        return None
+
+    def load_eligible_blocks(self, document_id: str, block_ids: Sequence[str]) -> list[Block]:
+        wanted = set(block_ids)
+        return self._sorted_blocks(document_id, lambda key, _: key in self._eligible and key[1] in wanted)
 
     def save_crop_image(self, crop: CropImage, png: bytes) -> CropWriteResult:
         """Byte giữ trong instance; tổng byte (mỗi `(document_id, crop_ref)` tính một lần) vượt

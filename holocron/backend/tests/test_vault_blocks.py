@@ -781,3 +781,40 @@ def test_settle_without_chapter_code_raises_chapter_missing(store: AppStore) -> 
     document = store.get_imported_document(DOC_ID)
     assert document is not None and document.status == "review"
     assert chunks_of(store) == []
+
+
+# --------------------------------------------------------------------------- #
+# Bảo toàn sau `PATCH …/lines` (X09, đường nhập thật của service)
+# --------------------------------------------------------------------------- #
+
+
+def test_ledger_patched_page_uses_confirmed_lines(store: AppStore, tmp_path: Path) -> None:
+    """Trang đã sửa dòng: ledger dùng basis `confirmed_lines` với `source_count` = đơn vị của MỌI `ExtractedLine` của
+    trang (đếm độc lập, không từ khối) và cân; sau khi xác nhận, chunk chứa chữ đã sửa, không còn chữ cũ."""
+    from holocron_core.domain.documents import DocumentConfirmRequest, LineEdit, PageLinesPatch
+    from holocron_core.services.document_import import confirm_document, edit_page_lines
+    from holocron_core.services.extraction_ledger import nonws_units
+    from tests.import_blocks_support import THREE, GeoReader, import_doc, pages_of, runtime_for, text_page
+
+    runtime = runtime_for(tmp_path)
+    pages = [text_page("1. Gioi thieu", extra=("Dong rieng cua trang mot se duoc sua",)), *THREE[1:]]
+    doc_id = import_doc(store, runtime, GeoReader(pages), auto_confirm=False)
+    page = pages_of(store, doc_id)[0]
+    old = page.lines[3].text
+    patch = PageLinesPatch(
+        editor_id="u",
+        expected_version=page.version,
+        edits=[LineEdit(line_index=3, text="Bo dem chuong trinh da duoc nguoi dung sua lai")],
+        appended_lines=["Dong go them cuoi trang"],
+    )
+    edited = edit_page_lines(store, store, runtime, doc_id, 1, patch, now=NOW)
+    [ledger] = [item for item in store.list_extraction_ledgers(doc_id) if item.page_number == 1]
+    bases = {basis.ledger_basis: basis for basis in ledger.bases}
+    assert "confirmed_lines" in bases and ledger.balanced
+    assert bases["confirmed_lines"].source_count == sum(nonws_units(line.text) for line in edited.lines)
+    edited_blocks = [block for block in store.list_blocks(doc_id, 1) if "human_edited" in block.flags]
+    assert edited_blocks
+    confirm_document(store, store, runtime, doc_id, DocumentConfirmRequest(editor_id="u"), now=NOW)
+    joined = "\n".join(chunk.raw_text for chunk in store.list_chunks("IT3070"))
+    assert "da duoc nguoi dung sua lai" in joined and "Dong go them cuoi trang" in joined
+    assert old not in joined

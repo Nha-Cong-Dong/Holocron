@@ -1300,3 +1300,78 @@ export interface ProviderTestResult {
   latency_ms: number;
   models: string[];
 }
+
+// ----------------------------------------------------------- domain/ai_reread.py (§6.10a, ADR-009 mục 15)
+
+export type AiRereadStatus = "accepted_text" | "rejected";
+
+/** Lý do quyết định của cổng VLM (`services/vision_gate.py`); `"ok"` khi và chỉ khi `status = "accepted_text"`. */
+export type GateReason =
+  | "ok"
+  | "status_invalid"
+  | "status_unavailable"
+  | "text_layer_overlap"
+  | "invalid_overlap"
+  | "ocr_missing"
+  | "unreadable_marker"
+  | "empty"
+  | "mixed_table"
+  | "too_long"
+  | "cer"
+  | "jaccard"
+  | "number_tokens"
+  | "code_tokens"
+  | "figure_only";
+
+/** Mã trong `detail.code` của lỗi 409/503 của `POST …/blocks/{block_id}/ai-reread`. */
+export type AiRereadErrorCode =
+  | "BLOCK_NOT_ELIGIBLE"
+  | "AI_NOT_CONFIGURED"
+  | "AI_MODE_OFF"
+  | "AI_BUDGET_EXHAUSTED"
+  | "VLM_TIMEOUT"
+  | "VLM_RATE_LIMITED"
+  | "VLM_UPSTREAM_ERROR";
+
+/** Chỗ lệch token số/mã của ứng viên bảng: VLM thừa có `row`/`col`/`vlm_value`; VLM bỏ sót chỉ có `ocr_value`. */
+export interface AiRereadMismatch {
+  mismatch_id: string;
+  token_kind: "number" | "code";
+  row: number | null;
+  col: number | null;
+  vlm_value: string | null;
+  ocr_value: string | null;
+}
+
+/** Khối đề xuất (chữ VLM đã qua cổng): `text` null ⇔ `type = "table"` ⇔ `rows` khác null. */
+export interface AiRereadBlock {
+  type: BlockType;
+  text: string | null;
+  rows: string[][] | null;
+  flags: BlockFlag[];
+}
+
+/** Response `POST /v1/documents/{document_id}/pages/{page_number}/blocks/{block_id}/ai-reread` (không ghi trang). */
+export interface AiRereadProposal {
+  proposal_id: string;
+  document_id: string;
+  page_number: number;
+  block_id: string;
+  page_version: number;
+  status: AiRereadStatus;
+  reason: GateReason;
+  /** Đúng một phần tử khi `status = "accepted_text"`, rỗng khi `"rejected"`. */
+  blocks: AiRereadBlock[];
+  mismatches: AiRereadMismatch[];
+  /** Chữ OCR độc lập của vùng; `""` khi không có. */
+  ocr_text: string;
+  input_sha256: string;
+  from_cache: boolean;
+  recipient_label: string;
+}
+
+/** Body của `POST …/ai-reread/{proposal_id}/accept`; trả `PageExtraction`. */
+export interface AiRereadAcceptRequest {
+  editor_id: string;
+  expected_version: number;
+}

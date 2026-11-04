@@ -4,7 +4,7 @@
  */
 
 import type { KeyValueStorage } from "@/lib/theme";
-import type { SectionNode, SubjectTree } from "@/types/holocron";
+import type { SectionNode, SourceNode, SubjectTree } from "@/types/holocron";
 
 export type TocKind = "source" | "chapter" | "section";
 
@@ -18,6 +18,8 @@ export interface TocNode {
   sectionId: string | null;
   pageStart: number | null;
   pageEnd: number | null;
+  /** Cảnh báo của nguồn (số trang backend trả, dạng danh sách); `null` với mục hoặc nguồn không có trang vấn đề. */
+  warning: string | null;
   children: TocNode[];
 }
 
@@ -43,8 +45,22 @@ function sectionNode(node: SectionNode, documentId: string): TocNode {
     sectionId: section.section_id,
     pageStart: section.page_start,
     pageEnd: section.page_end,
+    warning: null,
     children: node.children.map((child) => sectionNode(child, documentId)),
   };
+}
+
+/** Cảnh báo cho nút nguồn khi có trang chưa tra cứu được; số trang lấy nguyên từ backend. Cả nguồn `root: null`. */
+export function sourceWarning(
+  source: Pick<SourceNode, "layout_failed_pages" | "pages_without_blocks" | "pages_unconfirmable_with_blocks">,
+): string | null {
+  const parts: string[] = [];
+  if (source.layout_failed_pages.length > 0) parts.push(`${source.layout_failed_pages.length} trang lỗi bố cục`);
+  if (source.pages_without_blocks.length > 0) parts.push(`${source.pages_without_blocks.length} trang chưa có khối`);
+  if (source.pages_unconfirmable_with_blocks.length > 0) {
+    parts.push(`${source.pages_unconfirmable_with_blocks.length} trang có khối nhưng chưa xác nhận được`);
+  }
+  return parts.length === 0 ? null : `${parts.join("; ")} — xem ở màn xem lại`;
 }
 
 /** Cây của môn thành các nút nguồn; nguồn chưa có cây mục (`root` null) là nút lá. */
@@ -57,6 +73,7 @@ export function buildToc(tree: SubjectTree): TocNode[] {
     sectionId: null,
     pageStart: null,
     pageEnd: null,
+    warning: sourceWarning(source),
     children: source.root === null ? [] : [sectionNode(source.root, source.document_id)],
   }));
 }

@@ -79,6 +79,7 @@
 }
 
 .treeItem {
+  position: relative;
   display: flex;
   align-items: baseline;
   gap: var(--sp-2);
@@ -244,4 +245,29 @@
   .treeItem {
     transition: none;
   }
+}
+
+.treeWarn {
+  flex: none;
+  color: var(--warn);
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-semibold);
+}
+
+.warnNote {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: var(--fs-caption);
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }

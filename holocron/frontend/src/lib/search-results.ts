@@ -3,7 +3,7 @@
  * Vị trí khớp do backend trả (`match_spans`, UTF-16); hàm ở đây chỉ cắt chuỗi theo các khoảng đó, không tự tìm khớp.
  */
 
-import type { Block, BlockFlag, BlockSearchHit, BlockType, MatchSpan } from "@/types/holocron";
+import type { Block, BlockFlag, BlockSearchHit, BlockSearchPage, BlockType, MatchSpan } from "@/types/holocron";
 
 /** Loại khối cho bộ lọc (không có `header_footer`, `page_number`: backend trả 422). */
 export const FILTER_TYPES: readonly { type: BlockType; label: string }[] = [
@@ -129,4 +129,12 @@ export function highlightParts(text: string, spans: readonly MatchSpan[]): TextP
 /** Khối cần ảnh cắt cạnh chữ: có `crop_ref` và là hình, công thức hoặc có cờ chưa chắc. */
 export function showsCrop(block: Block): boolean {
   return block.crop_ref !== null && (block.type === "figure" || block.type === "formula" || isUncertain(block));
+}
+
+/** Dòng báo trang chưa tra cứu được (tổng 3 số backend trả); `null` khi cả ba bằng 0. Hiện cả khi 0 kết quả. */
+export function unsearchedNotice(
+  page: Pick<BlockSearchPage, "layout_failed_pages" | "pages_without_blocks" | "pages_unconfirmable_with_blocks">,
+): string | null {
+  const count = page.layout_failed_pages + page.pages_without_blocks + page.pages_unconfirmable_with_blocks;
+  return count > 0 ? `${count} trang chưa tra cứu được — xem ở màn xem lại` : null;
 }

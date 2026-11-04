@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chip, ErrorState } from "@/components/ui";
 import { api } from "@/lib/api";
 import { toUiError, type UiError } from "@/lib/errors";
-import { FILTER_TYPES, groupHits, toggleType } from "@/lib/search-results";
+import { FILTER_TYPES, groupHits, toggleType, unsearchedNotice } from "@/lib/search-results";
 import { GLOBAL_SCOPE, isSearchShortcut, targetKindOf } from "@/lib/shortcuts";
 import { browserStorage } from "@/lib/theme";
 import { buildToc, pathLabels, readTocPosition, type TocNode, visibleRows, writeTocPosition } from "@/lib/toc";
@@ -226,6 +226,11 @@ export function DocumentExplorer({ subjectCode }: DocumentExplorerProps) {
               onRetry={reloadSearch}
               technical={search.error.diagnostic}
             />
+          )}
+          {search.kind === "ready" && unsearchedNotice(search.value) !== null && (
+            <p className={styles.warnNote} role="status">
+              {unsearchedNotice(search.value)}
+            </p>
           )}
           {search.kind === "ready" && search.value.hits.length === 0 && (
             <p className={styles.note}>

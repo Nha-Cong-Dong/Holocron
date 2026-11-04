@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { Section, SectionNode, SubjectTree } from "@/types/holocron";
 
-import { buildToc, pathLabels, readTocPosition, treeKey, visibleRows, writeTocPosition } from "./toc";
+import { buildToc, pathLabels, readTocPosition, sourceWarning, treeKey, visibleRows, writeTocPosition } from "./toc";
 
 function section(id: string, title: string | null, level: number): Section {
   return {
@@ -126,5 +126,22 @@ describe("giữ vị trí", () => {
     data.set("holocron.toc.X", "{hỏng");
     expect(readTocPosition(storage, "X")).toEqual({ expanded: [], selected: null });
     expect(readTocPosition(null, "X")).toEqual({ expanded: [], selected: null });
+  });
+});
+
+describe("sourceWarning", () => {
+  const base = { layout_failed_pages: [], pages_without_blocks: [], pages_unconfirmable_with_blocks: [] };
+  it("không cảnh báo khi cả ba rỗng", () => {
+    expect(sourceWarning(base)).toBeNull();
+  });
+  it("cảnh báo theo số trang backend trả, kể cả nguồn root null", () => {
+    expect(sourceWarning({ ...base, pages_without_blocks: [2, 5] })).toContain("2 trang chưa có khối");
+    const empty = TREE.sources.filter((source) => source.root === null);
+    const tree: SubjectTree = {
+      ...TREE,
+      sources: empty.map((source) => ({ ...source, layout_failed_pages: [1], pages_unconfirmable_with_blocks: [3] })),
+    };
+    expect(buildToc(tree)[0]?.warning).toContain("1 trang lỗi bố cục");
+    expect(buildToc(tree)[0]?.warning).toContain("1 trang có khối nhưng chưa xác nhận được");
   });
 });

@@ -81,6 +81,12 @@ export function TocTree({ roots, rows, focusedId, selectedId, onFocusChange, onT
               {row.expanded === null ? "·" : row.expanded ? "▾" : "▸"}
             </span>
             <span className={styles.treeLabel}>{node.label}</span>
+            {node.warning !== null && (
+              <span className={styles.treeWarn} title={node.warning}>
+                <span aria-hidden="true">⚠ </span>
+                <span className={styles.srOnly}>Cảnh báo: {node.warning}</span>
+              </span>
+            )}
             <span className={styles.treePages}>{pagesLabel(node)}</span>
           </div>
         );

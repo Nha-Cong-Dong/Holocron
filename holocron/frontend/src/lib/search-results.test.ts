@@ -2,7 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import type { Block, BlockSearchHit, MatchSpan } from "@/types/holocron";
 
-import { blockTypeLabel, groupHits, highlightParts, isUncertain, showsCrop, toggleType } from "./search-results";
+import {
+  blockTypeLabel,
+  groupHits,
+  highlightParts,
+  isUncertain,
+  showsCrop,
+  toggleType,
+  unsearchedNotice,
+} from "./search-results";
 
 function block(overrides: Partial<Block> = {}): Block {
   return {
@@ -99,5 +107,18 @@ describe("nhãn, cờ và bộ lọc", () => {
     expect(showsCrop(block({ type: "paragraph", crop_ref: "a" }))).toBe(false);
     expect(showsCrop(block({ type: "paragraph", crop_ref: "a", flags: ["layout_uncertain"] }))).toBe(true);
     expect(showsCrop(block({ type: "figure", crop_ref: null }))).toBe(false);
+  });
+});
+
+describe("unsearchedNotice", () => {
+  it("null khi cả ba bằng 0", () => {
+    expect(
+      unsearchedNotice({ layout_failed_pages: 0, pages_without_blocks: 0, pages_unconfirmable_with_blocks: 0 }),
+    ).toBeNull();
+  });
+  it("cộng ba số backend trả", () => {
+    expect(
+      unsearchedNotice({ layout_failed_pages: 1, pages_without_blocks: 2, pages_unconfirmable_with_blocks: 3 }),
+    ).toBe("6 trang chưa tra cứu được — xem ở màn xem lại");
   });
 });

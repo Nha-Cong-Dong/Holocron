@@ -9,8 +9,9 @@
  * - Thân `/v1/runtime` được kiểm dạng ở đây (`normalizeRuntimeInfo`) trước khi tới component.
  */
 
+import { parseAiStatus, parseConsentState, parseProvider, parseProviderList, parseTestResult } from "@/lib/ai-settings";
 import { parseProposalJobList } from "@/lib/concept-proposals";
-import { apiBase, authHeaders, USE_MOCKS } from "@/lib/config";
+import { apiBase, authHeaders, TOKEN_HEADER, USE_MOCKS } from "@/lib/config";
 import {
   type DocumentImportOutcome,
   type DocumentSummaryView,
@@ -60,6 +61,9 @@ import { isImportResultMock, mockImportResultApi } from "@/mocks/import-result";
 import { isMockDocument } from "@/mocks/store";
 import type { EssayGradeRequest, ProposalJobCreate } from "@/types/contract-pending";
 import type {
+  AiConsentState,
+  AiConsentUpdate,
+  AiStatus,
   BlueprintCreate,
   CellPatch,
   ChunkLabelsPatch,
@@ -75,6 +79,12 @@ import type {
   PageConfirmRequest,
   PageLinesPatch,
   PageRestoreRequest,
+  ProviderConfig,
+  ProviderCreate,
+  ProviderList,
+  ProviderTestRequest,
+  ProviderTestResult,
+  ProviderUpdate,
   Subject,
   SubjectCreate,
   TablePatchRequest,
@@ -89,8 +99,29 @@ export const LOCAL_EDITOR_ID = "local_user";
 // `ApiError` và `toUiError` nằm ở `lib/errors.ts` để dữ liệu mẫu dựng được lỗi đã phân loại mà không import vòng.
 export { ApiError, toUiError } from "@/lib/errors";
 
+/**
+ * Mã truy cập người dùng nhập ở Cài đặt › Kết nối AI: chỉ giữ trong RAM (biến module), không ghi localStorage, cookie
+ * hay URL; mất khi tải lại trang. Mã do vỏ desktop cấp (`authHeaders`) luôn thắng.
+ */
+let sessionAccessToken: string | null = null;
+
+/** Đặt (hoặc xoá bằng `null`/rỗng) mã truy cập của phiên này. */
+export function setAccessToken(token: string | null): void {
+  const trimmed = token === null ? "" : token.trim();
+  sessionAccessToken = trimmed === "" ? null : trimmed;
+}
+
+/** Đã có mã truy cập trong phiên (không lộ giá trị). */
+export function hasAccessToken(): boolean {
+  return sessionAccessToken !== null;
+}
+
+function sessionTokenHeaders(): Record<string, string> {
+  return sessionAccessToken === null ? {} : { [TOKEN_HEADER]: sessionAccessToken };
+}
+
 interface RequestSpec {
-  method: "GET" | "POST" | "PATCH" | "DELETE";
+  method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
   body?: BodyInit;
   headers?: Record<string, string>;
 }
@@ -99,7 +130,10 @@ interface RequestSpec {
 async function send(path: string, spec: RequestSpec, options: ClassifyOptions = {}): Promise<Response> {
   const base = apiBase();
   // Header xác thực gộp sau cùng để header riêng của request không ghi đè được token.
-  const init: RequestInit = { method: spec.method, headers: { ...spec.headers, ...authHeaders() } };
+  const init: RequestInit = {
+    method: spec.method,
+    headers: { ...spec.headers, ...sessionTokenHeaders(), ...authHeaders() },
+  };
   if (spec.body !== undefined) {
     init.body = spec.body;
   }
@@ -135,7 +169,11 @@ async function request<T>(path: string, spec: RequestSpec, options: ClassifyOpti
   return (await readJson(await send(path, spec, options))) as T;
 }
 
-function jsonSpec(method: "POST" | "PATCH", payload: unknown, headers: Record<string, string> = {}): RequestSpec {
+function jsonSpec(
+  method: "POST" | "PATCH" | "PUT",
+  payload: unknown,
+  headers: Record<string, string> = {},
+): RequestSpec {
   return { method, headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(payload) };
 }
 
@@ -183,6 +221,22 @@ export interface DocumentImportInput {
 
 /** Mọi hàm gọi backend. Mock chỉ được thay phần tử của endpoint chưa có ở backend. */
 export interface HolocronApi {
+  /** `RuntimeInfo.ai_status` (§5.12) từ `GET /v1/runtime`; luôn gọi backend, không dữ liệu mẫu. */
+  getAiStatus: () => Promise<AiStatus>;
+  /** `GET /v1/settings/ai-consent` (§6.11). */
+  getAiConsent: () => Promise<AiConsentState>;
+  /** `PUT /v1/settings/ai-consent`; 403/409 mang mã đã phân loại ở `ai_settings`. */
+  setAiConsent: (enabled: boolean) => Promise<AiConsentState>;
+  /** `GET /v1/settings/providers` (§6.11). */
+  listProviders: () => Promise<ProviderList>;
+  /** `POST /v1/settings/providers`; khoá trong `body.api_key` không bao giờ được trả lại. */
+  createProvider: (body: ProviderCreate) => Promise<ProviderConfig>;
+  /** `PATCH /v1/settings/providers/{id}`. */
+  updateProvider: (id: string, body: ProviderUpdate) => Promise<ProviderConfig>;
+  /** `DELETE /v1/settings/providers/{id}` (204): xoá cả khoá đã lưu. */
+  deleteProvider: (id: string) => Promise<void>;
+  /** `POST /v1/settings/providers/{id}/test`. */
+  testProvider: (id: string, body: ProviderTestRequest) => Promise<ProviderTestResult>;
   /** `GET /v1/runtime` (§5.12), đã kiểm dạng. */
   getRuntime: () => Promise<RuntimeView>;
   /** `GET /v1/subjects` (§6.8), đã kiểm dạng từng phần tử. */
@@ -296,8 +350,47 @@ async function loadRuntime(transform: (raw: unknown) => unknown): Promise<Runtim
   return runtime;
 }
 
+const AI_SETTINGS: ClassifyOptions = { context: "ai_settings" };
+
 export const realApi: HolocronApi = {
   getRuntime: () => loadRuntime((raw) => raw),
+
+  getAiStatus: async () =>
+    validated(parseAiStatus(await request<unknown>("/v1/runtime", { method: "GET" }, { context: "runtime" }))),
+
+  getAiConsent: async () =>
+    validated(parseConsentState(await request<unknown>("/v1/settings/ai-consent", { method: "GET" }, AI_SETTINGS))),
+
+  setAiConsent: async (enabled) => {
+    const payload: AiConsentUpdate = { enabled };
+    return validated(
+      parseConsentState(await request<unknown>("/v1/settings/ai-consent", jsonSpec("PUT", payload), AI_SETTINGS)),
+    );
+  },
+
+  listProviders: async () =>
+    validated(parseProviderList(await request<unknown>("/v1/settings/providers", { method: "GET" }, AI_SETTINGS))),
+
+  createProvider: async (body) =>
+    validated(parseProvider(await request<unknown>("/v1/settings/providers", jsonSpec("POST", body), AI_SETTINGS))),
+
+  updateProvider: async (id, body) =>
+    validated(
+      parseProvider(
+        await request<unknown>(`/v1/settings/providers/${segment(id)}`, jsonSpec("PATCH", body), AI_SETTINGS),
+      ),
+    ),
+
+  deleteProvider: async (id) => {
+    await send(`/v1/settings/providers/${segment(id)}`, { method: "DELETE" }, AI_SETTINGS);
+  },
+
+  testProvider: async (id, body) =>
+    validated(
+      parseTestResult(
+        await request<unknown>(`/v1/settings/providers/${segment(id)}/test`, jsonSpec("POST", body), AI_SETTINGS),
+      ),
+    ),
 
   listSubjects: async () => {
     const subjects = parseSubjectList(await request<unknown>("/v1/subjects", { method: "GET" }));

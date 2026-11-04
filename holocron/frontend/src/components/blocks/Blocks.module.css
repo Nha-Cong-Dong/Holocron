@@ -1,0 +1,273 @@
+/* Mục lục, tra cứu và thẻ khối của tab Tài liệu. Màu lấy từ biến ở tokens.css (có dark mode). */
+.explorer {
+  display: grid;
+  gap: var(--sp-5);
+  min-width: 0;
+}
+
+.searchBar {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.searchLabel {
+  font-size: var(--fs-small);
+  color: var(--ink-2);
+}
+
+.kbd {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: 0 var(--sp-1);
+  font-size: var(--fs-caption);
+}
+
+.searchInput {
+  width: 100%;
+  min-height: 44px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+
+.searchInput:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.results,
+.toc,
+.sectionBlocks,
+.group {
+  display: grid;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.groupTitle,
+.tocTitle {
+  font-size: var(--fs-small);
+  font-weight: var(--fw-semibold);
+  color: var(--ink-2);
+}
+
+.note {
+  font-size: var(--fs-small);
+  color: var(--ink-2);
+}
+
+.tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.treeItem {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding-block: var(--sp-2);
+  padding-inline-end: var(--sp-3);
+  cursor: pointer;
+  color: var(--ink);
+}
+
+.treeItem:hover {
+  background: var(--surface-2);
+}
+
+.treeItem:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.treeSelected {
+  background: var(--accent-soft);
+  color: var(--on-accent-soft);
+}
+
+.treeMark {
+  width: 1em;
+  flex: none;
+  text-align: center;
+}
+
+.treeLabel {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.treePages {
+  flex: none;
+  font-size: var(--fs-caption);
+  color: var(--ink-2);
+}
+
+.card {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  min-width: 0;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-caption);
+  color: var(--ink-2);
+}
+
+.context {
+  overflow-wrap: anywhere;
+}
+
+.badge {
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.uncertain {
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-weight: var(--fw-semibold);
+}
+
+.body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--sp-3);
+  align-items: start;
+}
+
+.bodySingle {
+  display: grid;
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  .body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.content,
+.cropBox {
+  min-width: 0;
+}
+
+.text,
+.heading {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.heading {
+  font-weight: var(--fw-semibold);
+}
+
+.mark {
+  background: var(--accent-soft);
+  color: var(--on-accent-soft);
+  border-radius: 2px;
+}
+
+.code {
+  margin: 0;
+  padding: var(--sp-3);
+  overflow-x: auto;
+  white-space: pre;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: var(--fs-small);
+}
+
+.tableWrap {
+  overflow-x: auto;
+}
+
+.table {
+  border-collapse: collapse;
+  font-size: var(--fs-small);
+}
+
+.table td {
+  border: 1px solid var(--line-strong);
+  padding: var(--sp-1) var(--sp-2);
+  vertical-align: top;
+}
+
+.crop {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--scan);
+}
+
+.cropNote {
+  margin: 0;
+  font-size: var(--fs-caption);
+  color: var(--ink-2);
+}
+
+/* Không có hoạt ảnh riêng; giữ khối này để mọi chuyển động thêm sau này tôn trọng giảm chuyển động. */
+@media (prefers-reduced-motion: reduce) {
+  .treeItem {
+    transition: none;
+  }
+}
+
+.treeWarn {
+  flex: none;
+  color: var(--warn);
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-semibold);
+}
+
+.warnNote {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: var(--fs-caption);
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

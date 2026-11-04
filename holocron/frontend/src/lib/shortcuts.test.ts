@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   GLOBAL_SCOPE,
+  isSearchShortcut,
   type KeyInput,
   optionKeyFromKey,
   resolveShortcut,
@@ -137,10 +138,25 @@ describe("resolveShortcut: câu tự luận", () => {
   });
 });
 
+describe("isSearchShortcut", () => {
+  it("/ nhảy tới ô tra cứu ở ngữ cảnh toàn cục, không khi đang gõ, có hộp thoại hay kèm phím bổ trợ", () => {
+    expect(isSearchShortcut(key("/"), ctx())).toBe(true);
+    expect(isSearchShortcut(key("/", { target: "editable" }), ctx())).toBe(false);
+    expect(isSearchShortcut(key("/"), ctx(GLOBAL_SCOPE, true))).toBe(false);
+    expect(isSearchShortcut(key("/"), ctx(UNANSWERED))).toBe(false);
+    expect(isSearchShortcut(key("/", { ctrlKey: true }), ctx())).toBe(false);
+    expect(isSearchShortcut(key("a"), ctx())).toBe(false);
+  });
+
+  it("không đổi kết quả của resolveShortcut", () => {
+    expect(resolveShortcut(key("/"), ctx())).toBeNull();
+  });
+});
+
 describe("SHORTCUT_HELP", () => {
   it("liệt kê đủ các phím của nền tảng", () => {
     const keys = SHORTCUT_HELP.flatMap((entry) => entry.keys);
-    for (const expected of ["Ctrl+K", "?", "Esc", "1–4", "A–D", "Enter", "Ctrl+Enter", "N", "C"]) {
+    for (const expected of ["Ctrl+K", "?", "/", "Esc", "1–4", "A–D", "Enter", "Ctrl+Enter", "N", "C"]) {
       expect(keys).toContain(expected);
     }
   });

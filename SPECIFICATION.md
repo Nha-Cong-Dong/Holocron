@@ -3032,6 +3032,61 @@ class BlockSearchPage(StrictModel):
 - **Cây:** dựng từ khối đủ điều kiện (§5.15). `PATCH …/chapter` cập nhật `chapter_code` và `title` của Section gốc, không đổi `section_id` (§5.15). Cây và tra cứu chỉ có tài liệu đã đóng; sau khi đóng, `…/unconfirm`, `…/restore` trả 409 nên không thể làm khối rời tập đủ điều kiện.
 - **Lỗi 422 của tra cứu khối:** `type` là `header_footer`/`page_number`, `q` rỗng sau khi bỏ khoảng trắng hoặc > 200 ký tự hoặc > 32 token, `offset` > 1000, `limit` ngoài 1–50.
 
+### 6.10a Đọc lại khối bằng AI theo yêu cầu (ADR-009 mục 15) — contract, chưa triển khai
+
+Thêm 2026-11-04 theo yêu cầu người dùng ("Đọc lại bằng AI" cho khối có cờ). Mọi tên, đường dẫn, mã lỗi, con số dưới đây là đề xuất suy ra (orchestrator, 2026-11-04), chờ xác nhận, trừ chỗ ghi khác. Router `routers/documents.py` (cùng router `PATCH …/lines`). Dùng lại nguyên `VisionReader`, `RegionRenderer`/`CropRequest`, `ProviderSelector` (vai `vlm`) và `services/vision_gate.judge_region` (§5.7, §5.16); KHÔNG có cổng hay ngưỡng mới.
+
+| Method | Path | Body | Response | Lỗi |
+|---|---|---|---|---|
+| POST | `/v1/documents/{document_id}/pages/{page_number}/blocks/{block_id}/ai-reread` | — | `200 AiRereadProposal` (KHÔNG ghi kho trang) | 404; 409 `BLOCK_NOT_ELIGIBLE`, `AI_NOT_CONFIGURED`, `AI_MODE_OFF`, `AI_BUDGET_EXHAUSTED`; 503 `VLM_TIMEOUT`, `VLM_RATE_LIMITED`, `VLM_UPSTREAM_ERROR` |
+| POST | `…/blocks/{block_id}/ai-reread/{proposal_id}/accept` | `AiRereadAcceptRequest` | `200 PageExtraction` | 404; 409 `VERSION_CONFLICT`, `PROPOSAL_STALE`, `PROPOSAL_NOT_PENDING`, `BLOCK_NOT_ELIGIBLE`; 422 |
+| POST | `…/blocks/{block_id}/ai-reread/{proposal_id}/reject` | — | `204` | 404 |
+
+```python
+AiRereadStatus = Literal["accepted_text", "rejected"]   # đặt tên theo brief V05; "accepted_text" gồm cả ứng viên bảng (block_type = "table")
+
+class AiRereadMismatch(StrictModel):              # chỗ lệch token số/mã của ứng viên bảng (GateTokenMismatch + id)
+    mismatch_id: str = Field(pattern=r"^vmm_[0-9a-f]{12}$")   # code: vision_gate.mismatch_ids (ADR-009 mục 3.4)
+    token_kind: Literal["number", "code"]         # code: cổng
+    row: int | None = Field(default=None, ge=0); col: int | None = Field(default=None, ge=0)   # code: cổng
+    vlm_value: str | None = Field(default=None, max_length=200)   # VLM (token thừa so với OCR); chữ đã qua cổng
+    ocr_value: str | None = Field(default=None, max_length=200)   # OCR độc lập của vùng (token VLM bỏ sót)
+
+class AiRereadBlock(StrictModel):                 # tối đa MỘT khối đề xuất, như judge_region (ADR-009 mục 2)
+    type: BlockType                               # code: VisionGateDecision.block_type
+    text: str | None                              # VLM ĐÃ QUA cổng (NFC); null ⇔ type = table
+    rows: list[list[str]] | None                  # VLM ĐÃ QUA cổng (NFC, chuẩn hoá khoảng trắng); khác null ⇔ type = table
+    flags: list[BlockFlag]                        # code: VisionGateDecision.flags (layout_uncertain, table_token_mismatch)
+
+class AiRereadProposal(StrictModel):
+    proposal_id: str = Field(pattern=r"^prp_[0-9a-f]{12}$")   # code: ngẫu nhiên lúc tạo
+    document_id: str; page_number: int = Field(ge=1); block_id: str      # code: chép đường dẫn (khối được đọc lại)
+    page_version: int = Field(ge=1)               # code: PageExtraction.version lúc tạo; accept so với version hiện tại
+    status: AiRereadStatus                        # code: "accepted_text" ⇔ outcome ∈ {accepted_text, accepted_table}; còn lại "rejected"
+    reason: GateReason                            # code: VisionGateDecision.reason ("ok" khi status = "accepted_text")
+    blocks: list[AiRereadBlock]                   # code: đúng 1 phần tử khi status = "accepted_text", rỗng khi "rejected"
+                                                  # (chữ VLM bị từ chối KHÔNG ra response, I3)
+    mismatches: list[AiRereadMismatch]            # code: rỗng trừ ứng viên bảng lệch token
+    ocr_text: str                                 # code: chữ OCR độc lập của vùng (để UI so cạnh chữ VLM); "" khi ocr_missing
+    input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")   # code: VlmRegionResult.input_sha256 (PNG đã gửi); chỉ để UI đối chiếu
+    from_cache: bool                              # code: VlmRegionResult.from_cache
+    recipient_label: str                          # code: label nhà cung cấp đã nhận ảnh (AiRoleStatus.recipient_label, §5.16)
+
+class AiRereadAcceptRequest(StrictModel):
+    editor_id: str; expected_version: int = Field(ge=1)    # người dùng; như PageConfirmRequest (§6.5)
+```
+
+- **Khối đủ điều kiện** (`409 BLOCK_NOT_ELIGIBLE` nếu sai; kiểm lúc tạo VÀ lúc accept): khối thuộc trang, `source ≠ "vlm"`, `bbox` khác null (cắt được vùng), `block_id ∉ vlm_rejected_block_ids`, và `flags` có ít nhất một trong `table_unresolved` (bảng ảnh: khối `figure` không khép lưới), `code_layout_uncertain`, `low_text_contrast`. Tài liệu `confirmed`, trang `confirmed`/`dropped`/`failed` hoặc tài liệu không phải PDF ⇒ cũng `BLOCK_NOT_ELIGIBLE` (cùng điều kiện 409 của `PATCH …/lines`). Khối `figure` khác (không có ba cờ trên) KHÔNG đủ điều kiện (ảnh chụp/sơ đồ thuần không có chữ để đối chiếu OCR). Danh sách cờ là đề xuất suy ra; mở rộng cờ khác là đổi contract.
+- **Thao tác do người dùng bấm.** KHÔNG bị công tắc đồng ý chặn (ADR-009 mục 7: thao tác người dùng tự bấm), NHƯNG: không có nhà cung cấp `vlm` enabled/đủ khoá ⇒ 409 `AI_NOT_CONFIGURED`; `HOLOCRON_VLM_MODE = off` ⇒ 409 `AI_MODE_OFF` (đề xuất suy ra, chờ xác nhận: người vận hành tắt cứng VLM thì nút không vượt được); mọi nhà cung cấp `vlm` chạm trần ⇒ 409 `AI_BUDGET_EXHAUSTED` (§5.16). Có tính vào bộ đếm chi phí và giữ chỗ như mọi lời gọi (§5.16), đi qua luật mạng §13.1. UI PHẢI báo trước khi gửi: "Ảnh vùng này sẽ được gửi tới {recipient_label}" (nhãn từ `RuntimeInfo.ai_status.roles[vlm].recipient_label`, §5.12) và dẫn tới Cài đặt (§6.11) khi chưa cấu hình.
+- **Luồng tạo đề xuất (code):** render vùng bbox khối bằng `RegionRenderer` (cùng ràng buộc ảnh §5.7, §13.1) → `VisionReader` → OCR độc lập của CÙNG vùng (§5.7) → `text_layer_overlap` của vùng → `judge_region`. `outcome` `accepted_text`/`accepted_table` ⇒ `status = "accepted_text"`; `rejected`, `keep_offline` (kể cả `text_layer_overlap`, `status_invalid`), `figure_confirmed` ⇒ `status = "rejected"` kèm `reason` (200, không phải lỗi). Lỗi gọi VLM `timeout` ⇒ 503 `VLM_TIMEOUT`; nhà cung cấp trả 429 ⇒ 503 `VLM_RATE_LIMITED`; `upstream_error` khác ⇒ 503 `VLM_UPSTREAM_ERROR`. Body lỗi `{"detail": {"code": …, "message": <câu tiếng Việt cố định>}}`, không nêu khoá, URL, tên model. Trúng cache AI vẫn chạy lại cổng (§5.16).
+- **Lưu đề xuất, hết hiệu lực** (đề xuất suy ra (orchestrator, 2026-11-04); chọn phương án đơn giản an toàn): đề xuất giữ ở kho tạm là thuộc tính instance của store (không module-level, không bảng SQLite), tối đa 50 đề xuất, đầy ⇒ bỏ cũ nhất; mất khi khởi động lại (accept/reject sau đó ⇒ 404). Mỗi đề xuất gắn `page_version` lúc tạo. Hết hiệu lực khi `PageExtraction.version` của trang khác `page_version` (sau `PATCH …/lines`, accept khác, restore, unconfirm...) ⇒ accept trả 409 `PROPOSAL_STALE` (client gọi đọc lại); xoá tài liệu xoá đề xuất của nó. Đề xuất `status = "rejected"` hoặc đã accept/reject ⇒ accept trả 409 `PROPOSAL_NOT_PENDING`.
+- **Accept (một giao dịch, kiểm version):** kiểm `expected_version` = `version` hiện tại (lệch ⇒ 409 `VERSION_CONFLICT`, body nêu version hiện tại), `page_version` = `version` hiện tại (lệch ⇒ 409 `PROPOSAL_STALE`), khối còn đủ điều kiện. Rồi trong CÙNG giao dịch: ghi kết quả VLM đã qua cổng của vùng vào `ai_cache` kèm liên kết tài liệu (§5.16, nếu chưa có dòng từ lần đọc; nhờ đó đường dựng lại trang của ADR-009 mục 3.5 lấy lại được, không gọi mạng), dựng lại trang qua đường dựng lại hiện có (§5.15) để khối vùng thành `source = "vlm"` (id khối theo tham chiếu OCR, không đổi), `version` + 1, thêm `VLM_REGION` vào `review_reasons`, ghi một `PageEditAudit` (`changes` ghi `block_id`, không chép chữ). Trả `200 PageExtraction`. Ứng viên bảng lệch token ⇒ khối mang `table_token_mismatch` (BLOCKING) và trang `TABLE_TOKEN_MISMATCH`, giải quyết bằng `PATCH …/lines` (`kept_mismatches`, `rejected_vlm_blocks`, §6.5) như luồng nhập. Chạy lại cổng lúc dựng lại; cổng từ chối lúc đó ⇒ không ghi gì, 409 `PROPOSAL_STALE`.
+- **Trang có khối `vlm` KHÔNG tự xác nhận** (ADR-009 mục 3.6): `VLM_REGION` chặn `page_clean_v1` và xác nhận theo lô; `source_trust_v1` coi trang là không đáng tin; người dùng phải tự `POST …/confirm`. Accept không bao giờ xác nhận trang hay tài liệu.
+- **Reject:** chỉ bỏ đề xuất khỏi kho tạm (idempotent: đề xuất cũ/hết hiệu lực ⇒ vẫn `204`; chưa từng có ⇒ 404). KHÔNG ghi trang, KHÔNG đổi `version`, KHÔNG thêm vào `vlm_rejected_block_ids` (field đó chỉ dành cho khối `vlm` người dùng bỏ sau khi đã nhận, §5.7; khối của đề xuất bị bỏ vẫn là khối offline). Đề xuất suy ra, chờ xác nhận (khác brief V05 A.1 ở điểm này).
+- **Bất biến:** I3 chữ VLM chỉ vào kho SAU `vision_gate` VÀ sau khi người dùng bấm Nhận; đề xuất `rejected` không mang chữ VLM nào; response `blocks` chỉ chứa chữ đã qua cổng. I5 trang có khối `vlm` không tự xác nhận, `table_token_mismatch` vẫn BLOCKING. I1 VLM không tính số: số trong ô bảng là số VLM đọc từ ảnh, chịu cổng token tuyệt đối và xác nhận của người dùng; không số nào do LLM tính được hiển thị như kết quả tính. Frontend chỉ hiển thị field backend trả (kể cả chỗ lệch để tô), không tự so hay tính.
+- **Frontend** (`lib/api.ts` thêm ba hàm; `types/holocron.ts` 1:1 với `AiRereadProposal`, `AiRereadBlock`, `AiRereadMismatch`, `AiRereadAcceptRequest`): nút "Đọc lại bằng AI" chỉ ở khối đủ điều kiện (cờ có trong `Block.flags` do backend trả); xem trước chữ VLM cạnh ảnh cắt của khối (`Block.crop_ref` khi có, §6.10) và `ocr_text`, tô `mismatches`; nút Nhận/Bỏ. Backend KHÔNG lưu ảnh đã gửi thành ảnh cắt mới (endpoint đọc không ghi); khối không có `crop_ref` thì UI chỉ hiện `ocr_text` (đề xuất suy ra, chờ xác nhận).
+- **Test** (đề xuất tên; transport giả, không mạng): `test_ai_reread_proposal_does_not_write_store`, `test_ai_reread_accept_writes_vlm_block_and_page_not_auto_confirmed`, `test_ai_reread_gate_rejected_returns_200_without_vlm_text`, `test_ai_reread_stale_proposal_after_patch_returns_409`, `test_ai_reread_not_configured_and_budget_409`, `test_ai_reread_vlm_timeout_and_429_return_503`, `test_ai_reread_ineligible_block_409`, `test_ai_reread_key_never_in_response`.
+
 ### 6.11 Cài đặt "Kết nối AI" (ADR-009 mục 12) — contract, chưa triển khai
 
 Phạm vi duyệt 2026-11-01 (ADR-009) (file quyết định mục 3, V04: người dùng tự thêm/sửa/xoá/kiểm thử API key và chọn model cho từng vai; điều kiện bảo mật nguyên văn ở ADR-009). Bảo vệ endpoint ghi: duyệt 2026-11-03 (người dùng uỷ quyền chọn phương án đề xuất), phương án 1. Đường dẫn, body, mã lỗi là đề xuất suy ra, chờ xác nhận. Router `routers/settings.py`. Model ở §5.16. V02 tạo router với riêng `DELETE /v1/settings/ai-cache`; V04 thêm phần còn lại.

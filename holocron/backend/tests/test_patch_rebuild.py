@@ -1,7 +1,7 @@
 """`PATCH …/lines` dựng lại khối của tài liệu chưa đóng có khối lưu (SPECIFICATION §5.15, §6.5; ADR-010 mục 13 "PATCH
 lines", "Đường dựng lại"; X09 C6).
 
-Tài liệu nhập qua `accept_document` với bộ đọc giả có hình học (`tests/test_import_blocks.py`); không mạng.
+Tài liệu nhập qua `accept_document` với bộ đọc giả có hình học (`tests/import_blocks_support.py`); không mạng.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from holocron_core.services.document_import import (
     edit_page_lines,
     unconfirm_page,
 )
-from tests.test_import_blocks import (
+from tests.import_blocks_support import (
     NOW,
     THREE,
     EditStage,

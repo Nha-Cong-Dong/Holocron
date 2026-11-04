@@ -794,7 +794,7 @@ def test_ledger_patched_page_uses_confirmed_lines(store: AppStore, tmp_path: Pat
     from holocron_core.domain.documents import DocumentConfirmRequest, LineEdit, PageLinesPatch
     from holocron_core.services.document_import import confirm_document, edit_page_lines
     from holocron_core.services.extraction_ledger import nonws_units
-    from tests.test_import_blocks import THREE, GeoReader, import_doc, pages_of, runtime_for, text_page
+    from tests.import_blocks_support import THREE, GeoReader, import_doc, pages_of, runtime_for, text_page
 
     runtime = runtime_for(tmp_path)
     pages = [text_page("1. Gioi thieu", extra=("Dong rieng cua trang mot se duoc sua",)), *THREE[1:]]

@@ -1,7 +1,7 @@
 """Cây mục và tập khối đủ điều kiện theo "tài liệu đã đóng" lúc truy vấn (SPECIFICATION §5.15, §6.10; ADR-010 mục 13;
 X09).
 
-Tài liệu nhập qua `accept_document` với bộ đọc giả có hình học (`tests/test_import_blocks.py`), đọc qua TestClient và
+Tài liệu nhập qua `accept_document` với bộ đọc giả có hình học (`tests/import_blocks_support.py`), đọc qua TestClient và
 method của kho; không mạng, không tài liệu thật.
 """
 
@@ -36,7 +36,7 @@ from holocron_core.services.document_import import (
     unconfirm_page,
 )
 from tests.block_samples import geo_line, geometry
-from tests.test_import_blocks import (
+from tests.import_blocks_support import (
     NOW,
     SUBJECT,
     EditStage,

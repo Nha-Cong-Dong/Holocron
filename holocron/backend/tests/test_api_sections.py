@@ -2,7 +2,7 @@
 tài liệu của ảnh cắt (ADR-010 mục 19; X09).
 
 Ảnh cắt seed bằng `save_crop_image` với PNG tự tạo; khối seed bằng luồng nhập (`accept_document` với bộ đọc giả có
-hình học, `tests/test_import_blocks.py`). Không mạng.
+hình học, `tests/import_blocks_support.py`). Không mạng.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from holocron_core.domain.vault import PageBlockList, SectionBlocks, SubjectTree
 from holocron_core.infrastructure.storage import SQLiteStore
 from holocron_core.routers.api import app, get_store
 from holocron_core.services.document_import import confirm_document
-from tests.test_import_blocks import (
+from tests.import_blocks_support import (
     NOW,
     SUBJECT,
     EditStage,

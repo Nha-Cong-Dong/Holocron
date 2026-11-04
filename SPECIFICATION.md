@@ -2701,7 +2701,8 @@ class BlockSearchHit(StrictModel):
         # code: exact = token khớp nguyên dạng sau NFC, casefold và chuẩn hoá vị trí dấu thanh (ADR-006 mục 5 bước 2), giữ dấu
         # (gồm token kỹ thuật R13, CPSR, 0x1F);
         # folded = khớp sau gấp dấu; fuzzy = trigram hoặc khoảng cách sửa (token ngắn)
-    match_spans: list[MatchSpan]                  # code: ≥ 1 phần tử, theo vị trí
+    match_spans: list[MatchSpan]                  # code: theo vị trí; RỖNG chỉ khi khối khớp duy nhất qua chữ kề (caption/đoạn kề; khối
+        # thuộc figure/table/formula/code), còn lại ≥ 1 phần tử (đề xuất suy ra (orchestrator) 2026-11-04, sprint mục 1)
     score: float                                  # code: chỉ để xếp hạng, UI không hiển thị
 
 class BlockSearchPage(StrictModel):

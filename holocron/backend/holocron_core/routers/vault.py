@@ -25,6 +25,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
+from ..domain.ai import AiConsent
 from ..domain.capabilities import CapabilityError
 from ..domain.llm import ChatCompletionClient, LlmUpstreamError, LlmUpstreamErrorDetail
 from ..domain.repositories import AppStore, RecordNotFoundError, VersionConflictError
@@ -97,6 +98,7 @@ def _chat_client_builder(
     local_failures: LocalFailures,
     providers: ProviderSelection | None,
     transport_for: TransportFactory | None,
+    user_send_allowed: Callable[[], bool] | None = None,
 ) -> tuple[ChatCompletionClient, ChatClientBuilder]:
     """Client LLM đầu tiên (đã dựng để kiểm cấu hình) và hàm dựng client mới cho đề xuất cặp, sau khi kiểm khả năng theo CÙNG nguồn hợp nhất env + người dùng của
     `GET /v1/runtime` (`deps.merged_capabilities`; ADR-009 mục 12.11). Không gửi gì ra mạng ở đây.
@@ -105,6 +107,9 @@ def _chat_client_builder(
     - Ngược lại có nhà cung cấp người dùng vai `llm` ⇒ `SelectedProviderChatClient`: chọn qua `ProviderSelection` ở mỗi
       lời gọi (trần chi tiêu, giữ chỗ), transport `guarded_transport` theo `ip_policy`.
     - Không có gì ⇒ 409 `CapabilityError` (`llm_not_configured`, spec v0.6 §11.4).
+
+    `user_send_allowed` (chỉ đường gửi TỰ ĐỘNG, `auto_chat_client_factory`): trả sai ⇒ KHÔNG dùng nhà cung cấp người
+    dùng (409 như không có nhà cung cấp). `None` ⇒ thao tác người dùng tự bấm, không bị công tắc chặn (spec §5.16).
     """
     selection = providers if providers is not None else get_provider_selection()
     view = selection.snapshot()
@@ -123,6 +128,8 @@ def _chat_client_builder(
             return build_env(), build_env
         except ConfigError as exc:
             failure = str(exc)  # ConfigError chỉ nêu tên biến, không bao giờ nêu giá trị
+    if view.configured("llm") and user_send_allowed is not None and not user_send_allowed():
+        raise _llm_unavailable(failure or "công tắc đồng ý gửi tự động đang tắt")
     if view.configured("llm"):
         chosen_transport = transport_for if transport_for is not None else guarded_transport
 
@@ -163,6 +170,23 @@ def get_chat_client_factory(
     Kiểm khả năng và cấu hình ngay khi tạo job như `get_chat_client` (409 `CapabilityError`); không gọi mạng.
     """
     _, build = _chat_client_builder(config, local_failures, providers, transport_for)
+    return build
+
+
+def auto_chat_client_factory(
+    config: RuntimeConfig,
+    local_failures: LocalFailures,
+    providers: ProviderSelection | None,
+    transport_for: TransportFactory | None,
+    consent: AiConsent,
+) -> ClientFactory:
+    """Hàm dựng client LLM cho job đề xuất TỰ TẠO khi xác nhận tài liệu (lần gửi tự động; spec §5.8, §5.16; ADR-009
+    mục 7). Như `get_chat_client_factory`, nhưng nhà cung cấp người dùng chỉ được dùng khi
+    `consent.auto_send_allowed("text")` đúng lúc tạo job; đường env giữ nguyên. Không phải phụ thuộc FastAPI.
+    """
+    _, build = _chat_client_builder(
+        config, local_failures, providers, transport_for, user_send_allowed=lambda: consent.auto_send_allowed("text")
+    )
     return build
 
 

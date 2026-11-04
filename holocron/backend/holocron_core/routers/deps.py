@@ -173,14 +173,17 @@ def get_provider_selection() -> ProviderSelection:
     return _provider_selection_for(data_dir_from_env())
 
 
-def merged_ai_configured(config: RuntimeConfig, view: ProviderSelection) -> tuple[bool, bool]:
+def merged_ai_configured(
+    config: RuntimeConfig, view: ProviderSelection, *, include_user_llm: bool = True
+) -> tuple[bool, bool]:
     """`(llm_configured, vlm_configured)` theo nguồn hợp nhất env + nhà cung cấp người dùng (ADR-009 mục 12.11).
 
     Nguồn DUY NHẤT cho `GET /v1/runtime`, cho phụ thuộc client LLM (`vault.get_chat_client`) và cho job đề xuất tự
     tạo, để khả năng báo ra luôn khớp việc endpoint có dựng được client. Không có nhà cung cấp người dùng ⇒ trùng
-    nghĩa env."""
+    nghĩa env. `include_user_llm = False` (job tự tạo khi công tắc đồng ý tắt, spec §5.8, ADR-009 mục 7) ⇒ vai
+    `llm` chỉ tính env."""
     return (
-        config.llm_configured or view.configured("llm"),
+        config.llm_configured or (include_user_llm and view.configured("llm")),
         config.vlm is not None or view.configured("vlm"),
     )
 
@@ -189,9 +192,11 @@ def merged_capabilities(
     config: RuntimeConfig,
     view: ProviderSelection,
     local_failures: Mapping[CapabilityName, CapabilityReason] | None = None,
+    *,
+    include_user_llm: bool = True,
 ) -> list[Capability]:
     """`compute_capabilities` với cờ cấu hình theo `merged_ai_configured`."""
-    llm_configured, vlm_configured = merged_ai_configured(config, view)
+    llm_configured, vlm_configured = merged_ai_configured(config, view, include_user_llm=include_user_llm)
     return compute_capabilities(
         config, local_failures=local_failures, llm_configured=llm_configured, vlm_configured=vlm_configured
     )

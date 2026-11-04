@@ -127,6 +127,7 @@ from .block_pipeline import LayoutConfig, PageContext, default_layout_config
 from .chapter_naming import DEFAULT_TITLE, InitialChapter
 from .chapter_reservation import ChapterReservations, ChapterTurn, reserve_chapter
 from .concept_proposal_job import DocumentProposals
+from .crop_job import CropJobs
 from .document_layout import (
     effective_role,
     plan_failed_layout,
@@ -334,6 +335,9 @@ class ReadJob:
     # `layout_version`/hash null (đường cũ `build_chunks`; người dùng 2026-11-03, Q1 = A).
     layout: LayoutConfig = field(default_factory=default_layout_config)
     geometry_reader: PageGeometrySource | None = None
+    # XCROP (ADR-010 mục 13): nơi xếp job cắt ảnh nền sau commit của bước kết thúc (`ImportRuntime.crops`). `None` ⇒
+    # không tạo job, khối cần ảnh giữ `crop_pending` (như X09).
+    crops: CropJobs | None = None
 
 
 class ImportQueue(Protocol):
@@ -442,6 +446,9 @@ class ImportRuntime:
     on_document_confirmed: DocumentConfirmedHook | None = None
     # X09: cấu hình bộ dựng khối của app (ADR-010 mục 15): đi theo mọi `ReadJob`, `PATCH …/lines` và bước chốt.
     layout: LayoutConfig = field(default_factory=default_layout_config)
+    # XCROP: hàng đợi job cắt ảnh nền của app (ADR-010 mục 13; `services/crop_job.py`), dùng CÙNG `locks`; đi theo mọi
+    # `ReadJob` và đường dựng lại `PATCH …/lines`. `None` ⇒ không tạo job (khối giữ `crop_pending`).
+    crops: CropJobs | None = None
 
     def close(self, timeout_s: float | None = None) -> bool:
         """Ngừng nhận tài liệu, dừng hàng đợi rồi dọn kho file gốc; `True` khi mọi luồng đã dừng hẳn.
@@ -454,7 +461,9 @@ class ImportRuntime:
         timeout = QUEUE_CLOSE_TIMEOUT_S if timeout_s is None else timeout_s
         admissions_done = self.gate.close(timeout)
         stopped = self.queue.close(timeout)
-        if admissions_done and stopped:
+        # Job cắt ảnh dừng SAU hàng đợi đọc (bước kết thúc lần đọc có thể còn xếp job); job đang chạy dừng trước lô kế.
+        crops_stopped = self.crops is None or self.crops.close(timeout)
+        if admissions_done and stopped and crops_stopped:
             self.files.close()
             return True
         _LOGGER.warning("bộ nhập tài liệu chưa dừng hẳn sau %.1f s; giữ nguyên thư mục file gốc", timeout)
@@ -901,6 +910,7 @@ def _store_and_queue(
                 on_document_confirmed=runtime.on_document_confirmed,
                 layout=runtime.layout if layout is None else layout,
                 geometry_reader=geometry_reader,
+                crops=runtime.crops,
             )
         )
     except Exception as exc:
@@ -1472,6 +1482,17 @@ def notify_confirmed(hook: DocumentConfirmedHook | None, document_id: str) -> No
         _LOGGER.exception("tài liệu %s đã xác nhận nhưng hook sau khi đóng lỗi", document_id)
 
 
+def schedule_crops(crops: CropJobs | None, store: DocumentRepository, document_id: str) -> None:
+    """Xếp job cắt ảnh nền (XCROP, ADR-010 mục 13) SAU commit và SAU khi nhả khoá của tài liệu; không chờ job. Lỗi
+    khi xếp chỉ ghi log (khối giữ `crop_pending`, quét khởi động sau xếp lại), không đổi kết quả của người gọi."""
+    if crops is None:
+        return
+    try:
+        crops.schedule(store, document_id)
+    except (StorageError, RuntimeError, OSError) as exc:
+        _LOGGER.warning("chưa xếp được job cắt ảnh của tài liệu %s (%s)", document_id, type(exc).__name__)
+
+
 def mark_document_failed(
     store: DocumentRepository,
     document_id: str,
@@ -1485,6 +1506,7 @@ def mark_document_failed(
     build_blocks: bool = False,
     retry: RetryPolicy | None = None,
     pause: Callable[[float], None] = time.sleep,
+    crops: CropJobs | None = None,
 ) -> None:
     """Tài liệu không đọc tiếp được: trang còn `pending` thành `failed` (`PAGE_ERROR`), tài liệu thành `failed`;
     có `vault` (thường là `ReadJob.vault`) thì sau đó settle như bước kết thúc lần đọc (`_finish`): mọi trang có văn
@@ -1495,7 +1517,8 @@ def mark_document_failed(
     liệu. `locks = None` (test, script) ⇒ không lấy khoá (chỉ còn so version); `vault = None` ⇒ không settle.
     Bước settle vừa đóng tài liệu ⇒ báo `on_document_confirmed` sau khi nhả khoá (T1b). `layout` và `build_blocks`
     (X09), `retry` và `pause` (thử lại khi kho bận lúc lưu khối) chuyển cho `_finish` như ở bước kết thúc lần đọc;
-    lỗi kho của bước khối ném ra, tài liệu giữ trạng thái đang lưu.
+    lỗi kho của bước khối ném ra, tài liệu giữ trạng thái đang lưu. Xong bước kết thúc ⇒ xếp job cắt ảnh nền vào
+    `crops` (XCROP) sau khi nhả khoá.
     """
     settings = PdfReaderConfig() if config is None else config
     with locks.hold(document_id) if locks is not None else contextlib.nullcontext():
@@ -1515,6 +1538,7 @@ def mark_document_failed(
     if closed:
         notify_confirmed(on_document_confirmed, document_id)
     _after_finish(store, document_id, settings, locks, vault)
+    schedule_crops(crops, store, document_id)
 
 
 def _close_pages(pages: Iterator[PageExtraction]) -> None:
@@ -1550,6 +1574,7 @@ def _job_failed(job: ReadJob, pause: Callable[[float], None] = time.sleep) -> No
         build_blocks=job.geometry_reader is not None,
         retry=job.retry,
         pause=pause,
+        crops=job.crops,
     )
 
 
@@ -1624,6 +1649,7 @@ def read_document(
       (`TOO_MANY_LINES`, `_within_vault_lines`); các trang còn lại xác nhận được như thường.
     - Bước kết thúc chạy dưới khoá của tài liệu (`job.locks`) như các request sửa và xác nhận: đặt `review` rồi, nếu
       mọi trang có văn bản đã được xác nhận trong lúc đọc, nhập Vault và đặt `confirmed` (`_finish`).
+    - Sau khi bước kết thúc commit và nhả khoá: xếp job cắt ảnh nền (`job.crops`, XCROP), không chờ job.
     """
     store, document_id = job.store, job.document_id
     pending = [p.page_number for p in store.list_pages(document_id, PageExtraction) if p.status == "pending"]
@@ -1675,6 +1701,7 @@ def read_document(
     if closed:
         notify_confirmed(job.on_document_confirmed, document_id)
     _after_finish(store, document_id, job.config, job.locks, job.vault)
+    schedule_crops(job.crops, store, document_id)
 
 
 def run_job(run: Callable[[], None], job: ReadJob, should_stop: Callable[[], bool]) -> None:
@@ -1794,12 +1821,15 @@ def requeue_pending(
     on_document_confirmed: DocumentConfirmedHook | None = None,
     geometry_reader: PageGeometrySource | None = None,
     layout: LayoutConfig | None = None,
+    crops: CropJobs | None = None,
 ) -> list[str]:
     """Khi khởi động: xếp lại tài liệu còn `processing` theo thứ tự nhận (cũ trước), từ file gốc đã lưu (§6.5).
 
     File gốc không còn ⇒ tài liệu `failed`. Trả id các tài liệu đã xếp lại. `vault`, `locks`, `config` (ngưỡng 0D) và
     hook `on_document_confirmed` (T1b) đi cùng việc đọc (`ReadJob`) và đường `failed`; X09: `geometry_reader` (bộ
-    đọc có hình học) và `layout` (None ⇒ `default_layout_config()`) cũng vậy.
+    đọc có hình học) và `layout` (None ⇒ `default_layout_config()`) cũng vậy; XCROP: `crops` (job cắt ảnh nền sau
+    bước kết thúc). Khối còn chờ ảnh của tài liệu khác do quét khởi động riêng xếp (`crop_job.schedule_pending_crops`),
+    không qua hàm này.
     """
     policy = RetryPolicy() if retry is None else retry
     settings = PdfReaderConfig() if config is None else config
@@ -1822,6 +1852,7 @@ def requeue_pending(
                     layout=layout_config,
                     build_blocks=geometry_reader is not None,
                     retry=policy,
+                    crops=crops,
                 )
             except StorageError as exc:
                 # Kho bận/lệch version ở bước kết thúc: tài liệu giữ trạng thái đang lưu, xét lại ở lần khởi động sau;
@@ -1842,6 +1873,7 @@ def requeue_pending(
                 on_document_confirmed=on_document_confirmed,
                 layout=layout_config,
                 geometry_reader=geometry_reader,
+                crops=crops,
             )
         )
         queued.append(document_id)
@@ -1999,6 +2031,9 @@ def edit_page_lines(
     chữ khi hash đã lưu khác hash của `runtime.layout`), `page_numbers` toàn tài liệu, `LAYOUT_FAILED` tính lại, trang
     tự xác nhận có cờ chặn về xem lại. `layout_version` null ⇒ chỉ ghi trang như cũ. Không có phương án lùi cắt theo
     dòng cho tài liệu có khối.
+
+    XCROP: sau khi đường dựng lại commit và nhả khoá ⇒ xếp job cắt ảnh nền (`runtime.crops`) cho mọi khối cần ảnh
+    chưa có ảnh; request KHÔNG chờ job (khối giữ `crop_pending` tới khi job ghi ảnh).
     """
     with runtime.locks.hold(document_id):
         page = get_page_extraction(store, document_id, page_number)
@@ -2009,26 +2044,29 @@ def edit_page_lines(
         _check_version(page, patch.expected_version)
         edited, changes = apply_line_edits(page, patch, line_conf_min=runtime.reader_config.line_conf_min)
         if document.layout_version is not None:
-            return _rebuild_after_edit(store, document, page, edited, changes, patch, runtime.layout, now)
-        audit = PageEditAudit(
-            document_id=document_id,
-            page_number=page_number,
-            from_version=page.version,
-            to_version=edited.version,
-            editor_id=patch.editor_id,
-            changes=changes,
-            at=now,
-        )
-        store.update_page(
-            document_id,
-            page_number,
-            edited,
-            status=edited.status,
-            confirmed=False,
-            expected_version=page.version,
-            audit=audit,
-        )
-        return edited
+            rebuilt = _rebuild_after_edit(store, document, page, edited, changes, patch, runtime.layout, now)
+        else:
+            audit = PageEditAudit(
+                document_id=document_id,
+                page_number=page_number,
+                from_version=page.version,
+                to_version=edited.version,
+                editor_id=patch.editor_id,
+                changes=changes,
+                at=now,
+            )
+            store.update_page(
+                document_id,
+                page_number,
+                edited,
+                status=edited.status,
+                confirmed=False,
+                expected_version=page.version,
+                audit=audit,
+            )
+            return edited
+    schedule_crops(runtime.crops, store, document_id)
+    return rebuilt
 
 
 def _plan_rebuild(

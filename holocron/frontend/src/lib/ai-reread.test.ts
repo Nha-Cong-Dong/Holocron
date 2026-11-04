@@ -9,9 +9,13 @@ import {
   mismatchCellKey,
   mismatchCells,
   missedTokens,
+  NO_RECIPIENT_VI,
   parseAiRereadProposal,
   parsePageBlocks,
+  rereadButtonLabel,
   rereadReasons,
+  sendDisclosure,
+  vlmRecipientLabel,
 } from "@/lib/ai-reread";
 import { classifyHttpError } from "@/lib/errors";
 
@@ -170,5 +174,43 @@ describe("ánh xạ mã lỗi sang thông điệp", () => {
   it("409 mã lạ rơi về thông điệp chung, không có code", () => {
     const error = classifyHttpError(409, { detail: { code: "LA" } }, { context: "ai_reread", versioned: true });
     expect(error.code).toBeUndefined();
+  });
+});
+
+describe("nguồn khối và người nhận ảnh", () => {
+  it("giữ source và ẩn khối vlm khỏi danh sách đọc lại", () => {
+    const parsed = parsePageBlocks({
+      blocks: [
+        rawBlock("b1", ["table_unresolved"], { source: "ocr" }),
+        rawBlock("b2", ["table_unresolved"], { source: "vlm" }),
+      ],
+    });
+    expect(parsed?.map((block) => block.source)).toEqual(["ocr", "vlm"]);
+    expect(eligibleBlocks(parsed ?? []).map((block) => block.blockId)).toEqual(["b1"]);
+  });
+
+  const role = (name: "vlm" | "llm", label: string | null) => ({
+    role: name,
+    auto_send_allowed: label !== null,
+    reason: null,
+    provider_id: label === null ? null : "p1",
+    recipient_label: label,
+    local: false,
+  });
+
+  it("lấy nhãn của vai vlm, không lấy vai llm", () => {
+    expect(vlmRecipientLabel({ roles: [role("vlm", "Gemini"), role("llm", "Khác")] })).toBe("Gemini");
+  });
+
+  it("chưa cấu hình ⇒ null", () => {
+    expect(vlmRecipientLabel({ roles: [role("vlm", null), role("llm", "Khác")] })).toBeNull();
+    expect(vlmRecipientLabel(null)).toBeNull();
+  });
+
+  it("câu báo và nút nêu nhãn người nhận", () => {
+    expect(sendDisclosure("Gemini")).toContain("Ảnh vùng này sẽ được gửi tới Gemini");
+    expect(rereadButtonLabel("Gemini")).toContain("Gemini");
+    expect(rereadButtonLabel(null)).toBe("Đọc lại bằng AI");
+    expect(NO_RECIPIENT_VI).not.toBe("");
   });
 });

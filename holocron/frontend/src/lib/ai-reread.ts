@@ -11,6 +11,7 @@ import type {
   AiRereadMismatch,
   AiRereadProposal,
   AiRereadStatus,
+  AiStatus,
   BlockFlag,
   BlockType,
   GateReason,
@@ -36,6 +37,8 @@ export interface PageBlockView {
   cropRef: string | null;
   text: string | null;
   ocrText: string | null;
+  /** Nguồn chữ của khối (`text_layer`, `ocr`, `vlm`); lạ hoặc vắng ⇒ `null`. */
+  source: string | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -60,6 +63,7 @@ function parsePageBlock(raw: unknown): PageBlockView | null {
     cropRef: isCropRef(raw.crop_ref) ? raw.crop_ref : null,
     text: typeof raw.text === "string" ? raw.text : null,
     ocrText: typeof raw.ocr_text === "string" ? raw.ocr_text : null,
+    source: typeof raw.source === "string" ? raw.source : null,
   };
 }
 
@@ -76,6 +80,7 @@ export function parsePageBlocks(raw: unknown): PageBlockView[] | null {
 
 /** Khối có ít nhất một cờ đủ điều kiện đọc lại bằng AI. */
 export function isRereadEligible(block: PageBlockView): boolean {
+  if (block.source === "vlm") return false;
   return block.flags.some((flag) => REREAD_FLAGS.some((allowed) => allowed === flag));
 }
 
@@ -383,6 +388,22 @@ export function aiRereadErrorInfo(code: string | undefined): AiRereadErrorInfo |
   return known === null ? null : AI_REREAD_ERRORS[known];
 }
 
-/** Dòng báo trước khi gửi: ảnh vùng sẽ tới nhà cung cấp AI (ADR-009 mục 15). */
-export const SEND_DISCLOSURE_VI =
-  "Bấm “Đọc lại bằng AI” sẽ gửi ảnh vùng này tới nhà cung cấp AI bạn đã cấu hình ở Cài đặt. Chữ AI chỉ là đề xuất: Holocron đối chiếu với chữ OCR và bạn phải bấm Nhận thì mới ghi vào trang.";
+/** Nhãn người nhận ảnh của vai `vlm` (SPEC §5.12); chưa cấu hình hoặc không có vai ⇒ `null`. */
+export function vlmRecipientLabel(status: Pick<AiStatus, "roles"> | null): string | null {
+  const role = status?.roles.find((item) => item.role === "vlm");
+  const label = role?.recipient_label;
+  return typeof label === "string" && label.trim() !== "" ? label : null;
+}
+
+/** Dòng báo trước khi gửi, nêu nhãn người nhận (SPEC §6.10a). */
+export function sendDisclosure(label: string): string {
+  return `Ảnh vùng này sẽ được gửi tới ${label}. Chữ AI chỉ là đề xuất: Holocron đối chiếu với chữ OCR và bạn phải bấm Nhận thì mới ghi vào trang.`;
+}
+
+/** Dòng báo khi chưa có nơi nhận: không cho gửi, dẫn tới Cài đặt. */
+export const NO_RECIPIENT_VI = "Chưa cấu hình nhà cung cấp AI đọc ảnh nên chưa thể gửi ảnh vùng này.";
+
+/** Nhãn nút gửi: nêu người nhận khi đã biết. */
+export function rereadButtonLabel(label: string | null): string {
+  return label === null ? "Đọc lại bằng AI" : `Đọc lại bằng AI (gửi tới ${label})`;
+}

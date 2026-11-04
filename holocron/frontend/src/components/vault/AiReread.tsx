@@ -12,9 +12,12 @@ import {
   mismatchCellKey,
   mismatchCells,
   missedTokens,
+  NO_RECIPIENT_VI,
   type PageBlockView,
+  rereadButtonLabel,
   rereadReasons,
-  SEND_DISCLOSURE_VI,
+  sendDisclosure,
+  vlmRecipientLabel,
 } from "@/lib/ai-reread";
 import { api, toUiError } from "@/lib/api";
 import type { PageView } from "@/lib/documents-data";
@@ -58,7 +61,23 @@ function AiRereadLoaded({
   onRetry,
 }: AiRereadSectionProps & { onRetry: () => void }) {
   const [blocks, setBlocks] = useState<Loadable<PageBlockView[]>>({ kind: "loading" });
+  const [recipient, setRecipient] = useState<Loadable<string | null>>({ kind: "loading" });
   const pageNumber = page.pageNumber;
+
+  useEffect(() => {
+    let current = true;
+    api
+      .getAiStatus()
+      .then((status) => {
+        if (current) setRecipient({ kind: "ready", value: vlmRecipientLabel(status) });
+      })
+      .catch(() => {
+        if (current) setRecipient({ kind: "ready", value: null });
+      });
+    return () => {
+      current = false;
+    };
+  }, []);
 
   useEffect(() => {
     let current = true;
@@ -89,11 +108,19 @@ function AiRereadLoaded({
     );
   }
   if (blocks.value.length === 0) return null;
+  const label = recipient.kind === "ready" ? recipient.value : null;
 
   return (
     <section className={vault.panel} aria-labelledby="ai-reread-title">
       <h3 id="ai-reread-title">Đọc lại bằng AI</h3>
-      <p className={styles.disclosure}>{SEND_DISCLOSURE_VI}</p>
+      {label !== null ? (
+        <p className={styles.disclosure}>{sendDisclosure(label)}</p>
+      ) : (
+        <p className={styles.disclosure}>
+          {recipient.kind === "loading" ? "Đang kiểm tra nơi nhận ảnh…" : NO_RECIPIENT_VI}{" "}
+          {recipient.kind === "ready" && <Link href="/settings">Mở Cài đặt</Link>}
+        </p>
+      )}
       <ul className={styles.list}>
         {blocks.value.map((block) => (
           <RereadItem
@@ -101,7 +128,8 @@ function AiRereadLoaded({
             documentId={documentId}
             page={page}
             block={block}
-            disabled={busy}
+            recipientLabel={label}
+            disabled={busy || label === null}
             onAccepted={onAccepted}
             onReload={onReload}
           />
@@ -121,12 +149,13 @@ interface RereadItemProps {
   documentId: string;
   page: PageView;
   block: PageBlockView;
+  recipientLabel: string | null;
   disabled: boolean;
   onAccepted: (updated: PageView) => void;
   onReload: () => void;
 }
 
-function RereadItem({ documentId, page, block, disabled, onAccepted, onReload }: RereadItemProps) {
+function RereadItem({ documentId, page, block, recipientLabel, disabled, onAccepted, onReload }: RereadItemProps) {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [error, setError] = useState<UiError | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -192,7 +221,7 @@ function RereadItem({ documentId, page, block, disabled, onAccepted, onReload }:
             onClick={() => void reread()}
             disabled={disabled || working}
           >
-            {phase.kind === "sending" ? "Đang gửi ảnh và chờ AI…" : "Đọc lại bằng AI"}
+            {phase.kind === "sending" ? "Đang gửi ảnh và chờ AI…" : rereadButtonLabel(recipientLabel)}
           </button>
         )}
       </div>

@@ -1114,6 +1114,7 @@ export interface BlockSearchHit {
   chapter_code: string;
   section_path: SectionPathItem[];
   match_kind: "exact" | "folded" | "fuzzy";
+  /** Rỗng khi khối (figure/table/formula/code) chỉ khớp ở chữ kề (caption, đoạn quanh): không có chuỗi đích để tô. */
   match_spans: MatchSpan[];
   /** Chỉ để xếp hạng; giao diện không hiển thị. */
   score: number;

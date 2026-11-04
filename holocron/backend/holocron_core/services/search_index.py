@@ -2,7 +2,7 @@
 
 Luồng một truy vấn (`search_blocks`), cùng kết quả ở mọi đường (FTS5, FTS5 + trigram, Python):
 
-1. `parse_query`: NFC, bỏ khoảng trắng đầu/cuối, gấp dấu (`domain.vault.fold_text`), tách token. Mọi ký tự đặc biệt của
+1. `parse_query`: NFC, bỏ khoảng trắng đầu/cuối, gấp dấu (`domain.search_text.fold_text`), tách token. Mọi ký tự đặc biệt của
    FTS5 (`"`, `*`, `NEAR`, `-`, `:`) chỉ là chữ thường hoặc dấu câu bị bỏ: token đi vào FTS5 luôn nằm trong ngoặc kép.
 2. Với MỖI token: tập khối khớp chặt (token gấp dấu bằng token của khối). FTS5 lấy từ `blocks_fts`; đường lùi Python quét
    mọi khối đủ điều kiện của tài liệu trong phạm vi.
@@ -11,8 +11,11 @@ Luồng một truy vấn (`search_blocks`), cùng kết quả ở mọi đườn
    còn ít nhất một trigram chung); token ngắn hơn: trigram không bắt được ⇒ quét mọi khối trong phạm vi.
 4. Chấm điểm bằng cùng một hàm Python trên khối ứng viên (`_match_block`): hạng khớp `exact` > `folded` > `fuzzy`,
    token kỹ thuật (chữ lẫn số, chữ hoa ≥ 2 ký tự, mã `0x…`) khớp `exact` được cộng thêm nên xếp trên mọi kết quả mờ.
-   Điểm chỉ để xếp hạng; hoà điểm thì theo (tài liệu, trang, `reading_order`, `block_id`).
-5. Khoảng khớp trả theo chữ GỐC (đơn vị UTF-16 code unit), ánh xạ qua bảng vị trí của `fold_text`.
+   Thứ tự kết quả (§6.10): `match_kind` (exact > folded > fuzzy) → điểm giảm dần → (tài liệu, trang, `reading_order`,
+   `block_id`). Điểm chỉ phân hạng trong cùng `match_kind`.
+5. Khối figure/table/formula/code còn được tìm qua chữ kề (`domain.vault.block_contexts`: caption kề, đoạn văn quanh,
+   cùng trang theo `reading_order`); khớp chỉ ở chữ kề thì hit không có `match_spans` (chuỗi đích nằm ngoài khối).
+6. Khoảng khớp trả theo chữ GỐC (đơn vị UTF-16 code unit), ánh xạ qua bảng vị trí của `fold_text`.
 
 Chỉ tập khối đủ điều kiện của tài liệu ĐÃ ĐÓNG (`status = "confirmed"` hoặc Vault đã có chunk, §5.15) và không phải `past_exam`.
 """
@@ -32,18 +35,18 @@ from ..domain.blocks import Block, BlockType
 from ..domain.documents import PageExtraction, PageSummary
 from ..domain.repositories import AppStore, ImportedDocument, RecordNotFoundError
 from ..domain.schemas import SourceKind, StrictModel
-from ..domain.search_text import TOKEN_RE, normalize_search_text
+from ..domain.search_text import TOKEN_RE, FoldedText, fold_text, normalize_search_text, utf16_offsets
 from ..domain.vault import (
+    BLOCK_CONTEXT_MAX_CHARS,
+    BLOCK_CONTEXT_TYPES,
     BLOCK_SEARCH_EXCLUDED_TYPES,
     BlockSearchHit,
     BlockSearchPage,
-    FoldedText,
     MatchSpan,
     SearchField,
+    block_contexts,
     block_search_fields,
-    fold_text,
     section_path_of,
-    utf16_offsets,
 )
 
 __all__ = [
@@ -68,6 +71,8 @@ class SearchSettings(StrictModel):
     max_query_chars: int = Field(default=200, ge=1)
     max_query_tokens: int = Field(default=32, ge=1)
     max_results: int = Field(default=1000, ge=1)
+    max_page_size: int = Field(default=50, ge=1)  # trần `limit` và số giá trị lọc lặp của endpoint
+    context_max_chars: int = Field(default=BLOCK_CONTEXT_MAX_CHARS, ge=1)  # mỗi đoạn chữ kề (xem `block_contexts`)
     technical_patterns: tuple[str, ...] = (
         r"^(?=\w*\d)(?=\w*[^\W\d_])[^\W_]+$",  # chữ lẫn số: R13, int32, mp3
         r"^[A-Z]{2,}$",  # chữ hoa ≥ 2 ký tự: CPSR, MOV
@@ -212,6 +217,10 @@ def _field_tier(
 
 
 def _spans(analyzed: _Analyzed, hits: list[_Tok]) -> list[MatchSpan]:
+    field = analyzed.field
+    target = field.target
+    if target == "context":
+        return []  # chữ kề không nằm trong khối: không có khoảng để tô
     offsets = utf16_offsets(analyzed.field.text)
     merged: list[list[int]] = []
     for tok in sorted(hits, key=lambda t: (t.start, t.end)):
@@ -220,10 +229,9 @@ def _spans(analyzed: _Analyzed, hits: list[_Tok]) -> list[MatchSpan]:
             merged[-1][1] = max(merged[-1][1], end)
         else:
             merged.append([start, end])
-    field = analyzed.field
     return [
         MatchSpan(
-            target=field.target,
+            target=target,
             row=field.row,
             cell_index=field.cell_index,
             label_index=field.label_index,
@@ -343,16 +351,18 @@ def search_blocks(
     failed, without, unconfirmable = _page_counts(store, documents)
     by_doc = {document.meta.doc_id: document for document in documents}
 
-    blocks, fuzzy, engine = _gather(store, subject_code, tokens, list(by_doc), settings)
+    blocks, fuzzy, engine, contexts = _gather(store, subject_code, tokens, list(by_doc), settings)
     scored: list[tuple[Block, _Match]] = []
     for block in blocks:
         if wanted_types is not None and block.type not in wanted_types:
             continue
-        match = _match_block([_analyze(f) for f in block_search_fields(block)], tokens, fuzzy, settings)
+        fields = block_search_fields(block, contexts.get(block.block_id, ()))
+        match = _match_block([_analyze(f) for f in fields], tokens, fuzzy, settings)
         if match is not None:
             scored.append((block, match))
     scored.sort(
         key=lambda pair: (
+            _TIER_RANK[pair[1].kind],
             -pair[1].score,
             pair[0].document_id,
             pair[0].page_number,
@@ -394,10 +404,10 @@ def _gather(
     tokens: Sequence[QueryToken],
     doc_ids: Sequence[str],
     settings: SearchSettings,
-) -> tuple[list[Block], list[bool], Literal["fts5", "fts5_trigram", "python"]]:
-    """Khối ứng viên, cờ "được khớp mờ" của từng token và đường đã dùng."""
+) -> tuple[list[Block], list[bool], Literal["fts5", "fts5_trigram", "python"], dict[str, list[SearchField]]]:
+    """Khối ứng viên, cờ "được khớp mờ" của từng token, đường đã dùng và chữ kề của khối ứng viên."""
     if not tokens or not doc_ids:
-        return [], [False] * len(tokens), "python"
+        return [], [False] * len(tokens), "python", {}
     scope = set(doc_ids)
     index = store if isinstance(store, BlockIndexSource) else None
     if index is not None:
@@ -415,14 +425,19 @@ def _gather(
 
 def _gather_scan(
     store: AppStore, tokens: Sequence[QueryToken], doc_ids: Sequence[str], settings: SearchSettings
-) -> tuple[list[Block], list[bool], Literal["python"]]:
-    blocks = [block for doc_id in doc_ids for block in store.list_eligible_blocks(doc_id)]
+) -> tuple[list[Block], list[bool], Literal["python"], dict[str, list[SearchField]]]:
+    blocks: list[Block] = []
+    contexts: dict[str, list[SearchField]] = {}
+    for doc_id in doc_ids:
+        doc_blocks = store.list_eligible_blocks(doc_id)
+        blocks.extend(doc_blocks)
+        contexts.update(block_contexts(doc_blocks, settings.context_max_chars))
     present: set[str] = set()
     for block in blocks:
-        for item in (_analyze(f) for f in block_search_fields(block)):
+        for item in (_analyze(f) for f in block_search_fields(block, contexts.get(block.block_id, ()))):
             present.update(t.text for t in item.folded_tokens)
     fuzzy = [token.folded not in present and len(token.folded) >= settings.fuzzy_min_len for token in tokens]
-    return blocks, fuzzy, "python"
+    return blocks, fuzzy, "python", contexts
 
 
 def _gather_indexed(
@@ -433,7 +448,7 @@ def _gather_indexed(
     scope: set[str],
     strict: Sequence[set[tuple[str, str]]],
     settings: SearchSettings,
-) -> tuple[list[Block], list[bool], Literal["fts5", "fts5_trigram", "python"]]:
+) -> tuple[list[Block], list[bool], Literal["fts5", "fts5_trigram", "python"], dict[str, list[SearchField]]]:
     fuzzy = [
         not found and len(token.folded) >= settings.fuzzy_min_len for token, found in zip(tokens, strict, strict=True)
     ]
@@ -458,4 +473,7 @@ def _gather_indexed(
         blocks = [block for doc_id in sorted(scope) for block in store.list_eligible_blocks(doc_id)]
     else:
         blocks = [block for doc_id, ids in sorted(by_doc.items()) for block in index.load_eligible_blocks(doc_id, ids)]
-    return blocks, fuzzy, ("fts5_trigram" if used_trigram else "fts5")
+    contexts: dict[str, list[SearchField]] = {}
+    for doc_id in sorted({block.document_id for block in blocks if block.type in BLOCK_CONTEXT_TYPES}):
+        contexts.update(block_contexts(store.list_eligible_blocks(doc_id), settings.context_max_chars))
+    return blocks, fuzzy, ("fts5_trigram" if used_trigram else "fts5"), contexts

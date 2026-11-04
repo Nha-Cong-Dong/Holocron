@@ -69,6 +69,7 @@ from ...domain.vault import (
     ConceptPairStatus,
     QuoteMismatchError,
     VaultEdit,
+    block_contexts,
     block_index_body,
     block_trigram_body,
     check_definition_quote,
@@ -871,15 +872,32 @@ class SQLiteStore:
             (document_id,),
         ).fetchall()
         blocks = [Block.model_validate_json(str(row["block_json"])) for row in rows]
+        contexts = block_contexts(blocks)
         if self._block_fts:
             conn.executemany(
                 f"INSERT INTO {_BLOCK_FTS_TABLE} (body, block_id, document_id, subject_code) VALUES (?, ?, ?, ?)",
-                [(block_index_body(b), b.block_id, document_id, subject["subject_code"]) for b in blocks],
+                [
+                    (
+                        block_index_body(b, contexts.get(b.block_id, ())),
+                        b.block_id,
+                        document_id,
+                        subject["subject_code"],
+                    )
+                    for b in blocks
+                ],
             )
         if self._block_trigram:
             conn.executemany(
                 f"INSERT INTO {_BLOCK_TRIGRAM_TABLE} (body, block_id, document_id, subject_code) VALUES (?, ?, ?, ?)",
-                [(block_trigram_body(b), b.block_id, document_id, subject["subject_code"]) for b in blocks],
+                [
+                    (
+                        block_trigram_body(b, contexts.get(b.block_id, ())),
+                        b.block_id,
+                        document_id,
+                        subject["subject_code"],
+                    )
+                    for b in blocks
+                ],
             )
 
     def _backfill_block_index(self) -> None:
@@ -893,7 +911,8 @@ class SQLiteStore:
             for table in tables:
                 rows = conn.execute(
                     f"SELECT DISTINCT document_id FROM blocks WHERE eligible = 1 AND block_id NOT IN "
-                    f"(SELECT block_id FROM {table})"
+                    f"(SELECT block_id FROM {table}) AND document_id IN "
+                    "(SELECT document_id FROM documents WHERE subject_code IS NOT NULL)"
                 ).fetchall()
                 missing.update(str(row["document_id"]) for row in rows)
         for document_id in sorted(missing):

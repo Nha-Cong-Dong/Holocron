@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import re
-import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -26,7 +25,7 @@ from pydantic import Field, field_validator, model_validator
 from .blocks import Block, BlockType, Section
 from .limits import MAX_LINE_CHARS
 from .schemas import TOPIC_KEY_PATTERN, ChunkCategory, KnowledgeChunk, StrictModel, normalize_quote, quote_in_text
-from .search_text import TOKEN_RE
+from .search_text import TOKEN_RE, fold_text
 
 SUBJECT_CODE_PATTERN = r"^[A-Z]{2,6}[0-9]{2,4}$"
 CHAPTER_CODE_PATTERN = r"^ch[0-9]{1,2}(\.[0-9]{1,2})?$"
@@ -374,7 +373,7 @@ class BlockSearchHit(StrictModel):
     chapter_code: str
     section_path: list[SectionPathItem]
     match_kind: Literal["exact", "folded", "fuzzy"]
-    match_spans: list[MatchSpan] = Field(min_length=1)
+    match_spans: list[MatchSpan]  # rỗng khi khối chỉ khớp ở chữ kề (caption, đoạn quanh), không có chuỗi đích để tô
     score: float
 
 
@@ -392,93 +391,75 @@ class BlockSearchPage(StrictModel):
 BLOCK_SEARCH_EXCLUDED_TYPES: frozenset[BlockType] = frozenset({"header_footer", "page_number"})
 
 
-@dataclass(frozen=True)
-class FoldedText:
-    """Chữ đã gấp dấu kèm vị trí trong chuỗi gốc (đơn vị code point; đổi UTF-16 ở `utf16_offsets`).
-
-    `kept` = NFC + `casefold` (giữ dấu), `folded` = `kept` bỏ dấu kết hợp và `đ` thành `d`. Với mỗi ký tự của hai chuỗi,
-    `*_starts[i]`/`*_ends[i]` là khoảng của cụm (ký tự gốc + dấu kết hợp đi kèm) sinh ra nó trong chuỗi gốc.
-    """
-
-    original: str
-    kept: str
-    kept_starts: tuple[int, ...]
-    kept_ends: tuple[int, ...]
-    folded: str
-    folded_starts: tuple[int, ...]
-    folded_ends: tuple[int, ...]
-
-
-def _clusters(text: str) -> list[tuple[int, int]]:
-    """Cụm = một ký tự cùng các dấu kết hợp theo sau; khoảng `[start, end)` theo code point."""
-    bounds: list[tuple[int, int]] = []
-    start = 0
-    for index, char in enumerate(text):
-        if index > start and not unicodedata.combining(char):
-            bounds.append((start, index))
-            start = index
-    if text:
-        bounds.append((start, len(text)))
-    return bounds
-
-
-def _strip_marks(text: str) -> str:
-    stripped = "".join(c for c in unicodedata.normalize("NFD", text) if not unicodedata.combining(c))
-    return unicodedata.normalize("NFC", stripped).replace("đ", "d")
-
-
-def fold_text(text: str) -> FoldedText:
-    """Gấp dấu theo ADR-010 mục 18: NFC, `casefold`, bỏ dấu kết hợp, `đ` thành `d`; kèm ánh xạ về chuỗi gốc.
-
-    Dùng chung lúc lập chỉ mục và truy vấn (bảng không dấu, trigram, đường lùi Python). Chỉ mục CHUNK không dùng hàm này.
-    """
-    kept: list[str] = []
-    kept_starts: list[int] = []
-    kept_ends: list[int] = []
-    folded: list[str] = []
-    folded_starts: list[int] = []
-    folded_ends: list[int] = []
-    for start, end in _clusters(text):
-        cluster_kept = unicodedata.normalize("NFC", unicodedata.normalize("NFC", text[start:end]).casefold())
-        cluster_folded = _strip_marks(cluster_kept)
-        kept.append(cluster_kept)
-        kept_starts.extend([start] * len(cluster_kept))
-        kept_ends.extend([end] * len(cluster_kept))
-        folded.append(cluster_folded)
-        folded_starts.extend([start] * len(cluster_folded))
-        folded_ends.extend([end] * len(cluster_folded))
-    return FoldedText(
-        original=text,
-        kept="".join(kept),
-        kept_starts=tuple(kept_starts),
-        kept_ends=tuple(kept_ends),
-        folded="".join(folded),
-        folded_starts=tuple(folded_starts),
-        folded_ends=tuple(folded_ends),
-    )
-
-
-def utf16_offsets(text: str) -> list[int]:
-    """`result[i]` = số UTF-16 code unit đứng trước code point thứ `i`; phần tử cuối là độ dài UTF-16 của `text`."""
-    offsets = [0]
-    for char in text:
-        offsets.append(offsets[-1] + (2 if ord(char) > 0xFFFF else 1))
-    return offsets
+# Loại khối không có chữ riêng (hoặc chữ là ký hiệu) mà người dùng tìm qua chú thích và chữ đứng cạnh (ADR-010 mục 18).
+BLOCK_CONTEXT_TYPES: frozenset[BlockType] = frozenset({"figure", "table", "formula", "code"})
+# Loại khối cho chữ kề (đoạn văn quanh); caption xử lý riêng (số hình nằm ở caption).
+_NEIGHBOR_TEXT_TYPES: frozenset[BlockType] = frozenset({"paragraph", "list_item", "heading"})
+# Trần ký tự của MỖI đoạn chữ kề (đoạn trước lấy phần đuôi, đoạn sau lấy phần đầu). Chỉ mục ghi lúc lưu dùng đúng
+# hằng này; `SearchSettings.context_max_chars` mặc định bằng nó (đổi một bên mà không lập lại chỉ mục ⇒ lệch ứng viên).
+BLOCK_CONTEXT_MAX_CHARS = 300
 
 
 @dataclass(frozen=True)
 class SearchField:
-    """Một chuỗi đích có thể có khoảng khớp của khối (target/row/cell_index/label_index như `MatchSpan`)."""
+    """Một chuỗi đích có thể có khoảng khớp của khối (target/row/cell_index/label_index như `MatchSpan`).
 
-    target: Literal["text", "cell", "label"]
+    `target = "context"`: chữ của khối kề (caption, đoạn văn quanh), chỉ để tìm ra khối; KHÔNG sinh `MatchSpan` vì
+    chuỗi này không nằm trong khối.
+    """
+
+    target: Literal["text", "cell", "label", "context"]
     text: str
     row: int | None = None
     cell_index: int | None = None
     label_index: int | None = None
 
 
-def block_search_fields(block: Block) -> list[SearchField]:
-    """Chữ lập chỉ mục của khối: `text`, từng ô bảng, từng nhãn figure (ADR-010 mục 18); theo thứ tự cố định."""
+def block_contexts(
+    eligible_blocks: Sequence[Block], max_chars: int = BLOCK_CONTEXT_MAX_CHARS
+) -> dict[str, list[SearchField]]:
+    """Chữ kề của khối figure/table/formula/code, theo hình học và thứ tự đọc (không theo môn).
+
+    Từ các khối đủ điều kiện của MỘT tài liệu: với mỗi khối thuộc `BLOCK_CONTEXT_TYPES`, lấy khối đứng liền trước và
+    liền sau theo (`reading_order`) trong CÙNG trang:
+    - `caption` kề (hoặc có `caption_of` trỏ về khối) ⇒ toàn bộ chữ; caption có `caption_of` trỏ khối khác thì bỏ;
+    - `paragraph`/`list_item`/`heading` là khối gần nhất (bỏ qua caption) ở phía trước và phía sau ⇒ đoạn đuôi của khối
+      trước và đoạn đầu của khối sau, mỗi đoạn ≤ `max_chars`.
+    Một caption kề hai khối cần chú thích mà không có `caption_of` thì cả hai cùng nhận (không đoán khối nào).
+    """
+    by_page: dict[int, list[Block]] = {}
+    for block in sorted(eligible_blocks, key=lambda b: (b.page_number, b.reading_order, b.block_id)):
+        by_page.setdefault(block.page_number, []).append(block)
+    result: dict[str, list[SearchField]] = {}
+    for page_blocks in by_page.values():
+        for index, block in enumerate(page_blocks):
+            if block.type not in BLOCK_CONTEXT_TYPES:
+                continue
+            fields: list[SearchField] = []
+            seen: set[str] = set()
+            before = page_blocks[index - 1] if index > 0 else None
+            after = page_blocks[index + 1] if index + 1 < len(page_blocks) else None
+            linked = [b for b in page_blocks if b.type == "caption" and b.caption_of == block.block_id]
+            for neighbor in (before, *linked, after):
+                if neighbor is None or neighbor.block_id in seen or not neighbor.text:
+                    continue
+                if neighbor.type == "caption" and neighbor.caption_of in (None, block.block_id):
+                    seen.add(neighbor.block_id)
+                    fields.append(SearchField("context", neighbor.text))
+            before_text = next((b for b in reversed(page_blocks[:index]) if b.type != "caption"), None)
+            after_text = next((b for b in page_blocks[index + 1 :] if b.type != "caption"), None)
+            for neighbor, tail in ((before_text, True), (after_text, False)):
+                if neighbor is None or neighbor.type not in _NEIGHBOR_TEXT_TYPES or not neighbor.text:
+                    continue
+                text = neighbor.text[-max_chars:] if tail else neighbor.text[:max_chars]
+                fields.append(SearchField("context", text))
+            if fields:
+                result[block.block_id] = fields
+    return result
+
+
+def block_search_fields(block: Block, context: Sequence[SearchField] = ()) -> list[SearchField]:
+    """Chữ lập chỉ mục của khối: `text`, từng ô bảng, từng nhãn figure, rồi chữ kề `context` (ADR-010 mục 18)."""
     fields: list[SearchField] = []
     if block.text:
         fields.append(SearchField("text", block.text))
@@ -489,19 +470,22 @@ def block_search_fields(block: Block) -> list[SearchField]:
     for label_index, label in enumerate(block.labels):
         if label:
             fields.append(SearchField("label", label, label_index=label_index))
+    fields.extend(context)
     return fields
 
 
-def block_index_body(block: Block) -> str:
-    """`body` của `blocks_fts`: token đã gấp dấu của mọi chuỗi đích, nối bằng một dấu cách."""
+def block_index_body(block: Block, context: Sequence[SearchField] = ()) -> str:
+    """`body` của `blocks_fts`: token đã gấp dấu của mọi chuỗi đích (kể cả chữ kề), nối bằng một dấu cách."""
     return " ".join(
-        token for field in block_search_fields(block) for token in TOKEN_RE.findall(fold_text(field.text).folded)
+        token
+        for field in block_search_fields(block, context)
+        for token in TOKEN_RE.findall(fold_text(field.text).folded)
     )
 
 
-def block_trigram_body(block: Block) -> str:
+def block_trigram_body(block: Block, context: Sequence[SearchField] = ()) -> str:
     """`body` của `blocks_fts_trigram`: văn bản đã gấp dấu, gộp khoảng trắng; các chuỗi đích cách nhau một dấu cách."""
-    return " ".join(" ".join(fold_text(field.text).folded.split()) for field in block_search_fields(block))
+    return " ".join(" ".join(fold_text(field.text).folded.split()) for field in block_search_fields(block, context))
 
 
 def section_path_of(block_id: str, sections: Sequence[Section]) -> list[SectionPathItem]:

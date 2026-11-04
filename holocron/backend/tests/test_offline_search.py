@@ -22,7 +22,8 @@ from holocron_core.domain.blocks import Block, TableCell, WordRef
 from holocron_core.domain.documents import PageExtraction
 from holocron_core.domain.repositories import AppStore, RecordNotFoundError
 from holocron_core.domain.schemas import DocumentMeta
-from holocron_core.domain.vault import BlockSearchPage, fold_text, utf16_offsets
+from holocron_core.domain.search_text import fold_text, utf16_offsets
+from holocron_core.domain.vault import BlockSearchPage
 from holocron_core.infrastructure.memory_store import IngestionStore
 from holocron_core.infrastructure.storage import SQLiteStore, migrator, sqlite_store
 from holocron_core.routers.api import app, get_store

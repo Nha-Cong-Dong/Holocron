@@ -12,12 +12,16 @@ Dùng chung cho văn bản chunk lúc lập chỉ mục và cho truy vấn:
 Chỉ mục chính giữ dấu (`ma`, `mà`, `má`, `mã` là bốn token khác nhau). Chỉ mục phụ không dấu dùng
 `no_diacritics_tokens`, bỏ mọi dấu kết hợp như tokenizer `unicode61 remove_diacritics 2` của SQLite FTS5 (`đ` vẫn
 giữ, vì FTS5 cũng giữ).
+
+
+Hàm gấp dấu của chỉ mục KHỐI (`fold_text`, `utf16_offsets`; ADR-010 mục 18) nằm cuối file; chỉ mục chunk không dùng.
 """
 
 from __future__ import annotations
 
 import re
 import unicodedata
+from dataclasses import dataclass
 
 TOKEN_RE = re.compile(r"[^\W_]+")
 
@@ -100,3 +104,77 @@ def no_diacritics_tokens(text: str) -> list[str]:
 def search_body(text: str) -> str:
     """Văn bản ghi vào chỉ mục FTS5: các token chính nối bằng một dấu cách."""
     return " ".join(search_tokens(text))
+
+
+@dataclass(frozen=True)
+class FoldedText:
+    """Chữ đã gấp dấu kèm vị trí trong chuỗi gốc (đơn vị code point; đổi UTF-16 ở `utf16_offsets`).
+
+    `kept` = NFC + `casefold` (giữ dấu), `folded` = `kept` bỏ dấu kết hợp và `đ` thành `d`. Với mỗi ký tự của hai chuỗi,
+    `*_starts[i]`/`*_ends[i]` là khoảng của cụm (ký tự gốc + dấu kết hợp đi kèm) sinh ra nó trong chuỗi gốc.
+    """
+
+    original: str
+    kept: str
+    kept_starts: tuple[int, ...]
+    kept_ends: tuple[int, ...]
+    folded: str
+    folded_starts: tuple[int, ...]
+    folded_ends: tuple[int, ...]
+
+
+def _clusters(text: str) -> list[tuple[int, int]]:
+    """Cụm = một ký tự cùng các dấu kết hợp theo sau; khoảng `[start, end)` theo code point."""
+    bounds: list[tuple[int, int]] = []
+    start = 0
+    for index, char in enumerate(text):
+        if index > start and not unicodedata.combining(char):
+            bounds.append((start, index))
+            start = index
+    if text:
+        bounds.append((start, len(text)))
+    return bounds
+
+
+def _strip_marks(text: str) -> str:
+    stripped = "".join(c for c in unicodedata.normalize("NFD", text) if not unicodedata.combining(c))
+    return unicodedata.normalize("NFC", stripped).replace("đ", "d")
+
+
+def fold_text(text: str) -> FoldedText:
+    """Gấp dấu theo ADR-010 mục 18: NFC, `casefold`, bỏ dấu kết hợp, `đ` thành `d`; kèm ánh xạ về chuỗi gốc.
+
+    Dùng chung lúc lập chỉ mục và truy vấn (bảng không dấu, trigram, đường lùi Python). Chỉ mục CHUNK không dùng hàm này.
+    """
+    kept: list[str] = []
+    kept_starts: list[int] = []
+    kept_ends: list[int] = []
+    folded: list[str] = []
+    folded_starts: list[int] = []
+    folded_ends: list[int] = []
+    for start, end in _clusters(text):
+        cluster_kept = unicodedata.normalize("NFC", unicodedata.normalize("NFC", text[start:end]).casefold())
+        cluster_folded = _strip_marks(cluster_kept)
+        kept.append(cluster_kept)
+        kept_starts.extend([start] * len(cluster_kept))
+        kept_ends.extend([end] * len(cluster_kept))
+        folded.append(cluster_folded)
+        folded_starts.extend([start] * len(cluster_folded))
+        folded_ends.extend([end] * len(cluster_folded))
+    return FoldedText(
+        original=text,
+        kept="".join(kept),
+        kept_starts=tuple(kept_starts),
+        kept_ends=tuple(kept_ends),
+        folded="".join(folded),
+        folded_starts=tuple(folded_starts),
+        folded_ends=tuple(folded_ends),
+    )
+
+
+def utf16_offsets(text: str) -> list[int]:
+    """`result[i]` = số UTF-16 code unit đứng trước code point thứ `i`; phần tử cuối là độ dài UTF-16 của `text`."""
+    offsets = [0]
+    for char in text:
+        offsets.append(offsets[-1] + (2 if ord(char) > 0xFFFF else 1))
+    return offsets

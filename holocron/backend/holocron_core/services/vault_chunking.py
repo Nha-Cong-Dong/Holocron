@@ -6,7 +6,7 @@ Thuật toán (cùng đầu vào ⇒ cùng tập chunk, cùng `chunk_id`):
    nhau trong một đoạn nối bằng một dấu cách.
 2. **Phần theo tiêu đề.** Mỗi dòng tiêu đề mở một phần mới. Phần chỉ có tiêu đề (tiêu đề nằm ngay trên một tiêu đề
    khác) được gộp vào phần sau nó. Dòng tiêu đề nhận theo mẫu không phụ thuộc môn: tiêu đề Markdown (`# …`), từ khoá
-   đánh số (`Chương 3`, `Bài 2`, `Phần II`, `Chapter 4`, `Section 1`, …) hoặc số mục nhiều cấp (`3.2 …`, `3.2.1 …`);
+   đánh số (`Chương 3`, `Chapter 4`, …; danh sách từ khoá ở `infrastructure/lang/*.toml`) hoặc số mục nhiều cấp (`3.2 …`, `3.2.1 …`);
    dòng dài quá 120 ký tự hoặc kết thúc bằng dấu câu không phải tiêu đề.
 3. **Giới hạn 450 token.** Token là token âm tiết của chỉ mục tìm kiếm (`domain.search_text.search_tokens`). Phần
    dài hơn được tách tại ranh giới đoạn; đoạn không vừa thì tách tại ranh giới câu; câu dài hơn 450 token thì tách
@@ -19,31 +19,53 @@ Thuật toán (cùng đầu vào ⇒ cùng tập chunk, cùng `chunk_id`):
 5. **`chunk_id`** = `"chk_"` + 16 ký tự hex đầu của sha256 trên `doc_id`, thứ tự chunk và `raw_text`.
 
 Chunk không có token nào hoặc ngắn hơn 8 ký tự bị bỏ (không đủ để trích dẫn).
+
+**Cắt theo khối** (`build_block_chunks`, tài liệu có khối; ADR-010 mục 16): chunk thuộc MỘT Section, gom khối ứng viên
+có chữ theo (trang, `reading_order`) thành chunk ≤ 450 token tại ranh giới khối, không chồng lấn; khối dài hơn tách
+theo câu/từ bằng các hàm ở trên. `raw_text` = `text` các khối nối bằng `\\n\\n`. Chunk ngắn hơn 8 ký tự (sau gộp khoảng
+trắng) hoặc không có token gộp vào chunk kề cùng Section khi còn vừa giới hạn; mảnh ngắn của một khối đã tách luôn
+gộp vào chunk kề chứa mảnh khác của cùng khối (có thể vượt nhẹ 450 token) nên không chữ nào của khối bị bỏ; chunk gồm
+toàn khối nguyên vẹn không gộp được thì không thành chunk và các khối của nó được báo `too_short_for_chunk`. Trang
+không có khối cắt bằng `build_chunks` theo từng dãy trang liền nhau. MỘT bộ đếm `ordinal` chung theo (trang đầu,
+`reading_order` của khối đầu); chunk của một dãy trang không có khối đứng ở vị trí trang đầu của dãy.
 """
 
 from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from ..domain.schemas import KnowledgeChunk, normalize_quote
 from ..domain.search_text import TOKEN_RE, search_tokens
-from ..domain.vault import ConfirmedDocumentText
+from ..domain.vault import BlockDocumentText, ChunkBlock, ConfirmedDocumentText, ConfirmedPage
+from ..infrastructure.lang_patterns import load_lang_patterns
 
 MAX_CHUNK_TOKENS = 450
 MAX_HEADING_CHARS = 120
 MIN_QUOTE_CHARS = 8
 MAX_QUOTE_CHARS = 600
 
-HEADING_RE = re.compile(
-    r"^(?:"
-    r"#{1,6}\s+\S"
-    r"|(?:chương|chapter|bài|phần|part|section|lecture|mục|unit)\s+(?:[0-9]+|[ivxlc]+)\b"
-    r"|[0-9]{1,2}(?:\.[0-9]{1,2})+\.?\s+\S"
-    r")",
-    re.IGNORECASE,
-)
+# Mẫu tiêu đề không phụ thuộc ngôn ngữ: tiêu đề Markdown và số mục nhiều cấp. Từ khoá đánh số (`Chương`, `Chapter`,
+# …) nằm ở `infrastructure/lang/*.toml` (`LangPatterns.heading_keywords`, ADR-010 mục 16), không nằm trong code.
+_MARKDOWN_HEADING = r"#{1,6}\s+\S"
+_NUMBERED_HEADING = r"[0-9]{1,2}(?:\.[0-9]{1,2})+\.?\s+\S"
+
+
+def _heading_re(keywords: Sequence[str]) -> re.Pattern[str]:
+    """Biểu thức tiêu đề của bước 2 với các từ khoá đánh số `keywords` (so không phân biệt hoa thường)."""
+    alternatives = [_MARKDOWN_HEADING, _NUMBERED_HEADING]
+    if keywords:
+        ordered = sorted(set(keywords), key=lambda keyword: (-len(keyword), keyword))
+        words = "|".join(re.escape(keyword) for keyword in ordered)
+        alternatives.insert(1, rf"(?:{words})\s+(?:[0-9]+|[ivxlc]+)\b")
+    return re.compile(r"^(?:" + "|".join(alternatives) + r")", re.IGNORECASE)
+
+
+# Từ khoá mặc định: nạp MỘT lần lúc import từ các tệp ngôn ngữ đóng gói, thành hằng bất biến.
+DEFAULT_HEADING_KEYWORDS: tuple[str, ...] = load_lang_patterns().heading_keywords
+HEADING_RE = _heading_re(DEFAULT_HEADING_KEYWORDS)
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+")
 HEADING_TRAILING_PUNCTUATION = ".,;:!?…"
 
@@ -70,11 +92,22 @@ class _Unit:
     glued: bool = False
 
 
-def is_heading(line: str) -> bool:
-    """Dòng (đã gộp khoảng trắng) có phải tiêu đề theo mẫu ở bước 2 không."""
+def _pattern_for(heading_keywords: Sequence[str] | None) -> re.Pattern[str]:
+    return HEADING_RE if heading_keywords is None else _heading_re(heading_keywords)
+
+
+def _matches_heading(line: str, pattern: re.Pattern[str]) -> bool:
     if not line or len(line) > MAX_HEADING_CHARS or line[-1] in HEADING_TRAILING_PUNCTUATION:
         return False
-    return HEADING_RE.match(line) is not None
+    return pattern.match(line) is not None
+
+
+def is_heading(line: str, heading_keywords: Sequence[str] | None = None) -> bool:
+    """Dòng (đã gộp khoảng trắng) có phải tiêu đề theo mẫu ở bước 2 không.
+
+    `heading_keywords` None ⇒ từ khoá của các tệp ngôn ngữ đóng gói (`DEFAULT_HEADING_KEYWORDS`).
+    """
+    return _matches_heading(line, _pattern_for(heading_keywords))
 
 
 def _flush(buffer: list[str], page_number: int, paragraphs: list[_Paragraph]) -> None:
@@ -83,7 +116,7 @@ def _flush(buffer: list[str], page_number: int, paragraphs: list[_Paragraph]) ->
         buffer.clear()
 
 
-def _paragraphs(document: ConfirmedDocumentText) -> list[_Paragraph]:
+def _paragraphs(document: ConfirmedDocumentText, pattern: re.Pattern[str]) -> list[_Paragraph]:
     paragraphs: list[_Paragraph] = []
     for page in document.pages:
         buffer: list[str] = []
@@ -91,7 +124,7 @@ def _paragraphs(document: ConfirmedDocumentText) -> list[_Paragraph]:
             line = normalize_quote(raw_line)
             if not line:
                 _flush(buffer, page.page_number, paragraphs)
-            elif is_heading(line):
+            elif _matches_heading(line, pattern):
                 _flush(buffer, page.page_number, paragraphs)
                 paragraphs.append(_Paragraph(page.page_number, line, is_heading=True))
             else:
@@ -289,10 +322,195 @@ def chunk_id_for(doc_id: str, ordinal: int, raw_text: str) -> str:
     return f"chk_{digest[:16]}"
 
 
-def build_chunks(document: ConfirmedDocumentText) -> list[KnowledgeChunk]:
-    """Cắt văn bản đã xác nhận thành chunk với nhãn khởi đầu của `document` (`label_status = "proposed"`)."""
+@dataclass(frozen=True)
+class BlockChunks:
+    """Kết quả cắt theo khối: chunk theo thứ tự `ordinal` và các khối không thành chunk vì quá ngắn (sắp, không trùng)."""
+
+    chunks: list[KnowledgeChunk]
+    too_short_block_ids: list[str]
+
+
+@dataclass(frozen=True)
+class _Segment:
+    """Một khối, hoặc một mảnh (câu/từ) của khối dài hơn 450 token — đơn vị gom của cắt theo khối."""
+
+    block: ChunkBlock
+    text: str
+    tokens: int
+    glued: bool = False
+
+
+def _block_segments(block: ChunkBlock) -> list[_Segment]:
+    tokens = _token_count(block.text)
+    if tokens <= MAX_CHUNK_TOKENS:
+        return [_Segment(block, block.text, tokens)]
+    segments: list[_Segment] = []
+    for sentence in SENTENCE_SPLIT_RE.split(block.text):
+        pieces = [(sentence, False)] if _token_count(sentence) <= MAX_CHUNK_TOKENS else _split_long_sentence(sentence)
+        segments.extend(_Segment(block, piece, _token_count(piece), glued) for piece, glued in pieces)
+    return segments
+
+
+def _section_runs(blocks: Sequence[ChunkBlock]) -> list[list[ChunkBlock]]:
+    """Các dãy khối liền nhau (theo trang, `reading_order`) cùng một Section."""
+    runs: list[list[ChunkBlock]] = []
+    for block in sorted(blocks, key=lambda b: (b.page_number, b.reading_order, b.block_id)):
+        if runs and runs[-1][-1].section_id == block.section_id:
+            runs[-1].append(block)
+        else:
+            runs.append([block])
+    return runs
+
+
+def _pack_segments(segments: list[_Segment]) -> list[list[_Segment]]:
+    """Gom tham lam ≤ 450 token, không chồng lấn."""
+    packed: list[list[_Segment]] = []
+    current: list[_Segment] = []
+    total = 0
+    for segment in segments:
+        if current and total + segment.tokens > MAX_CHUNK_TOKENS:
+            packed.append(current)
+            current, total = [], 0
+        current.append(segment)
+        total += segment.tokens
+    if current:
+        packed.append(current)
+    return packed
+
+
+def _segments_text(segments: Sequence[_Segment]) -> str:
+    """`text` các khối nối bằng `\\n\\n`; mảnh của cùng một khối nối bằng dấu cách (liền nhau nếu `glued`)."""
+    blocks: list[str] = []
+    previous: str | None = None
+    for segment in segments:
+        if segment.block.block_id != previous:
+            blocks.append(segment.text)
+            previous = segment.block.block_id
+        elif segment.glued:
+            blocks[-1] += segment.text
+        else:
+            blocks[-1] += " " + segment.text
+    return "\n\n".join(blocks)
+
+
+def _is_short(segments: Sequence[_Segment]) -> bool:
+    return sum(s.tokens for s in segments) == 0 or len(normalize_quote(_segments_text(segments))) < MIN_QUOTE_CHARS
+
+
+def _fits(segments: Sequence[_Segment]) -> bool:
+    return sum(s.tokens for s in segments) <= MAX_CHUNK_TOKENS
+
+
+def _shares_block(before: Sequence[_Segment], after: Sequence[_Segment]) -> bool:
+    """Hai chunk liền nhau chứa hai mảnh của CÙNG một khối (khối dài bị tách theo câu/từ)."""
+    return bool(before) and bool(after) and before[-1].block.block_id == after[0].block.block_id
+
+
+def _merge_short(packed: list[list[_Segment]]) -> tuple[list[list[_Segment]], list[str]]:
+    """Gộp chunk ngắn vào chunk kề TRƯỚC, không vừa thì vào chunk kề SAU (cùng Section, còn ≤ 450 token). Chunk ngắn
+    là mảnh của một khối đã bị tách và chunk kề chứa mảnh khác của CÙNG khối đó ⇒ vẫn gộp vào chunk kề (ưu tiên SAU,
+    rồi TRƯỚC) dù vượt nhẹ 450 token, để không chữ nào của khối bị bỏ khỏi `raw_text`. Vì vậy chunk bị bỏ chỉ gồm khối
+    nguyên vẹn (khối của nó không nằm trong chunk nào khác); trả `block_id` của các khối đó."""
+    kept: list[list[_Segment]] = []
+    dropped: list[str] = []
+    carry: list[_Segment] | None = None
+    for chunk in packed:
+        if carry is not None:
+            if _fits(carry + chunk) or _shares_block(carry, chunk):
+                chunk = carry + chunk
+            elif kept and _shares_block(kept[-1], carry):
+                kept[-1] = kept[-1] + carry
+            else:
+                dropped.extend(segment.block.block_id for segment in carry)
+            carry = None
+        if not _is_short(chunk):
+            kept.append(chunk)
+        elif kept and _fits(kept[-1] + chunk):
+            kept[-1] = kept[-1] + chunk
+        else:
+            carry = chunk
+    if carry is not None:
+        if kept and _shares_block(kept[-1], carry):
+            kept[-1] = kept[-1] + carry
+        else:
+            dropped.extend(segment.block.block_id for segment in carry)
+    return kept, dropped
+
+
+def _block_quote(segments: Sequence[_Segment], raw_text: str) -> str:
+    """`default_quote` trên các câu của chunk (ưu tiên khối không phải tiêu đề); không câu nào đủ 8 ký tự thì lấy
+    `raw_text` đã gộp khoảng trắng (cắt ≤ 600 ký tự tại ranh giới từ) — vẫn là chuỗi con sau chuẩn hoá (I3)."""
+    units = [
+        _Unit(index, segment.block.page_number, sentence, 0, segment.block.is_heading)
+        for index, segment in enumerate(segments)
+        for sentence in SENTENCE_SPLIT_RE.split(segment.text)
+    ]
+    return default_quote(units) or _truncate(normalize_quote(raw_text))
+
+
+def _block_chunk(document: BlockDocumentText, segments: Sequence[_Segment]) -> KnowledgeChunk:
+    raw_text = _segments_text(segments)
+    first, last = segments[0].block.page_number, segments[-1].block.page_number
+    block_ids = list(dict.fromkeys(segment.block.block_id for segment in segments))
+    return KnowledgeChunk(
+        chunk_id=chunk_id_for(document.doc_id, 0, raw_text),
+        doc_id=document.doc_id,
+        subject_code=document.subject_code,
+        chapter_code=document.chapter_code,
+        page_number=first,
+        page_end=last if last != first else None,
+        raw_text=raw_text,
+        verbatim_quote=_block_quote(segments, raw_text),
+        category=document.category,
+        topic_keys=list(document.topic_keys),
+        token_count=sum(segment.tokens for segment in segments),
+        section_id=segments[0].block.section_id,
+        block_ids=block_ids,
+    )
+
+
+def _page_runs(pages: Sequence[ConfirmedPage]) -> list[list[ConfirmedPage]]:
+    """Các dãy trang liền nhau (số trang liên tiếp)."""
+    runs: list[list[ConfirmedPage]] = []
+    for page in pages:
+        if runs and runs[-1][-1].page_number + 1 == page.page_number:
+            runs[-1].append(page)
+        else:
+            runs.append([page])
+    return runs
+
+
+def build_block_chunks(document: BlockDocumentText, heading_keywords: Sequence[str] | None = None) -> BlockChunks:
+    """Cắt chunk cho tài liệu có khối (ADR-010 mục 16; xem docstring module). Hàm thuần, tất định: cùng đầu vào ⇒ cùng
+    chunk và cùng `chunk_id = chunk_id_for(doc_id, ordinal, raw_text)`. `heading_keywords` dùng cho `build_chunks` của
+    trang không có khối (None ⇒ từ khoá của các tệp ngôn ngữ đóng gói)."""
+    keyed: list[tuple[tuple[int, int, int], KnowledgeChunk]] = []
+    too_short: list[str] = []
+    for run in _section_runs(document.blocks):
+        packed, dropped = _merge_short(_pack_segments([s for block in run for s in _block_segments(block)]))
+        too_short.extend(dropped)
+        for segments in packed:
+            first = segments[0].block
+            keyed.append(((first.page_number, first.reading_order, len(keyed)), _block_chunk(document, segments)))
+    for pages in _page_runs(document.line_pages):
+        for chunk in build_chunks(document.labels(pages), heading_keywords):
+            keyed.append(((pages[0].page_number, -1, len(keyed)), chunk))
+    chunks = [
+        chunk.model_copy(update={"chunk_id": chunk_id_for(document.doc_id, ordinal, chunk.raw_text)})
+        for ordinal, (_, chunk) in enumerate(sorted(keyed, key=lambda item: item[0]))
+    ]
+    return BlockChunks(chunks=chunks, too_short_block_ids=sorted(set(too_short)))
+
+
+def build_chunks(
+    document: ConfirmedDocumentText, heading_keywords: Sequence[str] | None = None
+) -> list[KnowledgeChunk]:
+    """Cắt văn bản đã xác nhận thành chunk với nhãn khởi đầu của `document` (`label_status = "proposed"`).
+
+    `heading_keywords` None ⇒ từ khoá tiêu đề của các tệp ngôn ngữ đóng gói (`DEFAULT_HEADING_KEYWORDS`).
+    """
     chunks: list[KnowledgeChunk] = []
-    for units in _pack(_sections(_paragraphs(document))):
+    for units in _pack(_sections(_paragraphs(document, _pattern_for(heading_keywords)))):
         token_count = sum(unit.tokens for unit in units)
         quote = default_quote(units)
         if token_count == 0 or quote is None:

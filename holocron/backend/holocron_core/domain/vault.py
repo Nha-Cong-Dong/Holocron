@@ -73,6 +73,54 @@ class ConfirmedDocumentText(StrictModel):
         return self
 
 
+class ChunkBlock(StrictModel):
+    """Một khối ỨNG VIÊN có chữ đưa vào cắt chunk theo khối (ADR-010 mục 16): khối tiêu đề lặp do nối trang đã bị bỏ
+    (chỉ giữ khối tiêu đề đầu của Section), `section_id` là Section sâu nhất chứa khối."""
+
+    block_id: str = Field(pattern=r"^blk_[0-9a-f]{16}$")
+    page_number: int = Field(ge=1)
+    reading_order: int = Field(ge=0)
+    is_heading: bool
+    text: str
+    section_id: str = Field(pattern=r"^sec_[0-9a-f]{16}$")
+
+
+class BlockDocumentText(StrictModel):
+    """Đầu vào cắt chunk của tài liệu có khối (ADR-010 mục 16): khối ứng viên có chữ theo (trang, `reading_order`) và
+    văn bản đã xác nhận của các trang KHÔNG có khối (`LAYOUT_FAILED`, OCR), cùng nhãn khởi đầu như
+    `ConfirmedDocumentText`. Trang của `line_pages` không có khối nào trong `blocks`."""
+
+    doc_id: str = Field(min_length=3, max_length=128)
+    subject_code: str = Field(pattern=SUBJECT_CODE_PATTERN)
+    chapter_code: str = Field(pattern=CHAPTER_CODE_PATTERN)
+    category: ChunkCategory = ChunkCategory.THEORY
+    topic_keys: list[TopicKey] = Field(default_factory=list, max_length=MAX_TOPIC_KEYS)
+    blocks: list[ChunkBlock] = Field(default_factory=list)
+    line_pages: list[ConfirmedPage] = Field(default_factory=list, max_length=MAX_DOCUMENT_PAGES)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> BlockDocumentText:
+        numbers = [page.page_number for page in self.line_pages]
+        if numbers != sorted(set(numbers)):
+            raise ValueError("line_pages phải theo page_number tăng dần, không trùng")
+        if set(numbers) & {block.page_number for block in self.blocks}:
+            raise ValueError("trang của line_pages không được có khối")
+        if len({block.block_id for block in self.blocks}) != len(self.blocks):
+            raise ValueError("block_id trùng")
+        return self
+
+    def labels(self, pages: Sequence[ConfirmedPage]) -> ConfirmedDocumentText:
+        """Văn bản đã xác nhận của một dãy trang không có khối, cùng nhãn khởi đầu (đầu vào của `build_chunks`)."""
+        return ConfirmedDocumentText(
+            doc_id=self.doc_id,
+            subject_code=self.subject_code,
+            chapter_code=self.chapter_code,
+            category=self.category,
+            topic_keys=list(self.topic_keys),
+            pages=list(pages),
+        )
+
+
 class QuoteMismatchError(ValueError):
     """Trích dẫn không phải chuỗi con nguyên văn (NFC + gộp khoảng trắng) của văn bản chunk (I3)."""
 

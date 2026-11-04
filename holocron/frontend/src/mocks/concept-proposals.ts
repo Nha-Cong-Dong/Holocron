@@ -79,6 +79,8 @@ function chunk(suffix: string, chapter: string, page: number, rawText: string): 
     mapping_confidence: null,
     version: 1,
     is_exercise: null,
+    section_id: null,
+    block_ids: [],
   };
 }
 

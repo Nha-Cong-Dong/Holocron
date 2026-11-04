@@ -205,6 +205,10 @@ class KnowledgeChunk(StrictModel):
     # §5.8 (GĐ1 1C): nhãn "chunk là bài tập" do LLM gắn trong job đề xuất cặp; `None` khi chưa có LLM gắn. Chỉ làm
     # cặp của chunk này không được tích sẵn (ADR-007 mục 3); ghi nhãn tăng `version`.
     is_exercise: bool | None = None
+    # §5.8 (ADR-010 mục 16): Section chứa mọi khối của chunk (chunk không vắt qua hai Section) và các `block_id` tạo
+    # nên `raw_text` theo thứ tự nối. Chunk cũ và chunk cắt bằng `build_chunks`: null / [].
+    section_id: str | None = Field(default=None, pattern=r"^sec_[0-9a-f]{16}$")
+    block_ids: list[Annotated[str, Field(pattern=r"^blk_[0-9a-f]{16}$")]] = Field(default_factory=list)
 
     @field_validator("tags")
     @classmethod

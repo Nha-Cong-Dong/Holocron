@@ -201,6 +201,14 @@ fn probe_runtime(port: u16, token: Option<&str>) -> Option<u16> {
     parts.next()?.parse().ok()
 }
 
+/// Tự kiểm: request không token phải nhận đúng 403; mọi kết quả khác (200, rác, không kết nối được) ⇒ lỗi chặn mở UI.
+fn verify_token_required(port: u16) -> Result<(), String> {
+    match probe_runtime(port, None) {
+        Some(403) => Ok(()),
+        other => Err(format!("Mã trả về: {other:?}")),
+    }
+}
+
 /// Đăng ký `WebResourceRequested` cho đúng `http://127.0.0.1:<port>/*`: gắn header token ở tầng native. Chờ tới khi
 /// đăng ký xong (chạy trên luồng UI) rồi mới trả, để điều hướng sau đó chắc chắn mang token.
 #[cfg(windows)]
@@ -290,7 +298,7 @@ fn build_main_window(app: &AppHandle, allowed_port: Arc<AtomicU16>) -> tauri::Re
 fn is_allowed_navigation(url: &Url, port: u16) -> bool {
     match url.scheme() {
         "tauri" => true,
-        "http" | "https" if url.host_str() == Some("tauri.localhost") => true,
+        "http" | "https" if url.host_str() == Some("tauri.localhost") => url.port().is_none(),
         "http" => port != 0 && url.host_str() == Some("127.0.0.1") && url.port() == Some(port),
         _ => false,
     }
@@ -353,11 +361,10 @@ fn wait_and_open(
         std::thread::sleep(PROBE_INTERVAL);
     }
     // Tự kiểm: request không token phải bị từ chối, nếu không thì không mở giao diện.
-    let unauthenticated = probe_runtime(port, None);
-    if unauthenticated != Some(403) {
+    if let Err(detail) = verify_token_required(port) {
         return Err(fail(
             "Kiểm tra bảo mật thất bại: máy chủ nền nhận request không có token.",
-            format!("Mã trả về: {unauthenticated:?}. {LOG_HINT}"),
+            format!("{detail}. {LOG_HINT}"),
         ));
     }
     let window = app
@@ -476,9 +483,79 @@ mod tests {
         assert!(is_allowed_navigation(&url("http://127.0.0.1:5000/vault/"), 5000));
         assert!(!is_allowed_navigation(&url("http://127.0.0.1:5001/"), 5000));
         assert!(!is_allowed_navigation(&url("http://localhost:5000/"), 5000));
+        assert!(!is_allowed_navigation(&url("http://tauri.localhost:5000/"), 5000));
+        assert!(!is_allowed_navigation(&url("http://tauri.localhost:5000/"), 0));
+        assert!(!is_allowed_navigation(&url("https://tauri.localhost:8443/"), 0));
+        assert!(is_allowed_navigation(&url("https://tauri.localhost/"), 0));
         assert!(!is_allowed_navigation(&url("https://127.0.0.1:5000/"), 5000));
         assert!(!is_allowed_navigation(&url("https://example.com/"), 5000));
         assert!(!is_allowed_navigation(&url("file:///C:/Windows/"), 5000));
+    }
+
+    /// Máy chủ giả: trả đúng `reply` cho một kết nối rồi đóng; trả về cổng.
+    fn fake_server(reply: &'static [u8]) -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            if let Ok((mut conn, _)) = listener.accept() {
+                let mut buf = [0u8; 512];
+                let _ = conn.read(&mut buf);
+                let _ = conn.write_all(reply);
+            }
+        });
+        port
+    }
+
+    #[test]
+    fn probe_runtime_parses_status_line() {
+        assert_eq!(
+            probe_runtime(
+                fake_server(
+                    b"HTTP/1.1 200 OK
+
+"
+                ),
+                Some("t")
+            ),
+            Some(200)
+        );
+        assert_eq!(
+            probe_runtime(
+                fake_server(
+                    b"HTTP/1.1 403 Forbidden
+
+"
+                ),
+                None
+            ),
+            Some(403)
+        );
+        assert_eq!(probe_runtime(fake_server(b"xin chao khong phai http"), None), None);
+        assert_eq!(probe_runtime(fake_server(b"HTTP/1.1 "), None), None);
+        assert_eq!(probe_runtime(fake_server(b"HTTP/1.1"), None), None);
+    }
+
+    #[test]
+    fn verify_token_required_blocks_unless_403() {
+        assert!(verify_token_required(fake_server(
+            b"HTTP/1.1 403 Forbidden
+
+"
+        ))
+        .is_ok());
+        assert!(verify_token_required(fake_server(
+            b"HTTP/1.1 200 OK
+
+"
+        ))
+        .is_err());
+        assert!(verify_token_required(fake_server(b"rac rac rac")).is_err());
+        assert!(verify_token_required(fake_server(b"HTTP/1.1 ")).is_err());
+        let closed = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            l.local_addr().expect("addr").port()
+        };
+        assert!(verify_token_required(closed).is_err());
     }
 
     #[test]

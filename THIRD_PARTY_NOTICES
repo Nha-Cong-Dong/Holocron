@@ -114,8 +114,8 @@ Bản zip kèm toàn văn OFL-1.1 (file LICENSE của gói) trong `licenses/`.
 Vỏ desktop Tauri (holocron/desktop, chỉ có trong bộ cài NSIS Windows)
 ---------------------------------------------------------------------
 Dùng cho: cửa sổ ứng dụng (WebView2) chạy backend Python portable làm tiến trình nền. Crate ghim trong
-`holocron/desktop/src-tauri/Cargo.lock`, biên dịch tĩnh vào `Holocron.exe`. Cây phụ thuộc trên Windows (227 crate,
-kiểm bằng `cargo tree --target x86_64-pc-windows-msvc` ngày 2026-11-04) không có GPL/AGPL; còn lại là MIT, Apache-2.0,
+`holocron/desktop/src-tauri/Cargo.lock`, biên dịch tĩnh vào `Holocron.exe`. Cây phụ thuộc trên Windows (246 crate gồm build-dep và proc-macro,
+đếm bằng `cargo metadata --filter-platform x86_64-pc-windows-msvc` ngày 2026-11-04) không có GPL/AGPL; còn lại là MIT, Apache-2.0,
 BSD, Zlib, Unicode-3.0, Unlicense, CC0 và 5 crate MPL-2.0 dưới đây. Toàn văn giấy phép của từng crate nằm trong mã
 nguồn của crate trên crates.io.
 

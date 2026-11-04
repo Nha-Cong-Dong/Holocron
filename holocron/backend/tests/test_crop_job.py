@@ -272,6 +272,38 @@ def test_crop_jobs_rescheduled_on_startup_scan(store: AppStore, tmp_path: Path) 
     assert store.list_crop_images(done) == []
 
 
+class _ExplodingCropJobs:
+    """Hàng job ném lỗi dữ liệu (không phải lỗi kho) cho một tài liệu, xếp bình thường cho tài liệu khác."""
+
+    def __init__(self, inner: SynchronousCropJobs, bad_id: str) -> None:
+        self.inner = inner
+        self.bad_id = bad_id
+        self.attempted: list[str] = []
+
+    def schedule(self, store: AppStore, document_id: str) -> bool:
+        self.attempted.append(document_id)
+        if document_id == self.bad_id:
+            raise ValueError("du lieu khoi hong")
+        return self.inner.schedule(store, document_id)
+
+    def close(self, timeout_s: float = 0.0) -> bool:
+        return self.inner.close(timeout_s)
+
+
+def test_startup_crop_scan_survives_data_error_of_one_document(store: AppStore, tmp_path: Path) -> None:
+    """Quét khởi động: lỗi dữ liệu ở một tài liệu chỉ ghi log, tài liệu khác vẫn được cắt ảnh và `requeue_on_startup`
+    không ném lỗi (cùng tinh thần lỗi theo từng tài liệu của `requeue_pending`)."""
+    plain = runtime_for(tmp_path, layout_with(FIGURES))
+    first = import_doc(store, plain, GeoReader(PAGES), tag="mot", auto_confirm=False)
+    second = import_doc(store, plain, GeoReader(PAGES), tag="hai", auto_confirm=False)
+    inner = SynchronousCropJobs(_runner(plain, FakeRenderer()), plain.files)
+    jobs = _ExplodingCropJobs(inner, second)
+    requeue_on_startup(store, dataclasses.replace(plain, crops=jobs))
+    assert set(jobs.attempted) == {first, second}
+    assert _all_cropped(store, first), "tài liệu xét sau tài liệu lỗi vẫn được cắt ảnh"
+    assert store.list_crop_images(second) == []
+
+
 def test_crop_job_reevaluates_auto_confirm(store: AppStore, tmp_path: Path) -> None:
     """Nghĩa mới (SPEC §5.7, người dùng 2026-11-03): job cắt ảnh KHÔNG đổi trạng thái xác nhận trang, trang tự xác nhận
     giữ nguyên, trang chưa xác nhận vẫn chưa; trên tài liệu đã đóng, job ghi ảnh nhưng không đổi `eligible` hay trạng

@@ -382,16 +382,18 @@ class BackgroundCropJobs:
 
 def schedule_pending_crops(store: DocumentRepository, jobs: CropJobs) -> list[str]:
     """Quét khởi động (ADR-010 mục 13; KHÔNG dựa `requeue_pending`): xếp job cho mọi tài liệu có khối mang
-    `crop_pending`, không `crop_failed`/`crop_capped`, chưa có hàng `crop_images`. Lỗi kho ở một tài liệu chỉ ghi log,
-    không chặn tài liệu khác. Trả id các tài liệu đã xếp job."""
+    `crop_pending`, không `crop_failed`/`crop_capped`, chưa có hàng `crop_images`. Lỗi ở một tài liệu (lỗi kho hay lỗi
+    dữ liệu) chỉ ghi log, không chặn tài liệu khác hay lần khởi động. Trả id các tài liệu đã xếp job."""
     scheduled: list[str] = []
     for document in reversed(store.list_imported_documents()):
         document_id = document.meta.doc_id
-        if _key_of(document) is None:
-            continue
         try:
+            if _key_of(document) is None:
+                continue
             if jobs.schedule(store, document_id):
                 scheduled.append(document_id)
         except StorageError as exc:
             _LOGGER.warning("chưa xếp được job cắt ảnh của tài liệu %s (%s)", document_id, type(exc).__name__)
+        except Exception:  # một tài liệu lỗi không được chặn quét các tài liệu khác hay làm hỏng lần khởi động
+            _LOGGER.exception("lỗi khi xếp job cắt ảnh của tài liệu %s; bỏ qua tài liệu này", document_id)
     return scheduled

@@ -1203,6 +1203,44 @@ export interface PageBlockList {
   ledger: ExtractionLedger | null;
 }
 
+export interface SectionPathItem {
+  section_id: string;
+  title: string | null;
+}
+
+/** Khoảng khớp trong chữ GỐC; `start`/`end` là UTF-16 code unit của chuỗi đích (cắt bằng `String.prototype.slice`). */
+export interface MatchSpan {
+  target: "text" | "cell" | "label";
+  row: number | null;
+  cell_index: number | null;
+  label_index: number | null;
+  start: number;
+  end: number;
+}
+
+export interface BlockSearchHit {
+  block: Block;
+  document_title: string;
+  chapter_code: string;
+  section_path: SectionPathItem[];
+  match_kind: "exact" | "folded" | "fuzzy";
+  /** Rỗng khi khối (figure/table/formula/code) chỉ khớp ở chữ kề (caption, đoạn quanh): không có chuỗi đích để tô. */
+  match_spans: MatchSpan[];
+  /** Chỉ để xếp hạng; giao diện không hiển thị. */
+  score: number;
+}
+
+/** `GET /v1/vault/blocks/search` (§6.10). */
+export interface BlockSearchPage {
+  total: number;
+  total_capped: boolean;
+  hits: BlockSearchHit[];
+  engine: "fts5" | "fts5_trigram" | "python";
+  layout_failed_pages: number;
+  pages_without_blocks: number;
+  pages_unconfirmable_with_blocks: number;
+}
+
 /** Response `DELETE /v1/settings/ai-cache` (khớp `routers/settings.py` `AiCacheCleared`). */
 export interface AiCacheCleared {
   deleted_entries: number;

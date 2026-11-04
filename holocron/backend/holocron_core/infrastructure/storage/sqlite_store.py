@@ -1116,20 +1116,25 @@ class SQLiteStore:
                     (document_id, page_number),
                 )
             if audit is not None:
-                conn.execute(
-                    "INSERT INTO page_audits (document_id, page_number, from_version, to_version, editor_id, "
-                    "changes_json, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        document_id,
-                        page_number,
-                        audit.from_version,
-                        audit.to_version,
-                        audit.editor_id,
-                        json.dumps(audit.model_dump(mode="json")["changes"], ensure_ascii=False),
-                        _ts(audit.at),
-                    ),
-                )
+                self._insert_page_audit(conn, audit)
         return expected_version + 1
+
+    @staticmethod
+    def _insert_page_audit(conn: sqlite3.Connection, audit: PageEditAudit) -> None:
+        """Ghi một `PageEditAudit` trong giao dịch đang mở của `conn` (cùng giao dịch với hàng trang)."""
+        conn.execute(
+            "INSERT INTO page_audits (document_id, page_number, from_version, to_version, editor_id, "
+            "changes_json, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                audit.document_id,
+                audit.page_number,
+                audit.from_version,
+                audit.to_version,
+                audit.editor_id,
+                json.dumps(audit.model_dump(mode="json")["changes"], ensure_ascii=False),
+                _ts(audit.at),
+            ),
+        )
 
     def list_page_audits(self, document_id: str, page_number: int) -> list[PageEditAudit]:
         with self._read() as conn:
@@ -1916,6 +1921,8 @@ class SQLiteStore:
                             "SELECT version FROM pages WHERE document_id = ? AND page_number = ?",
                             (document_id, page.page_number),
                         )
+                    if rewrite.audit is not None:
+                        self._insert_page_audit(conn, rewrite.audit)
                 for page_layout in layout.pages:
                     number = page_layout.page_number
                     self._require_page(conn, document_id, number)

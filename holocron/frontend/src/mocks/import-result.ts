@@ -337,6 +337,9 @@ function rawDocument(state: Session): RawDocumentImport {
     dropped_role_counts: roleCounts(pages),
     proposal_job: job === null ? null : structuredClone(job),
     proposal_job_absent_reason: absent,
+    layout_version: null,
+    layout_settings_sha256: null,
+    blocks_after_close: false,
   };
 }
 

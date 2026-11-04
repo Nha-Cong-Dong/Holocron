@@ -13,7 +13,10 @@ thứ tự với 0D/tự xác nhận/settle và thử lại do `services/documen
   HIỆN TẠI (dòng thô không sửa giữ tham chiếu `word`; dòng sửa/gõ thêm thành `confirmed_line` do bộ dựng X05 quyết),
   chạy lại `page_numbers` trên toàn tài liệu, tính lại `LAYOUT_FAILED`, rồi xét lại MỌI trang tự xác nhận: trang có khối
   mang cờ chặn (`auto_confirm.BLOCKING_BLOCK_FLAGS`) hay có lý do xem lại về trạng thái xem lại (`confirmed = false`,
-  `confirmed_by`/`confirm_rule` null, `auto_confirm_undone` giữ false). Trang người dùng xác nhận giữ nguyên. Khối có
+  `confirmed_by`/`confirm_rule` null, `auto_confirm_undone` giữ false). Trang người dùng xác nhận giữ nguyên. Khối
+  `source = "vlm"` đã lưu (đọc lại bằng AI, §6.10a) được giữ khi khối dựng lại cùng id, cùng `bbox`, cùng tập tham chiếu
+  và không nằm trong `vlm_rejected_block_ids` (đầu vào của cổng không đổi; `by_type` của ledger chuyển theo loại);
+  ngược lại khối thành offline và chỗ lệch của nó bị bỏ khỏi `vlm_mismatches` (`VLM_REGION` giữ nguyên). Khối có
   tập tham chiếu không đổi giữ id (id theo nội dung nguồn) và giữ ảnh cắt; khối đổi id mất hàng `crop_images` cũ (kho
   xoá khi lưu). Không dựng Section, không gọi LLM.
 - `refresh_drop_reasons`: ghi lại `page_drop_reason` của ledger theo vai trò hiệu lực hiện tại, qua
@@ -27,12 +30,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Mapping, Sequence
 
-from ..domain.blocks import CROPPED_TYPES, LAYOUT_VERSION, Block, BlockFlag, ExtractionLedger
+from ..domain.blocks import CROPPED_TYPES, LAYOUT_VERSION, Block, BlockFlag, BlockType, ExtractionLedger
 from ..domain.documents import PageExtraction, PageGeometry, PageRole, ReviewReason
 from ..domain.repositories import DocumentLayout, DocumentRepository, PageLayout, PageRewrite
 from .auto_confirm import has_blocking_block_flags
 from .block_pipeline import LayoutConfig, PageBlocks
-from .extraction_ledger import with_page_drop_reason
+from .extraction_ledger import LedgerError, SourceIndex, block_refs, retype_by_type, with_page_drop_reason
 
 __all__ = [
     "LAYOUT_FAILED",
@@ -44,6 +47,7 @@ __all__ = [
     "plan_initial_layout",
     "plan_rebuild",
     "refresh_drop_reasons",
+    "retype_ledger",
     "with_layout_reason",
 ]
 
@@ -196,6 +200,88 @@ def _carry_crop(block: Block, previous: Block | None) -> Block:
     return Block.model_validate({**block.model_dump(), "crop_ref": previous.crop_ref, "flags": sorted(flags)})
 
 
+def retype_ledger(
+    ledger: ExtractionLedger, swaps: Iterable[tuple[Block, Block]], geometry: PageGeometry | None, page: PageExtraction
+) -> ExtractionLedger:
+    """Ledger sau khi thay khối `old` bằng `new` CÙNG tập tham chiếu nguồn (ADR-009 mục 2: khối `vlm` thay khối offline
+    của vùng): `by_type` chuyển đơn vị của các tham chiếu từ loại cũ sang loại mới; số đếm của basis không đổi. Ném
+    `LedgerError` khi tập tham chiếu khác nhau, thiếu geometry hoặc tham chiếu không giải được."""
+    moves: list[tuple[BlockType, BlockType, int]] = []
+    index: SourceIndex | None = None
+    for old, new in swaps:
+        refs = block_refs(old)
+        if set(refs) != set(block_refs(new)):
+            raise LedgerError("khối thay thế phải giữ đúng tập tham chiếu nguồn")
+        if old.type == new.type:
+            continue
+        if geometry is None:
+            raise LedgerError("thiếu geometry để tính lại by_type")
+        index = index or SourceIndex(geometry, page)
+        for ref in refs:
+            index.validate(ref)
+        moves.append((old.type, new.type, sum(index.units(ref) for ref in refs)))
+    return retype_by_type(ledger, moves) if moves else ledger
+
+
+def _carry_vlm(built: list[Block], previous: Mapping[str, Block], page: PageExtraction) -> list[tuple[Block, Block]]:
+    """Cặp (khối offline vừa dựng, khối `vlm` đã lưu) để giữ khối `vlm` qua dựng lại (ADR-009 mục 3.5): cùng
+    `block_id` (id theo tham chiếu nguồn), cùng `bbox`, cùng tập tham chiếu, khối không nằm trong
+    `vlm_rejected_block_ids`. Đầu vào của cổng (tham chiếu, geometry) không đổi nên quyết định của cổng không đổi;
+    khối đổi id (dòng của vùng bị sửa) ⇒ không giữ, khối thành offline (phía an toàn)."""
+    rejected = set(page.vlm_rejected_block_ids)
+    pairs: list[tuple[Block, Block]] = []
+    for block in built:
+        stored = previous.get(block.block_id)
+        if (
+            stored is not None
+            and stored.source == "vlm"
+            and block.source != "vlm"
+            and block.block_id not in rejected
+            and stored.bbox == block.bbox
+            and set(block_refs(stored)) == set(block_refs(block))
+        ):
+            pairs.append((block, stored))
+    return pairs
+
+
+def _with_vlm_blocks(
+    built: list[Block],
+    ledger: ExtractionLedger | None,
+    previous: Mapping[str, Block],
+    page: PageExtraction,
+    geometry: PageGeometry | None,
+) -> tuple[list[Block], ExtractionLedger | None]:
+    pairs = _carry_vlm(built, previous, page)
+    if not pairs:
+        return built, ledger
+    try:
+        retyped = None if ledger is None else retype_ledger(ledger, pairs, geometry, page)
+    except LedgerError:
+        _LOGGER.warning("không giữ được khối VLM của trang %d khi dựng lại (ledger không khớp)", page.page_number)
+        return built, ledger
+    carried = {block.block_id: stored for block, stored in pairs}
+    return [carried.get(block.block_id, block) for block in built], retyped
+
+
+def _with_vlm_mismatches(page: PageExtraction, blocks: Sequence[Block]) -> PageExtraction:
+    """Bỏ chỗ lệch của khối không còn là khối `vlm` sau dựng lại; hết chỗ lệch ⇒ bỏ `TABLE_TOKEN_MISMATCH`.
+    `VLM_REGION` giữ nguyên (ADR-009 mục 3.6). Không đổi ⇒ trả đúng `page`."""
+    vlm_ids = {block.block_id for block in blocks if block.source == "vlm"}
+    mismatches = [m for m in page.vlm_mismatches if m.block_id in vlm_ids]
+    if len(mismatches) == len(page.vlm_mismatches):
+        return page
+    reasons = [r for r in page.review_reasons if mismatches or r != "TABLE_TOKEN_MISMATCH"]
+    status = page.status if page.status == "failed" else ("needs_review" if reasons else "ok")
+    return PageExtraction.model_validate(
+        {
+            **page.model_dump(),
+            "vlm_mismatches": [m.model_dump() for m in mismatches],
+            "review_reasons": reasons,
+            "status": status,
+        }
+    )
+
+
 def _block_key(block: Block) -> tuple[int, str]:
     return block.reading_order, block.block_id
 
@@ -242,6 +328,7 @@ def plan_rebuild(
         previous = {block.block_id: block for block in by_page.get(number, [])}
         blocks = [_carry_crop(block, previous.get(block.block_id)) for block in result.blocks]
         ledger = _ledger_for(page, result)
+        blocks, ledger = _with_vlm_blocks(blocks, ledger, previous, page, geometries.get(number))
         same = sorted(blocks, key=_block_key) == sorted(previous.values(), key=_block_key) and ledger == ledgers.get(
             number
         )
@@ -266,6 +353,7 @@ def plan_rebuild(
             )
         if failed is not None:
             current = with_layout_reason(current, failed)
+            current = _with_vlm_mismatches(current, final_blocks.get(number, []))
         if current is not page:
             changed[number] = current
     plan = DocumentLayout(layout_version=LAYOUT_VERSION, layout_settings_sha256=new_sha, pages=page_layouts)

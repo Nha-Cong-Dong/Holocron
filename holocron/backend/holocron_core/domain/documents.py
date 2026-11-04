@@ -69,6 +69,11 @@ ReviewReason = Literal[
     # thêm 2026-11-01 (ADR-010 mục 6; §5.7), khai báo SAU mọi lý do cũ: bộ dựng khối lỗi/vượt trần, trang lớp chữ thiếu
     # `PageGeometry` (tài liệu có `layout_version`) hoặc ledger không cân; tính lại mỗi lần trang được dựng lại.
     "LAYOUT_FAILED",
+    # thêm 2026-11-03 (ADR-009 mục 2, 3; §5.7), khai báo SAU `LAYOUT_FAILED`: trang có ít nhất một vùng đã nhận kết quả
+    # VLM (luôn xem lại, không tự xác nhận, không xác nhận theo lô; không bị bỏ khi sửa dòng) và trang còn
+    # `vlm_mismatches` (ô bảng VLM lệch token số/mã với OCR: BLOCKING, `POST …/confirm` 409).
+    "VLM_REGION",
+    "TABLE_TOKEN_MISMATCH",
 ]
 FailureReason = Literal["PAGE_TIMEOUT", "PAGE_ERROR", "OCR_ENGINE_MISSING", "TOO_MANY_LINES"]
 PageStatus = Literal["pending", "ok", "needs_review", "failed"]
@@ -174,6 +179,38 @@ class CrossCheck(StrictModel):
         return self
 
 
+VLM_MISMATCH_ID_PATTERN = r"^vmm_[0-9a-f]{12}$"
+VLM_BLOCK_ID_PATTERN = r"^blk_[0-9a-f]{16}$"
+MAX_VLM_MISMATCHES = 500
+MAX_VLM_REJECTED_BLOCKS = 200
+MAX_VLM_TOKEN_CHARS = 200
+
+VlmMismatchId = Annotated[str, StringConstraints(pattern=VLM_MISMATCH_ID_PATTERN)]
+VlmBlockId = Annotated[str, StringConstraints(pattern=VLM_BLOCK_ID_PATTERN)]
+
+
+class VlmTokenMismatch(StrictModel):
+    """Chỗ lệch token số/mã CHƯA giải quyết của một khối `table` nguồn `vlm` (§5.7; ADR-009 mục 3.4). VLM thừa:
+    `row`, `col`, `vlm_value`; VLM bỏ sót token OCR: chỉ `ocr_value`."""
+
+    mismatch_id: str = Field(pattern=VLM_MISMATCH_ID_PATTERN)
+    block_id: str = Field(pattern=VLM_BLOCK_ID_PATTERN)
+    token_kind: Literal["number", "code"]
+    row: int | None = Field(default=None, ge=0)
+    col: int | None = Field(default=None, ge=0)
+    vlm_value: str | None = Field(default=None, max_length=MAX_VLM_TOKEN_CHARS)
+    ocr_value: str | None = Field(default=None, max_length=MAX_VLM_TOKEN_CHARS)
+
+    @model_validator(mode="after")
+    def _one_side(self) -> VlmTokenMismatch:
+        if (self.vlm_value is None) == (self.ocr_value is None):
+            raise ValueError("đúng một trong vlm_value, ocr_value khác null")
+        located = self.vlm_value is not None
+        if (self.row is not None) != located or (self.col is not None) != located:
+            raise ValueError("row, col khác null khi và chỉ khi vlm_value khác null")
+        return self
+
+
 class PageExtraction(StrictModel):
     document_id: str = Field(pattern=r"^doc_[0-9a-f]{16}$")
     page_number: int = Field(ge=1)
@@ -208,6 +245,10 @@ class PageExtraction(StrictModel):
     confirmed_by: ConfirmedBy | None = None
     confirm_rule: str | None = Field(default=None, pattern=r"^[a-z0-9_]+_v[0-9]+$")
     auto_confirm_undone: bool = False
+    # ADR-009 mục 3.4, 3.5 (thêm 2026-11-03, §5.7): có mặc định nên JSON trang cũ vẫn đọc được.
+    vlm_mismatches: list[VlmTokenMismatch] = Field(default_factory=list, max_length=MAX_VLM_MISMATCHES)
+    kept_vlm_mismatch_ids: list[VlmMismatchId] = Field(default_factory=list, max_length=MAX_VLM_MISMATCHES)
+    vlm_rejected_block_ids: list[VlmBlockId] = Field(default_factory=list, max_length=MAX_VLM_REJECTED_BLOCKS)
 
     @field_validator("review_reasons")
     @classmethod
@@ -265,6 +306,27 @@ class PageExtraction(StrictModel):
             raise ValueError("trang tự xác nhận phải không còn review_reasons, page_role = 'content', không bỏ mềm")
         if self.auto_confirm_undone and self.confirmed_by == "auto":
             raise ValueError("auto_confirm_undone = true thì confirmed_by không được là 'auto'")
+        return self
+
+    @model_validator(mode="after")
+    def _consistent_vlm(self) -> PageExtraction:
+        """Ràng buộc vùng VLM (§5.7, ADR-009 mục 3.4, 3.5)."""
+        reasons = set(self.review_reasons)
+        if bool(self.vlm_mismatches) != ("TABLE_TOKEN_MISMATCH" in reasons):
+            raise ValueError("vlm_mismatches không rỗng khi và chỉ khi có TABLE_TOKEN_MISMATCH")
+        ids = [mismatch.mismatch_id for mismatch in self.vlm_mismatches]
+        if len(set(ids)) != len(ids):
+            raise ValueError("mismatch_id không được trùng trong trang")
+        if "TABLE_TOKEN_MISMATCH" in reasons and "VLM_REGION" not in reasons:
+            raise ValueError("TABLE_TOKEN_MISMATCH chỉ có khi có VLM_REGION")
+        if set(ids) & set(self.kept_vlm_mismatch_ids):
+            raise ValueError("chỗ lệch đã giữ không được còn trong vlm_mismatches")
+        if len(set(self.kept_vlm_mismatch_ids)) != len(self.kept_vlm_mismatch_ids):
+            raise ValueError("kept_vlm_mismatch_ids không được trùng")
+        if len(set(self.vlm_rejected_block_ids)) != len(self.vlm_rejected_block_ids):
+            raise ValueError("vlm_rejected_block_ids không được trùng")
+        if self.vlm_rejected_block_ids and "VLM_REGION" not in reasons:
+            raise ValueError("vlm_rejected_block_ids không rỗng chỉ khi có VLM_REGION")
         return self
 
 

@@ -43,6 +43,10 @@ AiRereadErrorCode = Literal[
     "VLM_TIMEOUT",
     "VLM_RATE_LIMITED",
     "VLM_UPSTREAM_ERROR",
+    # Lỗi 409 của `…/accept` (§6.10a "Accept"):
+    "VERSION_CONFLICT",
+    "PROPOSAL_STALE",
+    "PROPOSAL_NOT_PENDING",
 ]
 
 PROPOSAL_ID_PATTERN = r"^prp_[0-9a-f]{12}$"
@@ -119,12 +123,13 @@ class AiRereadAcceptRequest(StrictModel):
     expected_version: int = Field(ge=1)
 
 
-AiRereadProposalState = Literal["pending", "discarded"]
+AiRereadProposalState = Literal["pending", "discarded", "accepted"]
 
 
 class AiRereadProposalRecord(StrictModel):
     """Một đề xuất trong kho tạm (nội bộ, không ra response): đề xuất và trạng thái của nó. `discarded` ⇒ người dùng
-    đã bấm Bỏ (giữ lại để Bỏ lần nữa vẫn 204, §6.10a "Reject")."""
+    đã bấm Bỏ (giữ lại để Bỏ lần nữa vẫn 204, §6.10a "Reject"); `accepted` ⇒ đã Nhận (Nhận lần nữa ⇒ 409
+    `PROPOSAL_NOT_PENDING`)."""
 
     proposal: AiRereadProposal
     state: AiRereadProposalState = "pending"

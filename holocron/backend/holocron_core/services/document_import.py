@@ -167,6 +167,10 @@ SETTLE_PENDING_DETAIL = (
 # 409 khi thao tác trên trang đang bị bỏ mềm (GĐ0 0D; `detail` đề xuất của §6.5).
 DROPPED_EDIT_DETAIL = "Trang đang bị bỏ qua; hãy hoàn tác trước khi sửa"
 DROPPED_CONFIRM_DETAIL = "Trang đang bị bỏ qua; hãy hoàn tác trước khi xác nhận"
+# §6.5 "Xác nhận" (ADR-009 mục 3.4; `detail` đề xuất suy ra): trang còn `vlm_mismatches` (ô bảng VLM lệch token).
+VLM_MISMATCH_CONFIRM_DETAIL = (
+    "Bảng trên trang còn số hoặc mã đọc lệch; hãy giữ giá trị, bỏ khối hoặc sửa dòng trước khi xác nhận"
+)
 USER_CONFIRMED_UNDO_DETAIL = "Trang do người dùng xác nhận, không hoàn tác được"
 PAGE_TOO_LARGE_DETAIL = (
     f"Trang vượt giới hạn của Knowledge Vault (tối đa {MAX_PAGE_LINES} dòng có văn bản, mỗi dòng tối đa "
@@ -2610,6 +2614,8 @@ def confirm_page(
                 raise PageStateError("trang đọc lỗi không xác nhận được; hãy xoá tài liệu rồi nhập lại file")
             if page.dropped:
                 raise PageStateError(DROPPED_CONFIRM_DETAIL)
+            if page.vlm_mismatches:
+                raise PageStateError(VLM_MISMATCH_CONFIRM_DETAIL)
             _check_version(page, request.expected_version)
             if not _has_text(page):
                 raise PageStateError("trang không có dòng nào có văn bản để xác nhận")

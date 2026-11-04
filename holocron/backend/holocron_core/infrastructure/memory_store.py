@@ -771,6 +771,9 @@ class IngestionStore:
     def discard_ai_reread_proposal(self, proposal_id: str) -> bool:
         return self._ai_reread.discard(proposal_id)
 
+    def accept_ai_reread_proposal(self, proposal_id: str) -> bool:
+        return self._ai_reread.mark_accepted(proposal_id)
+
     def get_ai_cache(self, cache_key: str, document_id: str, *, now: datetime) -> AiCacheEntry | None:
         with self._lock:
             stored = self._ai_cache.get(cache_key)

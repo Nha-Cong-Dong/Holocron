@@ -783,6 +783,10 @@ class AiRereadProposalRepository(Protocol):
         """Đánh dấu đề xuất đã bỏ; `False` khi kho không có nó."""
         ...
 
+    def accept_ai_reread_proposal(self, proposal_id: str) -> bool:
+        """Đánh dấu đề xuất đã nhận (chỉ khi còn `pending`); `False` khi không có hoặc không còn `pending`."""
+        ...
+
 
 class AppStore(
     IngestionRepository,

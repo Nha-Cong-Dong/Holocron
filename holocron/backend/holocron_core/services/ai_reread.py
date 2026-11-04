@@ -61,6 +61,9 @@ ERROR_MESSAGES: dict[AiRereadErrorCode, str] = {
     "VLM_TIMEOUT": "Nhà cung cấp AI không trả lời kịp. Hãy thử lại sau.",
     "VLM_RATE_LIMITED": "Nhà cung cấp AI đang giới hạn số yêu cầu. Hãy thử lại sau ít phút.",
     "VLM_UPSTREAM_ERROR": "Gọi nhà cung cấp AI thất bại. Hãy thử lại sau.",
+    "VERSION_CONFLICT": "Trang đã thay đổi so với bản đang xem. Hãy tải lại trang rồi thử lại.",
+    "PROPOSAL_STALE": "Đề xuất đọc lại đã cũ vì trang đã thay đổi. Hãy đọc lại bằng AI lần nữa.",
+    "PROPOSAL_NOT_PENDING": "Đề xuất này đã được nhận, đã bỏ, hoặc bị cổng kiểm từ chối nên không nhận được.",
 }
 _NO_LABEL = "nhà cung cấp AI"
 
@@ -68,10 +71,11 @@ _NO_LABEL = "nhà cung cấp AI"
 class AiRereadError(Exception):
     """Lỗi nghiệp vụ có mã của §6.10a; router chọn mã HTTP theo `code`."""
 
-    def __init__(self, code: AiRereadErrorCode) -> None:
-        super().__init__(ERROR_MESSAGES[code])
+    def __init__(self, code: AiRereadErrorCode, message: str | None = None) -> None:
+        text = ERROR_MESSAGES[code] if message is None else message
+        super().__init__(text)
         self.code: AiRereadErrorCode = code
-        self.message = ERROR_MESSAGES[code]
+        self.message = text
 
 
 class ProposalNotFoundError(LookupError):
@@ -156,7 +160,7 @@ def check_block_eligible(
 ) -> None:
     """409 `BLOCK_NOT_ELIGIBLE` (§6.10a): khối không đủ điều kiện, hoặc trang/tài liệu không còn sửa được (cùng
     điều kiện 409 của `PATCH …/lines`)."""
-    if not block_has_reread_flag(block):
+    if not block_has_reread_flag(block) or block.block_id in page.vlm_rejected_block_ids:
         raise AiRereadError("BLOCK_NOT_ELIGIBLE")
     try:
         check_page_editable(document, page, vault)

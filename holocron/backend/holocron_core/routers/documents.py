@@ -43,7 +43,7 @@ from typing import Annotated, Protocol, runtime_checkable
 from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 
 from ..domain.ai import AiConsent, AiConsentStore, AiVlmMode
-from ..domain.ai_reread import AiRereadErrorCode, AiRereadProposal
+from ..domain.ai_reread import AiRereadAcceptRequest, AiRereadErrorCode, AiRereadProposal
 from ..domain.capabilities import CapabilityName, CapabilityReason
 from ..domain.documents import (
     CHAPTER_CODE_PATTERN,
@@ -83,6 +83,7 @@ from ..services.ai_reread import (
     create_proposal,
     reject_proposal,
 )
+from ..services.ai_reread_accept import accept_proposal
 from ..services.capabilities import unavailable_error
 from ..services.concept_proposal_job import ClientFactory, DocumentProposals, ProposalJobRuntime
 from ..services.crop_job import BackgroundCropJobs, CropRunner, schedule_pending_crops
@@ -699,6 +700,9 @@ AI_REREAD_STATUS: dict[AiRereadErrorCode, int] = {
     "VLM_TIMEOUT": 503,
     "VLM_RATE_LIMITED": 503,
     "VLM_UPSTREAM_ERROR": 503,
+    "VERSION_CONFLICT": 409,
+    "PROPOSAL_STALE": 409,
+    "PROPOSAL_NOT_PENDING": 409,
 }
 PROPOSAL_NOT_FOUND_DETAIL = "không tìm thấy đề xuất đọc lại (đề xuất mất khi khởi động lại hoặc đã bị thay)"
 
@@ -757,6 +761,34 @@ def ai_reread_block(
 ) -> AiRereadProposal:
     try:
         return create_proposal(reread, document_id, page_number, block_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=PAGE_NOT_FOUND_DETAIL) from exc
+    except AiRereadError as exc:
+        raise _ai_reread_error(exc) from exc
+
+
+@router.post(
+    "/v1/documents/{document_id}/pages/{page_number}/blocks/{block_id}/ai-reread/{proposal_id}/accept",
+    response_model=PageExtraction,
+)
+def accept_ai_reread(
+    store: StoreDep,
+    vault: VaultDep,
+    runtime: RuntimeDep,
+    clock: ClockDep,
+    document_id: str,
+    page_number: int,
+    block_id: str,
+    proposal_id: str,
+    body: AiRereadAcceptRequest,
+) -> PageExtraction:
+    """Nhận đề xuất (§6.10a "Accept"): ghi khối `source = "vlm"` trong một giao dịch; không xác nhận trang."""
+    try:
+        return accept_proposal(
+            store, vault, runtime, document_id, page_number, block_id, proposal_id, body, now=clock()
+        )
+    except ProposalNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=PROPOSAL_NOT_FOUND_DETAIL) from exc
     except DocumentNotFoundError as exc:
         raise HTTPException(status_code=404, detail=PAGE_NOT_FOUND_DETAIL) from exc
     except AiRereadError as exc:

@@ -1,7 +1,9 @@
 """PDF và geometry mẫu cho test bộ dựng khối (ADR-010; X05). Không dùng tài liệu thật.
 
 - `build_pdf`: PDF viết tay, font chuẩn Helvetica (`/F1`) và Helvetica-Bold (`/F2`), mã WinAnsi (cp1252); mỗi đoạn chữ
-  là một đối tượng chữ riêng; chữ ẩn là chữ trắng trên nền trắng (bộ đọc loại theo tương phản, GĐ0 0B(1)).
+  là một đối tượng chữ riêng; chữ ẩn là chữ trắng trên nền trắng (bộ đọc loại theo tương phản, GĐ0 0B(1)). Run
+  `mono` dùng Courier (`/F3`, font đơn cách); đối tượng font này chỉ được thêm khi có Run `mono`, nên PDF không có Run
+  `mono` giữ nguyên từng byte.
 - `seeded_page`: một trang tổng hợp theo seed: tiêu đề đậm, header lặp, số trang ở chân, một hay hai cột, mục danh sách
   nhiều dòng có bullet, gạch nối cuối dòng và một đoạn chữ ẩn.
 - `geo_line`, `geometry`, `extraction_for`: dựng `PageGeometry`/`PageExtraction` bằng tay cho test hình học.
@@ -87,6 +89,7 @@ class Run:
     size: float = 11.0
     bold: bool = False
     hidden: bool = False
+    mono: bool = False
 
 
 def _escape(value: str) -> bytes:
@@ -104,7 +107,14 @@ def _escape(value: str) -> bytes:
 def _ops(runs: list[Run]) -> bytes:
     parts = [
         b"BT /F%d %.2f Tf 0 Tr %s rg 1 0 0 1 %.2f %.2f Tm (%s) Tj ET"
-        % (2 if run.bold else 1, run.size, b"1 1 1" if run.hidden else b"0 0 0", run.x, run.y, _escape(run.text))
+        % (
+            3 if run.mono else 2 if run.bold else 1,
+            run.size,
+            b"1 1 1" if run.hidden else b"0 0 0",
+            run.x,
+            run.y,
+            _escape(run.text),
+        )
         for run in runs
     ]
     return b"\n".join(parts) + b"\n"
@@ -118,16 +128,22 @@ def build_pdf(pages: list[list[Run]]) -> bytes:
     }
     kids: list[int] = []
     number = 5
+    # Courier (`/F3`) chỉ khi có Run `mono`: đối tượng đứng sau mọi trang, PDF không có Run `mono` giữ nguyên từng byte.
+    mono_number = 5 + 2 * len(pages) if any(run.mono for runs in pages for run in runs) else None
+    mono_font = b"" if mono_number is None else b" /F3 %d 0 R" % mono_number
     for runs in pages:
         page_number, content_number = number, number + 1
         number += 2
         kids.append(page_number)
         objects[page_number] = (
             b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %.0f %.0f] /Contents %d 0 R "
-            b"/Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> >>" % (PAGE_WIDTH, PAGE_HEIGHT, content_number)
+            b"/Resources << /Font << /F1 3 0 R /F2 4 0 R%s >> >> >>"
+            % (PAGE_WIDTH, PAGE_HEIGHT, content_number, mono_font)
         )
         data = _ops(runs)
         objects[content_number] = b"<< /Length %d >>\nstream\n%s\nendstream" % (len(data), data)
+    if mono_number is not None:
+        objects[mono_number] = b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>"
     objects[2] = b"<< /Type /Pages /Kids [%s] /Count %d >>" % (b" ".join(b"%d 0 R" % k for k in kids), len(kids))
     out = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
     offsets: dict[int, int] = {}

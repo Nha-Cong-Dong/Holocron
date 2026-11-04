@@ -72,6 +72,7 @@ export const REVIEW_REASONS: readonly ReviewReasonPending[] = [
   "IMAGE_NEEDS_READING",
   "PAGE_ROLE_UNCERTAIN",
   "DENOISE_UNAVAILABLE",
+  "LAYOUT_FAILED",
 ];
 
 /** `PageSummary` với `ReviewReason` của §5.7 v0.7 (có `LOW_TEXT_SCORE`). */

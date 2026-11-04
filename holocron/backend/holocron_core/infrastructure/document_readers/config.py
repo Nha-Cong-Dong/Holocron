@@ -39,6 +39,9 @@ OCR_INSTALL_HINT = (
 
 MIB = 1024 * 1024
 GIB = 1024 * MIB
+# Trần cứng của ảnh cắt (trần của `CropImage`, ADR-010 mục 8): validator cấu hình không cho vượt.
+CROP_MAX_EDGE_PX_LIMIT = 1024
+CROP_MAX_IMAGE_BYTES_LIMIT = MIB
 
 # Giá trị mặc định dùng chung giữa field của `PdfReaderConfig` và tham số mặc định của các hàm cấp thấp (gọi được
 # riêng trong test hay script), để mỗi con số chỉ ghi ở một chỗ.
@@ -266,6 +269,21 @@ class PdfReaderConfig(BaseModel):
     italic_name_tokens: frozenset[str] = ITALIC_NAME_TOKENS
     monospace_name_tokens: frozenset[str] = MONOSPACE_NAME_TOKENS
 
+    # Ảnh cắt vùng qua `CropRequest` (ADR-010 mục 9, spec §5.7; đề xuất suy ra): trần số vùng mỗi lượt/trang/tài liệu,
+    # cạnh dài và byte mỗi ảnh (≤ 1024 px, ≤ 1 MiB: trần của `CropImage`), lề nới hộp, ngân sách thời gian của một lượt
+    # và của một job cắt ảnh, số job chạy cùng lúc. `crop_max_dpi` (đề xuất suy ra, V02) chặn phóng quá mức vùng rất
+    # nhỏ: tỉ lệ render không vượt `crop_max_dpi / 72`.
+    crop_max_regions_per_request: int = Field(default=32, ge=1)
+    crop_max_per_page: int = Field(default=64, ge=1)
+    crop_max_per_document: int = Field(default=3000, ge=1)
+    crop_max_edge_px: int = Field(default=1024, ge=64, le=CROP_MAX_EDGE_PX_LIMIT)
+    crop_max_image_bytes: int = Field(default=MIB, ge=1024, le=CROP_MAX_IMAGE_BYTES_LIMIT)
+    crop_margin: float = Field(default=0.005, ge=0.0, le=0.1)
+    crop_request_timeout_s: float = Field(default=30.0, gt=0)
+    crop_document_budget_s: float = Field(default=120.0, gt=0)
+    crop_max_parallel_jobs: int = Field(default=1, ge=1)
+    crop_max_dpi: int = Field(default=400, ge=72, le=1200)
+
     @model_validator(mode="after")
     def _tesseract_fits_in_page(self) -> PdfReaderConfig:
         """Hạn của một lần chạy Tesseract phải nhỏ hơn hạn của cả trang OCR, để còn thời gian cho lượt thứ hai."""
@@ -295,6 +313,20 @@ class PdfReaderConfig(BaseModel):
             raise ValueError("hidden_text_drop_max phải nhỏ hơn hidden_text_keep_min")
         if self.build_step_dhash_same_max >= self.parallel_series_dhash_min:
             raise ValueError("build_step_dhash_same_max phải nhỏ hơn parallel_series_dhash_min")
+        return self
+
+    @property
+    def effective_crop_budget_s(self) -> float:
+        """Ngân sách một job cắt ảnh: `min(crop_document_budget_s, document_timeout_s)` (ADR-010 mục 9)."""
+        return min(self.crop_document_budget_s, self.document_timeout_s)
+
+    @model_validator(mode="after")
+    def _crop_caps_are_ordered(self) -> PdfReaderConfig:
+        """Trần mỗi trang không vượt trần tài liệu. (`crop_document_budget_s` không bị validator ép ≤
+        `document_timeout_s` vì cấu hình có sẵn đặt `document_timeout_s` rất nhỏ; ngân sách hiệu lực là
+        `effective_crop_budget_s`.)"""
+        if self.crop_max_per_page > self.crop_max_per_document:
+            raise ValueError("crop_max_per_page phải nhỏ hơn hoặc bằng crop_max_per_document")
         return self
 
     @model_validator(mode="after")

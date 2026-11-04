@@ -1014,3 +1014,8 @@ export interface ValidationErrorItem {
   msg: string;
   type: string;
 }
+
+/** Response `DELETE /v1/settings/ai-cache` (khớp `routers/settings.py` `AiCacheCleared`). */
+export interface AiCacheCleared {
+  deleted_entries: number;
+}

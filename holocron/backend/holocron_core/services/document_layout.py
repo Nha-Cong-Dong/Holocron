@@ -16,8 +16,10 @@ thứ tự với 0D/tự xác nhận/settle và thử lại do `services/documen
   `confirmed_by`/`confirm_rule` null, `auto_confirm_undone` giữ false). Trang người dùng xác nhận giữ nguyên. Khối có
   tập tham chiếu không đổi giữ id (id theo nội dung nguồn) và giữ ảnh cắt; khối đổi id mất hàng `crop_images` cũ (kho
   xoá khi lưu). Không dựng Section, không gọi LLM.
-- `refresh_drop_reasons`: ghi lại `page_drop_reason` của ledger sau MỌI lần đổi `page_role`/`dropped` (0D, đánh giá
-  lại trang bìa, `…/restore`), qua `extraction_ledger.with_page_drop_reason`.
+- `refresh_drop_reasons`: ghi lại `page_drop_reason` của ledger theo vai trò hiệu lực hiện tại, qua
+  `extraction_ledger.with_page_drop_reason` (bước khối của `_finish` trên tài liệu chưa đóng đã có khối: sửa ledger
+  lệch). Đổi `page_role`/`dropped` (0D, đánh giá lại trang bìa, `…/restore`) ghi trang CÙNG ledger trong một giao
+  dịch ở `services/document_import.py`.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ __all__ = [
     "build_document_blocks",
     "effective_role",
     "is_text_layer_page",
+    "plan_failed_layout",
     "plan_initial_layout",
     "plan_rebuild",
     "refresh_drop_reasons",
@@ -133,6 +136,27 @@ def plan_initial_layout(
         layout_settings_sha256=layout.settings_sha256(),
         blocks_after_close=blocks_after_close,
         pages=page_layouts,
+        page_rewrites=rewrites,
+    )
+
+
+def plan_failed_layout(
+    pages: Sequence[PageExtraction], layout: LayoutConfig, *, blocks_after_close: bool
+) -> DocumentLayout:
+    """Lần lưu khối đầu khi CHÍNH bộ dựng hoặc `page_numbers` ném lỗi dữ liệu (không dựng được kế hoạch nào): không
+    khối, không ledger; MỌI trang lớp chữ mang `LAYOUT_FAILED` (lý do hiển thị, trang không được tự xác nhận) và
+    `layout_version`/hash vẫn được ghi như khi mọi trang hỏng ở `plan_initial_layout` (Q1: không null im lặng)."""
+    rewrites: list[PageRewrite] = []
+    for page in pages:
+        if not is_text_layer_page(page):
+            continue
+        updated = with_layout_reason(page, True)
+        if updated is not page:
+            rewrites.append(_rewrite(page, updated))
+    return DocumentLayout(
+        layout_version=LAYOUT_VERSION,
+        layout_settings_sha256=layout.settings_sha256(),
+        blocks_after_close=blocks_after_close,
         page_rewrites=rewrites,
     )
 

@@ -129,6 +129,7 @@ from .chapter_reservation import ChapterReservations, ChapterTurn, reserve_chapt
 from .concept_proposal_job import DocumentProposals
 from .document_layout import (
     effective_role,
+    plan_failed_layout,
     plan_initial_layout,
     plan_rebuild,
     refresh_drop_reasons,
@@ -1096,7 +1097,9 @@ def _write_role(
     """Ghi vai trò của một trang qua `update_page` có so version; lệch version ⇒ đọc lại trang và thử lại tối đa
     `SETTLE_ATTEMPTS` lần (trang đã đổi thành không đổi được thì thôi); hết lượt ⇒ cảnh báo, trang giữ như cũ (không
     bỏ mềm là phía an toàn). `allow_auto_confirmed` (chỉ đường đánh giá lại bìa của tài liệu trước) cho ghi cả trang
-    do máy tự xác nhận (tự xác nhận bị bỏ theo, `apply_decision`); mặc định trang đã xác nhận không đổi."""
+    do máy tự xác nhận (tự xác nhận bị bỏ theo, `apply_decision`); mặc định trang đã xác nhận không đổi. Tài liệu có
+    khối lưu và trang có ledger ⇒ trang ghi CÙNG `page_drop_reason` mới của ledger trong một giao dịch
+    (`_rewrite_with_ledger`, ADR-010 mục 13)."""
     editable = reassessable if allow_auto_confirmed else changeable
     current: PageExtraction | None = page
     for attempt in range(1, SETTLE_ATTEMPTS + 1):
@@ -1105,7 +1108,10 @@ def _write_role(
         updated = apply_decision(current, decision)
         if updated is None:
             return
+        document = store.get_imported_document(current.document_id)
         try:
+            if document is not None and _rewrite_with_ledger(store, document, current, updated):
+                return
             store.update_page(
                 current.document_id,
                 current.page_number,
@@ -1184,9 +1190,6 @@ def _reassess_previous_covers(
                 decision = decisions.get(page.page_number)
                 if decision is not None:
                     _write_role(store, page, decision, allow_auto_confirmed=True)
-            if decisions:
-                # X09: `page_drop_reason` của ledger theo vai trò mới (ADR-010 mục 13), cùng khoá của tài liệu đó.
-                refresh_drop_reasons(store, other_id, decisions)
 
 
 def _after_finish(
@@ -1333,6 +1336,9 @@ def _store_blocks(
     - Sau đó, tài liệu ĐÃ ĐÓNG có khối lưu ⇒ (1), (2), (4) của settle (`_settle_closed_blocks`), không cắt chunk.
 
     Trang lệch version giữa lúc đọc và lúc lưu ⇒ tính lại tối đa `SETTLE_ATTEMPTS` lần rồi ném `VersionConflictError`.
+    Lỗi kho (`StorageError`) ném nguyên cho `_finish_blocks`. Lỗi dữ liệu của bộ dựng/`page_numbers`/kế hoạch ⇒ mọi
+    trang lớp chữ `LAYOUT_FAILED` (`_save_initial_layout`). Lỗi dữ liệu khi dựng cây Section của tài liệu đã đóng chỉ
+    ghi lỗi: khối đã lưu, tài liệu không đi đường dòng.
     """
     for attempt in range(1, SETTLE_ATTEMPTS + 1):
         document = store.get_imported_document(document_id)
@@ -1341,12 +1347,8 @@ def _store_blocks(
         if document.layout_version is None:
             if not build_blocks:
                 return
-            pages = store.list_pages(document_id, PageExtraction)
-            geometries = {page.page_number: store.get_page_geometry(document_id, page.page_number) for page in pages}
-            has_chunks = vault is not None and vault.has_document_chunks(document_id)
-            plan = plan_initial_layout(document_id, pages, geometries, layout, blocks_after_close=has_chunks)
             try:
-                store.save_document_layout(document_id, plan)
+                _save_initial_layout(store, vault, document_id, layout)
             except VersionConflictError:
                 if attempt == SETTLE_ATTEMPTS:
                     raise
@@ -1357,9 +1359,33 @@ def _store_blocks(
             document = stored
         elif not _is_closed(document, vault):
             refresh_drop_reasons(store, document_id)
-        if _is_closed(document, vault):
-            _settle_closed_blocks(store, document, layout)
+        try:
+            if _is_closed(document, vault):
+                _settle_closed_blocks(store, document, layout)
+        except _SETTLE_DATA_ERRORS as exc:
+            _LOGGER.error(
+                "khối của tài liệu %s đã lưu nhưng dựng cây mục lỗi bất ngờ (%s)", document_id, type(exc).__name__
+            )
         return
+
+
+def _save_initial_layout(
+    store: DocumentRepository, vault: VaultRepository | None, document_id: str, layout: LayoutConfig
+) -> None:
+    """Lần lưu khối đầu (`plan_initial_layout`). Bộ dựng, `page_numbers` hay kế hoạch ném lỗi dữ liệu ⇒ ghi lỗi (chỉ
+    tên lớp ngoại lệ) và lưu `plan_failed_layout`: mọi trang lớp chữ mang `LAYOUT_FAILED`, không khối, không tự xác
+    nhận; KHÔNG âm thầm đi đường dòng. Lỗi kho ném nguyên."""
+    pages = store.list_pages(document_id, PageExtraction)
+    geometries = {page.page_number: store.get_page_geometry(document_id, page.page_number) for page in pages}
+    has_chunks = vault is not None and vault.has_document_chunks(document_id)
+    try:
+        plan = plan_initial_layout(document_id, pages, geometries, layout, blocks_after_close=has_chunks)
+    except _SETTLE_DATA_ERRORS as exc:
+        _LOGGER.error(
+            "dựng khối của tài liệu %s lỗi (%s); mọi trang lớp chữ mang LAYOUT_FAILED", document_id, type(exc).__name__
+        )
+        plan = plan_failed_layout(pages, layout, blocks_after_close=has_chunks)
+    store.save_document_layout(document_id, plan)
 
 
 def _finish_blocks(
@@ -1368,15 +1394,32 @@ def _finish_blocks(
     document_id: str,
     layout: LayoutConfig,
     build_blocks: bool,
+    retry: RetryPolicy,
+    pause: Callable[[float], None],
 ) -> None:
-    """`_store_blocks` mà lỗi không làm hỏng lần đọc (mọi trang đã ghi xong): lỗi kho ghi cảnh báo, lỗi dữ liệu bất
-    ngờ ghi lỗi chỉ kèm tên lớp ngoại lệ; tài liệu lỗi trước khi lưu khối đi đường cũ, không mang cờ nào."""
-    try:
-        _store_blocks(store, vault, document_id, layout, build_blocks)
-    except StorageError as exc:
-        _LOGGER.warning("chưa lưu được khối của tài liệu %s: %s", document_id, type(exc).__name__)
-    except _SETTLE_DATA_ERRORS as exc:
-        _LOGGER.error("lưu khối của tài liệu %s lỗi bất ngờ (%s)", document_id, type(exc).__name__)
+    """`_store_blocks`, kho bận (`StorageBusyError`) ⇒ thử lại theo `retry` như khi ghi trang. Vẫn bận, version vẫn
+    lệch hay lỗi kho khác ⇒ ghi cảnh báo rồi NÉM lại: `_finish` dừng trước tự xác nhận và trạng thái cuối, tài liệu
+    giữ `processing` (`run_job`), được xếp lại ở lần khởi động sau (không còn trang `pending` ⇒ chỉ chạy lại bước kết
+    thúc). Không âm thầm đi đường dòng."""
+    for attempt in range(1, retry.attempts + 1):
+        try:
+            _store_blocks(store, vault, document_id, layout, build_blocks)
+            return
+        except StorageBusyError:
+            if attempt == retry.attempts:
+                _LOGGER.warning(
+                    "kho bận khi lưu khối của tài liệu %s sau %d lần; tài liệu giữ processing", document_id, attempt
+                )
+                raise
+            _LOGGER.warning(
+                "kho bận khi lưu khối của tài liệu %s; thử lại (%d/%d)", document_id, attempt, retry.attempts
+            )
+            pause(retry.delay_s * attempt)
+        except StorageError as exc:
+            _LOGGER.warning(
+                "chưa lưu được khối của tài liệu %s (%s); tài liệu giữ processing", document_id, type(exc).__name__
+            )
+            raise
 
 
 def _finish(
@@ -1389,6 +1432,8 @@ def _finish(
     *,
     layout: LayoutConfig | None = None,
     build_blocks: bool = False,
+    retry: RetryPolicy | None = None,
+    pause: Callable[[float], None] = time.sleep,
 ) -> bool:
     """Gán vai trò trang (GĐ0 0D, `assign_page_roles`), tự xác nhận trang đủ sạch (GĐ1 1B, `_auto_confirm_pages`) rồi
     đặt trạng thái cuối của lần đọc (`_write_final_status`); có `vault` thì settle luôn tài liệu nếu đủ điều kiện
@@ -1398,13 +1443,15 @@ def _finish(
     `confirm_document` đóng nó (`settle_document`, `by_user`). Trả `True` khi lần gọi này vừa đóng tài liệu (T1b).
 
     X09 (ADR-010 mục 13): sau 0D và TRƯỚC tự xác nhận, bước khối `_store_blocks` với `layout` (None ⇒
-    `default_layout_config()`; CÙNG đối tượng đi tới settle); `build_blocks` = lần đọc có bộ đọc hình học."""
+    `default_layout_config()`; CÙNG đối tượng đi tới settle); `build_blocks` = lần đọc có bộ đọc hình học. Kho bận
+    khi lưu khối ⇒ thử lại theo `retry` (None ⇒ `RetryPolicy()`), chờ bằng `pause`; vẫn lỗi kho ⇒ ném lỗi, KHÔNG tự
+    xác nhận, KHÔNG đặt trạng thái cuối (tài liệu giữ `processing`, `_finish_blocks`)."""
     settings = default_layout_config() if layout is None else layout
     try:
         assign_page_roles(store, document_id, PdfReaderConfig() if config is None else config, vault)
     except StorageError as exc:
         _LOGGER.warning("chưa gán được vai trò trang của tài liệu %s: %s", document_id, type(exc).__name__)
-    _finish_blocks(store, vault, document_id, settings, build_blocks)
+    _finish_blocks(store, vault, document_id, settings, build_blocks, RetryPolicy() if retry is None else retry, pause)
     try:
         _auto_confirm_pages(store, vault, document_id, _utc_now if clock is None else clock)
     except StorageError as exc:
@@ -1436,6 +1483,8 @@ def mark_document_failed(
     *,
     layout: LayoutConfig | None = None,
     build_blocks: bool = False,
+    retry: RetryPolicy | None = None,
+    pause: Callable[[float], None] = time.sleep,
 ) -> None:
     """Tài liệu không đọc tiếp được: trang còn `pending` thành `failed` (`PAGE_ERROR`), tài liệu thành `failed`;
     có `vault` (thường là `ReadJob.vault`) thì sau đó settle như bước kết thúc lần đọc (`_finish`): mọi trang có văn
@@ -1445,12 +1494,24 @@ def mark_document_failed(
     xác nhận: lần ghi trạng thái `failed` và bước settle sau nó không chen vào giữa một lần xác nhận đang settle tài
     liệu. `locks = None` (test, script) ⇒ không lấy khoá (chỉ còn so version); `vault = None` ⇒ không settle.
     Bước settle vừa đóng tài liệu ⇒ báo `on_document_confirmed` sau khi nhả khoá (T1b). `layout` và `build_blocks`
-    (X09) chuyển cho `_finish` như ở bước kết thúc lần đọc.
+    (X09), `retry` và `pause` (thử lại khi kho bận lúc lưu khối) chuyển cho `_finish` như ở bước kết thúc lần đọc;
+    lỗi kho của bước khối ném ra, tài liệu giữ trạng thái đang lưu.
     """
     settings = PdfReaderConfig() if config is None else config
     with locks.hold(document_id) if locks is not None else contextlib.nullcontext():
         _fail_pending(store, document_id, "PAGE_ERROR")
-        closed = _finish(store, document_id, "failed", vault, settings, clock, layout=layout, build_blocks=build_blocks)
+        closed = _finish(
+            store,
+            document_id,
+            "failed",
+            vault,
+            settings,
+            clock,
+            layout=layout,
+            build_blocks=build_blocks,
+            retry=retry,
+            pause=pause,
+        )
     if closed:
         notify_confirmed(on_document_confirmed, document_id)
     _after_finish(store, document_id, settings, locks, vault)
@@ -1476,7 +1537,7 @@ class _GeometryInbox:
         return self._pending.pop(page_number, None)
 
 
-def _job_failed(job: ReadJob) -> None:
+def _job_failed(job: ReadJob, pause: Callable[[float], None] = time.sleep) -> None:
     mark_document_failed(
         job.store,
         job.document_id,
@@ -1487,6 +1548,8 @@ def _job_failed(job: ReadJob) -> None:
         job.on_document_confirmed,
         layout=job.layout,
         build_blocks=job.geometry_reader is not None,
+        retry=job.retry,
+        pause=pause,
     )
 
 
@@ -1518,7 +1581,7 @@ def _open_pages(
         except (PdfInputError, ValueError, FileNotFoundError):
             _close_pages(pages)
             _LOGGER.warning("không mở lại được tài liệu %s để đọc", job.document_id)
-            _job_failed(job)
+            _job_failed(job, pause)
             return None
         except (PdfWorkerError, OSError) as exc:
             _close_pages(pages)
@@ -1606,6 +1669,8 @@ def read_document(
             job.clock,
             layout=job.layout,
             build_blocks=job.geometry_reader is not None,
+            retry=job.retry,
+            pause=pause,
         )
     if closed:
         notify_confirmed(job.on_document_confirmed, document_id)
@@ -1746,16 +1811,22 @@ def requeue_pending(
         document_id = document.meta.doc_id
         if not files.exists(document.meta.sha256):
             _LOGGER.warning("mất file gốc của tài liệu %s; đánh dấu failed", document_id)
-            mark_document_failed(
-                store,
-                document_id,
-                locks,
-                vault,
-                settings,
-                on_document_confirmed=on_document_confirmed,
-                layout=layout_config,
-                build_blocks=geometry_reader is not None,
-            )
+            try:
+                mark_document_failed(
+                    store,
+                    document_id,
+                    locks,
+                    vault,
+                    settings,
+                    on_document_confirmed=on_document_confirmed,
+                    layout=layout_config,
+                    build_blocks=geometry_reader is not None,
+                    retry=policy,
+                )
+            except StorageError as exc:
+                # Kho bận/lệch version ở bước kết thúc: tài liệu giữ trạng thái đang lưu, xét lại ở lần khởi động sau;
+                # không chặn việc xếp lại các tài liệu khác.
+                _LOGGER.warning("chưa đánh dấu được tài liệu %s là failed (%s)", document_id, type(exc).__name__)
             continue
         path = files.path_for(document.meta.sha256)
         jobs.submit(
@@ -2496,7 +2567,7 @@ def restore_page(
         restored = PageExtraction.model_validate(
             {**page.model_dump(), "dropped": False, "restored": True, "version": page.version + 1}
         )
-        if not _restore_with_ledger(store, document, page, restored):
+        if not _rewrite_with_ledger(store, document, page, restored):
             store.update_page(
                 document_id,
                 page_number,
@@ -2508,11 +2579,12 @@ def restore_page(
         return restored
 
 
-def _restore_with_ledger(
+def _rewrite_with_ledger(
     store: DocumentRepository, document: ImportedDocument, page: PageExtraction, restored: PageExtraction
 ) -> bool:
-    """Ghi trang hoàn tác bỏ mềm CÙNG ledger có `page_drop_reason` mới trong MỘT giao dịch; `False` khi tài liệu không
-    có khối lưu hay trang không có ledger (người gọi ghi trang như cũ)."""
+    """Ghi trang đổi vai trò/bỏ mềm (hoàn tác bỏ mềm, 0D, đánh giá lại trang bìa) CÙNG ledger có `page_drop_reason`
+    mới trong MỘT giao dịch (`restored` mang version mới, so với `page.version`); `False` khi tài liệu không có khối
+    lưu hay trang không có ledger (người gọi ghi trang như cũ). Lệch version ⇒ `VersionConflictError`, không ghi gì."""
     if document.layout_version is None or document.layout_settings_sha256 is None:
         return False
     document_id = document.meta.doc_id

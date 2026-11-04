@@ -264,7 +264,7 @@ Duyệt 2026-11-03 (người dùng uỷ quyền chọn phương án đề xuất
 
 Duyệt 2026-11-03 (người dùng uỷ quyền chọn phương án đề xuất), phương án 3; câu cũ bị thay (duyệt 2026-10-29, Q9, "chấp nhận … như đề xuất"): "Cache không gắn với tài liệu: xoá tài liệu không xoá kết quả VLM trong cache."
 
-- Bảng chung cho V02 và V03, thêm bằng **migration cache AI** (số kế tiếp lúc merge, ADR-010 mục 17; V02 dự kiến `0006_ai_cache.sql`). Schema (đề xuất suy ra, chờ xác nhận):
+- Bảng chung cho V02 và V03, thêm bằng **migration cache AI** (số kế tiếp lúc merge, ADR-010 mục 17; V02 dự kiến `0007_ai_cache.sql`). Schema (đề xuất suy ra, chờ xác nhận):
 
   ```sql
   ai_cache(

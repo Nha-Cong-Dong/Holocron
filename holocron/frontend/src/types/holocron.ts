@@ -960,6 +960,8 @@ export interface RuntimeInfo {
   log_dir: string | null;
   /** Đủ 12 phần tử theo thứ tự `CAPABILITY_NAMES` (§5.12). */
   capabilities: Capability[];
+  /** Công tắc đồng ý, chế độ gửi và nhà cung cấp theo vai (§5.12, §5.16). */
+  ai_status: AiStatus;
 }
 
 /** Body của `POST /v1/blueprints/{id}/twins`; mọi field đều tuỳ chọn khi gửi. `format` chỉ ghi đè slot tính toán. */
@@ -1018,4 +1020,50 @@ export interface ValidationErrorItem {
 /** Response `DELETE /v1/settings/ai-cache` (khớp `routers/settings.py` `AiCacheCleared`). */
 export interface AiCacheCleared {
   deleted_entries: number;
+}
+
+// ------------------------------------------------------------------- domain/ai.py (§5.16, §6.11)
+
+export type AiRole = "vlm" | "llm";
+export type AiConsentSource = "env" | "setting" | "default";
+export type AiVlmMode = "unset" | "off" | "images_only";
+export type WriteProtection = "token" | "token_not_configured";
+/** Xét theo thứ tự khai báo; lý do đầu tiên đúng được trả (§5.16). */
+export type AiAutoBlockReason = "no_provider" | "budget_exhausted" | "mode_off" | "mode_images_only" | "consent_off";
+
+/** Response `GET/PUT /v1/settings/ai-consent` (khớp `domain/ai.py` `AiConsentState`). */
+export interface AiConsentState {
+  enabled: boolean;
+  source: AiConsentSource;
+  vlm_mode: AiVlmMode;
+  persistent: boolean;
+}
+
+/** Body `PUT /v1/settings/ai-consent` (khớp `routers/settings.py` `AiConsentUpdate`). */
+export interface AiConsentUpdate {
+  enabled: boolean;
+}
+
+/** Trạng thái gửi tự động của một vai (khớp `domain/ai.py` `AiRoleStatus`). */
+export interface AiRoleStatus {
+  role: AiRole;
+  /** true ⇔ `reason` null. */
+  auto_send_allowed: boolean;
+  reason: AiAutoBlockReason | null;
+  /** null khi `no_provider`/`budget_exhausted`. */
+  provider_id: string | null;
+  /** null ⇔ `provider_id` null. */
+  recipient_label: string | null;
+  local: boolean;
+}
+
+/** `RuntimeInfo.ai_status` (khớp `domain/ai.py` `AiStatus`); tính lại ở mỗi `GET /v1/runtime`. */
+export interface AiStatus {
+  consent_enabled: boolean;
+  consent_source: AiConsentSource;
+  vlm_mode: AiVlmMode;
+  settings_persistent: boolean;
+  write_protection: WriteProtection;
+  /** Đúng 2 phần tử, thứ tự "vlm", "llm". */
+  roles: AiRoleStatus[];
 }

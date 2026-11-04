@@ -800,9 +800,13 @@ def accept_ai_reread(
     status_code=204,
     response_class=Response,
 )
-def reject_ai_reread(store: StoreDep, document_id: str, page_number: int, block_id: str, proposal_id: str) -> Response:
+def reject_ai_reread(
+    store: StoreDep, runtime: RuntimeDep, document_id: str, page_number: int, block_id: str, proposal_id: str
+) -> Response:
     try:
-        reject_proposal(store, document_id, page_number, block_id, proposal_id)
+        reject_proposal(store, runtime.locks, document_id, page_number, block_id, proposal_id)
     except ProposalNotFoundError as exc:
         raise HTTPException(status_code=404, detail=PROPOSAL_NOT_FOUND_DETAIL) from exc
+    except AiRereadError as exc:
+        raise _ai_reread_error(exc) from exc
     return Response(status_code=204)

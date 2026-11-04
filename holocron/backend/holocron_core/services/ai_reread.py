@@ -48,7 +48,13 @@ from ..infrastructure.vision_reader import (
     VisionSkipped,
     VlmRegionResult,
 )
-from .document_import import DocumentNotFoundError, PageStateError, check_page_editable, get_page_extraction
+from .document_import import (
+    DocumentNotFoundError,
+    KeyedLocks,
+    PageStateError,
+    check_page_editable,
+    get_page_extraction,
+)
 from .provider_selection import ProviderSelection
 from .vision_gate import judge_region, mismatch_ids
 
@@ -368,14 +374,23 @@ def create_proposal(runtime: AiRereadRuntime, document_id: str, page_number: int
     return proposal
 
 
-def reject_proposal(store: AppStore, document_id: str, page_number: int, block_id: str, proposal_id: str) -> None:
+def reject_proposal(
+    store: AppStore, locks: KeyedLocks, document_id: str, page_number: int, block_id: str, proposal_id: str
+) -> None:
     """`POST …/ai-reread/{proposal_id}/reject` (§6.10a): chỉ bỏ đề xuất khỏi kho tạm; idempotent (đề xuất đã bỏ hay
     hết hiệu lực vẫn thành công). Không ghi trang, không đổi `version`. Kho không có đề xuất của đúng tài liệu, trang
-    và khối ⇒ `ProposalNotFoundError`."""
-    record = store.get_ai_reread_proposal(proposal_id)
-    if record is None:
-        raise ProposalNotFoundError(proposal_id)
-    proposal = record.proposal
-    if (proposal.document_id, proposal.page_number, proposal.block_id) != (document_id, page_number, block_id):
-        raise ProposalNotFoundError(proposal_id)
-    store.discard_ai_reread_proposal(proposal_id)
+    và khối ⇒ `ProposalNotFoundError`.
+
+    Giữ khoá của tài liệu như Nhận (`accept_proposal`), nên Bỏ không chen giữa lúc Nhận kiểm và ghi. Đề xuất đã Nhận
+    (trang đã ghi khối `vlm`) ⇒ `AiRereadError("PROPOSAL_NOT_PENDING")` (409): không báo Bỏ thành công cho thao tác đã
+    ghi (đề xuất suy ra, phía an toàn; muốn bỏ khối đã nhận thì dùng `PATCH …/lines` `rejected_vlm_blocks`)."""
+    with locks.hold(document_id):
+        record = store.get_ai_reread_proposal(proposal_id)
+        if record is None:
+            raise ProposalNotFoundError(proposal_id)
+        proposal = record.proposal
+        if (proposal.document_id, proposal.page_number, proposal.block_id) != (document_id, page_number, block_id):
+            raise ProposalNotFoundError(proposal_id)
+        if record.state == "accepted":
+            raise AiRereadError("PROPOSAL_NOT_PENDING")
+        store.discard_ai_reread_proposal(proposal_id)

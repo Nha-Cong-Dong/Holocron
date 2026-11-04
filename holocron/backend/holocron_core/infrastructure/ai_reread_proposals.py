@@ -52,6 +52,16 @@ class AiRereadProposalCache:
             self._records[proposal_id] = record.model_copy(update={"state": "accepted"})
             return True
 
+    def release(self, proposal_id: str) -> bool:
+        """Trả đề xuất `accepted` về `pending` (lần Nhận đã giữ chỗ nhưng ghi trang thất bại); `False` khi không có
+        hoặc không ở `accepted`."""
+        with self._lock:
+            record = self._records.get(proposal_id)
+            if record is None or record.state != "accepted":
+                return False
+            self._records[proposal_id] = record.model_copy(update={"state": "pending"})
+            return True
+
     def drop_document(self, document_id: str) -> None:
         """Bỏ mọi đề xuất của tài liệu (xoá tài liệu xoá đề xuất của nó)."""
         with self._lock:

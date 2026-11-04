@@ -16,11 +16,19 @@ cache. Chữ VLM ghi vào kho là chữ ĐÃ QUA cổng, lưu trong đề xuất
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from ..domain.ai_reread import AiRereadAcceptRequest, AiRereadBlock, AiRereadProposal
 from ..domain.blocks import CROPPED_TYPES, Block, BlockFlag, ExtractionLedger, TableCell
-from ..domain.documents import PageEditAudit, PageExtraction, PageGeometry, ReviewReason, VlmTokenMismatch
+from ..domain.documents import (
+    PageEditAudit,
+    PageExtraction,
+    PageGeometry,
+    PageVlmAction,
+    ReviewReason,
+    VlmTokenMismatch,
+)
 from ..domain.repositories import (
     AppStore,
     DocumentLayout,
@@ -35,6 +43,12 @@ from .document_layout import retype_ledger
 from .extraction_ledger import LedgerError, block_refs
 
 __all__ = ["accept_proposal", "vlm_block", "with_vlm_block"]
+
+_LOGGER = logging.getLogger(__name__)
+# Câu cố định (§6.10a: body lỗi là câu tiếng Việt cố định): khối mới làm trang vượt trần `vlm_mismatches`.
+TOO_MANY_MISMATCHES_MESSAGE = (
+    "Trang đã có quá nhiều chỗ lệch chưa giải quyết để nhận thêm bảng này. Hãy giữ giá trị hoặc bỏ khối trước."
+)
 
 _CROP_FLAGS: frozenset[BlockFlag] = frozenset({"crop_pending", "crop_failed", "crop_capped"})
 VLM_REGION: ReviewReason = "VLM_REGION"
@@ -180,7 +194,11 @@ def _plan(
     ocr_text = region_ocr_text(geometry, offline.bbox) or ""
     if geometry is None or not ocr_text or ocr_text != proposal.ocr_text:
         raise _stale()
-    updated = with_vlm_block(page, proposal)
+    try:
+        updated = with_vlm_block(page, proposal)
+    except ValueError as exc:
+        # Vượt trần `vlm_mismatches` (hoặc trang không hợp lệ sau khi thêm): không nhận được, không ghi gì (409).
+        raise AiRereadError("BLOCK_NOT_ELIGIBLE", TOO_MANY_MISMATCHES_MESSAGE) from exc
     try:
         replacement = _drop_unfit_mismatch_flag(vlm_block(offline, proposal.blocks[0], ocr_text), updated)
         ledger = _page_ledger(store, document_id, page_number)
@@ -197,6 +215,7 @@ def _plan(
         editor_id=request.editor_id,
         changes=[],
         at=now,
+        vlm_actions=[PageVlmAction(action="accept_vlm_block", id=offline.block_id)],
     )
     plan = DocumentLayout(
         layout_version=document.layout_version,
@@ -221,17 +240,32 @@ def accept_proposal(
 ) -> PageExtraction:
     """`POST …/ai-reread/{proposal_id}/accept` (§6.10a). Lỗi: `ProposalNotFoundError` (404), `DocumentNotFoundError`
     (404), `AiRereadError` (409) theo thứ tự kiểm ở docstring của module. Ghi lỗi vì version lệch chen ngang ⇒
-    `VERSION_CONFLICT`, không ghi gì. Sau commit và nhả khoá: xếp job cắt ảnh khi khối mới cần ảnh."""
+    `VERSION_CONFLICT`, không ghi gì. Sau commit và nhả khoá: xếp job cắt ảnh khi khối mới cần ảnh.
+
+    Đồng thời: Nhận và Bỏ (`reject_proposal`) cùng giữ khoá của tài liệu. Đề xuất được đánh dấu `accepted` (giữ chỗ)
+    TRƯỚC khi ghi; giữ chỗ thất bại (`False`: đã bỏ, đã nhận hay đã bị đẩy khỏi kho tạm) ⇒ `PROPOSAL_NOT_PENDING`,
+    không ghi gì. Ghi thất bại ⇒ trả đề xuất về `pending` rồi ném lỗi. Nhờ vậy không bao giờ vừa Bỏ thành công vừa
+    ghi trang."""
     with runtime.locks.hold(document_id):
         proposal = _record(store, document_id, page_number, block_id, proposal_id)
         page = get_page_extraction(store, document_id, page_number)
         plan, updated = _plan(store, vault, page, proposal, request, now)
+        if not store.accept_ai_reread_proposal(proposal_id):
+            raise AiRereadError("PROPOSAL_NOT_PENDING")
         try:
             store.save_document_layout(document_id, plan)
         except VersionConflictError as exc:
+            _release(store, proposal_id)
             raise AiRereadError(
                 "VERSION_CONFLICT", f"Trang đã thay đổi (version hiện tại {exc.current_version})."
             ) from exc
-        store.accept_ai_reread_proposal(proposal_id)
+        except BaseException:
+            _release(store, proposal_id)
+            raise
     schedule_crops(runtime.crops, store, document_id)
     return updated
+
+
+def _release(store: AppStore, proposal_id: str) -> None:
+    if not store.release_ai_reread_proposal(proposal_id):
+        _LOGGER.warning("không trả được đề xuất đọc lại về pending sau khi ghi thất bại (đã bị đẩy khỏi kho tạm)")

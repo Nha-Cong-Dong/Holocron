@@ -671,6 +671,18 @@ class PageLineChange(StrictModel):
     new: str
 
 
+VlmActionKind = Literal["keep_mismatch", "reject_vlm_block", "accept_vlm_block"]
+
+
+class PageVlmAction(StrictModel):
+    """Một thao tác trên vùng VLM trong `PageEditAudit.vlm_actions` (§6.5 "Tính lại `review_reasons`", ADR-009 mục
+    3.4; đề xuất suy ra). `keep_mismatch`: `id` là `mismatch_id`; `reject_vlm_block`, `accept_vlm_block` (Nhận đề
+    xuất đọc lại bằng AI, §6.10a): `id` là `block_id`. Không chép chữ."""
+
+    action: VlmActionKind
+    id: str = Field(pattern=r"^(vmm_[0-9a-f]{12}|blk_[0-9a-f]{16})$")
+
+
 class PageEditAudit(StrictModel):
     """Một lần sửa dòng của trang (§6.5, đề xuất): version của trang tăng đúng 1."""
 
@@ -681,6 +693,7 @@ class PageEditAudit(StrictModel):
     editor_id: str = Field(min_length=1)
     changes: list[PageLineChange]
     at: datetime
+    vlm_actions: list[PageVlmAction] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _one_step(self) -> PageEditAudit:
@@ -724,6 +737,9 @@ class PageLinesPatch(StrictModel):
     expected_version: int = Field(ge=1)
     edits: list[LineEdit] = Field(default_factory=list)
     appended_lines: list[str] = Field(default_factory=list, max_length=MAX_APPENDED_LINES)
+    # ADR-009 mục 3.4 (§6.5; tên field: đề xuất suy ra): "Giữ giá trị này" từng chỗ lệch, và bỏ khối `vlm` đã nhận.
+    kept_mismatches: list[VlmMismatchId] = Field(default_factory=list, max_length=MAX_VLM_MISMATCHES)
+    rejected_vlm_blocks: list[VlmBlockId] = Field(default_factory=list, max_length=MAX_VLM_REJECTED_BLOCKS)
 
     @field_validator("appended_lines")
     @classmethod
@@ -732,11 +748,15 @@ class PageLinesPatch(StrictModel):
 
     @model_validator(mode="after")
     def _not_empty_and_unique(self) -> PageLinesPatch:
-        if not self.edits and not self.appended_lines:
-            raise ValueError("edits và appended_lines không được cùng rỗng")
+        if not (self.edits or self.appended_lines or self.kept_mismatches or self.rejected_vlm_blocks):
+            raise ValueError("edits, appended_lines, kept_mismatches và rejected_vlm_blocks không được cùng rỗng")
         indexes = [edit.line_index for edit in self.edits]
         if len(indexes) != len(set(indexes)):
             raise ValueError("line_index trong edits không được trùng")
+        if len(set(self.kept_mismatches)) != len(self.kept_mismatches):
+            raise ValueError("kept_mismatches không được trùng")
+        if len(set(self.rejected_vlm_blocks)) != len(self.rejected_vlm_blocks):
+            raise ValueError("rejected_vlm_blocks không được trùng")
         return self
 
 

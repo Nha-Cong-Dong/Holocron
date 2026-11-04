@@ -259,8 +259,18 @@ def _with_vlm_blocks(
     except LedgerError:
         _LOGGER.warning("không giữ được khối VLM của trang %d khi dựng lại (ledger không khớp)", page.page_number)
         return built, ledger
-    carried = {block.block_id: stored for block, stored in pairs}
+    open_ids = {mismatch.block_id for mismatch in page.vlm_mismatches}
+    carried = {block.block_id: _settled_mismatch_flag(stored, open_ids) for block, stored in pairs}
     return [carried.get(block.block_id, block) for block in built], retyped
+
+
+def _settled_mismatch_flag(block: Block, open_ids: set[str]) -> Block:
+    """Khối `vlm` không còn chỗ lệch chưa giải quyết trên trang (người dùng đã giữ mọi chỗ lệch, §6.5
+    `kept_mismatches`) ⇒ gỡ `table_token_mismatch` (ADR-009 mục 3.4). Còn chỗ lệch ⇒ giữ nguyên (BLOCKING)."""
+    if "table_token_mismatch" not in block.flags or block.block_id in open_ids:
+        return block
+    flags = [flag for flag in block.flags if flag != "table_token_mismatch"]
+    return Block.model_validate({**block.model_dump(), "flags": flags})
 
 
 def _with_vlm_mismatches(page: PageExtraction, blocks: Sequence[Block]) -> PageExtraction:

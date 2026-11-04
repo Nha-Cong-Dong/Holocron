@@ -117,6 +117,22 @@ def _now() -> str:
     return _ts(datetime.now(UTC))
 
 
+def _audit_payload(audit: PageEditAudit) -> object:
+    """Nội dung cột `changes_json` của `page_audits`: danh sách dòng đổi như cũ; khi có thao tác vùng VLM (ADR-009
+    mục 3.4) thì là đối tượng `{changes, vlm_actions}` (không đổi schema bảng; hàng cũ vẫn đọc được)."""
+    dumped = audit.model_dump(mode="json")
+    if not audit.vlm_actions:
+        return dumped["changes"]
+    return {"changes": dumped["changes"], "vlm_actions": dumped["vlm_actions"]}
+
+
+def _audit_changes(raw: object) -> dict[str, object]:
+    """Ngược của `_audit_payload`: danh sách ⇒ chỉ `changes`; đối tượng ⇒ `changes` và `vlm_actions`."""
+    if isinstance(raw, dict):
+        return {"changes": raw.get("changes", []), "vlm_actions": raw.get("vlm_actions", [])}
+    return {"changes": raw}
+
+
 def _dump(model: BaseModel) -> str:
     """JSON của model, bỏ computed field (model `extra="forbid"` không nhận lại chúng khi validate)."""
     return model.model_dump_json(exclude=set(type(model).model_computed_fields))
@@ -1102,7 +1118,7 @@ class SQLiteStore:
                 audit.from_version,
                 audit.to_version,
                 audit.editor_id,
-                json.dumps(audit.model_dump(mode="json")["changes"], ensure_ascii=False),
+                json.dumps(_audit_payload(audit), ensure_ascii=False),
                 _ts(audit.at),
             ),
         )
@@ -1122,7 +1138,7 @@ class SQLiteStore:
                     "from_version": row["from_version"],
                     "to_version": row["to_version"],
                     "editor_id": row["editor_id"],
-                    "changes": json.loads(str(row["changes_json"])),
+                    **_audit_changes(json.loads(str(row["changes_json"]))),
                     "at": row["at"],
                 }
             )
@@ -1608,6 +1624,9 @@ class SQLiteStore:
 
     def accept_ai_reread_proposal(self, proposal_id: str) -> bool:
         return self._ai_reread.mark_accepted(proposal_id)
+
+    def release_ai_reread_proposal(self, proposal_id: str) -> bool:
+        return self._ai_reread.release(proposal_id)
 
     def get_ai_cache(self, cache_key: str, document_id: str, *, now: datetime) -> AiCacheEntry | None:
         with self._write() as conn:

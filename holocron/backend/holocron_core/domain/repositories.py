@@ -787,6 +787,11 @@ class AiRereadProposalRepository(Protocol):
         """Đánh dấu đề xuất đã nhận (chỉ khi còn `pending`); `False` khi không có hoặc không còn `pending`."""
         ...
 
+    def release_ai_reread_proposal(self, proposal_id: str) -> bool:
+        """Trả đề xuất `accepted` về `pending` khi ghi trang của lần Nhận thất bại (không ghi gì); `False` khi không có
+        hoặc không ở `accepted`."""
+        ...
+
 
 class AppStore(
     IngestionRepository,

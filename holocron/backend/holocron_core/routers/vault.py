@@ -20,21 +20,24 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from ..domain.ai import AiConsent
+from ..domain.blocks import DOCUMENT_ID_PATTERN, BlockType
 from ..domain.capabilities import CapabilityError
 from ..domain.llm import ChatCompletionClient, LlmUpstreamError, LlmUpstreamErrorDetail
 from ..domain.repositories import AppStore, RecordNotFoundError, VersionConflictError
 from ..domain.schemas import ChunkCategory, KnowledgeChunk, StrictModel
 from ..domain.vault import (
+    BLOCK_SEARCH_EXCLUDED_TYPES,
     CHAPTER_CODE_PATTERN,
     MAX_ID_CHARS,
     MAX_TOPIC_KEYS,
     SUBJECT_CODE_PATTERN,
+    BlockSearchPage,
     ConceptPair,
     ConceptPairStatus,
     ProposalJob,
@@ -47,6 +50,7 @@ from ..infrastructure.llm_client import OpenAiChatClient
 from ..infrastructure.llm_config import ConfigError, RuntimeConfig
 from ..infrastructure.provider_probe import guarded_transport
 from ..infrastructure.selected_llm_client import SelectedProviderChatClient, TransportFactory
+from ..services import search_index
 from ..services import vault as vault_service
 from ..services.capabilities import unavailable_error
 from ..services.concept_proposal import MAX_PROPOSAL_CHUNKS, ChunkSubjectMismatchError, propose_concept_pairs
@@ -69,6 +73,15 @@ router = APIRouter(prefix="/v1/vault")
 SubjectQuery = Annotated[str, Query(pattern=SUBJECT_CODE_PATTERN)]
 ChapterQuery = Annotated[str | None, Query(pattern=CHAPTER_CODE_PATTERN)]
 TopicKeysQuery = Annotated[list[TopicKey] | None, Query(alias="topic_key", max_length=MAX_TOPIC_KEYS)]
+_SEARCH_LIMITS = search_index.DEFAULT_SETTINGS
+_SEARCHABLE_BLOCK_TYPES = frozenset(get_args(BlockType)) - BLOCK_SEARCH_EXCLUDED_TYPES
+DocumentIdsQuery = Annotated[
+    list[Annotated[str, Field(pattern=DOCUMENT_ID_PATTERN)]] | None, Query(max_length=_SEARCH_LIMITS.max_page_size)
+]
+ChapterCodesQuery = Annotated[
+    list[Annotated[str, Field(pattern=CHAPTER_CODE_PATTERN)]] | None, Query(max_length=_SEARCH_LIMITS.max_page_size)
+]
+BlockTypesQuery = Annotated[list[BlockType] | None, Query(alias="type", max_length=len(_SEARCHABLE_BLOCK_TYPES))]
 ChunkIdPath = Annotated[str, Path(min_length=1, max_length=MAX_ID_CHARS)]
 PairIdPath = Annotated[str, Path(min_length=1, max_length=MAX_ID_CHARS)]
 EditorId = Annotated[str, Field(min_length=1, max_length=MAX_ID_CHARS)]
@@ -311,6 +324,37 @@ def search(
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
 ) -> list[SearchHit]:
     return vault_service.search_chunks(vault, subject_code, q, topic_keys=topic_keys or (), limit=limit)
+
+
+@router.get("/blocks/search", response_model=BlockSearchPage)
+def search_blocks(
+    store: StoreDep,
+    q: Annotated[str, Query(min_length=1)],  # trần ký tự tính sau NFC và bỏ khoảng trắng: `QueryError` (§6.10)
+    subject_code: SubjectQuery,
+    document_id: DocumentIdsQuery = None,
+    chapter_code: ChapterCodesQuery = None,
+    block_type: BlockTypesQuery = None,
+    offset: Annotated[int, Query(ge=0, le=_SEARCH_LIMITS.max_results)] = 0,
+    limit: Annotated[int, Query(ge=1, le=_SEARCH_LIMITS.max_page_size)] = 20,
+) -> BlockSearchPage:
+    """Tra cứu khối offline trên tập khối đủ điều kiện (§6.10, ADR-010 mục 18); `GET /search` không đổi."""
+    if not _SEARCHABLE_BLOCK_TYPES.issuperset(block_type or ()):
+        raise HTTPException(status_code=422, detail="loại khối không tra cứu được")
+    try:
+        return search_index.search_blocks(
+            store,
+            subject_code=subject_code,
+            query=q,
+            document_ids=document_id or (),
+            chapter_codes=chapter_code or (),
+            types=block_type or (),
+            offset=offset,
+            limit=limit,
+        )
+    except RecordNotFoundError as exc:
+        raise _not_found(exc) from exc
+    except search_index.QueryError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.patch("/chunks/{chunk_id}/labels", response_model=KnowledgeChunk)

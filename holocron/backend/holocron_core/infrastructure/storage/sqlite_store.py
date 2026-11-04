@@ -72,12 +72,21 @@ from ...domain.vault import (
     ConceptPairStatus,
     QuoteMismatchError,
     VaultEdit,
+    block_contexts,
+    block_index_body,
+    block_trigram_body,
     check_definition_quote,
     link_practice_chunks,
 )
 from .connection import connect, fts5_available, immediate_transaction, is_busy, read_transaction
 from .crop_files import CropFiles
-from .migrator import load_fts5_script, migrate
+from .migrator import (
+    load_blocks_fts5_script,
+    load_blocks_trigram_script,
+    load_fts5_script,
+    migrate,
+    trigram_available,
+)
 
 IMPORTED_MEDIA_TYPE = "application/pdf"  # bộ nhập §6.5 chỉ nhận PDF trong MVP
 JSON1_MISSING_DETAIL = (
@@ -85,6 +94,9 @@ JSON1_MISSING_DETAIL = (
     "hãy dùng bản Python đi kèm SQLite ≥ 3.38 (JSON1 có sẵn) hoặc SQLite biên dịch kèm JSON1"
 )
 _FTS_TABLES: dict[SearchIndex, str] = {"primary": "chunks_fts", "no_diacritics": "chunks_fts_nodiac"}
+_BLOCK_FTS_TABLE = "blocks_fts"
+_BLOCK_TRIGRAM_TABLE = "blocks_fts_trigram"
+_ID_BATCH = 400  # số `block_id` mỗi câu `IN (...)` (giới hạn biến của SQLite)
 _LOGGER = logging.getLogger(__name__)
 _BATCH_TWIN = TypeAdapter(BatchTwin)  # twin_json đọc lại theo union câu tính toán / câu lý thuyết (`TwinBatch.twins`)
 _EDIT_TABLES: dict[VaultEntity, tuple[str, str]] = {
@@ -186,6 +198,13 @@ class SQLiteStore:
             self._fts5 = fts5_available(conn)
             if self._fts5:
                 conn.executescript(load_fts5_script())
+            self._block_fts = self._fts5
+            self._block_trigram = self._fts5 and trigram_available(conn)
+            if self._block_fts:
+                conn.executescript(load_blocks_fts5_script())
+            if self._block_trigram:
+                conn.executescript(load_blocks_trigram_script())
+            self._backfill_block_index()
             self._sweep_orphan_crops()
 
     @classmethod
@@ -837,7 +856,115 @@ class SQLiteStore:
             for row in conn.execute("SELECT DISTINCT subject_code FROM chunks WHERE document_id = ?", (document_id,))
         }
 
+    def _block_index_tables(self) -> list[str]:
+        tables = [_BLOCK_FTS_TABLE] if self._block_fts else []
+        return tables + ([_BLOCK_TRIGRAM_TABLE] if self._block_trigram else [])
+
+    def _delete_block_index(self, conn: sqlite3.Connection, document_id: str, page_number: int | None = None) -> None:
+        """Xoá dòng chỉ mục tra cứu khối của tài liệu (hoặc của các khối đang lưu ở một trang); bảng ảo không có khoá
+        ngoại nên dọn bằng code, cùng giao dịch với thao tác xoá khối."""
+        for table in self._block_index_tables():
+            if page_number is None:
+                conn.execute(f"DELETE FROM {table} WHERE document_id = ?", (document_id,))
+            else:
+                conn.execute(
+                    f"DELETE FROM {table} WHERE document_id = ? AND block_id IN "
+                    "(SELECT block_id FROM blocks WHERE document_id = ? AND page_number = ?)",
+                    (document_id, document_id, page_number),
+                )
+
+    def _index_eligible_blocks(self, conn: sqlite3.Connection, document_id: str) -> None:
+        """Ghi lại toàn bộ chỉ mục khối của tài liệu từ tập `eligible = 1` (xoá rồi chèn, cùng giao dịch)."""
+        self._delete_block_index(conn, document_id)
+        if not self._block_index_tables():
+            return
+        subject = conn.execute("SELECT subject_code FROM documents WHERE document_id = ?", (document_id,)).fetchone()
+        if subject is None or subject["subject_code"] is None:
+            return
+        rows = conn.execute(
+            "SELECT block_json FROM blocks WHERE document_id = ? AND eligible = 1 ORDER BY page_number, reading_order",
+            (document_id,),
+        ).fetchall()
+        blocks = [Block.model_validate_json(str(row["block_json"])) for row in rows]
+        contexts = block_contexts(blocks)
+        if self._block_fts:
+            conn.executemany(
+                f"INSERT INTO {_BLOCK_FTS_TABLE} (body, block_id, document_id, subject_code) VALUES (?, ?, ?, ?)",
+                [
+                    (
+                        block_index_body(b, contexts.get(b.block_id, ())),
+                        b.block_id,
+                        document_id,
+                        subject["subject_code"],
+                    )
+                    for b in blocks
+                ],
+            )
+        if self._block_trigram:
+            conn.executemany(
+                f"INSERT INTO {_BLOCK_TRIGRAM_TABLE} (body, block_id, document_id, subject_code) VALUES (?, ?, ?, ?)",
+                [
+                    (
+                        block_trigram_body(b, contexts.get(b.block_id, ())),
+                        b.block_id,
+                        document_id,
+                        subject["subject_code"],
+                    )
+                    for b in blocks
+                ],
+            )
+
+    def _backfill_block_index(self) -> None:
+        """Lúc mở kho: tài liệu có khối `eligible = 1` thiếu dòng ở một bảng chỉ mục (FTS bật sau khi đã có khối) được
+        lập chỉ mục lại từ tập đủ điều kiện."""
+        tables = self._block_index_tables()
+        if not tables:
+            return
+        missing: set[str] = set()
+        with self._read() as conn:
+            for table in tables:
+                rows = conn.execute(
+                    f"SELECT DISTINCT document_id FROM blocks WHERE eligible = 1 AND block_id NOT IN "
+                    f"(SELECT block_id FROM {table}) AND document_id IN "
+                    "(SELECT document_id FROM documents WHERE subject_code IS NOT NULL)"
+                ).fetchall()
+                missing.update(str(row["document_id"]) for row in rows)
+        for document_id in sorted(missing):
+            with self._write() as conn:
+                self._index_eligible_blocks(conn, document_id)
+
+    def match_block_index(
+        self, subject_code: str, terms: Sequence[str], *, trigram: bool
+    ) -> list[tuple[str, str]] | None:
+        """`(document_id, block_id)` của khối đủ điều kiện có BẤT KỲ `terms` nào (OR; mỗi term là chuỗi đã gấp dấu,
+        được đặt trong ngoặc kép nên không ký tự nào của truy vấn là toán tử FTS5). `None` khi bảng chỉ mục không có
+        (thiếu FTS5, hoặc thiếu trigram khi `trigram = True`)."""
+        table = _BLOCK_TRIGRAM_TABLE if trigram else _BLOCK_FTS_TABLE
+        if table not in self._block_index_tables():
+            return None
+        if not terms:
+            return []
+        expression = " OR ".join('"' + term.replace('"', '""') + '"' for term in terms)
+        with self._read() as conn:
+            rows = conn.execute(
+                f"SELECT document_id, block_id FROM {table} WHERE {table} MATCH ? AND subject_code = ?",
+                (expression, subject_code),
+            ).fetchall()
+        return sorted({(str(row["document_id"]), str(row["block_id"])) for row in rows})
+
+    def load_eligible_blocks(self, document_id: str, block_ids: Sequence[str]) -> list[Block]:
+        """Các khối `eligible = 1` của tài liệu có `block_id` trong `block_ids`, theo (trang, `reading_order`)."""
+        found: list[Block] = []
+        ids = list(block_ids)
+        for start in range(0, len(ids), _ID_BATCH):
+            part = ids[start : start + _ID_BATCH]
+            marks = ", ".join("?" for _ in part)
+            where = f"document_id = ? AND eligible = 1 AND block_id IN ({marks})"
+            found.extend(self._blocks_where(where, [document_id, *part]))
+        return sorted(found, key=lambda block: (block.page_number, block.reading_order, block.block_id))
+
     def _delete_document_row(self, conn: sqlite3.Connection, document_id: str) -> None:
+        self._delete_block_index(conn, document_id)
         subjects = self._delete_chunk_index(conn, document_id)
         try:
             conn.execute("DELETE FROM documents WHERE document_id = ?", (document_id,))
@@ -876,6 +1003,7 @@ class SQLiteStore:
                 self._delete_document_row(conn, document_id)
                 self._drop_implicit_subject(conn, implicit_subject)
                 return True
+            self._delete_block_index(conn, document_id)
             subjects = self._delete_chunk_index(conn, document_id)
             conn.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))  # cặp khái niệm theo CASCADE
             # lịch sử sửa trang, khối, ledger, đề xuất cấu trúc theo CASCADE của `pages`
@@ -1609,6 +1737,7 @@ class SQLiteStore:
                         page_layout.ledger is not None and page_layout.ledger.document_id != document_id
                     ):
                         raise ValueError("khối hoặc ledger không thuộc tài liệu")
+                    self._delete_block_index(conn, document_id, number)
                     conn.execute("DELETE FROM blocks WHERE document_id = ? AND page_number = ?", (document_id, number))
                     conn.executemany(
                         "INSERT INTO blocks (document_id, block_id, page_number, reading_order, type, eligible, "
@@ -1771,6 +1900,7 @@ class SQLiteStore:
                 eligible = is_candidate_block(block, pages[block.page_number], source_kind)
                 flags.append((int(eligible), document_id, block.block_id))
             conn.executemany("UPDATE blocks SET eligible = ? WHERE document_id = ? AND block_id = ?", flags)
+            self._index_eligible_blocks(conn, document_id)  # chỉ mục tra cứu khối cùng giao dịch (ADR-010 mục 18)
         return sum(eligible for eligible, _, _ in flags)
 
     def list_eligible_blocks(self, document_id: str) -> list[Block]:

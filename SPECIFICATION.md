@@ -99,7 +99,7 @@ Bài toán xuất phát từ hoàn cảnh của chính người làm dự án v�
 **MVP-1 (chốt 2026-10-26).** Spec v0.7 là contract mục tiêu, không phải phạm vi MVP. MVP-1 là mục tiêu duy nhất tới hết 29/10/2026. Hạn nộp hackathon là Chủ nhật 8/11/2026; lịch sau MVP-1 ở §16.
 - **Sản phẩm:** bản Windows dạng zip portable, chạy offline, không cần API key.
 - **Luồng:** tạo môn → nhập PDF (lớp chữ + OCR) → xem lại trang → xác nhận vào Vault → xác nhận cặp khái niệm → sinh câu MCQ4 lý thuyết tất định → làm bài → xem đáp án kèm trích dẫn nguyên văn và số trang → lịch sử làm bài và ôn lại câu sai.
-- **Lịch sử làm bài:** contract là đề xuất riêng, chờ duyệt. Đúng/sai và mọi con số do backend tính (I1).
+- **Lịch sử làm bài:** tính năng giữ (duyệt 2026-11-04, người dùng: "GIỮ lịch sử làm bài + ôn câu sai"); contract ở §5.17, §6.12 và bảng ở §5.13, chi tiết là đề xuất suy ra (orchestrator), chờ xác nhận; chưa triển khai. Đúng/sai và mọi con số do backend tính (I1).
 - **Đóng gói:** Python embeddable (giấy phép PSF); backend phục vụ frontend tĩnh và tự mở trình duyệt. Người dùng tự cài Tesseract theo hướng dẫn. Không dùng PyInstaller. Tauri chuyển sang 3–6/11. Launcher đặt `HOLOCRON_DATA_DIR` để lưu SQLite (lịch sử làm bài cần lưu bền; yêu cầu người dùng 2026-10-26: "bảng lượt làm bài trong SQLite") (§5.13, §11.2).
 - **Blueprint:** MVP-1 chỉ làm luồng slot lý thuyết (`theory_slots`), cùng các endpoint GET blueprint (§6.7). Giữ `POST /v1/blueprints` làm đường tạo blueprint cho slot lý thuyết (duyệt 2026-10-28, câu 2). `BlueprintCreate` vẫn có `item_ids` (§5.9) nhưng `item_ids` khác rỗng ⇒ 422 "Blueprint có câu tính toán chưa được hỗ trợ trong bản này", trước mọi lần ghi (duyệt 2026-10-28, câu 15; chỉ áp cho đường blueprint này, luồng sinh câu song sinh có tính toán `POST /v1/blueprints/{id}/twins` giữ nguyên). Kiểm I5 cho `item_ids` (mỗi item PHẢI `approved=true` và không `non_cloneable`, ngược lại 409, §6.7 bước 2 của contract mục tiêu) là mục tiêu sau 29/10, vì MVP-1 chưa nhận item nào ở đường này.
 - **Sau MVP-1:** câu tính toán, tầng 3 (bảng) (suy ra từ phạm vi MVP-1 chỉ gồm lớp chữ + OCR), tự luận (essay), `capabilities`, kiểm `Origin`, `RuntimeInfo` mở rộng.
@@ -1873,7 +1873,16 @@ Toàn bộ mục này đã duyệt 2026-10-25, trừ bảng `subjects` (đề xu
 
 - **Chỉ mục tra cứu khối (ADR-010 mục 18; duyệt 2026-11-01 (ADR-010)).** KHÔNG nằm trong migration đánh số. Hai script có điều kiện kiểu `fts5_vault.sql`, chạy lại mỗi lần mở kho (`IF NOT EXISTS`): `fts5_blocks.sql` (bảng `blocks_fts`: `body` = token đã gấp dấu bằng Python nối bằng dấu cách, `block_id`, `document_id`, `subject_code` UNINDEXED; `tokenize = 'unicode61 remove_diacritics 0'` + cùng `tokenchars` của `fts5_vault.sql`; chạy khi có `ENABLE_FTS5`) và `fts5_blocks_trigram.sql` (bảng `blocks_fts_trigram`, `tokenize = 'trigram'`, `body` = văn bản đã gấp dấu, gộp khoảng trắng; chỉ chạy khi probe trigram đạt: tạo thử bảng ảo trigram trong `temp` thành công và `sqlite_version() ≥ 3.34.0`). Repository ghi/xoá chỉ mục trong cùng giao dịch với `refresh_eligible_blocks` và khi xoá tài liệu (bảng ảo không có khoá ngoại, dọn bằng code như `_delete_chunk_index`). Bật FTS sau khi đã có khối ⇒ backfill từ khối `eligible = 1` khi mở kho. Thiếu FTS5/trigram, và kho in-memory ⇒ đường lùi Python. `chunks_fts`, `chunks_fts_nodiac`, `fts5_vault.sql` không đổi.
 - **Ảnh cắt (ADR-010 mục 19):** kho SQLite ghi file PNG TRƯỚC khi commit hàng `crop_images` (ghi file tạm trong cùng thư mục rồi đổi tên; giao dịch lỗi ⇒ file thành mồ côi, dọn khi mở kho); một file chỉ bị xoá (sau commit) khi không còn hàng `crop_images` nào có `crop_ref` đó, đếm bằng truy vấn, không giữ bộ đếm tham chiếu riêng (đề xuất suy ra (orchestrator)); xoá tài liệu xoá hàng trong giao dịch rồi xoá thư mục `crops/<document_id>/` sau commit; khi mở kho, xoá thư mục/file ảnh không có hàng tương ứng; hàng còn mà file mất ⇒ endpoint ảnh trả 404. Đường dẫn chỉ dựng từ `document_id` và `crop_ref` đã kiểm mẫu. Kho in-memory giữ byte trong instance store (không dict cấp module), trần tổng `memory_crop_max_bytes = 256 MiB` (đề xuất suy ra); vượt ⇒ khối giữ `crop_pending` + `crop_capped`.
-- **Kết quả chấm tự luận** (§5.14) không được lưu trong MVP (đề xuất, chờ duyệt): chấm lại cùng câu trả lời cho cùng kết quả (tái lập của bộ chấm, §5.14), nên không cần bảng riêng. Lịch sử làm bài và ôn lại câu sai thuộc MVP-1 (chốt 2026-10-26, §1.5); bảng lưu và contract của nó là đề xuất riêng, chờ duyệt, chưa có trong bảng trên.
+- **Kết quả chấm tự luận** (§5.14) không được lưu trong MVP (đề xuất, chờ duyệt): chấm lại cùng câu trả lời cho cùng kết quả (tái lập của bộ chấm, §5.14), nên không cần bảng riêng.
+- **Lượt làm bài (§5.17, §6.12; duyệt 2026-11-04 (người dùng giữ tính năng), lưu trong SQLite theo yêu cầu 2026-10-26; tên bảng, cột, index và cascade là đề xuất suy ra (orchestrator)).** Một migration `NNNN_practice_attempts.sql`, nhận số kế tiếp lúc merge như quy ước ở mục khối trên (brief đặt sau 0007; số do nhánh code chốt). Repository mới `PracticeAttemptRepository` sau `Protocol`, cấp qua `Depends`; bản in-memory cùng ngữ nghĩa, mất khi tắt app (§5.17). Lượt không sửa được nên hai bảng không có cột `version`; không có `outcome` của lượt hay số đếm lưu sẵn (code đếm lúc đọc, §5.17).
+
+| Bảng | Khoá chính | Cột chính | Quan hệ | Index |
+|---|---|---|---|---|
+| `practice_attempts` | `attempt_id` (`pa_` + 16 hex) | `seq` (INTEGER NOT NULL UNIQUE, tăng đơn điệu, = `MAX(seq) + 1` trong cùng giao dịch ghi; thứ tự "gần nhất" của §5.17, không ra response), `subject_code`, `mode` (TEXT CHECK `batch`\|`review`), `batch_id` (null ⇔ `mode = review`, CHECK), `blueprint_id` (null ⇔ `mode = review`), `submitted_at` | `batch_id` → `twin_batches` ON DELETE CASCADE; `subject_code` không khoá ngoại (như các bảng khác, bảng `subjects` ở trên) | `(subject_code, seq)` |
+| `practice_answers` | `(attempt_id, ordinal)` | `twin_id`, `batch_id`, `slot_index`, `chosen_key` (TEXT, null = bỏ qua), `correct_key` (chép từ twin lúc ghi), `outcome` (TEXT CHECK `correct`\|`incorrect`\|`skipped`) | `attempt_id` → `practice_attempts` ON DELETE CASCADE; `twin_id` → `twins` ON DELETE CASCADE | `(twin_id)`; UNIQUE `(attempt_id, twin_id)` |
+
+- **Cascade (đề xuất suy ra):** xoá lượt ⇒ xoá các hàng câu của nó. Xoá batch (chỉ qua cascade `blueprints` → `twin_batches`; MVP chưa có `DELETE` blueprint) ⇒ xoá lượt `batch` của batch đó và mọi hàng câu trỏ tới twin của batch; lượt `review` còn lại mà không còn hàng câu nào bị code xoá trong cùng giao dịch. Xoá tài liệu (§6.5) không xoá twin nên không đụng lượt làm bài. Không có `DELETE` môn (§6.8).
+- **Câu ôn (§5.17):** truy vấn lấy hàng `outcome IN ('correct','incorrect')` mới nhất theo `(seq, ordinal)` của mỗi `twin_id` trong môn, giữ hàng `incorrect`, rồi nối `twins.twin_json` để trả bản chụp twin.
 - **`templates`:** chỉ lưu template do LLM viết lúc chạy (bậc *ứng viên*, và bậc *đã kiểm chứng* khi người dùng duyệt trong app). Template trong `infrastructure/templates/` của repo vẫn nạp từ file, không chép vào DB, và vẫn là nguồn duy nhất của fallback `precomputed_verified` (§10). Các lớp kiểm chứng mà một template ứng viên phải qua trước khi người dùng duyệt: K1–K7 ở §10.1 (duyệt 2026-10-26, kèm điều kiện; §17 D6).
 - **Mã lỗi của kho SQLite** (duyệt 2026-10-25, §6.0, §6.4): tranh ghi (`rowcount = 0` khi so version) ⇒ 409; khoá ngoại `ingestion_items.source_doc_id` không trỏ tới tài liệu có thật ⇒ 422; kho bận hoặc bị khoá sau khi hết số lần thử ⇒ 503.
 
@@ -2324,6 +2333,76 @@ ai_cache_documents(
 - Trúng cache vẫn chạy lại cổng (`vision_gate` cho `vlm_region`, cổng V03 cho `structure_proposal`). Công tắc tắt ⇒ không tra cache.
 - `types/holocron.ts` thêm các model response của mục này (`ProviderConfig`, `ProviderList`, `AiStatus`, `AiConsentState`, …) cùng PR triển khai (CLAUDE.md §2.3); `SelectedProvider`, `AiUsage`, `CostEstimate` là nội bộ.
 
+### 5.17 Lượt làm bài và ôn câu sai (duyệt 2026-11-04 (người dùng giữ tính năng); chi tiết đề xuất suy ra (orchestrator))
+
+**Đã duyệt:** giữ tính năng lịch sử làm bài và ôn lại câu sai (người dùng 2026-11-04: "GIỮ lịch sử làm bài + ôn câu sai"); lượt làm bài lưu trong SQLite (yêu cầu người dùng 2026-10-26: "bảng lượt làm bài trong SQLite", §1.5); đúng/sai và mọi con số do backend tính (I1, §1.5). **Đề xuất suy ra (orchestrator), chờ xác nhận:** mọi chi tiết còn lại của mục này, gồm tên model, field, endpoint (§6.12), bảng (§5.13), luật chọn câu ôn, giới hạn và mã lỗi. Chưa triển khai. Model đặt ở `domain/practice.py` (đề xuất suy ra), xuất hiện trong response nên `src/types/holocron.ts` khớp 1:1 (CLAUDE.md §2.3).
+
+**Phạm vi (đề xuất suy ra):** chỉ câu `format = "MCQ4"` (câu lý thuyết `TheoryTwin` và câu tính toán `TwinQuestion` MCQ4). Câu `NUMERICAL` và `ESSAY` chưa ghi lượt được (422, §6.12); kết quả chấm tự luận vẫn không lưu (§5.13). Chạy offline, không cần LLM, không chạy sandbox; tất định theo dữ liệu đã lưu.
+
+```python
+AnswerOutcome = Literal["correct", "incorrect", "skipped"]   # đề xuất suy ra
+
+class PracticeAnswerIn(StrictModel):             # một câu trong request ghi lượt
+    twin_id: str                                 # client: twin đã hiển thị cho người học (từ TwinBatch đã lưu, §6.7, hoặc từ danh sách câu ôn)
+    chosen_key: OptionKey | None = None          # người học: phương án đã chọn; null = bỏ qua câu
+    # KHÔNG có field đúng/sai, điểm hay correct_key trong request: client không gửi kết quả (I1)
+
+class PracticeAttemptCreate(StrictModel):        # body POST /v1/practice/attempts
+    mode: Literal["batch", "review"]             # client: "batch" = làm một batch; "review" = ôn câu sai
+    batch_id: str | None = Field(default=None, pattern=r"^tb_[0-9a-f]{16}$")
+        # client: bắt buộc khi mode = "batch", PHẢI null khi mode = "review" (validator)
+    answers: list[PracticeAnswerIn] = Field(min_length=1, max_length=500)
+        # client: theo thứ tự đã hiển thị; twin_id không trùng (validator); 500 = 50 slot × count tối đa 10 (§6.7, §5.6)
+
+class PracticeAnswer(StrictModel):               # một câu đã ghi
+    ordinal: int = Field(ge=0)                   # code: vị trí trong answers của request
+    twin_id: str                                 # request
+    batch_id: str                                # code: batch đã lưu chứa twin (tra theo twin_id)
+    slot_index: int                              # code: chép từ twin đã lưu
+    chosen_key: OptionKey | None                 # request
+    correct_key: OptionKey                       # code: chép correct_key của twin đã lưu (TheoryTwin.question.correct_key hoặc TwinQuestion.correct_key)
+    outcome: AnswerOutcome                       # code: chosen_key null ⇒ "skipped"; = correct_key ⇒ "correct"; còn lại ⇒ "incorrect"
+
+class PracticeAttemptSummary(StrictModel):
+    attempt_id: str = Field(pattern=r"^pa_[0-9a-f]{16}$")   # code: sinh khi ghi
+    subject_code: str                            # code: subject_code của blueprint chứa các twin (mọi twin của một lượt cùng môn)
+    mode: Literal["batch", "review"]             # request
+    batch_id: str | None                         # request (mode = "batch"); null với mode = "review"
+    blueprint_id: str | None                     # code: blueprint của batch_id; null với mode = "review"
+    submitted_at: datetime                       # code: đồng hồ server lúc ghi (UTC); client không gửi thời gian
+    total_count: int = Field(ge=0)               # code: số PracticeAnswer còn lưu của lượt
+    correct_count: int = Field(ge=0)             # code: số outcome = "correct"
+    incorrect_count: int = Field(ge=0)           # code: số outcome = "incorrect"
+    skipped_count: int = Field(ge=0)             # code: số outcome = "skipped"
+    # validator: correct_count + incorrect_count + skipped_count = total_count
+
+class PracticeAttempt(PracticeAttemptSummary):   # chi tiết lượt
+    answers: list[PracticeAnswer]                # code: sắp theo ordinal
+
+class PracticeAttemptPage(StrictModel):
+    total: int = Field(ge=0)                     # code: số lượt khớp bộ lọc
+    attempts: list[PracticeAttemptSummary]       # code: mới nhất trước
+
+class ReviewQuestion(StrictModel):               # một câu cần ôn
+    twin: BatchTwin                              # code: bản chụp twin đã lưu (§5.11), nguyên vẹn: đề, phương án, correct_key, citation
+    batch_id: str                                # code: batch chứa twin
+    last_attempt_id: str                         # code: lượt gần nhất có outcome "incorrect" của twin
+    last_answered_at: datetime                   # code: submitted_at của lượt đó
+    last_chosen_key: OptionKey                   # code: phương án sai đã chọn ở lượt đó
+
+class ReviewQuestionPage(StrictModel):
+    total: int = Field(ge=0)                     # code: số câu cần ôn khớp bộ lọc
+    questions: list[ReviewQuestion]              # code: thứ tự ở luật dưới
+```
+
+- **Đúng/sai do backend tính (I1):** backend tra twin đã lưu theo `twin_id` (TwinBatchRepository cần thêm phép tra twin theo id; §6.9 đã ghi nhu cầu này; tên method do nhánh code chốt), so `chosen_key` với `correct_key` đã lưu. Mọi số đếm (`total_count`, `correct_count`, `incorrect_count`, `skipped_count`, `total`) do code đếm trên hàng đã lưu lúc đọc, không lưu sẵn, nên không lệch khi hàng câu bị dọn (cascade ở §5.13). Frontend chỉ hiển thị, không tự đếm hay tự so khoá cho lịch sử (I1, §3.3).
+- **Không đổi I1–I5:** lượt làm bài không tạo hay sửa twin, không chạy sandbox, không đọc lại Vault. Câu ôn trả đúng bản chụp `twin` đã lưu, nên đáp án, phương án nhiễu kèm `misconception_code` (I2) và `citation`/`distractor_citations` nguyên văn (I3) giống hệt lúc sinh; không sinh lại câu (I4 không liên quan vì không có bước sinh). I5 không đổi: twin chỉ có trong batch đã sinh dưới I5 (§6.7).
+- **Luật "câu sai để ôn" (đề xuất suy ra):** đơn vị "câu" là `twin_id`. Với mỗi twin của môn, xét các `PracticeAnswer` có `outcome ∈ {correct, incorrect}` qua mọi lượt (`batch` và `review`); câu `skipped` bị bỏ qua, không thêm và không gỡ câu khỏi danh sách. Lấy câu trả lời gần nhất theo thứ tự ghi (thứ tự lượt theo cột `seq` tăng đơn điệu của §5.13, rồi `ordinal`; không theo đồng hồ để không phụ thuộc giờ máy). Twin vào danh sách ⇔ câu trả lời gần nhất đó là `incorrect`, tức là sai ở lượt gần nhất và chưa làm đúng lại sau đó. Làm đúng ở lượt sau (kể cả lượt `review`) thì twin ra khỏi danh sách. Thứ tự trả về: `last_attempt` mới nhất trước (`seq` giảm dần), hoà thì `ordinal` tăng dần.
+- **Ôn lại:** frontend hiển thị `twin` như câu gốc; sau khi người học chọn, ghi một lượt `mode = "review"` (§6.12) với các `twin_id` vừa làm. Câu cùng nội dung nằm ở batch khác có `twin_id` khác nên được tính riêng (giới hạn đã biết, ADR-004 PRAC-001).
+- **Không có số tổng hợp theo môn:** contract này chỉ có số đếm theo lượt và số câu cần ôn. Thẻ môn KHÔNG hiện "Đã ôn x/y" hay "% đúng" (quyết định câu 13, 2026-10-29, vẫn hiệu lực); thêm số tổng hợp cần đề xuất riêng.
+- **Kho in-memory (không đặt `HOLOCRON_DATA_DIR`, §5.13):** cùng ngữ nghĩa, cùng luật và cùng mã lỗi; dữ liệu giữ trong instance store (không dict cấp module, CLAUDE.md §2.2) và **mất khi tắt app** như mọi dữ liệu khác của kho in-memory. Frontend báo việc này qua `RuntimeInfo.storage_mode = "memory"` (§5.12), không cần field mới.
+- **Log** (§14): `attempt_id`, `mode`, `total_count`, các số đếm; không log `chosen_key` theo từng câu.
+
 ## 6. API Contracts
 
 ### 6.0 Quy ước chung
@@ -2351,7 +2430,7 @@ class CapabilityError(StrictModel):              # đã duyệt 2026-10-25: deta
 | 204 | Đã xoá (`DELETE /v1/documents/{id}`, §6.5) |
 | 400 | Yêu cầu hợp lệ về cú pháp nhưng vi phạm trạng thái nghiệp vụ (file rỗng; approve item non-cloneable; gắn non-cloneable cho item đã duyệt) |
 | 403 | Đã duyệt 2026-10-25 (§13.1): `Host` không thuộc danh sách cho phép, hoặc thiếu/sai token khi đã đặt `HOLOCRON_REQUIRE_TOKEN`. Hướng duyệt 2026-10-26 chiều (§13.1; chi tiết là đề xuất (chi tiết), chờ duyệt): request ghi (`POST`, `PUT`, `PATCH`, `DELETE`) có `Origin` không thuộc danh sách origin cho phép. `detail` là chuỗi cố định, không lặp lại token hay header đã gửi. Thêm 2026-11-03 (ADR-009 mục 12.7): mọi 403 của middleware và của router cài đặt có thêm field `code` cạnh `detail` (chuỗi `detail` không đổi): `host_forbidden`, `token_config_invalid`, `token_required` (đã đặt token, thiếu/sai mã), `token_not_configured` (endpoint ghi cài đặt khi chưa đặt token, §6.11). Tên `token_required`/`token_not_configured`: duyệt 2026-11-03 (người dùng uỷ quyền chọn phương án đề xuất), phương án 1; hai tên còn lại và mã cho 403 `Origin` (`origin_forbidden`, khi làm): đề xuất suy ra |
-| 404 | Không tìm thấy item / blueprint / batch / tài liệu / trang / chunk / cặp khái niệm / môn / twin |
+| 404 | Không tìm thấy item / blueprint / batch / tài liệu / trang / chunk / cặp khái niệm / môn / twin / lượt làm bài (§6.12, đề xuất suy ra) |
 | 409 | Xung đột trạng thái: `expected_version` lệch; sửa item đã duyệt; approve khi còn BLOCKING; blueprint chứa item chưa duyệt; sửa trang đã xác nhận hoặc đang đọc; xoá tài liệu còn được item tham chiếu; endpoint cần một khả năng đang không khả dụng (`CapabilityError`, đã duyệt 2026-10-25); với kho SQLite: tranh ghi (optimistic locking, `rowcount = 0`) ở `PATCH …/stem`, `POST …/non-cloneable`, `POST …/approve` (duyệt 2026-10-25, §6.4) |
 | 413 | File vượt giới hạn của luồng: 10 MiB cho upload đề (§6.1); 50 MiB cho nhập tài liệu (§6.5, ADR-008 mục 4) |
 | 415 | Định dạng file không hỗ trợ, hoặc `Content-Type` khai báo không khớp nội dung |
@@ -2932,7 +3011,8 @@ class BlockSearchHit(StrictModel):
         # code: exact = token khớp nguyên dạng sau NFC, casefold và chuẩn hoá vị trí dấu thanh (ADR-006 mục 5 bước 2), giữ dấu
         # (gồm token kỹ thuật R13, CPSR, 0x1F);
         # folded = khớp sau gấp dấu; fuzzy = trigram hoặc khoảng cách sửa (token ngắn)
-    match_spans: list[MatchSpan]                  # code: ≥ 1 phần tử, theo vị trí
+    match_spans: list[MatchSpan]                  # code: theo vị trí; RỖNG chỉ khi khối khớp duy nhất qua chữ kề (caption/đoạn kề; khối
+        # thuộc figure/table/formula/code), còn lại ≥ 1 phần tử (đề xuất suy ra (orchestrator) 2026-11-04, sprint mục 1)
     score: float                                  # code: chỉ để xếp hạng, UI không hiển thị
 
 class BlockSearchPage(StrictModel):
@@ -3024,6 +3104,24 @@ class ProviderTestResult(StrictModel):
 - Lỗi nghiệp vụ dạng `{"detail": {"code": <mã ở bảng>, "message": <câu tiếng Việt cố định>}}`; không nêu giá trị khoá, base URL hay model.
 - `POST …/test` không bị công tắc đồng ý chặn (không gửi nội dung tài liệu), có tính vào bộ đếm chi phí, đi qua đúng luật mạng của §13.1 (kiểm IP lúc kết nối, không redirect).
 - Frontend: trang Cài đặt → mục "Kết nối AI": danh sách nhà cung cấp, thêm từ mẫu "Gemini (Google AI Studio)", "Gateway ban tổ chức", "Tuỳ chỉnh (tương thích OpenAI)"; ô khoá `type="password"`, xoá state sau khi gửi, hiện `…` + `key_last4`; chọn model cho vai VLM (đọc ảnh) và LLM (cấu trúc); thứ tự ưu tiên; nút "Kiểm thử"; chi phí đã dùng / trần (số backend trả); công tắc đồng ý (§5.12); banner khi `key_storage = "plaintext_file"`; ô "Mã truy cập" (giữ trong biến module của `lib/api.ts`, không localStorage/sessionStorage; AppShell hiện cùng ô khi nhận 403 `token_required`). Mọi lời gọi qua `lib/api.ts`.
+
+### 6.12 Lượt làm bài và ôn câu sai (§5.17) — contract, chưa triển khai
+
+Tính năng duyệt 2026-11-04 (người dùng giữ tính năng); đường dẫn, body, tham số, giới hạn và mã lỗi là đề xuất suy ra (orchestrator), chờ xác nhận. Mọi endpoint chạy offline, không cần LLM, không chạy sandbox, qua `LocalAccessMiddleware` như mọi request (§13.1). Kho SQLite bận ⇒ 503 như §6.0.
+
+| Method | Path | Request | Response | Lỗi |
+|---|---|---|---|---|
+| POST | `/v1/practice/attempts` | `PracticeAttemptCreate` (§5.17) | `201 PracticeAttempt`, header `Location: /v1/practice/attempts/{attempt_id}` | 404 (`batch_id` hoặc một `twin_id` không có); 422 (xem dưới) |
+| GET | `/v1/practice/attempts` | query `subject_code` (bắt buộc, mẫu của `Subject`), `offset` ≥ 0 (mặc định 0), `limit` 1–200 (mặc định 50) | `200 PracticeAttemptPage`, mới nhất trước (`seq` giảm dần) | 422 |
+| GET | `/v1/practice/attempts/{attempt_id}` | — | `200 PracticeAttempt` | 404 |
+| GET | `/v1/practice/review-questions` | query `subject_code` (bắt buộc), `offset` ≥ 0 (mặc định 0), `limit` 1–200 (mặc định 50) | `200 ReviewQuestionPage` theo luật "câu sai để ôn" (§5.17) | 422 |
+| DELETE | `/v1/practice/attempts/{attempt_id}` | — | 204 | 404 |
+| DELETE | `/v1/practice/attempts` | query `subject_code` (bắt buộc) | 204; xoá mọi lượt của môn (môn chưa có lượt nào cũng 204) | 422 |
+
+- **Xử lý `POST` (theo thứ tự lỗi):** (1) body sai (kể cả `twin_id` trùng, `batch_id` thiếu khi `mode = "batch"` hoặc có khi `mode = "review"`, quá 500 câu) → 422 (FastAPI); (2) `mode = "batch"` mà batch không có → 404 `"không tìm thấy batch"`; (3) `twin_id` không có trong kho → 404, `detail` liệt kê các `answers[i]`; (4) `mode = "batch"` mà twin không thuộc `batch_id` → 422; (5) twin có `format` khác `MCQ4` → 422 `"hình thức câu này chưa ghi lượt làm bài được"`; (6) `chosen_key` không thuộc khoá `options` của twin → 422; (7) các twin thuộc blueprint khác môn nhau → 422; (8) ghi lượt và mọi `PracticeAnswer` trong một giao dịch, tính `outcome` theo §5.17. Lượt không sửa được sau khi ghi (không `PATCH`); ghi lại là một lượt mới.
+- `mode = "batch"` cho phép gửi một phần twin của batch (người học thoát giữa chừng, §4); twin chưa hiển thị không được ghi (đề xuất suy ra).
+- **Xoá:** `DELETE` chỉ xoá lượt làm bài, không đụng twin, batch hay Vault. Không có `DELETE` môn trong MVP (§6.8), nên "xoá theo môn" là `DELETE /v1/practice/attempts?subject_code=`. `DELETE /v1/documents/{document_id}` (§6.5) KHÔNG xoá lượt làm bài: twin giữ trích dẫn dạng bản chụp nên câu ôn vẫn hiển thị được đủ đáp án và trích dẫn (đề xuất suy ra). Khi twin bị xoá (chỉ xảy ra qua cascade `twin_batches` → `twins` của §5.13), hàng câu của nó bị xoá theo và lượt không còn câu nào bị code xoá trong cùng giao dịch (§5.13).
+- **Frontend:** mọi lời gọi qua `lib/api.ts`; hiển thị số đếm và `outcome` backend trả, không tự tính (I1). Màn ôn câu sai hiện `twin` theo `question_kind` như màn luyện tập, kèm đáp án và trích dẫn nguyên văn (I3).
 
 ## 7. Ingestion Gate
 

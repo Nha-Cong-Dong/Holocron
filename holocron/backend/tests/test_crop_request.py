@@ -553,7 +553,8 @@ def test_batch_missing_a_region_marks_it_render_error(tmp_path: Path) -> None:
 
 
 def test_verify_crop_rejects_non_canonical_base64_padding_bits() -> None:
-    png = _png(9, 7)
+    # Độ dài PNG phụ thuộc phiên bản zlib của máy chạy; chọn kích thước cho base64 có đệm (len % 3 != 0).
+    png = next(candidate for width in range(9, 64) if len(candidate := _png(width, 7)) % 3 != 0)
     canonical = base64.b64encode(png).decode("ascii")
     assert canonical.endswith("=")
     body = canonical.rstrip("=")

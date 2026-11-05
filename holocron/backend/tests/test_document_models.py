@@ -86,6 +86,9 @@ def test_literals_match_spec() -> None:
         "DENOISE_UNAVAILABLE",
         # ADR-010 mục 6 (§5.7, 2026-11-01): khai báo SAU mọi lý do cũ.
         "LAYOUT_FAILED",
+        # ADR-009 mục 2, 3 (§5.7, 2026-11-03): khai báo SAU LAYOUT_FAILED.
+        "VLM_REGION",
+        "TABLE_TOKEN_MISMATCH",
     )
 
 

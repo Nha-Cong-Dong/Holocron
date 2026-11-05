@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from pydantic import BaseModel
 
 from ..domain.ai import AiCacheEntry
+from ..domain.ai_reread import AiRereadProposal, AiRereadProposalRecord
 from ..domain.block_eligibility import is_candidate_block
 from ..domain.blocks import Block, CropImage, ExtractionLedger, Section
 from ..domain.documents import PageEditAudit, PageGeometry, PageSummary
@@ -62,6 +63,7 @@ from ..domain.repositories import (
 from ..domain.schemas import BlueprintSummary, ExamBlueprint, ExamFormat, KnowledgeChunk, Subject
 from ..domain.twins import IdempotencyRecord, TwinBatch
 from ..domain.vault import ConceptPair, ConceptPairStatus, VaultEdit, check_definition_quote, link_practice_chunks
+from .ai_reread_proposals import AiRereadProposalCache
 
 __all__ = ["IDEMPOTENCY_TTL", "IngestionStore"]
 
@@ -160,6 +162,7 @@ class IngestionStore:
         if ai_cache_max_rows < 1 or ai_cache_ttl_days < 1:
             raise ValueError("ai_cache_max_rows và ai_cache_ttl_days phải là số nguyên dương")
         self._ai_cache: dict[str, _StoredAiCache] = {}
+        self._ai_reread = AiRereadProposalCache()
         self._ai_cache_max_rows = ai_cache_max_rows
         self._ai_cache_ttl = timedelta(days=ai_cache_ttl_days)
         self._items: dict[str, IngestionItem] = {}
@@ -547,6 +550,7 @@ class IngestionStore:
             del self._blocks[block_key]
             self._eligible.discard(block_key)
         self._sections.pop(document_id, None)
+        self._ai_reread.drop_document(document_id)
         for crop_key in [key for key in self._crop_rows if key[0] == document_id]:
             del self._crop_rows[crop_key]
         for bytes_key in [key for key in self._crop_bytes if key[0] == document_id]:
@@ -864,6 +868,22 @@ class IngestionStore:
             stored.documents.discard(document_id)
             if not stored.documents:
                 del self._ai_cache[key]
+
+    # AiRereadProposalRepository: kho tạm theo instance (spec §6.10a), không ghi DB.
+    def put_ai_reread_proposal(self, proposal: AiRereadProposal) -> None:
+        self._ai_reread.put(proposal)
+
+    def get_ai_reread_proposal(self, proposal_id: str) -> AiRereadProposalRecord | None:
+        return self._ai_reread.get(proposal_id)
+
+    def discard_ai_reread_proposal(self, proposal_id: str) -> bool:
+        return self._ai_reread.discard(proposal_id)
+
+    def accept_ai_reread_proposal(self, proposal_id: str) -> bool:
+        return self._ai_reread.mark_accepted(proposal_id)
+
+    def release_ai_reread_proposal(self, proposal_id: str) -> bool:
+        return self._ai_reread.release(proposal_id)
 
     def get_ai_cache(self, cache_key: str, document_id: str, *, now: datetime) -> AiCacheEntry | None:
         with self._lock:

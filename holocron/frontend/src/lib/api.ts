@@ -349,6 +349,9 @@ export interface HolocronApi {
     expectedVersion: number,
     edits: LineEdit[],
     appendedLines: string[],
+    /** ADR-009 mục 3.4: `mismatch_id` "Giữ giá trị này" và `block_id` khối VLM bỏ (tuỳ chọn). */
+    keptMismatches?: string[],
+    rejectedVlmBlocks?: string[],
   ) => Promise<PageView>;
   /** `POST /v1/documents/{document_id}/pages/{page_number}/confirm` (§6.5; chưa có ở backend của nhánh). */
   confirmPage: (documentId: string, pageNumber: number, expectedVersion: number) => Promise<PageView>;
@@ -665,12 +668,24 @@ export const realApi: HolocronApi = {
     return validated(parsePageExtraction(raw));
   },
 
-  patchPageLines: async (documentId, pageNumber, expectedVersion, edits, appendedLines) => {
+  patchPageLines: async (
+    documentId,
+    pageNumber,
+    expectedVersion,
+    edits,
+    appendedLines,
+    keptMismatches,
+    rejectedVlmBlocks,
+  ) => {
     const payload: PageLinesPatch = {
       editor_id: LOCAL_EDITOR_ID,
       expected_version: expectedVersion,
       edits,
       appended_lines: appendedLines,
+      ...(keptMismatches !== undefined && keptMismatches.length > 0 ? { kept_mismatches: keptMismatches } : {}),
+      ...(rejectedVlmBlocks !== undefined && rejectedVlmBlocks.length > 0
+        ? { rejected_vlm_blocks: rejectedVlmBlocks }
+        : {}),
     };
     const raw = await request<unknown>(
       `/v1/documents/${segment(documentId)}/pages/${pageNumber}/lines`,
@@ -865,12 +880,12 @@ export function createApi(useMocks: boolean): HolocronApi {
           : realApi.deleteDocument(id),
     // Sửa dòng và xác nhận (§6.5) chưa có ở backend của nhánh: tài liệu mẫu dùng fixture; tài liệu thật vẫn gọi
     // backend (backend chưa có endpoint thì trả 404 và giao diện báo backend chưa hỗ trợ).
-    patchPageLines: (id, page, version, edits, appended) =>
+    patchPageLines: (id, page, version, edits, appended, kept, rejected) =>
       isImportResultMock(id)
         ? result.patchPageLines(id, page)
         : isMockDocument(id)
           ? documents.patchPageLines(id, page, version)
-          : realApi.patchPageLines(id, page, version, edits, appended),
+          : realApi.patchPageLines(id, page, version, edits, appended, kept, rejected),
     confirmPage: (id, page, version) =>
       isImportResultMock(id)
         ? result.confirmPage(id, page, version)

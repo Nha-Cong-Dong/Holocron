@@ -139,7 +139,26 @@ const PAGE_2: PageExtractionPending = {
   confirmed_by: null,
   confirm_rule: null,
   auto_confirm_undone: false,
-  vlm_mismatches: [],
+  vlm_mismatches: [
+    {
+      mismatch_id: "mock-mm-1",
+      block_id: "mock-blk-vlm-1",
+      token_kind: "number",
+      row: 2,
+      col: 3,
+      vlm_value: "7",
+      ocr_value: "1",
+    },
+    {
+      mismatch_id: "mock-mm-2",
+      block_id: "mock-blk-vlm-1",
+      token_kind: "number",
+      row: null,
+      col: null,
+      vlm_value: null,
+      ocr_value: "30",
+    },
+  ],
   kept_vlm_mismatch_ids: [],
   vlm_rejected_block_ids: [],
 };
@@ -160,6 +179,7 @@ const PAGE_2_EDITED: PageExtractionPending = {
   ],
   cross_check: { status: "ok", secondary_engine: "rapidocr", mismatches: [] },
   review_reasons: [],
+  vlm_mismatches: [],
 };
 
 /** Trang 3 đã được người dùng xem lại và xác nhận từng trang từ trước (§6.5: trang `needs_review` xác nhận từng trang). */

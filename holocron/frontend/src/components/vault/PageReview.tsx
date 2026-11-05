@@ -87,12 +87,12 @@ import {
   reviewSessionFor,
 } from "@/lib/review-session";
 import type { VaultHrefFor } from "@/lib/vault";
-
 import { AiRereadSection } from "./AiReread";
 import { DeleteDialog } from "./DocumentList";
 import { DroppedPageNav, DroppedPagePanel } from "./DroppedPages";
 import pageStyles from "./PageReview.module.css";
 import styles from "./Vault.module.css";
+import { VlmMismatchPanel } from "./VlmMismatchPanel";
 
 type Loadable<T> = { kind: "loading" } | { kind: "error"; error: UiError } | { kind: "ready"; value: T };
 
@@ -639,6 +639,28 @@ export function PageReview({
                   () => setConfirmedHere(current),
                 );
               }}
+            />
+          )}
+          {page.kind === "ready" && !page.value.dropped && (
+            <VlmMismatchPanel
+              key={`vlm:${page.value.pageNumber}:${page.value.version}`}
+              page={page.value}
+              busy={busy}
+              onPatch={(patch) =>
+                runWrite(
+                  () =>
+                    api.patchPageLines(
+                      documentId,
+                      page.value.pageNumber,
+                      page.value.version,
+                      [],
+                      [],
+                      patch.keptMismatches,
+                      patch.rejectedVlmBlocks,
+                    ),
+                  patch.rejectedVlmBlocks.length > 0 ? "Đã bỏ khối AI đọc." : "Đã giữ giá trị này.",
+                )
+              }
             />
           )}
           {page.kind === "ready" && !page.value.dropped && page.value.status !== "pending" && (

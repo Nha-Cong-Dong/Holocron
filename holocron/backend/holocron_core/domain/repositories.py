@@ -16,6 +16,7 @@ from typing import Literal, Protocol, get_args
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .ai import AiCacheEntry
+from .ai_reread import AiRereadProposal, AiRereadProposalRecord
 from .blocks import Block, BlockFlag, CropImage, ExtractionLedger, Section, SectionFlag
 from .documents import (
     CHAPTER_CODE_PATTERN,
@@ -812,6 +813,28 @@ class AiCacheRepository(Protocol):
         ...
 
 
+class AiRereadProposalRepository(Protocol):
+    """Kho tạm đề xuất đọc lại bằng AI (spec §6.10a): thuộc tính instance của store, tối đa 50 đề xuất (bỏ cũ nhất),
+    mất khi khởi động lại; `delete_document` bỏ đề xuất của tài liệu."""
+
+    def put_ai_reread_proposal(self, proposal: AiRereadProposal) -> None: ...
+
+    def get_ai_reread_proposal(self, proposal_id: str) -> AiRereadProposalRecord | None: ...
+
+    def discard_ai_reread_proposal(self, proposal_id: str) -> bool:
+        """Đánh dấu đề xuất đã bỏ; `False` khi kho không có nó."""
+        ...
+
+    def accept_ai_reread_proposal(self, proposal_id: str) -> bool:
+        """Đánh dấu đề xuất đã nhận (chỉ khi còn `pending`); `False` khi không có hoặc không còn `pending`."""
+        ...
+
+    def release_ai_reread_proposal(self, proposal_id: str) -> bool:
+        """Trả đề xuất `accepted` về `pending` khi ghi trang của lần Nhận thất bại (không ghi gì); `False` khi không có
+        hoặc không ở `accepted`."""
+        ...
+
+
 class AppStore(
     IngestionRepository,
     BlueprintRepository,
@@ -821,6 +844,7 @@ class AppStore(
     SubjectRepository,
     PracticeAttemptRepository,
     AiCacheRepository,
+    AiRereadProposalRepository,
     Protocol,
 ):
     """Kho mà các router dùng, cấp qua `Depends(get_store)`."""

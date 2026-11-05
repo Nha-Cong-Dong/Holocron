@@ -137,6 +137,13 @@ class LlmTimeoutError(LlmUpstreamError):
     """
 
 
+class LlmRateLimitedError(LlmUpstreamError):
+    """`LlmUpstreamError` do nhà cung cấp trả HTTP 429 ở lần thử cuối cùng (sau khi hết số lần thử lại).
+
+    Nơi gọi phân biệt theo KIỂU exception (spec §6.10a: 503 `VLM_RATE_LIMITED`), không theo thông điệp.
+    """
+
+
 class ImageTooLargeError(Exception):
     """Một ảnh trong request vượt trần byte cấu hình; adapter từ chối TRƯỚC khi gửi (ADR-009 mục 5, mục 9).
 

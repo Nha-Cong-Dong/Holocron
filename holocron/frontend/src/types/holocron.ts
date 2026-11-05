@@ -535,7 +535,9 @@ export type ReviewReason =
   | "IMAGE_NEEDS_READING"
   | "PAGE_ROLE_UNCERTAIN"
   | "DENOISE_UNAVAILABLE"
-  | "LAYOUT_FAILED";
+  | "LAYOUT_FAILED"
+  | "VLM_REGION"
+  | "TABLE_TOKEN_MISMATCH";
 
 export type FailureReason = "PAGE_TIMEOUT" | "PAGE_ERROR" | "OCR_ENGINE_MISSING" | "TOO_MANY_LINES";
 
@@ -588,6 +590,18 @@ export interface CrossCheck {
   mismatches: TokenMismatch[];
 }
 
+/** Chỗ lệch token số/mã chưa giải quyết của một khối bảng nguồn `vlm` (§5.7; ADR-009 mục 3.4). VLM thừa có
+ * `row`/`col`/`vlm_value`; VLM bỏ sót chỉ có `ocr_value`. */
+export interface VlmTokenMismatch {
+  mismatch_id: string;
+  block_id: string;
+  token_kind: "number" | "code";
+  row: number | null;
+  col: number | null;
+  vlm_value: string | null;
+  ocr_value: string | null;
+}
+
 /** Kết quả đọc một trang PDF (§5.7); mọi điểm và cờ do backend tính, frontend chỉ hiển thị. */
 export interface PageExtraction {
   document_id: string;
@@ -624,6 +638,12 @@ export interface PageExtraction {
   confirm_rule: string | null;
   /** True sau khi người dùng hoàn tác tự xác nhận (`POST …/unconfirm`); trang này không bao giờ tự xác nhận lại. */
   auto_confirm_undone: boolean;
+  /** ADR-009 mục 3.4: chỗ lệch ô bảng VLM chưa giải quyết; không rỗng ⇔ có `TABLE_TOKEN_MISMATCH` (xác nhận trang 409). */
+  vlm_mismatches: VlmTokenMismatch[];
+  /** ADR-009 mục 3.5: `mismatch_id` người dùng đã "Giữ giá trị này". */
+  kept_vlm_mismatch_ids: string[];
+  /** ADR-009 mục 3.5: `block_id` của khối VLM người dùng đã bỏ. */
+  vlm_rejected_block_ids: string[];
 }
 
 /** Người xác nhận một trang (GĐ1 1B). */
@@ -730,6 +750,10 @@ export interface PageLinesPatch {
   expected_version: number;
   edits?: LineEdit[];
   appended_lines?: string[];
+  /** ADR-009 mục 3.4: `mismatch_id` từng chỗ lệch "Giữ giá trị này" (không có "giữ tất cả"). */
+  kept_mismatches?: string[];
+  /** ADR-009 mục 3.4: `block_id` của khối `source = "vlm"` người dùng bỏ (khối về offline). */
+  rejected_vlm_blocks?: string[];
 }
 
 /** Body của `POST /v1/documents/{document_id}/pages/{page_number}/confirm`; trả `PageExtraction`. */
@@ -1480,4 +1504,82 @@ export interface ProviderTestResult {
   http_status: number | null;
   latency_ms: number;
   models: string[];
+}
+
+// ----------------------------------------------------------- domain/ai_reread.py (§6.10a, ADR-009 mục 15)
+
+export type AiRereadStatus = "accepted_text" | "rejected";
+
+/** Lý do quyết định của cổng VLM (`services/vision_gate.py`); `"ok"` khi và chỉ khi `status = "accepted_text"`. */
+export type GateReason =
+  | "ok"
+  | "status_invalid"
+  | "status_unavailable"
+  | "text_layer_overlap"
+  | "invalid_overlap"
+  | "ocr_missing"
+  | "unreadable_marker"
+  | "empty"
+  | "mixed_table"
+  | "too_long"
+  | "cer"
+  | "jaccard"
+  | "number_tokens"
+  | "code_tokens"
+  | "figure_only";
+
+/** Mã trong `detail.code` của lỗi 409/503 của `POST …/blocks/{block_id}/ai-reread` và 409 của `…/accept`. */
+export type AiRereadErrorCode =
+  | "BLOCK_NOT_ELIGIBLE"
+  | "AI_NOT_CONFIGURED"
+  | "AI_MODE_OFF"
+  | "AI_BUDGET_EXHAUSTED"
+  | "VLM_TIMEOUT"
+  | "VLM_RATE_LIMITED"
+  | "VLM_UPSTREAM_ERROR"
+  | "VERSION_CONFLICT"
+  | "PROPOSAL_STALE"
+  | "PROPOSAL_NOT_PENDING";
+
+/** Chỗ lệch token số/mã của ứng viên bảng: VLM thừa có `row`/`col`/`vlm_value`; VLM bỏ sót chỉ có `ocr_value`. */
+export interface AiRereadMismatch {
+  mismatch_id: string;
+  token_kind: "number" | "code";
+  row: number | null;
+  col: number | null;
+  vlm_value: string | null;
+  ocr_value: string | null;
+}
+
+/** Khối đề xuất (chữ VLM đã qua cổng): `text` null ⇔ `type = "table"` ⇔ `rows` khác null. */
+export interface AiRereadBlock {
+  type: BlockType;
+  text: string | null;
+  rows: string[][] | null;
+  flags: BlockFlag[];
+}
+
+/** Response `POST /v1/documents/{document_id}/pages/{page_number}/blocks/{block_id}/ai-reread` (không ghi trang). */
+export interface AiRereadProposal {
+  proposal_id: string;
+  document_id: string;
+  page_number: number;
+  block_id: string;
+  page_version: number;
+  status: AiRereadStatus;
+  reason: GateReason;
+  /** Đúng một phần tử khi `status = "accepted_text"`, rỗng khi `"rejected"`. */
+  blocks: AiRereadBlock[];
+  mismatches: AiRereadMismatch[];
+  /** Chữ OCR độc lập của vùng; `""` khi không có. */
+  ocr_text: string;
+  input_sha256: string;
+  from_cache: boolean;
+  recipient_label: string;
+}
+
+/** Body của `POST …/ai-reread/{proposal_id}/accept`; trả `PageExtraction`. */
+export interface AiRereadAcceptRequest {
+  editor_id: string;
+  expected_version: number;
 }

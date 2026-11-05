@@ -46,7 +46,13 @@ def is_trusted_source(page: PageExtraction) -> bool:
     """`source_trust_v1`: trang là nguồn đáng tin khi (a) `tier_used = "text_layer"` và `scan_text_layer = false`,
     hoặc (b) `tier_used = "ocr"` và `cross_check.status = "ok"`. Mọi trường hợp khác không đáng tin: lớp chữ là lớp
     OCR của PDF scan, tầng `vlm` hay `layout`, OCR có đối chiếu `unavailable`, `mismatch` hay `not_applicable`, trang
-    `pending` hoặc `failed` (không có `tier_used`)."""
+    `pending` hoặc `failed` (không có `tier_used`).
+
+    ADR-009 mục 3.6 (xét theo khối, không theo `tier_used`): trang có `VLM_REGION` (có vùng đã nhận kết quả VLM; khối
+    `source = "vlm"` chỉ được ghi cùng lý do này và lý do không bao giờ bị bỏ) KHÔNG đáng tin, bất kể `tier_used` và
+    `cross_check`, kể cả sau khi người dùng xác nhận."""
+    if "VLM_REGION" in page.review_reasons:
+        return False
     if page.tier_used == "text_layer":
         return not page.scan_text_layer
     if page.tier_used == "ocr":

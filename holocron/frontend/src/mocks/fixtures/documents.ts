@@ -94,6 +94,9 @@ const PAGE_1: PageExtractionPending = {
   confirmed_by: null,
   confirm_rule: null,
   auto_confirm_undone: false,
+  vlm_mismatches: [],
+  kept_vlm_mismatch_ids: [],
+  vlm_rejected_block_ids: [],
 };
 
 const PAGE_2: PageExtractionPending = {
@@ -136,6 +139,9 @@ const PAGE_2: PageExtractionPending = {
   confirmed_by: null,
   confirm_rule: null,
   auto_confirm_undone: false,
+  vlm_mismatches: [],
+  kept_vlm_mismatch_ids: [],
+  vlm_rejected_block_ids: [],
 };
 
 /**
@@ -192,6 +198,9 @@ const PAGE_3: PageExtractionPending = {
   confirmed_by: "user",
   confirm_rule: null,
   auto_confirm_undone: false,
+  vlm_mismatches: [],
+  kept_vlm_mismatch_ids: [],
+  vlm_rejected_block_ids: [],
 };
 
 const PAGE_4: PageExtractionPending = {
@@ -226,6 +235,9 @@ const PAGE_4: PageExtractionPending = {
   confirmed_by: null,
   confirm_rule: null,
   auto_confirm_undone: false,
+  vlm_mismatches: [],
+  kept_vlm_mismatch_ids: [],
+  vlm_rejected_block_ids: [],
 };
 
 export const INITIAL_PAGES: readonly PageExtractionPending[] = [PAGE_1, PAGE_2, PAGE_3, PAGE_4];

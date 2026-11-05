@@ -58,6 +58,8 @@ from ..domain.block_eligibility import is_candidate_block
 from ..domain.blocks import Block
 from ..domain.documents import (
     GEOMETRY_VERSION,
+    MAX_VLM_MISMATCHES,
+    MAX_VLM_REJECTED_BLOCKS,
     ChapterSource,
     ConfirmedBy,
     CrossCheck,
@@ -76,6 +78,7 @@ from ..domain.documents import (
     PageRestoreRequest,
     PageSummary,
     PageUnconfirmRequest,
+    PageVlmAction,
     ProposalJobAbsentReason,
     ReviewReason,
     count_auto_confirmed,
@@ -167,6 +170,10 @@ SETTLE_PENDING_DETAIL = (
 # 409 khi thao tác trên trang đang bị bỏ mềm (GĐ0 0D; `detail` đề xuất của §6.5).
 DROPPED_EDIT_DETAIL = "Trang đang bị bỏ qua; hãy hoàn tác trước khi sửa"
 DROPPED_CONFIRM_DETAIL = "Trang đang bị bỏ qua; hãy hoàn tác trước khi xác nhận"
+# §6.5 "Xác nhận" (ADR-009 mục 3.4; `detail` đề xuất suy ra): trang còn `vlm_mismatches` (ô bảng VLM lệch token).
+VLM_MISMATCH_CONFIRM_DETAIL = (
+    "Bảng trên trang còn số hoặc mã đọc lệch; hãy giữ giá trị, bỏ khối hoặc sửa dòng trước khi xác nhận"
+)
 USER_CONFIRMED_UNDO_DETAIL = "Trang do người dùng xác nhận, không hoàn tác được"
 PAGE_TOO_LARGE_DETAIL = (
     f"Trang vượt giới hạn của Knowledge Vault (tối đa {MAX_PAGE_LINES} dòng có văn bản, mỗi dòng tối đa "
@@ -2024,6 +2031,12 @@ def _check_editable(document: ImportedDocument, page: PageExtraction, vault: Vau
     _check_text_open(document, vault)
 
 
+def check_page_editable(document: ImportedDocument, page: PageExtraction, vault: VaultRepository) -> None:
+    """Điều kiện 409 của `PATCH …/lines` (§6.5) cho một trang; dùng chung với đọc lại bằng AI (§6.10a "Khối đủ điều
+    kiện"). Không cho sửa ⇒ `PageStateError`."""
+    _check_editable(document, page, vault)
+
+
 def _check_version(page: PageExtraction, expected_version: int) -> None:
     if page.version != expected_version:
         key = _page_key(page.document_id, page.page_number)
@@ -2101,6 +2114,62 @@ def apply_line_edits(
     return edited, changes
 
 
+def _appended_unique(current: list[str], added: list[str]) -> list[str]:
+    return [*current, *(item for item in added if item not in current)]
+
+
+def apply_vlm_resolutions(
+    page: PageExtraction, patch: PageLinesPatch, vlm_block_ids: Collection[str]
+) -> tuple[PageExtraction, list[PageVlmAction]]:
+    """Áp `kept_mismatches` và `rejected_vlm_blocks` của `patch` lên trang (hàm thuần; §6.5, ADR-009 mục 3.4, 3.5).
+
+    - Mỗi `mismatch_id` giữ: bỏ khỏi `vlm_mismatches`, thêm vào `kept_vlm_mismatch_ids` (lưu bền qua dựng lại).
+    - Mỗi khối bỏ: mọi chỗ lệch của khối bị bỏ, `block_id` thêm vào `vlm_rejected_block_ids`; khối về offline khi dựng
+      lại (`document_layout._carry_vlm` không giữ khối có id trong danh sách) và không đọc lại bằng AI được nữa.
+    - Hết `vlm_mismatches` ⇒ bỏ `TABLE_TOKEN_MISMATCH`; `VLM_REGION` giữ nguyên; `status` tính lại. KHÔNG đổi `version`
+      (người gọi đã tăng đúng 1 cho cả lời gọi qua `apply_line_edits`).
+
+    `mismatch_id` không có trong `vlm_mismatches` của trang, `block_id` không phải khối `source = "vlm"` của trang
+    (`vlm_block_ids`), hoặc danh sách lưu bền vượt trần ⇒ `InvalidPageEditError` (422). Trả trang mới và các thao tác
+    cho `PageEditAudit.vlm_actions` theo thứ tự trong body.
+    """
+    if not patch.kept_mismatches and not patch.rejected_vlm_blocks:
+        return page, []
+    open_ids = {mismatch.mismatch_id for mismatch in page.vlm_mismatches}
+    unknown = [item for item in patch.kept_mismatches if item not in open_ids]
+    if unknown:
+        raise InvalidPageEditError(f"kept_mismatches không có trong vlm_mismatches của trang: {unknown}")
+    not_vlm = [item for item in patch.rejected_vlm_blocks if item not in vlm_block_ids]
+    if not_vlm:
+        raise InvalidPageEditError(f"rejected_vlm_blocks không phải khối vlm của trang: {not_vlm}")
+    kept_ids = _appended_unique(page.kept_vlm_mismatch_ids, patch.kept_mismatches)
+    rejected_ids = _appended_unique(page.vlm_rejected_block_ids, patch.rejected_vlm_blocks)
+    if len(kept_ids) > MAX_VLM_MISMATCHES or len(rejected_ids) > MAX_VLM_REJECTED_BLOCKS:
+        raise InvalidPageEditError("trang đã có quá nhiều chỗ lệch giữ hoặc khối vlm bỏ")
+    kept, rejected = set(patch.kept_mismatches), set(patch.rejected_vlm_blocks)
+    mismatches = [m for m in page.vlm_mismatches if m.mismatch_id not in kept and m.block_id not in rejected]
+    reasons = [reason for reason in page.review_reasons if mismatches or reason != "TABLE_TOKEN_MISMATCH"]
+    resolved = PageExtraction.model_validate(
+        {
+            **page.model_dump(),
+            "status": "needs_review" if reasons else "ok",
+            "review_reasons": reasons,
+            "vlm_mismatches": [m.model_dump() for m in mismatches],
+            "kept_vlm_mismatch_ids": kept_ids,
+            "vlm_rejected_block_ids": rejected_ids,
+        }
+    )
+    actions = [PageVlmAction(action="keep_mismatch", id=item) for item in patch.kept_mismatches]
+    actions += [PageVlmAction(action="reject_vlm_block", id=item) for item in patch.rejected_vlm_blocks]
+    return resolved, actions
+
+
+def _vlm_block_ids(store: DocumentRepository, document_id: str, page_number: int, patch: PageLinesPatch) -> set[str]:
+    if not patch.rejected_vlm_blocks:
+        return set()
+    return {block.block_id for block in store.list_blocks(document_id, page_number) if block.source == "vlm"}
+
+
 def edit_page_lines(
     store: DocumentRepository,
     vault: VaultRepository,
@@ -2125,6 +2194,10 @@ def edit_page_lines(
 
     XCROP: sau khi đường dựng lại commit và nhả khoá ⇒ xếp job cắt ảnh nền (`runtime.crops`) cho mọi khối cần ảnh
     chưa có ảnh; request KHÔNG chờ job (khối giữ `crop_pending` tới khi job ghi ảnh).
+
+    ADR-009 mục 3.4, 3.5: `kept_mismatches`/`rejected_vlm_blocks` áp bằng `apply_vlm_resolutions` trong CÙNG lời gọi
+    (`version` + 1 một lần, `PageEditAudit.vlm_actions`); khối bị bỏ về offline khi dựng lại; khối hết chỗ lệch được
+    gỡ `table_token_mismatch` khi dựng lại (`document_layout`).
     """
     with runtime.locks.hold(document_id):
         page = get_page_extraction(store, document_id, page_number)
@@ -2134,8 +2207,13 @@ def edit_page_lines(
         _check_editable(document, page, vault)
         _check_version(page, patch.expected_version)
         edited, changes = apply_line_edits(page, patch, line_conf_min=runtime.reader_config.line_conf_min)
+        edited, vlm_actions = apply_vlm_resolutions(
+            edited, patch, _vlm_block_ids(store, document_id, page_number, patch)
+        )
         if document.layout_version is not None:
-            rebuilt = _rebuild_after_edit(store, document, page, edited, changes, patch, runtime.layout, now)
+            rebuilt = _rebuild_after_edit(
+                store, document, page, edited, (changes, vlm_actions), patch, runtime.layout, now
+            )
         else:
             audit = PageEditAudit(
                 document_id=document_id,
@@ -2145,6 +2223,7 @@ def edit_page_lines(
                 editor_id=patch.editor_id,
                 changes=changes,
                 at=now,
+                vlm_actions=vlm_actions,
             )
             store.update_page(
                 document_id,
@@ -2190,7 +2269,7 @@ def _rebuild_after_edit(
     document: ImportedDocument,
     page: PageExtraction,
     edited: PageExtraction,
-    changes: list[PageLineChange],
+    audited: tuple[list[PageLineChange], list[PageVlmAction]],
     patch: PageLinesPatch,
     layout: LayoutConfig,
     now: datetime,
@@ -2216,8 +2295,9 @@ def _rebuild_after_edit(
             from_version=page.version,
             to_version=final.version,
             editor_id=patch.editor_id,
-            changes=changes,
+            changes=audited[0],
             at=now,
+            vlm_actions=audited[1],
         )
         stored = {item.page_number: item for item in store.list_pages(document_id, PageExtraction)}
         rewrites = [PageRewrite(page=final, expected_version=page.version, audit=audit)] + [
@@ -2604,6 +2684,8 @@ def confirm_page(
                 raise PageStateError("trang đọc lỗi không xác nhận được; hãy xoá tài liệu rồi nhập lại file")
             if page.dropped:
                 raise PageStateError(DROPPED_CONFIRM_DETAIL)
+            if page.vlm_mismatches:
+                raise PageStateError(VLM_MISMATCH_CONFIRM_DETAIL)
             _check_version(page, request.expected_version)
             if not _has_text(page):
                 raise PageStateError("trang không có dòng nào có văn bản để xác nhận")

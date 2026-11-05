@@ -22,6 +22,13 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 - Màn xem lại hiện trang ẩn tự động kèm lý do và nút "Khôi phục trang" (PR #112).
 - Màn kết quả nhập tài liệu: tóm tắt sau khi đọc xong, nút Chấp nhận và tiến độ job đề xuất cặp khái niệm (PR #113).
 - Màn khái niệm: chọn nhiều cặp đề xuất, "Chấp nhận & ôn tập", tô sáng định nghĩa trên đoạn gốc (PR #114).
+- Tài liệu nhập mới có khối, ledger và `layout_version`; trang lỗi bố cục báo `LAYOUT_FAILED`; sửa dòng sẽ dựng lại khối. Endpoint cây mục, khối theo mục/trang và ảnh cắt (SPEC §6.10) (PR #145).
+- Job cắt ảnh nền cho khối bảng/hình/công thức sau khi đọc, sau sửa dòng và khi khởi động (PR #148).
+- Mục lục và tra cứu khối trong tab Tài liệu của môn; kết quả hiện chữ cạnh ảnh cắt trang gốc (PR #147).
+- API lượt làm bài và ôn câu sai (`/v1/practice/attempts`, `/v1/practice/review-questions`), migration 0008 (PR #146).
+- Ôn tập: ghi lịch sử làm bài; thêm màn "Lịch sử làm bài" và "Ôn câu sai" (có đáp án và trích dẫn nguyên văn) (PR #144).
+- Cài đặt kết nối AI: công tắc đồng ý gửi tự động, thêm nhà cung cấp kèm khoá (DPAPI), `ai_status` trong `/v1/runtime`; đề xuất cặp khái niệm chạy được với nhà cung cấp LLM người dùng tự thêm (PR #149).
+- Đọc lại bằng AI theo yêu cầu cho khối có cờ (bảng chưa dựng được, mã chưa chắc, chữ tương phản thấp): xem trước, Nhận hoặc Bỏ, báo trước nơi nhận ảnh; `PATCH …/lines` nhận `kept_mismatches` và `rejected_vlm_blocks`, trang có ô bảng VLM lệch xác nhận được sau khi giữ hết chỗ lệch hoặc bỏ khối (PR #150).
 
 ### 🛠️ Cải tiến & Tối ưu
 - Spec: contract nhập một chạm cho khử nhiễu trang PDF, vai trò trang, chương tự động, tự xác nhận cấp trang và job đề xuất cặp kiểu con trỏ (ADR-006/007/008; PR #105).
@@ -39,6 +46,9 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 - SPEC/ADR: ngưỡng template 0.40, cờ `CHAPTER_NUMBER_SHARED`, lô đề xuất mặc định 5, contract màn kết quả nhập (PR #111); SPEC §5/§6: contract Block/Section/ExtractionLedger, migration và endpoint cây/tra cứu (PR #119).
 - Số chương trong tên file trùng chương đã có được giữ, kèm cờ thông tin `CHAPTER_NUMBER_SHARED`; lô đề xuất khái niệm mặc định 5 chunk (PR #115).
 - Danh sách tài liệu hiện số trang cần xem lại và đã ẩn do backend đếm; trang ẩn không vào hàng đợi xem lại (PR #112).
+- Tự xác nhận trang dựa trên cờ khối; `crop_*` không chặn (PR #145).
+- SPEC §6.10a: contract đọc lại khối có cờ bằng AI theo yêu cầu (PR #143).
+- LLM adapter đánh dấu HTTP 429 cuối cùng (`LlmRateLimitedError`), endpoint trả 503 `VLM_RATE_LIMITED` (PR #150).
 
 ### 🐛 Sửa lỗi
 - Màn Xem lại: bỏ phím Enter xác nhận trang, nút bỏ qua kích hoạt trong 0,6 s đầu và khoá khi đang gửi; nháp không mất khi lưu dòng khác hay đổi trang; xung đột 409 báo tại dòng kèm "Sửa lại từ bản mới" và "Bỏ chữ đã gõ" (PR #100). Sửa focus và câu báo ở tab Khái niệm (PR #102).
@@ -48,12 +58,20 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 - Nhập đồng thời cùng môn cho kết quả như tuần tự; file hỏng không chiếm số chương (PR #108).
 - OCR: `vie.traineddata` thiếu chữ tiếng Việt thì trang scan thành `failed` với `OCR_ENGINE_MISSING`; lần kiểm nền gặp lỗi không treo ở pending; `HOLOCRON_TESSDATA_DIR`/`HOLOCRON_TESSERACT_CMD` tương đối đổi sang tuyệt đối; thăm dò RapidOCR chạy trong thư mục tạm riêng; lỗi kiểm ở request đầu báo `ocr_engine_missing` thay vì 500; đường dẫn Tesseract bắt đầu bằng `\` trên Linux/macOS hiểu là tương đối; một lần hỏi lại runtime lỗi mạng không còn đẩy ô trạng thái sang lỗi (PR #103).
 - Bản zip ghi license OFL-1.1 của hai font Lexend, Newsreader (`THIRD_PARTY_NOTICES`, `licenses/`); bước kiểm license khi build chỉ cho phép OFL cho đúng hai gói font này (PR #96).
+- Lỗi cắt ảnh hoặc ghi ảnh chỉ đánh `crop_failed` khối đó; trần số ảnh tính cả ảnh đã có (PR #148).
+- Cảnh báo trang chưa tra cứu được (lỗi bố cục, chưa có khối, chưa xác nhận) (PR #147).
 - Cây tiêu đề: La Mã chuẩn 1-39 nên `C. Kết luận`, `Part C` không bị coi là đánh số La Mã; `_strip_suffix` tuyến tính và đúng ranh giới ký tự khi casefold đổi độ dài; thêm test khoá luật cấp (từ khoá + số ⇒ cấp theo đánh số, không cờ; chỉ tiêu đề không đánh số trong cụm cỡ quá gần mới `level_uncertain`); `SECTION_TREE_STAGE_VERSION` = 2 (PR #126).
 
 ### 🔒 Bảo mật Sandbox
 - `HOLOCRON_REQUIRE_TOKEN`: không đặt hoặc rỗng thì không yêu cầu token; có giá trị toàn khoảng trắng hoặc sai dạng là cấu hình hỏng, app từ chối khởi động (bản zip thoát 2 trước khi mở cổng; uvicorn thoát 3), thông điệp chỉ nêu tên biến; lúc chạy vẫn 403 fail-closed. Launcher thoát 2 (thay vì 0) khi server không khởi động xong (PR #97).
 - Màn Xem lại khoá nút xác nhận trang và "Xác nhận các trang đọc tốt" khi còn dòng chưa lưu, không tự lưu hộ (I5; PR #100).
 - Bìa tự xác nhận của tài liệu còn mở bị bỏ tự xác nhận và bỏ mềm khi tài liệu sau lộ ra trùng bìa (PR #110).
+- Ghi ảnh cắt dưới khoá tài liệu kèm khoá thế hệ nhập; không đổi trạng thái xác nhận trang (PR #148).
+- Ảnh cắt tải qua header token rồi object URL, không có token trong URL (PR #147).
+- Client VLM/LLM tới nhà cung cấp người dùng đi qua transport chặn địa chỉ nội bộ, kèm trần chi tiêu (PR #149).
+- Cài đặt và sổ chi tiêu AI fail-closed khi file không đọc được; không ghi đè (PR #149).
+- Job đề xuất tự tạo tôn trọng công tắc đồng ý với nhà cung cấp người dùng (PR #149).
+- Chữ VLM chỉ vào kho sau `vision_gate` và sau khi người dùng Nhận; trang có khối AI không tự xác nhận (I1, I3, I5; PR #150).
 
 ### ⚠️ Thay đổi không tương thích
 - `PdfReaderConfig` bỏ `text_full_chars` (truyền vào sẽ báo `ValidationError`), thêm `text_sparse_chars`, `text_sparse_image_min`, `text_full_image_min`, `text_full_image_max_chars` và các field `template_*`; `text_score` đã lưu của tài liệu nhập trước 2026-10-29 theo công thức cũ, không so trực tiếp được với điểm mới. Hệ quả tạm: slide có khung template vẽ bằng vector trên ảnh nền template vẫn bị gắn cờ hình cho tới khi xử lý nợ BE-007 (PR #104).

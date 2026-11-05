@@ -139,6 +139,18 @@ const PAGE_2: PageExtractionPending = {
   confirmed_by: null,
   confirm_rule: null,
   auto_confirm_undone: false,
+  vlm_mismatches: [],
+  kept_vlm_mismatch_ids: [],
+  vlm_rejected_block_ids: [],
+};
+
+/**
+ * Trang riêng cho chỗ lệch bảng do AI đọc (ADR-009 mục 3.4; không nằm trong `INITIAL_PAGES`): có
+ * `TABLE_TOKEN_MISMATCH` và hai chỗ lệch cùng một khối VLM `mock-blk-vlm-1`.
+ */
+export const VLM_MISMATCH_PAGE: PageExtractionPending = {
+  ...PAGE_2,
+  review_reasons: ["TABLE_TOKEN_MISMATCH"],
   vlm_mismatches: [
     {
       mismatch_id: "mock-mm-1",
@@ -159,8 +171,6 @@ const PAGE_2: PageExtractionPending = {
       ocr_value: "30",
     },
   ],
-  kept_vlm_mismatch_ids: [],
-  vlm_rejected_block_ids: [],
 };
 
 /**
@@ -179,7 +189,6 @@ const PAGE_2_EDITED: PageExtractionPending = {
   ],
   cross_check: { status: "ok", secondary_engine: "rapidocr", mismatches: [] },
   review_reasons: [],
-  vlm_mismatches: [],
 };
 
 /** Trang 3 đã được người dùng xem lại và xác nhận từng trang từ trước (§6.5: trang `needs_review` xác nhận từng trang). */

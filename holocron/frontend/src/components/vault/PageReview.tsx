@@ -87,6 +87,8 @@ import {
   reviewSessionFor,
 } from "@/lib/review-session";
 import type { VaultHrefFor } from "@/lib/vault";
+import { mismatchDoneMessage, writeMismatchPatch } from "@/lib/vlm-mismatch";
+
 import { AiRereadSection } from "./AiReread";
 import { DeleteDialog } from "./DocumentList";
 import { DroppedPageNav, DroppedPagePanel } from "./DroppedPages";
@@ -649,16 +651,14 @@ export function PageReview({
               onPatch={(patch) =>
                 runWrite(
                   () =>
-                    api.patchPageLines(
+                    writeMismatchPatch(
+                      api.patchPageLines,
                       documentId,
                       page.value.pageNumber,
                       page.value.version,
-                      [],
-                      [],
-                      patch.keptMismatches,
-                      patch.rejectedVlmBlocks,
+                      patch,
                     ),
-                  patch.rejectedVlmBlocks.length > 0 ? "Đã bỏ khối AI đọc." : "Đã giữ giá trị này.",
+                  mismatchDoneMessage(patch),
                 )
               }
             />

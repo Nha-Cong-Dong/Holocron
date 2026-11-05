@@ -143,10 +143,6 @@ export interface PageView {
   restored: boolean;
   /** ADR-009 mục 3.4: chỗ lệch bảng VLM chưa giải quyết; không rỗng ⇔ trang có `TABLE_TOKEN_MISMATCH`. */
   vlmMismatches: VlmMismatchView[];
-  /** `mismatch_id` đã "Giữ giá trị này". */
-  keptMismatchIds: string[];
-  /** `block_id` khối VLM đã bỏ. */
-  rejectedBlockIds: string[];
 }
 
 /** Kết quả của `POST /v1/documents`: `created = false` khi backend trả 200 (cùng nội dung đã nhập cho cùng môn). */
@@ -403,7 +399,5 @@ export function parsePageExtraction(value: unknown): PageView | null {
     dropped: value.dropped === true,
     restored: value.restored === true,
     vlmMismatches: parseVlmMismatches(value.vlm_mismatches),
-    keptMismatchIds: codeList(value.kept_vlm_mismatch_ids),
-    rejectedBlockIds: codeList(value.vlm_rejected_block_ids),
   };
 }

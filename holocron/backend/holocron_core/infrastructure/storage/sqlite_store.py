@@ -26,6 +26,16 @@ from ...domain.block_eligibility import is_candidate_block
 from ...domain.blocks import Block, CropImage, ExtractionLedger, Section
 from ...domain.documents import PageEditAudit, PageGeometry, PageSummary
 from ...domain.ingestion import IngestionItem, PatchAudit, UploadedDocument
+from ...domain.practice import (
+    PracticeAnswer,
+    PracticeAttempt,
+    PracticeAttemptPage,
+    PracticeAttemptSummary,
+    ReviewQuestion,
+    ReviewQuestionPage,
+    StoredTwin,
+    build_attempt,
+)
 from ...domain.repositories import (
     AI_CACHE_MAX_ROWS,
     AI_CACHE_TTL_DAYS,
@@ -564,6 +574,30 @@ class SQLiteStore:
                 (cutoff, blueprint_id, key),
             )
             self._insert_batch(conn, batch, record.body_digest, key)
+
+    def get_batch_blueprint_id(self, batch_id: str) -> str | None:
+        with self._read() as conn:
+            row = conn.execute("SELECT blueprint_id FROM twin_batches WHERE batch_id = ?", (batch_id,)).fetchone()
+        return None if row is None else str(row["blueprint_id"])
+
+    def get_twins(self, twin_ids: Sequence[str]) -> dict[str, StoredTwin]:
+        """Một câu đọc: twin nối batch và blueprint (môn lấy từ `blueprints.subject_code`)."""
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT t.twin_id, t.batch_id, t.twin_json, b.blueprint_id, bp.subject_code FROM twins t "
+                "JOIN twin_batches b ON b.batch_id = t.batch_id JOIN blueprints bp ON bp.blueprint_id = b.blueprint_id "
+                "WHERE t.twin_id IN (SELECT value FROM json_each(?))",
+                (json.dumps(list(twin_ids)),),
+            ).fetchall()
+        return {
+            str(row["twin_id"]): StoredTwin(
+                twin=_BATCH_TWIN.validate_json(str(row["twin_json"])),
+                batch_id=str(row["batch_id"]),
+                blueprint_id=str(row["blueprint_id"]),
+                subject_code=str(row["subject_code"]),
+            )
+            for row in rows
+        }
 
     # ------------------------------------------------------------------ #
     # SubjectRepository
@@ -1598,6 +1632,158 @@ class SQLiteStore:
         if row is None or row["edited_by"] is None:
             return None
         return VaultEdit(editor_id=str(row["edited_by"]), at=datetime.fromisoformat(str(row["edited_at"])))
+
+    # ------------------------------------------------------------------ #
+    # PracticeAttemptRepository
+    # ------------------------------------------------------------------ #
+
+    _ATTEMPT_SUMMARY_SELECT = (
+        "SELECT a.attempt_id, a.subject_code, a.mode, a.batch_id, a.blueprint_id, a.submitted_at, "
+        "COUNT(p.ordinal) AS total_count, "
+        "COALESCE(SUM(p.outcome = 'correct'), 0) AS correct_count, "
+        "COALESCE(SUM(p.outcome = 'incorrect'), 0) AS incorrect_count, "
+        "COALESCE(SUM(p.outcome = 'skipped'), 0) AS skipped_count "
+        "FROM practice_attempts a LEFT JOIN practice_answers p ON p.attempt_id = a.attempt_id "
+    )
+    _SUMMARY_COLUMNS = (
+        "attempt_id",
+        "subject_code",
+        "mode",
+        "batch_id",
+        "blueprint_id",
+        "submitted_at",
+        "total_count",
+        "correct_count",
+        "incorrect_count",
+        "skipped_count",
+    )
+    _ANSWER_COLUMNS = ("ordinal", "twin_id", "batch_id", "slot_index", "chosen_key", "correct_key", "outcome")
+    _REVIEW_CTE = (
+        "WITH ranked AS (SELECT p.twin_id, p.attempt_id, p.ordinal, p.chosen_key, p.outcome, a.seq, a.submitted_at, "
+        "ROW_NUMBER() OVER (PARTITION BY p.twin_id ORDER BY a.seq DESC, p.ordinal DESC) AS rn "
+        "FROM practice_answers p JOIN practice_attempts a ON a.attempt_id = p.attempt_id "
+        "WHERE a.subject_code = ? AND p.outcome IN ('correct', 'incorrect')) "
+    )
+
+    def save_practice_attempt(self, attempt: PracticeAttempt) -> PracticeAttempt:
+        """Một giao dịch `BEGIN IMMEDIATE`: cấp `seq` = `MAX(seq) + 1` rồi ghi lượt và mọi câu. Khoá ghi giữ suốt giao
+        dịch nên hai lần ghi (kể cả từ hai tiến trình) không nhận cùng `seq`."""
+        with self._write() as conn:
+            row = conn.execute("SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM practice_attempts").fetchone()
+            missing = MissingReferenceError(f"lượt {attempt.attempt_id} trỏ tới batch hoặc twin không còn")
+            try:
+                conn.execute(
+                    "INSERT INTO practice_attempts (attempt_id, seq, subject_code, mode, batch_id, blueprint_id, "
+                    "submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        attempt.attempt_id,
+                        int(row["next_seq"]),
+                        attempt.subject_code,
+                        attempt.mode,
+                        attempt.batch_id,
+                        attempt.blueprint_id,
+                        _ts(attempt.submitted_at),
+                    ),
+                )
+                conn.executemany(
+                    "INSERT INTO practice_answers (attempt_id, ordinal, twin_id, batch_id, slot_index, chosen_key, "
+                    "correct_key, outcome) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        (
+                            attempt.attempt_id,
+                            answer.ordinal,
+                            answer.twin_id,
+                            answer.batch_id,
+                            answer.slot_index,
+                            None if answer.chosen_key is None else answer.chosen_key.value,
+                            answer.correct_key.value,
+                            answer.outcome,
+                        )
+                        for answer in attempt.answers
+                    ],
+                )
+            except sqlite3.IntegrityError as exc:
+                raise _translate(exc, missing) from exc
+        return attempt
+
+    @classmethod
+    def _summary(cls, row: sqlite3.Row) -> PracticeAttemptSummary:
+        return PracticeAttemptSummary.model_validate({column: row[column] for column in cls._SUMMARY_COLUMNS})
+
+    def get_practice_attempt(self, attempt_id: str) -> PracticeAttempt | None:
+        with self._read() as conn:
+            row = conn.execute(
+                "SELECT attempt_id, subject_code, mode, batch_id, blueprint_id, submitted_at FROM practice_attempts "
+                "WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            answers = conn.execute(
+                "SELECT ordinal, twin_id, batch_id, slot_index, chosen_key, correct_key, outcome FROM practice_answers "
+                "WHERE attempt_id = ? ORDER BY ordinal",
+                (attempt_id,),
+            ).fetchall()
+        return build_attempt(
+            attempt_id=str(row["attempt_id"]),
+            subject_code=str(row["subject_code"]),
+            mode="batch" if row["mode"] == "batch" else "review",
+            batch_id=None if row["batch_id"] is None else str(row["batch_id"]),
+            blueprint_id=None if row["blueprint_id"] is None else str(row["blueprint_id"]),
+            submitted_at=datetime.fromisoformat(str(row["submitted_at"])),
+            answers=[
+                PracticeAnswer.model_validate({column: answer[column] for column in self._ANSWER_COLUMNS})
+                for answer in answers
+            ],
+        )
+
+    def list_practice_attempts(self, subject_code: str, offset: int, limit: int) -> PracticeAttemptPage:
+        with self._read() as conn:
+            total = conn.execute(
+                "SELECT COUNT(*) AS n FROM practice_attempts WHERE subject_code = ?", (subject_code,)
+            ).fetchone()
+            rows = conn.execute(
+                f"{self._ATTEMPT_SUMMARY_SELECT}WHERE a.subject_code = ? GROUP BY a.attempt_id "
+                "ORDER BY a.seq DESC LIMIT ? OFFSET ?",
+                (subject_code, limit, offset),
+            ).fetchall()
+        return PracticeAttemptPage(total=int(total["n"]), attempts=[self._summary(row) for row in rows])
+
+    def list_review_questions(self, subject_code: str, offset: int, limit: int) -> ReviewQuestionPage:
+        with self._read() as conn:
+            total = conn.execute(
+                f"{self._REVIEW_CTE}SELECT COUNT(*) AS n FROM ranked WHERE rn = 1 AND outcome = 'incorrect'",
+                (subject_code,),
+            ).fetchone()
+            rows = conn.execute(
+                f"{self._REVIEW_CTE}SELECT r.attempt_id, r.chosen_key, r.submitted_at, t.batch_id, t.twin_json "
+                "FROM ranked r JOIN twins t ON t.twin_id = r.twin_id WHERE r.rn = 1 AND r.outcome = 'incorrect' "
+                "ORDER BY r.seq DESC, r.ordinal ASC LIMIT ? OFFSET ?",
+                (subject_code, limit, offset),
+            ).fetchall()
+        questions = [
+            ReviewQuestion.model_validate(
+                {
+                    "twin": _BATCH_TWIN.validate_json(str(row["twin_json"])),
+                    "batch_id": str(row["batch_id"]),
+                    "last_attempt_id": str(row["attempt_id"]),
+                    "last_answered_at": datetime.fromisoformat(str(row["submitted_at"])),
+                    "last_chosen_key": row["chosen_key"],
+                }
+            )
+            for row in rows
+        ]
+        return ReviewQuestionPage(total=int(total["n"]), questions=questions)
+
+    def delete_practice_attempt(self, attempt_id: str) -> bool:
+        with self._write() as conn:
+            cursor = conn.execute("DELETE FROM practice_attempts WHERE attempt_id = ?", (attempt_id,))
+        return cursor.rowcount > 0
+
+    def delete_practice_attempts(self, subject_code: str) -> int:
+        with self._write() as conn:
+            cursor = conn.execute("DELETE FROM practice_attempts WHERE subject_code = ?", (subject_code,))
+        return cursor.rowcount
 
     # ------------------------------------------------------------------ #
     # AiCacheRepository (spec §5.16; ADR-009 mục 8)

@@ -342,8 +342,6 @@ export interface HolocronApi {
   getSectionBlocks: (documentId: string, sectionId: string, offset: number, limit: number) => Promise<SectionBlocks>;
   /** `GET /v1/vault/blocks/search` (§6.10). */
   searchBlocks: (query: BlockSearchQuery) => Promise<BlockSearchPage>;
-  /** `GET /v1/documents/{id}/crops/{crop_ref}` (§6.10): byte PNG qua header token; component tự tạo/thu hồi object URL. */
-  getCropImage: (documentId: string, cropRef: string) => Promise<Blob>;
   /** `PATCH /v1/documents/{document_id}/pages/{page_number}/lines` (§6.5; chưa có ở backend của nhánh). */
   patchPageLines: (
     documentId: string,
@@ -657,9 +655,6 @@ export const realApi: HolocronApi = {
     params.set("limit", String(query.limit));
     return request<BlockSearchPage>(`/v1/vault/blocks/search?${params.toString()}`, { method: "GET" });
   },
-
-  getCropImage: async (documentId, cropRef) =>
-    (await send(`/v1/documents/${segment(documentId)}/crops/${segment(cropRef)}`, { method: "GET" })).blob(),
 
   getDocumentPage: async (documentId, pageNumber) => {
     const raw = await request<unknown>(

@@ -332,6 +332,77 @@ export interface TheoryTwin {
 /** Phần tử của `TwinBatch.twins`: `question_kind === "theory"` ⇒ `TheoryTwin`, không có `question_kind` ⇒ `TwinQuestion`. */
 export type BatchTwin = TwinQuestion | TheoryTwin;
 
+// ---------------------------------------------------------------- domain/practice.py
+
+/** Kết quả một câu của lượt làm bài (§5.17); do backend tính, frontend chỉ hiển thị (I1). */
+export type AnswerOutcome = "correct" | "incorrect" | "skipped";
+
+export type PracticeMode = "batch" | "review";
+
+/** Một câu trong request ghi lượt; KHÔNG có đúng/sai, điểm hay `correct_key` (I1). `chosen_key` null = bỏ qua. */
+export interface PracticeAnswerIn {
+  twin_id: string;
+  chosen_key?: OptionKey | null;
+}
+
+/** Body của `POST /v1/practice/attempts` (§6.12): `batch_id` bắt buộc khi `mode = "batch"`, null khi `"review"`. */
+export interface PracticeAttemptCreate {
+  mode: PracticeMode;
+  batch_id?: string | null;
+  answers: PracticeAnswerIn[];
+}
+
+/** Một câu đã ghi; mọi field trừ `twin_id`, `chosen_key` do backend điền từ twin đã lưu. */
+export interface PracticeAnswer {
+  ordinal: number;
+  twin_id: string;
+  batch_id: string;
+  slot_index: number;
+  chosen_key: OptionKey | null;
+  correct_key: OptionKey;
+  outcome: AnswerOutcome;
+}
+
+/** Tóm tắt một lượt; số đếm do backend đếm trên các câu còn lưu. */
+export interface PracticeAttemptSummary {
+  attempt_id: string;
+  subject_code: string;
+  mode: PracticeMode;
+  batch_id: string | null;
+  blueprint_id: string | null;
+  submitted_at: string;
+  total_count: number;
+  correct_count: number;
+  incorrect_count: number;
+  skipped_count: number;
+}
+
+/** Chi tiết lượt (`POST`/`GET /v1/practice/attempts/{id}`); `answers` sắp theo `ordinal`. */
+export interface PracticeAttempt extends PracticeAttemptSummary {
+  answers: PracticeAnswer[];
+}
+
+/** `GET /v1/practice/attempts`: mới nhất trước. */
+export interface PracticeAttemptPage {
+  total: number;
+  attempts: PracticeAttemptSummary[];
+}
+
+/** Một câu cần ôn: bản chụp twin đã lưu, nguyên đáp án và trích dẫn (I2, I3). */
+export interface ReviewQuestion {
+  twin: BatchTwin;
+  batch_id: string;
+  last_attempt_id: string;
+  last_answered_at: string;
+  last_chosen_key: OptionKey;
+}
+
+/** `GET /v1/practice/review-questions`. */
+export interface ReviewQuestionPage {
+  total: number;
+  questions: ReviewQuestion[];
+}
+
 // ---------------------------------------------------------- services/ingestion_gate.py
 
 export type Severity = "info" | "warning" | "blocking";
@@ -463,7 +534,8 @@ export type ReviewReason =
   | "FONT_ENCODING_SUSPECT"
   | "IMAGE_NEEDS_READING"
   | "PAGE_ROLE_UNCERTAIN"
-  | "DENOISE_UNAVAILABLE";
+  | "DENOISE_UNAVAILABLE"
+  | "LAYOUT_FAILED";
 
 export type FailureReason = "PAGE_TIMEOUT" | "PAGE_ERROR" | "OCR_ENGINE_MISSING" | "TOO_MANY_LINES";
 
@@ -610,6 +682,12 @@ export interface DocumentImport {
   proposal_job: ProposalJob | null;
   /** T1e: lý do không có `proposal_job`; null ⇔ `proposal_job` khác null. */
   proposal_job_absent_reason: ProposalJobAbsentReason | null;
+  /** X09 (ADR-010 mục 15): `LAYOUT_VERSION` của code đã dựng khối; null với tài liệu cũ hoặc đọc không có hình học. */
+  layout_version: number | null;
+  /** sha256 cấu hình bộ dựng khối; null ⇔ `layout_version` null. */
+  layout_settings_sha256: string | null;
+  /** Khối được lưu SAU khi tài liệu đã đóng bằng chunk dòng (chunk của tài liệu là chunk dòng; backend đặt). */
+  blocks_after_close: boolean;
 }
 
 /** Số trang "cần xem" mang một lý do (T1e, §5.7); `count` = số phần tử của `pages` (tăng dần, không trùng). */
@@ -960,6 +1038,8 @@ export interface RuntimeInfo {
   log_dir: string | null;
   /** Đủ 12 phần tử theo thứ tự `CAPABILITY_NAMES` (§5.12). */
   capabilities: Capability[];
+  /** Công tắc đồng ý, chế độ gửi và nhà cung cấp theo vai (§5.12, §5.16). */
+  ai_status: AiStatus;
 }
 
 /** Body của `POST /v1/blueprints/{id}/twins`; mọi field đều tuỳ chọn khi gửi. `format` chỉ ghi đè slot tính toán. */
@@ -1015,8 +1095,9 @@ export interface ValidationErrorItem {
   type: string;
 }
 
-// -------------------------------------------------------------- tra cứu khối (domain/blocks.py, domain/vault.py; §6.10)
+// ------------------------------------------------------------------------------------------ khối, mục (§5.15, §6.10)
 
+/** Loại khối (ADR-010 mục 2), thứ tự khai báo của `BlockType`. */
 export type BlockType =
   | "heading"
   | "paragraph"
@@ -1029,6 +1110,7 @@ export type BlockType =
   | "header_footer"
   | "page_number";
 
+/** Cờ của khối (ADR-010 mục 3), sắp theo thứ tự khai báo, không trùng. */
 export type BlockFlag =
   | "crop_pending"
   | "crop_failed"
@@ -1053,9 +1135,10 @@ export type BlockFlag =
 
 export type SemanticLabel = "definition" | "example" | "exercise";
 
-/** Hộp trong [0, 1]: `[x0, y0, x1, y1]`, `x0 ≤ x1`, `y0 ≤ y1`. */
+/** Hộp chuẩn hoá [x0, y0, x1, y1] ∈ [0, 1], gốc trên-trái. */
 export type UnitBBox = [number, number, number, number];
 
+/** Tham chiếu nguồn của khối, phân biệt theo `kind` (ADR-010 mục 3). */
 export type SourceRef =
   | { kind: "word"; line_idx: number; word_idx: number }
   | { kind: "ocr_word"; line_idx: number; word_idx: number }
@@ -1070,7 +1153,7 @@ export interface TableCell {
   colspan: number;
 }
 
-/** Một khối của trang (§5.15). `text` là null khi và chỉ khi `type` là `table` hoặc `figure`. */
+/** Một khối của trang (§5.15); mọi field do backend dựng, frontend chỉ hiển thị. */
 export interface Block {
   block_id: string;
   document_id: string;
@@ -1091,6 +1174,106 @@ export interface Block {
   source: "text_layer" | "ocr" | "vlm";
   ocr_text: string | null;
   reading_order: number;
+}
+
+export type SectionFlag = "untitled" | "continued_across_pages" | "level_uncertain";
+
+/** Một nút của cây theo từng tài liệu (§5.15): gốc `chapter` (`level` 0), mục `section` (`level` 1–6). */
+export interface Section {
+  section_id: string;
+  document_id: string;
+  parent_id: string | null;
+  kind: "chapter" | "section";
+  level: number;
+  chapter_code: string | null;
+  title: string | null;
+  heading_block_ids: string[];
+  block_ids: string[];
+  ordinal: number;
+  page_start: number;
+  page_end: number;
+  flags: SectionFlag[];
+}
+
+export type LedgerBasis = "pdfium" | "confirmed_lines" | "ocr";
+
+export interface LedgerDrop {
+  reason: "hidden";
+  count: number;
+}
+
+export interface LedgerBasisCount {
+  ledger_basis: LedgerBasis;
+  source_count: number;
+  assigned_count: number;
+  dropped: LedgerDrop[];
+}
+
+export interface LedgerTypeCount {
+  type: BlockType;
+  count: number;
+}
+
+export interface LedgerFlagCount {
+  reason: "occluded" | "low_contrast";
+  count: number;
+}
+
+/** Sổ bảo toàn của một trang (ADR-010 mục 6); số đếm do backend tính. */
+export interface ExtractionLedger {
+  document_id: string;
+  page_number: number;
+  unit: "nonws_nfc_codepoint";
+  bases: LedgerBasisCount[];
+  by_type: LedgerTypeCount[];
+  flagged: LedgerFlagCount[];
+  page_drop_reason: "cover_or_course_nav" | "chapter_nav" | "build_step" | null;
+  balanced: boolean;
+}
+
+/** Nút cây mục của `GET /v1/vault/tree` (§6.10): Section và các con theo `ordinal`. */
+export interface SectionNode {
+  section: Section;
+  children: SectionNode[];
+}
+
+/** "Nguồn" = một tài liệu đã đóng (§6.10); danh sách trang do backend đếm (tăng dần), frontend chỉ hiển thị. */
+export interface SourceNode {
+  document_id: string;
+  title: string;
+  source_kind: SourceKind;
+  chapter_code: string | null;
+  chapter_title: string | null;
+  layout_version: number | null;
+  chunks_from_lines: boolean;
+  chapter_shared_with: string[];
+  root: SectionNode | null;
+  layout_failed_pages: number[];
+  pages_without_blocks: number[];
+  pages_unconfirmable_with_blocks: number[];
+}
+
+/** `GET /v1/vault/tree` (§6.10): môn và các nguồn đã đóng, sắp theo số chương, `uploaded_at`, `document_id`. */
+export interface SubjectTree {
+  subject_code: string;
+  display_name: string;
+  sources: SourceNode[];
+}
+
+/** `GET /v1/documents/{id}/sections/{section_id}/blocks` (§6.10): khối đủ điều kiện của mục; `total` do backend đếm. */
+export interface SectionBlocks {
+  section: Section;
+  total: number;
+  blocks: Block[];
+}
+
+/** `GET /v1/documents/{id}/pages/{n}/blocks` (§6.10): mọi khối của trang và ledger (null khi chưa có). */
+export interface PageBlockList {
+  document_id: string;
+  page_number: number;
+  layout_version: number | null;
+  blocks: Block[];
+  ledger: ExtractionLedger | null;
 }
 
 export interface SectionPathItem {
@@ -1134,4 +1317,167 @@ export interface BlockSearchPage {
 /** Response `DELETE /v1/settings/ai-cache` (khớp `routers/settings.py` `AiCacheCleared`). */
 export interface AiCacheCleared {
   deleted_entries: number;
+}
+
+// ------------------------------------------------------------------- domain/ai.py (§5.16, §6.11)
+
+export type AiRole = "vlm" | "llm";
+export type AiConsentSource = "env" | "setting" | "default";
+export type AiVlmMode = "unset" | "off" | "images_only";
+export type WriteProtection = "token" | "token_not_configured";
+/** Xét theo thứ tự khai báo; lý do đầu tiên đúng được trả (§5.16). */
+export type AiAutoBlockReason = "no_provider" | "budget_exhausted" | "mode_off" | "mode_images_only" | "consent_off";
+
+/** Response `GET/PUT /v1/settings/ai-consent` (khớp `domain/ai.py` `AiConsentState`). */
+export interface AiConsentState {
+  enabled: boolean;
+  source: AiConsentSource;
+  vlm_mode: AiVlmMode;
+  persistent: boolean;
+}
+
+/** Body `PUT /v1/settings/ai-consent` (khớp `routers/settings.py` `AiConsentUpdate`). */
+export interface AiConsentUpdate {
+  enabled: boolean;
+}
+
+/** Trạng thái gửi tự động của một vai (khớp `domain/ai.py` `AiRoleStatus`). */
+export interface AiRoleStatus {
+  role: AiRole;
+  /** true ⇔ `reason` null. */
+  auto_send_allowed: boolean;
+  reason: AiAutoBlockReason | null;
+  /** null khi `no_provider`/`budget_exhausted`. */
+  provider_id: string | null;
+  /** null ⇔ `provider_id` null. */
+  recipient_label: string | null;
+  local: boolean;
+}
+
+/** `RuntimeInfo.ai_status` (khớp `domain/ai.py` `AiStatus`); tính lại ở mỗi `GET /v1/runtime`. */
+export interface AiStatus {
+  consent_enabled: boolean;
+  consent_source: AiConsentSource;
+  vlm_mode: AiVlmMode;
+  settings_persistent: boolean;
+  write_protection: WriteProtection;
+  /** Đúng 2 phần tử, thứ tự "vlm", "llm". */
+  roles: AiRoleStatus[];
+}
+
+export type ProviderTemplate = "gemini" | "organizer_gateway" | "custom";
+export type KeyStorage = "dpapi" | "plaintext_file" | "env" | "none";
+export type ProviderTestAction = "chat" | "list_models";
+/** Mã đã làm sạch của `POST …/test`: không thân phản hồi, không URL, không khoá (§6.11). */
+export type ProviderTestCode =
+  | "ok"
+  | "auth_failed"
+  | "not_found"
+  | "rate_limited"
+  | "upstream_error"
+  | "timeout"
+  | "blocked_address"
+  | "redirect_blocked"
+  | "invalid_response"
+  | "image_rejected"
+  | "key_unreadable"
+  | "no_model_for_role"
+  | "budget_exhausted";
+
+/** Model theo vai (khớp `domain/ai.py` `ProviderModels`). */
+export interface ProviderModels {
+  vlm: string | null;
+  llm: string | null;
+}
+
+/** Giá USD (khớp `domain/ai.py` `ProviderPrices`). */
+export interface ProviderPrices {
+  input_per_1k_usd: number;
+  output_per_1k_usd: number;
+  per_image_usd: number;
+  source: "user" | "env" | "template_default";
+}
+
+/** Một nhà cung cấp (khớp `domain/ai.py` `ProviderConfig`); không bao giờ có khoá đầy đủ. */
+export interface ProviderConfig {
+  id: string;
+  kind: "openai_compatible";
+  source: "user" | "env";
+  template: ProviderTemplate;
+  label: string;
+  /** null với nhà cung cấp env (không lộ endpoint). */
+  base_url: string | null;
+  local: boolean;
+  models: ProviderModels;
+  key_set: boolean;
+  /** 4 ký tự cuối chỉ khi khoá dài ≥ 12 ký tự. */
+  key_last4: string | null;
+  /** "plaintext_file" ⇒ UI hiện cảnh báo. */
+  key_storage: KeyStorage;
+  key_unreadable: boolean;
+  enabled: boolean;
+  priority: number;
+  budget_usd: number;
+  /** Số backend tính; UI chỉ hiển thị. */
+  spent_usd: number;
+  budget_exhausted: boolean;
+  budget_shared_with: string[];
+  prices: ProviderPrices;
+}
+
+/** Response `GET /v1/settings/providers` (khớp `domain/ai.py` `ProviderList`). */
+export interface ProviderList {
+  providers: ProviderConfig[];
+  settings_persistent: boolean;
+  write_protection: WriteProtection;
+}
+
+/** Giá người dùng nhập (khớp `domain/ai.py` `ProviderPricesInput`). */
+export interface ProviderPricesInput {
+  input_per_1k_usd: number;
+  output_per_1k_usd: number;
+  per_image_usd: number;
+}
+
+/** Body `POST /v1/settings/providers` (khớp `domain/ai.py` `ProviderCreate`). */
+export interface ProviderCreate {
+  template: ProviderTemplate;
+  label: string;
+  base_url: string;
+  /** Không bao giờ được trả lại; bắt buộc trừ base URL loopback. */
+  api_key?: string | null;
+  models: ProviderModels;
+  enabled?: boolean;
+  priority?: number;
+  budget_usd?: number | null;
+  prices?: ProviderPricesInput | null;
+}
+
+/** Body `PATCH /v1/settings/providers/{id}`: field vắng = giữ nguyên; gửi null ⇒ 422 (trừ `budget_usd`). */
+export interface ProviderUpdate {
+  label?: string;
+  base_url?: string;
+  api_key?: string;
+  models?: ProviderModels;
+  enabled?: boolean;
+  priority?: number;
+  /** null tường minh ⇒ về trần mặc định theo template. */
+  budget_usd?: number | null;
+  prices?: ProviderPricesInput;
+  clear_prices?: boolean;
+}
+
+/** Body `POST /v1/settings/providers/{id}/test`: `role` bắt buộc ⇔ `action = "chat"`. */
+export interface ProviderTestRequest {
+  action: ProviderTestAction;
+  role?: AiRole | null;
+}
+
+/** Response `POST /v1/settings/providers/{id}/test` (khớp `domain/ai.py` `ProviderTestResult`). */
+export interface ProviderTestResult {
+  ok: boolean;
+  code: ProviderTestCode;
+  http_status: number | null;
+  latency_ms: number;
+  models: string[];
 }

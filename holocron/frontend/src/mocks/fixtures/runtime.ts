@@ -5,6 +5,7 @@
  */
 
 import type { Capability, CapabilityName, CapabilityReason, RuntimeInfoPending } from "@/types/contract-pending";
+import type { AiStatus } from "@/types/holocron";
 
 export const REASON_DETAILS_VI: Record<CapabilityReason, string> = {
   llm_not_configured:
@@ -31,6 +32,35 @@ function available(name: CapabilityName): Capability {
 
 function unavailable(name: CapabilityName, reason: CapabilityReason): Capability {
   return { name, available: false, reason, detail_vi: REASON_DETAILS_VI[reason] };
+}
+
+/** Mặc định của backend khi chưa cấu hình AI: công tắc tắt, chưa đặt token, không nhà cung cấp cho vai nào (§5.16). */
+function aiStatusNoProvider(): AiStatus {
+  return {
+    consent_enabled: false,
+    consent_source: "default",
+    vlm_mode: "unset",
+    settings_persistent: false,
+    write_protection: "token_not_configured",
+    roles: [
+      {
+        role: "vlm",
+        auto_send_allowed: false,
+        reason: "no_provider",
+        provider_id: null,
+        recipient_label: null,
+        local: false,
+      },
+      {
+        role: "llm",
+        auto_send_allowed: false,
+        reason: "no_provider",
+        provider_id: null,
+        recipient_label: null,
+        local: false,
+      },
+    ],
+  };
 }
 
 export type RuntimeScenario = "offline" | "llm" | "no_tesseract";
@@ -60,6 +90,7 @@ const offline: RuntimeInfoPending = {
     unavailable("line_review_queue", "not_implemented"),
     unavailable("page_progress_eta", "not_implemented"),
   ],
+  ai_status: aiStatusNoProvider(),
 };
 
 /** Đã cấu hình LLM; VLM vẫn đang park. */
@@ -85,6 +116,7 @@ const llm: RuntimeInfoPending = {
     unavailable("line_review_queue", "not_implemented"),
     unavailable("page_progress_eta", "not_implemented"),
   ],
+  ai_status: aiStatusNoProvider(),
 };
 
 /** Đã cấu hình LLM nhưng máy chưa cài Tesseract và lượt đọc thứ hai đang tắt. */
@@ -110,6 +142,7 @@ const noTesseract: RuntimeInfoPending = {
     unavailable("line_review_queue", "not_implemented"),
     unavailable("page_progress_eta", "not_implemented"),
   ],
+  ai_status: aiStatusNoProvider(),
 };
 
 export const RUNTIME_FIXTURES: Record<RuntimeScenario, RuntimeInfoPending> = {

@@ -25,6 +25,7 @@ from typing import Annotated, Any, Literal, get_args
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
+from ..domain.ai import AiConsent
 from ..domain.blocks import DOCUMENT_ID_PATTERN, BlockType
 from ..domain.capabilities import CapabilityError
 from ..domain.llm import ChatCompletionClient, LlmUpstreamError, LlmUpstreamErrorDetail
@@ -46,14 +47,26 @@ from ..domain.vault import (
     VaultEdit,
 )
 from ..infrastructure.llm_client import OpenAiChatClient
-from ..infrastructure.llm_config import ConfigError
+from ..infrastructure.llm_config import ConfigError, RuntimeConfig
+from ..infrastructure.provider_probe import guarded_transport
+from ..infrastructure.selected_llm_client import SelectedProviderChatClient, TransportFactory
 from ..services import search_index
 from ..services import vault as vault_service
-from ..services.capabilities import compute_capabilities, unavailable_error
+from ..services.capabilities import unavailable_error
 from ..services.concept_proposal import MAX_PROPOSAL_CHUNKS, ChunkSubjectMismatchError, propose_concept_pairs
 from ..services.concept_proposal_job import ClientFactory
-from .deps import ClockDep, ProposalJobsDep, RuntimeConfigDep, StoreDep, VaultDep
-from .runtime import NO_LOCAL_FAILURES, LocalFailuresDep
+from ..services.provider_selection import ProviderSelection
+from .deps import (
+    ClockDep,
+    ProposalJobsDep,
+    RuntimeConfigDep,
+    StoreDep,
+    VaultDep,
+    get_llm_transport_factory,
+    get_provider_selection,
+    merged_capabilities,
+)
+from .runtime import NO_LOCAL_FAILURES, LocalFailures, LocalFailuresDep
 
 router = APIRouter(prefix="/v1/vault")
 
@@ -79,41 +92,115 @@ LLM_UPSTREAM_MESSAGE = (
 )
 
 
-def get_chat_client(
-    config: RuntimeConfigDep, local_failures: LocalFailuresDep = NO_LOCAL_FAILURES
-) -> ChatCompletionClient:
-    """Client LLM cho đề xuất cặp khái niệm, dùng model `HOLOCRON_LLM_MODEL_EXTRACT` (§11.2).
+ProviderSelectionParam = Annotated[ProviderSelection | None, Depends(get_provider_selection)]
+LlmTransportParam = Annotated[TransportFactory | None, Depends(get_llm_transport_factory)]
+ChatClientBuilder = Callable[[], ChatCompletionClient]
 
-    Khả năng `concept_pair_llm_proposal` không khả dụng, hoặc cấu hình LLM không dựng được client (`ConfigError`) ⇒
-    409 `CapabilityError` (spec v0.6 §11.4). Không gửi gì ra mạng ở đây. Client dựng mỗi request nên cận tổng
-    `LlmTaskLimits.deadline_s` của nó (tính từ lúc dựng) trùng với hạn của lần đề xuất.
-    """
-    error = unavailable_error(compute_capabilities(config, local_failures=local_failures), "concept_pair_llm_proposal")
-    if error is not None:
-        raise HTTPException(status_code=409, detail=error.model_dump(mode="json"))
-    failure: str | None = None
-    try:
-        return OpenAiChatClient.from_settings(config.llm, model=config.llm.model_extract)
-    except ConfigError as exc:
-        failure = str(exc)  # ConfigError chỉ nêu tên biến, không bao giờ nêu giá trị
+
+def _llm_unavailable(failure: str) -> HTTPException:
     invalid = CapabilityError(
         capability="concept_pair_llm_proposal",
         reason="llm_not_configured",
         message=f"Khả năng concept_pair_llm_proposal không khả dụng: cấu hình LLM không hợp lệ ({failure}).",
     )
-    raise HTTPException(status_code=409, detail=invalid.model_dump(mode="json"))
+    return HTTPException(status_code=409, detail=invalid.model_dump(mode="json"))
+
+
+def _chat_client_builder(
+    config: RuntimeConfig,
+    local_failures: LocalFailures,
+    providers: ProviderSelection | None,
+    transport_for: TransportFactory | None,
+    user_send_allowed: Callable[[], bool] | None = None,
+) -> tuple[ChatCompletionClient, ChatClientBuilder]:
+    """Client LLM đầu tiên (đã dựng để kiểm cấu hình) và hàm dựng client mới cho đề xuất cặp, sau khi kiểm khả năng theo CÙNG nguồn hợp nhất env + người dùng của
+    `GET /v1/runtime` (`deps.merged_capabilities`; ADR-009 mục 12.11). Không gửi gì ra mạng ở đây.
+
+    - Đủ biến `HOLOCRON_LLM_*` và dựng được client ⇒ client env như trước (`HOLOCRON_LLM_MODEL_EXTRACT`, §11.2).
+    - Ngược lại có nhà cung cấp người dùng vai `llm` ⇒ `SelectedProviderChatClient`: chọn qua `ProviderSelection` ở mỗi
+      lời gọi (trần chi tiêu, giữ chỗ), transport `guarded_transport` theo `ip_policy`.
+    - Không có gì ⇒ 409 `CapabilityError` (`llm_not_configured`, spec v0.6 §11.4).
+
+    `user_send_allowed` (chỉ đường gửi TỰ ĐỘNG, `auto_chat_client_factory`): trả sai ⇒ KHÔNG dùng nhà cung cấp người
+    dùng (409 như không có nhà cung cấp). `None` ⇒ thao tác người dùng tự bấm, không bị công tắc chặn (spec §5.16).
+    """
+    selection = providers if providers is not None else get_provider_selection()
+    view = selection.snapshot()
+    capabilities = merged_capabilities(config, view, local_failures)
+    error = unavailable_error(capabilities, "concept_pair_llm_proposal")
+    if error is not None:
+        raise HTTPException(status_code=409, detail=error.model_dump(mode="json"))
+    settings = config.llm
+    failure: str | None = None
+    if config.llm_configured:
+
+        def build_env() -> ChatCompletionClient:
+            return OpenAiChatClient.from_settings(settings, model=settings.model_extract)
+
+        try:
+            return build_env(), build_env
+        except ConfigError as exc:
+            failure = str(exc)  # ConfigError chỉ nêu tên biến, không bao giờ nêu giá trị
+    if view.configured("llm") and user_send_allowed is not None and not user_send_allowed():
+        raise _llm_unavailable(failure or "công tắc đồng ý gửi tự động đang tắt")
+    if view.configured("llm"):
+        chosen_transport = transport_for if transport_for is not None else guarded_transport
+
+        def build_selected() -> ChatCompletionClient:
+            return SelectedProviderChatClient(
+                selector=selection, recorder=selection, settings=settings, transport_for=chosen_transport
+            )
+
+        return build_selected(), build_selected
+    raise _llm_unavailable(failure or "chưa có nhà cung cấp LLM")
+
+
+def get_chat_client(
+    config: RuntimeConfigDep,
+    local_failures: LocalFailuresDep = NO_LOCAL_FAILURES,
+    providers: ProviderSelectionParam = None,
+    transport_for: LlmTransportParam = None,
+) -> ChatCompletionClient:
+    """Client LLM cho đề xuất cặp khái niệm (`_chat_client_builder`).
+
+    Khả năng `concept_pair_llm_proposal` không khả dụng, hoặc không dựng được client (`ConfigError` của env và không có
+    nhà cung cấp người dùng vai `llm`) ⇒ 409 `CapabilityError` (spec v0.6 §11.4). Không gửi gì ra mạng ở đây. Client
+    dựng mỗi request nên cận tổng `LlmTaskLimits.deadline_s` của nó (tính từ lúc dựng) trùng với hạn của lần đề xuất.
+    `providers` / `transport_for` là `None` khi gọi trực tiếp (không qua `Depends`) ⇒ bộ chọn và transport mặc định.
+    """
+    client, _ = _chat_client_builder(config, local_failures, providers, transport_for)
+    return client
 
 
 def get_chat_client_factory(
-    config: RuntimeConfigDep, local_failures: LocalFailuresDep = NO_LOCAL_FAILURES
+    config: RuntimeConfigDep,
+    local_failures: LocalFailuresDep = NO_LOCAL_FAILURES,
+    providers: ProviderSelectionParam = None,
+    transport_for: LlmTransportParam = None,
 ) -> ClientFactory:
     """Hàm dựng client LLM cho job nền: mỗi lô một client, để cận tổng `deadline_s` của client tính từ lúc lô bắt đầu.
 
     Kiểm khả năng và cấu hình ngay khi tạo job như `get_chat_client` (409 `CapabilityError`); không gọi mạng.
     """
-    get_chat_client(config, local_failures)
-    settings = config.llm
-    return lambda: OpenAiChatClient.from_settings(settings, model=settings.model_extract)
+    _, build = _chat_client_builder(config, local_failures, providers, transport_for)
+    return build
+
+
+def auto_chat_client_factory(
+    config: RuntimeConfig,
+    local_failures: LocalFailures,
+    providers: ProviderSelection | None,
+    transport_for: TransportFactory | None,
+    consent: AiConsent,
+) -> ClientFactory:
+    """Hàm dựng client LLM cho job đề xuất TỰ TẠO khi xác nhận tài liệu (lần gửi tự động; spec §5.8, §5.16; ADR-009
+    mục 7). Như `get_chat_client_factory`, nhưng nhà cung cấp người dùng chỉ được dùng khi
+    `consent.auto_send_allowed("text")` đúng lúc tạo job; đường env giữ nguyên. Không phải phụ thuộc FastAPI.
+    """
+    _, build = _chat_client_builder(
+        config, local_failures, providers, transport_for, user_send_allowed=lambda: consent.auto_send_allowed("text")
+    )
+    return build
 
 
 def get_monotonic() -> Callable[[], float]:

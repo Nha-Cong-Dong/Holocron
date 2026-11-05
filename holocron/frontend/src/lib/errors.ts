@@ -95,7 +95,8 @@ export type ErrorContext =
   | "pairs_list"
   | "pair_create"
   | "pair_confirm"
-  | "pair_reject";
+  | "pair_reject"
+  | "ai_settings";
 
 export interface ClassifyOptions {
   /** Request có gửi `expected_version`: 409 dạng chuỗi được hiểu là bản đã đổi ở nơi khác. */
@@ -236,6 +237,7 @@ const CONTEXT_MESSAGES: Record<ErrorContext, Partial<Record<ContextualKind, stri
   pair_create: { not_found: PAIR_NOT_FOUND_VI },
   pair_confirm: { not_found: PAIR_NOT_FOUND_VI },
   pair_reject: { not_found: PAIR_NOT_FOUND_VI },
+  ai_settings: { not_found: "Nhà cung cấp này không còn. Tải lại danh sách rồi thử lại." },
 };
 
 /**
@@ -418,8 +420,42 @@ export function classifyHttpError(status: number, body: unknown, options: Classi
   return withDiagnostic(classifyHttpStatus(status, body, options), httpDiagnostic(status, body, options));
 }
 
+/** Mã lỗi nghiệp vụ của `/v1/settings/*` (§6.11) thành câu cố định; không chép `message` của backend. */
+const AI_SETTINGS_CODE_MESSAGES: Record<string, string> = {
+  token_not_configured:
+    "Holocron chưa đặt mã truy cập nên chưa cho đổi cài đặt AI. Đặt biến môi trường HOLOCRON_REQUIRE_TOKEN cho backend, khởi động lại rồi nhập mã vào ô “Mã truy cập”.",
+  consent_env_locked: "Công tắc này đang bị khoá bởi biến môi trường HOLOCRON_AI_CONSENT nên không đổi được ở đây.",
+  settings_not_persistent:
+    "Chưa lưu được cài đặt vì backend chưa có thư mục dữ liệu. Đặt biến môi trường HOLOCRON_DATA_DIR rồi khởi động lại.",
+  provider_read_only: "Nhà cung cấp này cấu hình bằng biến môi trường nên chỉ xem được, không sửa hay xoá ở đây.",
+  provider_limit: "Đã có đủ 20 nhà cung cấp. Xoá bớt một nhà cung cấp rồi thêm lại.",
+  key_storage_failed: "Không mã hoá được khoá để lưu nên chưa lưu gì. Thử lại.",
+  base_url_rejected:
+    "Địa chỉ nhà cung cấp không được chấp nhận. Dùng địa chỉ https (http chỉ cho máy này) và không trỏ vào mạng nội bộ.",
+  label_rejected: "Tên nhà cung cấp chưa hợp lệ. Đổi tên rồi thử lại.",
+  key_invalid: "Khoá API chưa hợp lệ. Dán lại khoá, không có khoảng trắng hay xuống dòng.",
+  key_required_after_base_url_change: "Đổi địa chỉ nhà cung cấp thì phải nhập lại khoá API.",
+  models_required: "Cần điền model cho ít nhất một vai (đọc ảnh hoặc ngôn ngữ).",
+};
+
+/** Lỗi của luồng cài đặt AI: nhận diện theo `code` (ở `detail` hoặc ngay thân), `null` khi không có mã đã biết. */
+function aiSettingsError(status: number, body: unknown, detail: unknown): UiError | null {
+  const code = isRecord(detail) ? detail.code : isRecord(body) ? body.code : undefined;
+  const message = typeof code === "string" ? AI_SETTINGS_CODE_MESSAGES[code] : undefined;
+  if (message === undefined) return null;
+  const kind: ErrorKind =
+    status === 403 ? "forbidden" : status === 422 ? "validation" : status >= 500 ? "server" : "state_conflict";
+  return build(kind, message);
+}
+
 function classifyHttpStatus(status: number, body: unknown, options: ClassifyOptions): UiError {
   const detail = extractDetail(body);
+  if (options.context === "ai_settings") {
+    const known = aiSettingsError(status, body, detail);
+    if (known !== null) return known;
+    if (status === 403)
+      return build("forbidden", "Mã truy cập sai hoặc thiếu. Kiểm tra mã ở ô “Mã truy cập” rồi thử lại.");
+  }
 
   if (hasCapabilityCode(detail)) {
     const name = isCapabilityName(detail.capability) ? detail.capability : null;

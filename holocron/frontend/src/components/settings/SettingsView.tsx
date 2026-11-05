@@ -18,6 +18,7 @@ import {
   writeTheme,
 } from "@/lib/theme";
 
+import { AiConnection } from "./AiConnection";
 import { MachineDiagnostics } from "./MachineDiagnostics";
 import { QuestionStyleSection } from "./QuestionStyleSection";
 import styles from "./SettingsView.module.css";
@@ -114,6 +115,8 @@ export function SettingsView() {
           />
         </div>
       </section>
+
+      <AiConnection />
 
       <MachineDiagnostics />
 

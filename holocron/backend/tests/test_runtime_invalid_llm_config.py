@@ -46,6 +46,25 @@ VLM_ENV_WITH_BAD_KEY = {
 LLM_KEY_WITH_SPACE = "sk-llm-0123 456789-must-never-leak"
 LEAKS = ("abc def", "must-never-leak", "secret-model-name", "gateway.example.test", "vlm.example.test", "0123")
 PROPOSE_URL = "/v1/vault/concept-pairs/propose"
+# `RuntimeInfo.ai_status` (spec §5.12, §5.16) khi không có nhà cung cấp AI dùng được, công tắc mặc định, không token.
+AI_STATUS_NO_PROVIDER = {
+    "consent_enabled": False,
+    "consent_source": "default",
+    "vlm_mode": "unset",
+    "settings_persistent": False,
+    "write_protection": "token_not_configured",
+    "roles": [
+        {
+            "role": role,
+            "auto_send_allowed": False,
+            "reason": "no_provider",
+            "provider_id": None,
+            "recipient_label": None,
+            "local": False,
+        }
+        for role in ("vlm", "llm")
+    ],
+}
 
 
 @pytest.fixture(autouse=True)
@@ -174,6 +193,7 @@ def test_runtime_with_a_vlm_key_containing_a_space_is_200_and_vlm_not_configured
         "vlm_configured": False,
         **_build_fields(),
         "capabilities": CAPS_NO_LLM,
+        "ai_status": AI_STATUS_NO_PROVIDER,
     }
     _assert_no_leak(response.text)
     assert "HOLOCRON_VLM_API_KEY" in caplog.text
@@ -221,6 +241,7 @@ def test_runtime_keeps_a_valid_llm_when_only_the_vlm_is_broken(monkeypatch: pyte
         "vlm_configured": False,
         **_build_fields(),
         "capabilities": CAPS_LLM_ONLY,
+        "ai_status": AI_STATUS_NO_PROVIDER,
     }
     _assert_no_leak(response.text)
 

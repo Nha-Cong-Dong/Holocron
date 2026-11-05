@@ -31,6 +31,25 @@ FULL_VLM_ENV = {
     "HOLOCRON_VLM_MODEL": "vision-model-x",
 }
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "holocron_core"
+# `RuntimeInfo.ai_status` (spec §5.12, §5.16): nhà cung cấp AI chỉ từ `HOLOCRON_VLM_*` (env đã dọn), công tắc mặc định.
+AI_STATUS_NO_PROVIDER = {
+    "consent_enabled": False,
+    "consent_source": "default",
+    "vlm_mode": "unset",
+    "settings_persistent": False,
+    "write_protection": "token_not_configured",
+    "roles": [
+        {
+            "role": role,
+            "auto_send_allowed": False,
+            "reason": "no_provider",
+            "provider_id": None,
+            "recipient_label": None,
+            "local": False,
+        }
+        for role in ("vlm", "llm")
+    ],
+}
 
 
 @pytest.fixture(autouse=True)
@@ -175,6 +194,7 @@ def test_runtime_endpoint_reports_demo_mode_without_leaking_anything(monkeypatch
         "vlm_configured": False,
         **_build_fields(),
         "capabilities": CAPS_LLM_ONLY,
+        "ai_status": AI_STATUS_NO_PROVIDER,
     }
     assert SECRET not in response.text and "secret-model-name" not in response.text
 
@@ -200,6 +220,7 @@ def test_runtime_endpoint_reflects_the_extractor_in_use_not_only_the_environment
             "vlm_configured": True,
             **_build_fields(),
             "capabilities": CAPS_VLM_ONLY,
+            "ai_status": AI_STATUS_NO_PROVIDER,
         }
     finally:
         app.dependency_overrides.clear()

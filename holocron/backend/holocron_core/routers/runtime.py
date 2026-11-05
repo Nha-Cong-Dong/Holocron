@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import logging
+import os
 import threading
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
@@ -27,14 +28,25 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, FastAPI, Request
 from pydantic import BaseModel
 
+from ..domain.ai import AiStatus
 from ..domain.capabilities import Capability, CapabilityName, CapabilityReason
+from ..infrastructure.ai_runtime import build_ai_status, read_consent_state
 from ..infrastructure.document_readers.config import PdfReaderConfig, load_ocr_settings
 from ..infrastructure.document_readers.secondary_probe import error_name, probe_secondary_ocr
-from ..services.capabilities import compute_capabilities
 from ..services.capability_checks import check_local_capabilities, probe_tesseract
 from ..services.document_import import ImportRuntime
 from ..services.extraction import MockDualPassExtractor
-from .deps import BuildInfoDep, ExtractorDep, LogDirDep, RuntimeConfigDep
+from .access import get_required_token
+from .deps import (
+    AiConsentStoreDep,
+    BuildInfoDep,
+    ExtractorDep,
+    LogDirDep,
+    ProviderSelectionDep,
+    RuntimeConfigDep,
+    merged_ai_configured,
+    merged_capabilities,
+)
 from .documents import RUNTIME_STATE_ATTR
 
 router = APIRouter()
@@ -221,6 +233,7 @@ class RuntimeInfo(BaseModel):
     commit: str
     log_dir: str | None
     capabilities: list[Capability]
+    ai_status: AiStatus
 
 
 @router.get("/v1/runtime", response_model=RuntimeInfo)
@@ -230,13 +243,27 @@ def get_runtime(
     build: BuildInfoDep,
     log_dir: LogDirDep,
     local_failures: LocalFailuresDep,
+    consent_store: AiConsentStoreDep,
+    providers: ProviderSelectionDep,
+    required_token: Annotated[str | None, Depends(get_required_token)],
 ) -> RuntimeInfo:
+    # `ai_status` tính lại ở MỖI request (spec §5.12): `peek` không giữ chỗ, không gọi mạng, không lộ khoá/endpoint.
+    # Danh sách nhà cung cấp đọc MỘT lần mỗi request (giải mã khoá một lần), dùng chung cho cờ, khả năng và ai_status.
+    view = providers.snapshot()
+    ai_status = build_ai_status(
+        read_consent_state(os.environ, consent_store),
+        view,
+        "token_not_configured" if required_token is None else "token",
+    )
+    # Nguồn hợp nhất env + người dùng (ADR-009 mục 12.11), CÙNG hàm với phụ thuộc client LLM (`vault.get_chat_client`).
+    llm_configured, vlm_configured = merged_ai_configured(config, view)
     return RuntimeInfo(
         demo_mode=isinstance(extractor, MockDualPassExtractor),
-        llm_configured=config.llm_configured,
-        vlm_configured=config.vlm is not None,
+        llm_configured=llm_configured,
+        vlm_configured=vlm_configured,
         app_version=build.version,
         commit=build.commit,
         log_dir=log_dir,
-        capabilities=compute_capabilities(config, local_failures=local_failures),
+        capabilities=merged_capabilities(config, view, local_failures),
+        ai_status=ai_status,
     )

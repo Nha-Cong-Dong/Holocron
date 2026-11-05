@@ -66,6 +66,9 @@ ReviewReason = Literal[
     "IMAGE_NEEDS_READING",
     "PAGE_ROLE_UNCERTAIN",
     "DENOISE_UNAVAILABLE",
+    # thêm 2026-11-01 (ADR-010 mục 6; §5.7), khai báo SAU mọi lý do cũ: bộ dựng khối lỗi/vượt trần, trang lớp chữ thiếu
+    # `PageGeometry` (tài liệu có `layout_version`) hoặc ledger không cân; tính lại mỗi lần trang được dựng lại.
+    "LAYOUT_FAILED",
 ]
 FailureReason = Literal["PAGE_TIMEOUT", "PAGE_ERROR", "OCR_ENGINE_MISSING", "TOO_MANY_LINES"]
 PageStatus = Literal["pending", "ok", "needs_review", "failed"]
@@ -555,6 +558,11 @@ class DocumentImport(StrictModel):
     dropped_role_counts: list[DroppedRoleCount] = Field(default_factory=list)
     proposal_job: ProposalJob | None = None
     proposal_job_absent_reason: ProposalJobAbsentReason | None = None
+    # thêm 2026-11-01 (ADR-010 mục 13, 15; §5.7): cột `documents.layout_version`, `documents.layout_settings_sha256`,
+    # `documents.blocks_after_close`. Null/false với tài liệu cũ và tài liệu đọc bằng bộ đọc không có hình học.
+    layout_version: int | None = Field(default=None, ge=1)
+    layout_settings_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    blocks_after_close: bool = False
 
     @model_validator(mode="after")
     def _proposal_job_or_reason(self) -> DocumentImport:
@@ -569,6 +577,8 @@ class DocumentImport(StrictModel):
     def _chapter_title_has_a_source(self) -> DocumentImport:
         if (self.chapter_title is None) != (self.chapter_source.title is None):
             raise ValueError("chapter_source.title null khi và chỉ khi chapter_title null")
+        if (self.layout_version is None) != (self.layout_settings_sha256 is None):
+            raise ValueError("layout_version và layout_settings_sha256 cùng null hoặc cùng có giá trị")
         return self
 
     @model_validator(mode="after")

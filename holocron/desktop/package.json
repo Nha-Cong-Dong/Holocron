@@ -1,0 +1,13 @@
+{
+  "name": "holocron-desktop",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Vỏ Tauri của Holocron (bộ cài Windows); version phát hành lấy từ holocron/frontend/package.json khi build.",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.4"
+  }
+}

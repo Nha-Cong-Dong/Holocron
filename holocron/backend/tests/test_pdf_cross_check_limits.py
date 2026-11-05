@@ -14,6 +14,7 @@ import time
 import pytest
 
 from holocron_core.domain.documents import PageExtraction
+from holocron_core.infrastructure.document_readers import cross_check
 from holocron_core.infrastructure.document_readers.config import PdfReaderConfig
 from holocron_core.infrastructure.document_readers.cross_check import (
     CrossCheckLimitError,
@@ -38,7 +39,6 @@ from holocron_core.infrastructure.document_readers.tiers import assemble_text_la
 DOC_ID = "doc_00000000000000cc"
 GARBLED = "HÖ ®iÒu hµnh cÊp ph¸t CPU cho c¸c tiÕn tr×nh theo l−ît vµ ®−îc ch¹y tèi ®a mét l−îng tö."
 SAME_BOX: UnitBBox = (0.1, 0.1, 0.9, 0.12)
-TIME_LIMIT_S = 1.0
 ABSOLUTE_LIMIT_S = 10.0
 RATIO_RUNS = 5
 RATIO_LIMIT = 5.0
@@ -130,14 +130,43 @@ def test_ratio_check_detects_quadratic_cross_check() -> None:
         _assert_cost_is_bounded(small, large, 100, 1000)
 
 
-def test_adversarial_overlapping_lines_at_protocol_cap_are_cut_fast() -> None:
-    """Ở trần của giao thức (10 000 × 10 000) trang bị cắt ngay ở kiểm số dòng.
+class _NoPairWork:
+    """Thay `WorkBudget`: bị tạo nghĩa là đối chiếu đã qua kiểm số dòng và bắt đầu ghép cặp."""
 
-    Phần cắt là O(1) nhưng dựng trang vẫn O(n); đo cục bộ 20 lần: 0.24–0.42 s (ngưỡng 1 s giữ như develop).
+    def __init__(self, limit: int, what: str) -> None:
+        raise AssertionError(f"đối chiếu bắt đầu tiêu ngân sách {what} (trần {limit}) thay vì cắt ở kiểm số dòng")
+
+
+def test_adversarial_overlapping_lines_at_protocol_cap_are_cut_fast(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ở trần của giao thức (10 000 × 10 000) trang bị cắt ngay ở kiểm số dòng, trước khi ghép cặp nào.
+
+    Kiểm bằng hành vi thay vì ngưỡng giây: `WorkBudget` bị thay bằng bản ném lỗi khi được tạo, nên đối chiếu phải cắt
+    ở kiểm số dòng O(1) trước vòng ghép cặp. Ngưỡng 1 s cũ chập chờn trên CI Windows có coverage (đo 1.03–1.05 s cho
+    phần dựng trang O(n)); lưới tuyệt đối `ABSOLUTE_LIMIT_S` chỉ chống treo.
     """
+    monkeypatch.setattr(cross_check, "WorkBudget", _NoPairWork)
     page, elapsed = _timed_assemble(_same_box_page(MAX_PAGE_LINES, MAX_PAGE_LINES), PdfReaderConfig())
-    assert elapsed < TIME_LIMIT_S, f"đối chiếu mất {elapsed:.2f} s"
+    assert elapsed < ABSOLUTE_LIMIT_S, f"đối chiếu mất {elapsed:.2f} s"
     _assert_cut(page)
+
+
+def test_line_count_check_detects_missing_cut() -> None:
+    """Trần số dòng nới lên trên trần giao thức ⇒ đối chiếu chạy vào ghép cặp và chính bản thay `WorkBudget` phải đỏ."""
+    raw = _same_box_page(MAX_PAGE_LINES, MAX_PAGE_LINES)
+    assert raw.ocr is not None and raw.ocr.secondary is not None
+    limits = CrossCheckLimits.from_config(PdfReaderConfig())
+    unbounded = CrossCheckLimits(
+        max_lines=MAX_PAGE_LINES + 1,
+        max_line_pairs=limits.max_line_pairs,
+        max_line_tokens=limits.max_line_tokens,
+        max_token_cells=limits.max_token_cells,
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(cross_check, "WorkBudget", _NoPairWork)
+        with pytest.raises(AssertionError, match="thay vì cắt ở kiểm số dòng"):
+            cross_check.assign_secondary_lines(
+                [line.bbox for line in raw.ocr.lines], raw.ocr.secondary.lines, 0.5, limits=unbounded
+            )
 
 
 def test_dense_token_lines_are_cut_at_the_cell_budget() -> None:
@@ -153,8 +182,18 @@ def test_dense_token_lines_are_cut_at_the_cell_budget() -> None:
         RawSecondaryLine(bbox=(0.1, 0.02 * r, 0.9, 0.02 * r + 0.015), tokens=[str(i + 10_000) for i in range(width)])
         for r in range(rows)
     ]
-    page, elapsed = _timed_assemble(_page(primary, secondary), config)
-    assert elapsed < TIME_LIMIT_S, f"đối chiếu mất {elapsed:.2f} s"
+    raw = _page(primary, secondary)
+    assert raw.ocr is not None and raw.ocr.secondary is not None
+    with pytest.raises(CrossCheckLimitError, match="số ô gióng token"):
+        cross_check_lines(
+            [line.text for line in primary],
+            [line.bbox for line in primary],
+            secondary,
+            config.line_match_min_overlap,
+            limits=CrossCheckLimits.from_config(config),
+        )
+    page, elapsed = _timed_assemble(raw, config)
+    assert elapsed < ABSOLUTE_LIMIT_S, f"đối chiếu mất {elapsed:.2f} s"
     _assert_cut(page)
 
 

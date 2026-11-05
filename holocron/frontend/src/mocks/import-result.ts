@@ -110,6 +110,9 @@ function page(pageNumber: number, overrides: Partial<PageExtractionPending>): Pa
     confirmed_by: null,
     confirm_rule: null,
     auto_confirm_undone: false,
+    vlm_mismatches: [],
+    kept_vlm_mismatch_ids: [],
+    vlm_rejected_block_ids: [],
     ...overrides,
   };
 }
@@ -337,6 +340,9 @@ function rawDocument(state: Session): RawDocumentImport {
     dropped_role_counts: roleCounts(pages),
     proposal_job: job === null ? null : structuredClone(job),
     proposal_job_absent_reason: absent,
+    layout_version: null,
+    layout_settings_sha256: null,
+    blocks_after_close: false,
   };
 }
 

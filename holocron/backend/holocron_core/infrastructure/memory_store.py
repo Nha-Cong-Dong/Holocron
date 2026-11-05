@@ -16,10 +16,20 @@ from datetime import datetime, timedelta
 from pydantic import BaseModel
 
 from ..domain.ai import AiCacheEntry
+from ..domain.ai_reread import AiRereadProposal, AiRereadProposalRecord
 from ..domain.block_eligibility import is_candidate_block
 from ..domain.blocks import Block, CropImage, ExtractionLedger, Section
 from ..domain.documents import PageEditAudit, PageGeometry, PageSummary
 from ..domain.ingestion import IngestionItem, MediaType, UploadedDocument
+from ..domain.practice import (
+    PracticeAnswer,
+    PracticeAttempt,
+    PracticeAttemptPage,
+    PracticeAttemptSummary,
+    ReviewQuestion,
+    ReviewQuestionPage,
+    StoredTwin,
+)
 from ..domain.repositories import (
     AI_CACHE_MAX_ROWS,
     AI_CACHE_TTL_DAYS,
@@ -53,6 +63,7 @@ from ..domain.repositories import (
 from ..domain.schemas import BlueprintSummary, ExamBlueprint, ExamFormat, KnowledgeChunk, Subject
 from ..domain.twins import IdempotencyRecord, TwinBatch
 from ..domain.vault import ConceptPair, ConceptPairStatus, VaultEdit, check_definition_quote, link_practice_chunks
+from .ai_reread_proposals import AiRereadProposalCache
 
 __all__ = ["IDEMPOTENCY_TTL", "IngestionStore"]
 
@@ -151,6 +162,7 @@ class IngestionStore:
         if ai_cache_max_rows < 1 or ai_cache_ttl_days < 1:
             raise ValueError("ai_cache_max_rows và ai_cache_ttl_days phải là số nguyên dương")
         self._ai_cache: dict[str, _StoredAiCache] = {}
+        self._ai_reread = AiRereadProposalCache()
         self._ai_cache_max_rows = ai_cache_max_rows
         self._ai_cache_ttl = timedelta(days=ai_cache_ttl_days)
         self._items: dict[str, IngestionItem] = {}
@@ -170,6 +182,8 @@ class IngestionStore:
         self._document_versions: dict[str, int] = {}
         self._pages: dict[tuple[str, int], _StoredPage] = {}
         self._page_audits: dict[tuple[str, int], list[PageEditAudit]] = {}
+        # `practice_attempts` + `practice_answers` (§5.13): lượt theo thứ tự ghi (thứ tự chèn của dict là `seq`).
+        self._attempts: dict[str, PracticeAttempt] = {}
         # BlockRepository (bảng của migration khối). `_last_generation` là `import_generations`: KHÔNG bị xoá theo tài
         # liệu, mất khi tắt app. `_eligible` là các `(document_id, block_id)` có `eligible = 1`.
         self._last_generation: dict[str, int] = {}
@@ -309,6 +323,31 @@ class IngestionStore:
     # ------------------------------------------------------------------ #
     # SubjectRepository
     # ------------------------------------------------------------------ #
+
+    def get_batch_blueprint_id(self, batch_id: str) -> str | None:
+        with self._lock:
+            stored = self._batches.get(batch_id)
+            return None if stored is None else stored.batch.blueprint_id
+
+    def get_twins(self, twin_ids: Sequence[str]) -> dict[str, StoredTwin]:
+        """Twin theo id kèm batch, blueprint và môn; twin có blueprint không còn thì coi như không có (như phép nối
+        của bản SQLite)."""
+        wanted = set(twin_ids)
+        found: dict[str, StoredTwin] = {}
+        with self._lock:
+            for stored in self._batches.values():
+                blueprint = self._blueprints.get(stored.batch.blueprint_id)
+                if blueprint is None:
+                    continue
+                for twin in stored.batch.twins:
+                    if twin.twin_id in wanted:
+                        found[twin.twin_id] = StoredTwin(
+                            twin=twin.model_copy(deep=True),
+                            batch_id=stored.batch.batch_id,
+                            blueprint_id=blueprint.blueprint_id,
+                            subject_code=blueprint.subject_code,
+                        )
+        return found
 
     def _ensure_subject(self, subject: Subject | None) -> None:
         """Tạo môn ngầm khi chưa có; gọi dưới `_lock`, cùng lần ghi với bản ghi chính."""
@@ -511,6 +550,7 @@ class IngestionStore:
             del self._blocks[block_key]
             self._eligible.discard(block_key)
         self._sections.pop(document_id, None)
+        self._ai_reread.drop_document(document_id)
         for crop_key in [key for key in self._crop_rows if key[0] == document_id]:
             del self._crop_rows[crop_key]
         for bytes_key in [key for key in self._crop_bytes if key[0] == document_id]:
@@ -747,6 +787,78 @@ class IngestionStore:
         return None if edit is None else edit.model_copy()
 
     # ------------------------------------------------------------------ #
+    # PracticeAttemptRepository
+    # ------------------------------------------------------------------ #
+
+    def save_practice_attempt(self, attempt: PracticeAttempt) -> PracticeAttempt:
+        """Ghi dưới `_lock`; twin không còn ⇒ `MissingReferenceError` và không ghi gì (như khoá ngoại của SQLite)."""
+        with self._lock:
+            twins = self.get_twins([answer.twin_id for answer in attempt.answers])
+            if len(twins) != len(attempt.answers) or (
+                attempt.batch_id is not None and attempt.batch_id not in self._batches
+            ):
+                raise MissingReferenceError(f"lượt {attempt.attempt_id} trỏ tới batch hoặc twin không còn")
+            if attempt.attempt_id in self._attempts:
+                raise StorageError(f"lượt {attempt.attempt_id} đã có")
+            self._attempts[attempt.attempt_id] = attempt.model_copy(deep=True)
+        return attempt
+
+    def get_practice_attempt(self, attempt_id: str) -> PracticeAttempt | None:
+        with self._lock:
+            attempt = self._attempts.get(attempt_id)
+            return None if attempt is None else attempt.model_copy(deep=True)
+
+    def list_practice_attempts(self, subject_code: str, offset: int, limit: int) -> PracticeAttemptPage:
+        with self._lock:
+            attempts = [attempt for attempt in self._attempts.values() if attempt.subject_code == subject_code]
+        newest_first = list(reversed(attempts))
+        page = newest_first[offset : offset + limit]
+        return PracticeAttemptPage(
+            total=len(attempts),
+            attempts=[build_attempt_summary(attempt) for attempt in page],
+        )
+
+    def list_review_questions(self, subject_code: str, offset: int, limit: int) -> ReviewQuestionPage:
+        """Duyệt lượt theo thứ tự ghi; câu `correct`/`incorrect` sau ghi đè câu trước của cùng twin (§5.17)."""
+        latest: dict[str, tuple[int, PracticeAttempt, PracticeAnswer]] = {}
+        with self._lock:
+            for seq, attempt in enumerate(self._attempts.values()):
+                if attempt.subject_code != subject_code:
+                    continue
+                for answer in attempt.answers:  # đã sắp theo `ordinal`
+                    if answer.outcome != "skipped":
+                        latest[answer.twin_id] = (seq, attempt, answer)
+            wrong = [entry for entry in latest.values() if entry[2].outcome == "incorrect"]
+            wrong.sort(key=lambda entry: (-entry[0], entry[2].ordinal))
+            twins = self.get_twins([entry[2].twin_id for entry in wrong])
+        # Bản in-memory không xoá batch nên mọi twin còn; phép lọc giữ cùng ngữ nghĩa phép nối `twins` của SQLite.
+        questions = [
+            ReviewQuestion.model_validate(
+                {
+                    "twin": twins[answer.twin_id].twin,
+                    "batch_id": twins[answer.twin_id].batch_id,
+                    "last_attempt_id": attempt.attempt_id,
+                    "last_answered_at": attempt.submitted_at,
+                    "last_chosen_key": answer.chosen_key,
+                }
+            )
+            for _seq, attempt, answer in wrong
+            if answer.twin_id in twins
+        ]
+        return ReviewQuestionPage(total=len(questions), questions=questions[offset : offset + limit])
+
+    def delete_practice_attempt(self, attempt_id: str) -> bool:
+        with self._lock:
+            return self._attempts.pop(attempt_id, None) is not None
+
+    def delete_practice_attempts(self, subject_code: str) -> int:
+        with self._lock:
+            doomed = [key for key, attempt in self._attempts.items() if attempt.subject_code == subject_code]
+            for key in doomed:
+                del self._attempts[key]
+        return len(doomed)
+
+    # ------------------------------------------------------------------ #
     # AiCacheRepository (như bản SQLite; spec §5.16, ADR-009 mục 8)
     # ------------------------------------------------------------------ #
 
@@ -756,6 +868,22 @@ class IngestionStore:
             stored.documents.discard(document_id)
             if not stored.documents:
                 del self._ai_cache[key]
+
+    # AiRereadProposalRepository: kho tạm theo instance (spec §6.10a), không ghi DB.
+    def put_ai_reread_proposal(self, proposal: AiRereadProposal) -> None:
+        self._ai_reread.put(proposal)
+
+    def get_ai_reread_proposal(self, proposal_id: str) -> AiRereadProposalRecord | None:
+        return self._ai_reread.get(proposal_id)
+
+    def discard_ai_reread_proposal(self, proposal_id: str) -> bool:
+        return self._ai_reread.discard(proposal_id)
+
+    def accept_ai_reread_proposal(self, proposal_id: str) -> bool:
+        return self._ai_reread.mark_accepted(proposal_id)
+
+    def release_ai_reread_proposal(self, proposal_id: str) -> bool:
+        return self._ai_reread.release(proposal_id)
 
     def get_ai_cache(self, cache_key: str, document_id: str, *, now: datetime) -> AiCacheEntry | None:
         with self._lock:
@@ -844,6 +972,9 @@ class IngestionStore:
                 self._pages[(document_id, page.page_number)] = _StoredPage.of(
                     page, page.status, page.confirmed, rewrite.expected_version + 1
                 )
+                if rewrite.audit is not None:
+                    audits = self._page_audits.setdefault((document_id, page.page_number), [])
+                    audits.append(rewrite.audit.model_copy(deep=True))
             for page_layout in layout.pages:
                 number = page_layout.page_number
                 for key in [k for k, b in self._blocks.items() if k[0] == document_id and b.page_number == number]:
@@ -1002,3 +1133,8 @@ class IngestionStore:
             if not any(k[0] == document_id and row.crop_ref == crop_ref for k, row in self._crop_rows.items()):
                 return None
             return self._crop_bytes.get((document_id, crop_ref))
+
+
+def build_attempt_summary(attempt: PracticeAttempt) -> PracticeAttemptSummary:
+    """Phần tóm tắt của lượt (bỏ `answers`); số đếm đã do `build_attempt` đếm trên các câu."""
+    return PracticeAttemptSummary.model_validate(attempt.model_dump(exclude={"answers"}))

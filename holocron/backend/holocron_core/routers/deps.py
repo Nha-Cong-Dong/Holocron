@@ -7,21 +7,36 @@ from __future__ import annotations
 
 import os
 import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from functools import cache
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 
+from ..domain.ai import AiConsent, AiConsentStore
+from ..domain.capabilities import Capability, CapabilityName, CapabilityReason
 from ..domain.repositories import AppStore, VaultRepository
+from ..infrastructure.ai_consent_store import AiSettingsFile, FileAiConsentStore, UnpersistedAiConsentStore
+from ..infrastructure.ai_runtime import EnvAiConsent, EnvProviderSource, FileSpendLedger, InMemorySpendLedger
 from ..infrastructure.llm_config import RuntimeConfig, load_runtime_config_lenient
-from ..infrastructure.storage import open_store_from_env
+from ..infrastructure.provider_probe import ProviderProbe, guarded_transport
+from ..infrastructure.provider_store import (
+    CombinedProviderSource,
+    FileProviderStore,
+    ProviderStore,
+    UnpersistedProviderStore,
+)
+from ..infrastructure.selected_llm_client import TransportFactory
+from ..infrastructure.storage import data_dir_from_env, open_store_from_env
 from ..infrastructure.template_library import InMemoryTemplateRegistry
 from ..launcher_logging import LOG_DIR_ENV, BuildInfo, read_build_info
+from ..services.capabilities import compute_capabilities
 from ..services.concept_proposal_job import ProposalJobRuntime
 from ..services.extraction import DocumentExtractor, MockDualPassExtractor
 from ..services.pipeline import TemplateAuthor
+from ..services.provider_selection import ProviderSelection
 from ..services.twin_batch import CitationProvider, NoCitationProvider, UnconfiguredTemplateAuthor
 
 REGISTRY = InMemoryTemplateRegistry()
@@ -106,6 +121,98 @@ def get_log_dir() -> str | None:
     return value or None
 
 
+@cache
+def _settings_file(data_dir: Path) -> AiSettingsFile:
+    """Một file cài đặt AI (một khoá) cho mỗi thư mục dữ liệu, dùng chung cho công tắc và nhà cung cấp người dùng."""
+    return AiSettingsFile(data_dir)
+
+
+@cache
+def _file_consent_store(data_dir: Path) -> FileAiConsentStore:
+    """Một kho cho mỗi thư mục dữ liệu, để khoá ghi của file cài đặt dùng chung cho mọi request."""
+    return FileAiConsentStore(data_dir, _settings_file(data_dir))
+
+
+def get_ai_consent_store() -> AiConsentStore:
+    """Kho công tắc đồng ý: `HOLOCRON_DATA_DIR/ai_settings.json` khi đặt thư mục dữ liệu (đọc env ở mỗi request), không
+    thì kho không lưu được (`PUT /v1/settings/ai-consent` ⇒ 409 `settings_not_persistent`)."""
+    data_dir = data_dir_from_env()
+    return UnpersistedAiConsentStore() if data_dir is None else _file_consent_store(data_dir)
+
+
+AiConsentStoreDep = Annotated[AiConsentStore, Depends(get_ai_consent_store)]
+
+
+def get_ai_consent(store: AiConsentStoreDep) -> AiConsent:
+    """`AiConsent` đọc `HOLOCRON_AI_CONSENT`, kho cài đặt và `HOLOCRON_VLM_MODE` ở MỖI lời gọi (env thắng file)."""
+    return EnvAiConsent(store=store)
+
+
+@cache
+def _file_provider_store(data_dir: Path) -> FileProviderStore:
+    return FileProviderStore(_settings_file(data_dir))
+
+
+def get_provider_store() -> ProviderStore:
+    """Kho nhà cung cấp người dùng (spec §5.16): file cài đặt khi đặt `HOLOCRON_DATA_DIR`, không thì chỉ nhà cung cấp
+    env và mọi endpoint ghi trả 409 `settings_not_persistent`. Test thay bằng `dependency_overrides`."""
+    data_dir = data_dir_from_env()
+    return UnpersistedProviderStore() if data_dir is None else _file_provider_store(data_dir)
+
+
+@cache
+def _provider_selection_for(data_dir: Path | None) -> ProviderSelection:
+    """Một bộ chọn cho mỗi thư mục dữ liệu: nguồn env và kho người dùng đọc lại mỗi lần gọi; sổ chi tiêu lưu bền ở
+    `ai_usage.json` khi có thư mục dữ liệu, không thì trong RAM (reset khi khởi động; spec §5.16 "Lưu trữ")."""
+    ledger = InMemorySpendLedger() if data_dir is None else FileSpendLedger(data_dir)
+    return ProviderSelection(CombinedProviderSource(EnvProviderSource(), get_provider_store), ledger)
+
+
+def get_provider_selection() -> ProviderSelection:
+    """Bộ chọn nhà cung cấp (cài DUY NHẤT ở `services/provider_selection.py`); test thay bằng `dependency_overrides`."""
+    return _provider_selection_for(data_dir_from_env())
+
+
+def merged_ai_configured(
+    config: RuntimeConfig, view: ProviderSelection, *, include_user_llm: bool = True
+) -> tuple[bool, bool]:
+    """`(llm_configured, vlm_configured)` theo nguồn hợp nhất env + nhà cung cấp người dùng (ADR-009 mục 12.11).
+
+    Nguồn DUY NHẤT cho `GET /v1/runtime`, cho phụ thuộc client LLM (`vault.get_chat_client`) và cho job đề xuất tự
+    tạo, để khả năng báo ra luôn khớp việc endpoint có dựng được client. Không có nhà cung cấp người dùng ⇒ trùng
+    nghĩa env. `include_user_llm = False` (job tự tạo khi công tắc đồng ý tắt, spec §5.8, ADR-009 mục 7) ⇒ vai
+    `llm` chỉ tính env."""
+    return (
+        config.llm_configured or (include_user_llm and view.configured("llm")),
+        config.vlm is not None or view.configured("vlm"),
+    )
+
+
+def merged_capabilities(
+    config: RuntimeConfig,
+    view: ProviderSelection,
+    local_failures: Mapping[CapabilityName, CapabilityReason] | None = None,
+    *,
+    include_user_llm: bool = True,
+) -> list[Capability]:
+    """`compute_capabilities` với cờ cấu hình theo `merged_ai_configured`."""
+    llm_configured, vlm_configured = merged_ai_configured(config, view, include_user_llm=include_user_llm)
+    return compute_capabilities(
+        config, local_failures=local_failures, llm_configured=llm_configured, vlm_configured=vlm_configured
+    )
+
+
+def get_llm_transport_factory() -> TransportFactory:
+    """Transport của client LLM tới nhà cung cấp đã chọn: `guarded_transport(ip_policy, limits)` (ADR-009 mục 12.8).
+    Test thay bằng transport giả (không gọi mạng)."""
+    return guarded_transport
+
+
+def get_provider_probe() -> ProviderProbe:
+    """Kiểm thử nhà cung cấp qua mạng có chặn địa chỉ (ADR-009 mục 12.8); test thay bằng transport giả."""
+    return ProviderProbe()
+
+
 def get_template_author() -> TemplateAuthor:
     return UnconfiguredTemplateAuthor()
 
@@ -134,5 +241,10 @@ LogDirDep = Annotated[str | None, Depends(get_log_dir)]
 AuthorDep = Annotated[TemplateAuthor, Depends(get_template_author)]
 CitationDep = Annotated[CitationProvider, Depends(get_citation_provider)]
 ClockDep = Annotated[Callable[[], datetime], Depends(get_clock)]
+AiConsentDep = Annotated[AiConsent, Depends(get_ai_consent)]
+ProviderSelectionDep = Annotated[ProviderSelection, Depends(get_provider_selection)]
+ProviderStoreDep = Annotated[ProviderStore, Depends(get_provider_store)]
+ProviderProbeDep = Annotated[ProviderProbe, Depends(get_provider_probe)]
+LlmTransportFactoryDep = Annotated[TransportFactory, Depends(get_llm_transport_factory)]
 ProposalJobsDep = Annotated[ProposalJobRuntime, Depends(get_proposal_jobs)]
 OptionalProposalJobsDep = Annotated[ProposalJobRuntime | None, Depends(get_optional_proposal_jobs)]

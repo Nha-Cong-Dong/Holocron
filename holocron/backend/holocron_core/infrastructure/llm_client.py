@@ -52,6 +52,7 @@ from ..domain.llm import (
     ChatCompletionResult,
     ChatMessage,
     ImageTooLargeError,
+    LlmRateLimitedError,
     LlmTimeoutError,
     LlmUpstreamError,
     TokenUsage,
@@ -74,6 +75,7 @@ from .llm_config import (
 )
 
 DEFAULT_HTTP_LIMITS = LlmHttpLimits()
+HTTP_TOO_MANY_REQUESTS = 429
 # Tên cũ, giữ cho nơi gọi (script đánh giá, test); giá trị là mặc định của `LlmHttpLimits`.
 HTTP_RETRY_MAX = DEFAULT_HTTP_LIMITS.retry_max
 BACKOFF_BASE_S = DEFAULT_HTTP_LIMITS.backoff_base_s
@@ -258,7 +260,7 @@ class _Envelope(BaseModel):
 
 
 def _retryable(status: int) -> bool:
-    return status == 429 or 500 <= status <= 599
+    return status == HTTP_TOO_MANY_REQUESTS or 500 <= status <= 599
 
 
 def _check_budget(value: float | None, name: str) -> None:
@@ -445,6 +447,7 @@ class OpenAiChatClient:
             raise LlmUpstreamError(failure, attempts=0)
         last_failure = ""
         last_timed_out = False
+        last_rate_limited = False
         for attempt in range(1, self._retry_max + 2):
             if attempt > 1:
                 pause = self._backoff_base_s * 2 ** (attempt - 2)
@@ -461,18 +464,20 @@ class OpenAiChatClient:
                 if outcome.retryable:
                     last_failure = outcome.message
                     last_timed_out = outcome.timed_out
+                    last_rate_limited = False
                     continue
                 raise LlmUpstreamError(outcome.message, attempts=attempt)
             status, body = outcome
             if _retryable(status):
                 last_failure = f"HTTP {status}"
                 last_timed_out = False
+                last_rate_limited = status == HTTP_TOO_MANY_REQUESTS
                 continue
             if not 200 <= status <= 299:
                 raise LlmUpstreamError(f"LLM từ chối yêu cầu (HTTP {status})", attempts=attempt)
             return _parse(body, attempt)
         attempts = self._retry_max + 1
-        error = LlmTimeoutError if last_timed_out else LlmUpstreamError
+        error = LlmTimeoutError if last_timed_out else LlmRateLimitedError if last_rate_limited else LlmUpstreamError
         raise error(f"LLM không phản hồi được sau {attempts} lần thử ({last_failure})", attempts=attempts)
 
     def _send(self, request: urllib.request.Request, timeout_s: float) -> tuple[int, bytes] | _Failure:

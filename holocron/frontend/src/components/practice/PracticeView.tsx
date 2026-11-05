@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
 import { HolocronMark } from "@/components/brand/HolocronMark";
 import { useShell } from "@/components/shell/ShellContext";
@@ -13,12 +13,14 @@ import type { UiError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
 import type { PairsLocation } from "@/lib/pairs";
 import type { PracticeBatch, PracticeBlueprint, PracticeTicket } from "@/lib/practice-data";
+import { attemptStatusFor, type PendingStatus, pendingReducer, unsavedAttempts } from "@/lib/practice-history";
 import { failureTechnical, ticketTechnical, ticketText } from "@/lib/practice-setup";
 import { freshRuntime } from "@/lib/runtime";
 import type { PracticeSessionKind } from "@/lib/subject-route";
 import { selectedSubject } from "@/lib/subjects";
-import type { BlueprintCreate } from "@/types/holocron";
-
+import type { BlueprintCreate, PracticeAttemptCreate } from "@/types/holocron";
+import { AttemptHistory } from "../practice-history/AttemptHistory";
+import { ReviewWrongQuestions } from "../practice-history/ReviewWrongQuestions";
 import styles from "./Practice.module.css";
 import { PracticeSession } from "./PracticeSession";
 import { PracticeSetup } from "./PracticeSetup";
@@ -28,6 +30,8 @@ const TWINS_PER_SLOT = 1;
 
 type Stage =
   | { kind: "setup" }
+  | { kind: "history" }
+  | { kind: "review" }
   | { kind: "creating" }
   | { kind: "create_failed"; error: UiError; payload: BlueprintCreate }
   | { kind: "generating"; blueprint: PracticeBlueprint }
@@ -76,6 +80,35 @@ export function PracticeView({ subjectCode, hrefFor, urlSession = null, onSessio
     onSessionChange?.(session);
   }, [session, onSessionChange]);
   const calls = useRef(createLatestCounter());
+  // Lượt làm bài chưa lưu xong sống ở đây (không ở PracticeSession) để còn báo và thử lại sau khi rời màn làm bài.
+  const [attempts, dispatchAttempt] = useReducer(pendingReducer, []);
+  const sendAttempt = useCallback((key: string, body: PracticeAttemptCreate) => {
+    api.recordPracticeAttempt(body).then(
+      () => dispatchAttempt({ type: "saved", key }),
+      () => dispatchAttempt({ type: "failed", key }),
+    );
+  }, []);
+  const recordAttempt = useCallback(
+    (key: string, body: PracticeAttemptCreate) => {
+      if (attemptsRef.current.some((item) => item.key === key)) return;
+      dispatchAttempt({ type: "enqueue", key, body });
+      sendAttempt(key, body);
+    },
+    [sendAttempt],
+  );
+  const retryAttempt = useCallback(
+    (key: string) => {
+      const item = attemptsRef.current.find((entry) => entry.key === key && entry.status === "failed");
+      if (item === undefined) return;
+      dispatchAttempt({ type: "retry", key });
+      sendAttempt(key, item.body);
+    },
+    [sendAttempt],
+  );
+  const attemptsRef = useRef(attempts);
+  useEffect(() => {
+    attemptsRef.current = attempts;
+  }, [attempts]);
   // Một khoá cho mỗi bộ đề: "Thử lại" sau lỗi mạng gửi lại cùng body và nhận đúng lượt sinh cũ nếu backend đã sinh xong.
   const idempotencyKeys = useRef(new Map<string, string>());
 
@@ -112,6 +145,7 @@ export function PracticeView({ subjectCode, hrefFor, urlSession = null, onSessio
     [generate],
   );
 
+  const unsaved = unsavedAttempts(attempts);
   const restart = useCallback(() => {
     calls.current.invalidate();
     setStage({ kind: "setup" });
@@ -141,6 +175,31 @@ export function PracticeView({ subjectCode, hrefFor, urlSession = null, onSessio
 
   return (
     <div className={styles.page}>
+      {stage.kind === "setup" && (
+        <div className={styles.actions}>
+          <Button variant="secondary" onClick={() => setStage({ kind: "history" })}>
+            Lịch sử làm bài
+          </Button>
+          <Button variant="secondary" onClick={() => setStage({ kind: "review" })}>
+            Ôn câu sai
+          </Button>
+        </div>
+      )}
+      {stage.kind !== "ready" &&
+        unsaved.map((item) => (
+          <p key={item.key} className={styles.note} role="status">
+            {item.status === "saving"
+              ? "Đang lưu lượt làm bài trước vào lịch sử…"
+              : "Chưa lưu được lượt làm bài trước vào lịch sử."}{" "}
+            {item.status === "failed" && (
+              <Button variant="secondary" onClick={() => retryAttempt(item.key)}>
+                Thử lại
+              </Button>
+            )}
+          </p>
+        ))}
+      {stage.kind === "history" && <AttemptHistory subjectCode={subject.subject_code} onBack={restart} />}
+      {stage.kind === "review" && <ReviewWrongQuestions subjectCode={subject.subject_code} onBack={restart} />}
       {stage.kind === "setup" && (
         <PracticeSetup
           key={subject.subject_code}
@@ -183,6 +242,9 @@ export function PracticeView({ subjectCode, hrefFor, urlSession = null, onSessio
           batch={stage.batch}
           blueprint={stage.blueprint}
           onNewExam={restart}
+          saveStatus={attemptStatusFor(attempts, stage.batch.batchId ?? "")}
+          onRecord={(body) => recordAttempt(stage.batch.batchId ?? "", body)}
+          onRetrySave={() => retryAttempt(stage.batch.batchId ?? "")}
           onPhaseChange={setPhase}
           conceptsHref={hrefFor({})}
         />
@@ -196,13 +258,25 @@ interface ReadyBatchProps {
   blueprint: PracticeBlueprint;
   /** "Thoát" khi đang làm, "Làm đề mới" ở Kết quả, "Soạn đề mới" khi đề không có câu: về thiết lập đề. */
   onNewExam: () => void;
+  onRecord: (body: PracticeAttemptCreate) => void;
+  saveStatus: PendingStatus | "idle";
+  onRetrySave: () => void;
   /** Bài làm chuyển giữa làm đề và kết quả. */
   onPhaseChange: (phase: PracticeSessionKind) => void;
   /** Địa chỉ phần khái niệm của môn sinh ra đề. */
   conceptsHref: string;
 }
 
-function ReadyBatch({ batch, blueprint, onNewExam, onPhaseChange, conceptsHref }: ReadyBatchProps) {
+function ReadyBatch({
+  batch,
+  blueprint,
+  onNewExam,
+  onRecord,
+  saveStatus,
+  onRetrySave,
+  onPhaseChange,
+  conceptsHref,
+}: ReadyBatchProps) {
   const hasSkipped = batch.skipped.malformed > 0 || batch.skipped.unsupported > 0;
   if (batch.questions.length === 0) {
     return (
@@ -228,6 +302,10 @@ function ReadyBatch({ batch, blueprint, onNewExam, onPhaseChange, conceptsHref }
         questions={batch.questions}
         blueprint={blueprint}
         subjectCode={blueprint.subjectCode}
+        batchId={batch.batchId}
+        onRecord={onRecord}
+        saveStatus={saveStatus}
+        onRetrySave={onRetrySave}
         onExit={onNewExam}
         onPhaseChange={onPhaseChange}
       />

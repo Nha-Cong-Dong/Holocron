@@ -11,10 +11,12 @@ import { localError } from "@/lib/errors";
 import { createLatestCounter } from "@/lib/latest";
 import { essaySubmission, initialPracticeState, isAnswered, type PracticeState, practiceScope } from "@/lib/practice";
 import type { PracticeBlueprint, PracticeQuestion } from "@/lib/practice-data";
+import { buildAttemptCreate, type PendingStatus } from "@/lib/practice-history";
 import { essayErrorPlacement, nextLabel, quizHint, quizKeyEffect, quizReducer, resultRows } from "@/lib/quiz";
 import { resolveShortcut, targetKindOf } from "@/lib/shortcuts";
 import { chapterLabel } from "@/lib/sky";
 import type { PracticeSessionKind } from "@/lib/subject-route";
+import type { PracticeAttemptCreate } from "@/types/holocron";
 
 import { EssayQuestionView } from "./EssayQuestionView";
 import { McqQuestionView } from "./McqQuestionView";
@@ -28,8 +30,16 @@ interface PracticeSessionProps {
   blueprint: PracticeBlueprint;
   /** Môn của đề (ADR-006 mục 6): để tìm đoạn nguồn và tên tài liệu. */
   subjectCode: string;
+  /** Mã batch backend đã lưu; `null` (không có) thì không ghi lịch sử làm bài. */
+  batchId: string | null;
   /** "Thoát" khi đang làm hoặc "Làm đề mới" ở Kết quả: về thiết lập đề. */
   onExit: () => void;
+  /** Gửi lượt làm bài vào hàng đợi ghi lịch sử (idempotent theo bộ đề). */
+  onRecord: (body: PracticeAttemptCreate) => void;
+  /** Trạng thái ghi lượt của bộ đề này. */
+  saveStatus: PendingStatus | "idle";
+  /** "Thử lại" khi ghi lượt lỗi. */
+  onRetrySave: () => void;
   /** Báo bài làm đang ở màn làm đề hay màn kết quả. */
   onPhaseChange: (phase: PracticeSessionKind) => void;
 }
@@ -43,7 +53,17 @@ const NEXT_BUTTON_ID = "quiz-next";
  * ô trả lời. Trả lời xong thì focus sang nút chính, nên Enter là cú bấm gốc của nút đó; giữ Enter không nhảy qua câu
  * chưa làm vì nút chỉ có khi câu đã trả lời và reducer chỉ sang câu khi câu đang mở đã trả lời.
  */
-export function PracticeSession({ questions, blueprint, subjectCode, onExit, onPhaseChange }: PracticeSessionProps) {
+export function PracticeSession({
+  questions,
+  blueprint,
+  subjectCode,
+  batchId,
+  onRecord,
+  saveStatus,
+  onRetrySave,
+  onExit,
+  onPhaseChange,
+}: PracticeSessionProps) {
   const { overlayOpen } = useShell();
   const [state, dispatch] = useReducer(quizReducer, questions, initialPracticeState);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -69,6 +89,23 @@ export function PracticeSession({ questions, blueprint, subjectCode, onExit, onP
       alive = false;
     };
   }, [subjectCode]);
+
+  // Ghi lượt làm bài (§6.12): hàng đợi ở PracticeView, nên rời bài bằng đường nào (Thoát, Làm đề mới, breadcrumb, hộp
+  // lệnh) lượt vẫn được gửi, và lỗi còn chỗ báo kèm "Thử lại" ở màn thiết lập đề.
+  const onRecordRef = useRef(onRecord);
+  useEffect(() => {
+    onRecordRef.current = onRecord;
+  }, [onRecord]);
+  const record = useCallback(() => {
+    const current = stateRef.current;
+    const body = buildAttemptCreate("batch", batchId, current.questions, current.entries);
+    if (body !== null) onRecordRef.current(body);
+  }, [batchId]);
+  useEffect(() => {
+    if (state.finished) record();
+  }, [state.finished, record]);
+  // Gỡ màn làm bài (mọi đường rời bài): ghi nốt những câu đã nộp. Trùng khoá thì hàng đợi bỏ qua.
+  useEffect(() => record, [record]);
 
   useEffect(() => {
     onPhaseChange(state.finished ? "result" : "quiz");
@@ -142,7 +179,26 @@ export function PracticeSession({ questions, blueprint, subjectCode, onExit, onP
     if (answered && !state.finished) document.getElementById(NEXT_BUTTON_ID)?.focus();
   }, [answered, state.finished]);
 
-  if (state.finished) return <ResultScreen rows={resultRows(state)} onNewExam={onExit} />;
+  if (state.finished) {
+    return (
+      <>
+        <ResultScreen rows={resultRows(state)} onNewExam={onExit} />
+        {saveStatus === "failed" && (
+          <p className={styles.saveNotice} role="status">
+            Chưa lưu được lượt làm bài vào lịch sử.{" "}
+            <Button variant="secondary" onClick={onRetrySave}>
+              Thử lại
+            </Button>
+          </p>
+        )}
+        {saveStatus === "saved" && (
+          <p className={styles.saveNotice} role="status">
+            Đã lưu lượt làm bài vào lịch sử.
+          </p>
+        )}
+      </>
+    );
+  }
   if (question === undefined || entry === undefined) return null;
 
   const chapterCode = chapterOf(question.slotIndex);

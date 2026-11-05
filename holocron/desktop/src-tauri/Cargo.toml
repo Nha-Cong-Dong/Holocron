@@ -1,0 +1,28 @@
+[package]
+name = "holocron-desktop"
+# Version phát hành do `build_desktop.py` đặt qua `tauri build --config` (lấy từ holocron/frontend/package.json).
+version = "0.0.0"
+description = "Vỏ Tauri của Holocron: chạy backend Python đi kèm và mở giao diện trong WebView2"
+license = "MIT"
+edition = "2021"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "=2.7.4", features = [] }
+
+[dependencies]
+tauri = { version = "=2.12.5", features = [] }
+tauri-plugin-single-instance = "=2.5.5"
+getrandom = "=0.3.4"
+
+[target.'cfg(windows)'.dependencies]
+webview2-com = "=0.39.1"
+windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }
+windows-core = "=0.62.2"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

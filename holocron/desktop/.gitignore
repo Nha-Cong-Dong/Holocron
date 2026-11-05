@@ -1,0 +1,4 @@
+# Sản phẩm build của vỏ Tauri (không commit): crate đã biên dịch, bộ cài, schema sinh tự động.
+src-tauri/target/
+src-tauri/gen/
+node_modules/

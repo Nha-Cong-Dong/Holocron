@@ -16,8 +16,8 @@ Phụ thuộc cấp qua `Depends`, test thay bằng `app.dependency_overrides`:
   ghi đè `get_pdf_reader` bằng stub đọc theo đường cũ (`layout_version` null, Q1 = A).
 - `get_document_proposals` (T1b, T1e; spec §5.7, §5.8 "Khi nào chạy", §6.5): runtime job đề xuất cặp của app
   (`get_optional_proposal_jobs`, `None` khi không qua `lifespan`), khả năng `concept_pair_llm_proposal` tính bằng CÙNG
-  hàm của `GET /v1/runtime` (`compute_capabilities` với `RuntimeConfig` và kết quả kiểm cục bộ `get_local_failures`), và
-  hàm dựng client của `POST /v1/vault/concept-pairs/jobs` (`get_client_factory_builder` →
+  hàm của `GET /v1/runtime` (`deps.merged_capabilities` với `RuntimeConfig`, nhà cung cấp người dùng và kết quả kiểm
+  cục bộ `get_local_failures`), và hàm dựng client của `POST /v1/vault/concept-pairs/jobs` (`get_client_factory_builder` →
   `vault.get_chat_client_factory`). Mọi route trả `DocumentImport` dùng nó để điền `proposal_job` hoặc
   `proposal_job_absent_reason`; xác nhận vừa đóng tài liệu thì tự tạo job. Đường chốt chạy nền (cuối lần đọc, đường
   `failed`) dùng hook của `ImportRuntime` do `lifespan` cấp (`background_proposal_hook`), cùng các hàm trên.
@@ -41,6 +41,7 @@ from typing import Annotated, Protocol, runtime_checkable
 
 from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 
+from ..domain.ai import AiConsent, AiConsentStore
 from ..domain.capabilities import CapabilityName, CapabilityReason
 from ..domain.documents import (
     CHAPTER_CODE_PATTERN,
@@ -68,8 +69,9 @@ from ..infrastructure.document_readers.pdf_reader import (
     WorkerRegionRenderer,
 )
 from ..infrastructure.llm_config import ConfigError, RuntimeConfig
+from ..infrastructure.selected_llm_client import TransportFactory
 from ..infrastructure.storage.original_files import OriginalFileStore
-from ..services.capabilities import compute_capabilities, unavailable_error
+from ..services.capabilities import unavailable_error
 from ..services.concept_proposal_job import ClientFactory, DocumentProposals, ProposalJobRuntime
 from ..services.crop_job import BackgroundCropJobs, CropRunner, schedule_pending_crops
 from ..services.document_chapter import ChapterCodeLockedError, update_document_chapter
@@ -103,6 +105,7 @@ from ..services.document_import import (
     restore_page,
     unconfirm_page,
 )
+from ..services.provider_selection import ProviderSelection
 from .deps import (
     ClockDep,
     OptionalProposalJobsDep,
@@ -110,8 +113,13 @@ from .deps import (
     StoreDep,
     VaultDep,
     find_proposal_jobs,
+    get_ai_consent,
+    get_ai_consent_store,
     get_clock,
+    get_llm_transport_factory,
+    get_provider_selection,
     get_runtime_config,
+    merged_capabilities,
 )
 
 SUBJECT_CODE_PATTERN = r"^[A-Z]{2,6}[0-9]{2,4}$"
@@ -302,10 +310,30 @@ def get_capability_local_failures(request: Request) -> LocalFailures:
 def get_client_factory_builder() -> ClientFactoryBuilder:
     """Hàm dựng client LLM của job đề xuất cặp: CÙNG hàm của `POST /v1/vault/concept-pairs/jobs`
     (`vault.get_chat_client_factory`, kiểm khả năng và cấu hình, không gọi mạng). Import trễ: `routers/vault.py` import
-    `routers/runtime.py`, module đó import module này. Test thay bằng `app.dependency_overrides`."""
+    `routers/runtime.py`, module đó import module này. Test thay bằng `app.dependency_overrides`.
+
+    Job TỰ TẠO dùng hàm này qua `document_proposals`: khi đó là hàm mặc định (không bị override) và có công tắc
+    đồng ý, client dựng bằng `vault.auto_chat_client_factory` (cùng đường dựng, cùng bộ chọn và transport của
+    request) để nhà cung cấp người dùng chỉ được dùng khi công tắc cho gửi tự động (spec §5.8, §5.16)."""
     from .vault import get_chat_client_factory
 
     return get_chat_client_factory
+
+
+def _make_client_factory(
+    build_client_factory: ClientFactoryBuilder,
+    config: RuntimeConfig,
+    local_failures: LocalFailures,
+    selection: ProviderSelection,
+    transport_for: TransportFactory | None,
+    consent: AiConsent | None,
+) -> ClientFactory:
+    """Hàm tạo client của job tự tạo; chỉ gọi khi thật sự tạo job. Import trễ như `get_client_factory_builder`."""
+    from .vault import auto_chat_client_factory, get_chat_client_factory
+
+    if consent is not None and build_client_factory is get_chat_client_factory:
+        return auto_chat_client_factory(config, local_failures, selection, transport_for, consent)
+    return build_client_factory(config, local_failures)
 
 
 def document_proposals(
@@ -315,16 +343,31 @@ def document_proposals(
     clock: Callable[[], datetime],
     jobs: ProposalJobRuntime | None,
     build_client_factory: ClientFactoryBuilder,
+    providers: ProviderSelection | None = None,
+    consent: AiConsent | None = None,
+    transport_for: TransportFactory | None = None,
 ) -> DocumentProposals:
     """`DocumentProposals` của một request hoặc một lần hook nền chạy. Khả năng LLM lấy từ CÙNG hàm của
-    `GET /v1/runtime` (`compute_capabilities` + `unavailable_error`), không có nguồn thứ hai; client chỉ dựng khi thật
-    sự tạo job."""
-    error = unavailable_error(compute_capabilities(config, local_failures=local_failures), "concept_pair_llm_proposal")
+    `GET /v1/runtime` (`deps.merged_capabilities`: env + nhà cung cấp người dùng, rồi `unavailable_error`), không có
+    nguồn thứ hai; client chỉ dựng khi thật sự tạo job. `providers` là `None` ⇒ bộ chọn mặc định của app.
+
+    Job tự tạo là lần gửi TỰ ĐỘNG (spec §5.8, §5.16; ADR-009 mục 7): `consent.auto_send_allowed("text")` sai ⇒ nhà
+    cung cấp người dùng không được tính, chỉ còn env (env giữ hành vi cũ tới khi fixture được duyệt sửa, OPEN 11);
+    không còn nguồn nào ⇒ như LLM không khả dụng; hàm dựng mặc định (`get_client_factory_builder`) thay bằng
+    `vault.auto_chat_client_factory` với `selection`, `transport_for` và `consent` (công tắc đọc lại lúc dựng client).
+    Hai đường router (request và hook nền) luôn truyền `consent`; `None` chỉ dành cho lời gọi trực tiếp không qua
+    router (hành vi cũ)."""
+    selection = providers if providers is not None else get_provider_selection()
+    include_user_llm = consent is None or consent.auto_send_allowed("text")
+    capabilities = merged_capabilities(config, selection.snapshot(), local_failures, include_user_llm=include_user_llm)
+    error = unavailable_error(capabilities, "concept_pair_llm_proposal")
     return DocumentProposals(
         store=store,
         jobs=jobs,
         llm_available=error is None,
-        make_client_factory=functools.partial(build_client_factory, config, local_failures),
+        make_client_factory=functools.partial(
+            _make_client_factory, build_client_factory, config, local_failures, selection, transport_for, consent
+        ),
         limits=config.llm.task_limits,
         settings=config.llm.proposal,
         clock=clock,
@@ -338,8 +381,13 @@ def get_document_proposals(
     jobs: OptionalProposalJobsDep,
     local_failures: Annotated[LocalFailures, Depends(get_capability_local_failures)],
     build_client_factory: Annotated[ClientFactoryBuilder, Depends(get_client_factory_builder)],
+    providers: Annotated[ProviderSelection, Depends(get_provider_selection)],
+    consent: Annotated[AiConsent, Depends(get_ai_consent)],
+    transport_for: Annotated[TransportFactory, Depends(get_llm_transport_factory)],
 ) -> DocumentProposals:
-    return document_proposals(store, config, local_failures, clock, jobs, build_client_factory)
+    return document_proposals(
+        store, config, local_failures, clock, jobs, build_client_factory, providers, consent, transport_for
+    )
 
 
 DocumentProposalsDep = Annotated[DocumentProposals, Depends(get_document_proposals)]
@@ -353,6 +401,17 @@ def _app_local_failures(application: FastAPI) -> LocalFailures:
     return runtime.PENDING_LOCAL_FAILURES if stored is None else stored
 
 
+def _app_consent(application: FastAPI) -> AiConsent:
+    """Công tắc đồng ý theo override của app (luồng nền không có request): override `get_ai_consent` thắng, rồi kho
+    công tắc (`get_ai_consent_store`) theo override hoặc mặc định."""
+    overrides = application.dependency_overrides
+    consent_override: Callable[[], AiConsent] | None = overrides.get(get_ai_consent)
+    if consent_override is not None:
+        return consent_override()
+    store_provider: Callable[[], AiConsentStore] = overrides.get(get_ai_consent_store, get_ai_consent_store)
+    return get_ai_consent(store_provider())
+
+
 def background_proposal_hook(application: FastAPI, store: AppStore) -> DocumentConfirmedHook:
     """Hook "đề xuất sau khi đóng" cho đường chốt chạy nền (cuối lần đọc, đường `failed`), cấp lúc `lifespan` dựng
     `ImportRuntime` (T1b). Mỗi lần chạy đọc lại cấu hình, kết quả kiểm cục bộ và runtime job của app (theo override
@@ -362,6 +421,12 @@ def background_proposal_hook(application: FastAPI, store: AppStore) -> DocumentC
         overrides = application.dependency_overrides
         config_provider: Callable[[], RuntimeConfig] = overrides.get(get_runtime_config, get_runtime_config)
         clock_provider: Callable[[], Callable[[], datetime]] = overrides.get(get_clock, get_clock)
+        selection_provider: Callable[[], ProviderSelection] = overrides.get(
+            get_provider_selection, get_provider_selection
+        )
+        transport_provider: Callable[[], TransportFactory] = overrides.get(
+            get_llm_transport_factory, get_llm_transport_factory
+        )
         builder_provider: Callable[[], ClientFactoryBuilder] = overrides.get(
             get_client_factory_builder, get_client_factory_builder
         )
@@ -372,6 +437,9 @@ def background_proposal_hook(application: FastAPI, store: AppStore) -> DocumentC
             clock_provider(),
             find_proposal_jobs(application),
             builder_provider(),
+            selection_provider(),
+            _app_consent(application),
+            transport_provider(),
         )
         return proposals.start(document_id)
 

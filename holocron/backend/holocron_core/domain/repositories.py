@@ -31,6 +31,7 @@ from .documents import (
     normalize_chapter_title,
 )
 from .ingestion import IngestionItem, UploadedDocument
+from .practice import PracticeAttempt, PracticeAttemptPage, ReviewQuestionPage, StoredTwin
 from .schemas import BlueprintSummary, DocumentMeta, ExamBlueprint, ExamFormat, KnowledgeChunk, Subject
 from .twins import IdempotencyRecord, TwinBatch
 from .vault import ConceptPair, ConceptPairStatus, VaultEdit
@@ -281,6 +282,47 @@ class TwinBatchRepository(Protocol):
         """
         ...
 
+    def get_batch_blueprint_id(self, batch_id: str) -> str | None:
+        """`blueprint_id` của batch đã lưu; batch không có ⇒ `None` (§6.12 bước 2)."""
+        ...
+
+    def get_twins(self, twin_ids: Sequence[str]) -> dict[str, StoredTwin]:
+        """Twin đã lưu theo `twin_id` kèm batch, blueprint và môn chứa nó (§5.17); id không có thì vắng trong kết quả."""
+        ...
+
+
+class PracticeAttemptRepository(Protocol):
+    """Lượt làm bài và câu sai để ôn (§5.17, §5.13 bảng `practice_attempts`, `practice_answers`).
+
+    Lượt không sửa được sau khi ghi. Mọi số đếm do code đếm trên hàng câu còn lưu lúc đọc; lượt không còn câu nào
+    (twin bị xoá theo cascade của batch) bị xoá trong cùng giao dịch. Thứ tự "gần nhất" theo `seq` tăng đơn điệu do
+    kho cấp lúc ghi, không theo đồng hồ.
+    """
+
+    def save_practice_attempt(self, attempt: PracticeAttempt) -> PracticeAttempt:
+        """Ghi lượt và mọi câu của nó trong một giao dịch; `seq` = `MAX(seq) + 1`. Twin hay batch không còn ⇒
+        `MissingReferenceError` (kho SQLite)."""
+        ...
+
+    def get_practice_attempt(self, attempt_id: str) -> PracticeAttempt | None: ...
+
+    def list_practice_attempts(self, subject_code: str, offset: int, limit: int) -> PracticeAttemptPage:
+        """Lượt của môn, mới nhất trước (`seq` giảm dần); `total` là số lượt của môn."""
+        ...
+
+    def list_review_questions(self, subject_code: str, offset: int, limit: int) -> ReviewQuestionPage:
+        """Câu sai để ôn của môn theo luật §5.17: câu trả lời `correct`/`incorrect` gần nhất của mỗi twin là
+        `incorrect`; sắp `seq` giảm dần rồi `ordinal` tăng dần."""
+        ...
+
+    def delete_practice_attempt(self, attempt_id: str) -> bool:
+        """Xoá một lượt cùng các câu của nó; không có ⇒ `False`."""
+        ...
+
+    def delete_practice_attempts(self, subject_code: str) -> int:
+        """Xoá mọi lượt của môn; trả số lượt đã xoá (0 khi môn chưa có lượt)."""
+        ...
+
 
 class PageLayout(BaseModel):
     """Khối và sổ bảo toàn của MỘT trang để lưu bằng `save_document_layout` (thay toàn bộ khối/ledger của trang).
@@ -306,11 +348,22 @@ class PageLayout(BaseModel):
 class PageRewrite(BaseModel):
     """Một hàng trang ghi lại cùng giao dịch lưu khối (`LAYOUT_FAILED`, bỏ tự xác nhận khi dựng lại; x09c).
 
-    Cột `status`/`confirmed` lấy từ `page`; so-và-ghi theo `expected_version` như `update_page`.
+    Cột `status`/`confirmed` lấy từ `page`; so-và-ghi theo `expected_version` như `update_page`. `audit` (lần sửa
+    dòng của `PATCH …/lines` dựng lại, ADR-010 mục 13) được ghi CÙNG giao dịch với trang; nó phải thuộc đúng trang,
+    có `from_version = expected_version` (`check_page_audit`) và `to_version = page.version`.
     """
 
     page: PageExtraction
     expected_version: int = Field(ge=1)
+    audit: PageEditAudit | None = None
+
+    @model_validator(mode="after")
+    def _audit_of_page(self) -> PageRewrite:
+        if self.audit is not None:
+            check_page_audit(self.audit, self.page.document_id, self.page.page_number, self.expected_version)
+            if self.audit.to_version != self.page.version:
+                raise ValueError("audit phải có to_version bằng version của trang ghi lại")
+        return self
 
 
 class DocumentLayout(BaseModel):
@@ -437,8 +490,9 @@ class BlockRepository(Protocol):
     def save_document_layout(self, document_id: str, layout: DocumentLayout) -> None:
         """Lưu NGUYÊN TỬ trong MỘT giao dịch: thay khối và ledger của mọi trang trong `layout.pages` (khối mới có
         `eligible = 0`), ghi `layout_version`/`layout_settings_sha256` (và `blocks_after_close` khi khác None) của
-        tài liệu (KHÔNG tăng `version` của tài liệu), ghi lại các trang trong `layout.page_rewrites`, rồi xoá hàng
-        ảnh cắt có `block_id` không còn trong khối của tài liệu.
+        tài liệu (KHÔNG tăng `version` của tài liệu), ghi lại các trang trong `layout.page_rewrites` (kèm
+        `PageEditAudit` của trang khi `audit` khác None), rồi xoá hàng ảnh cắt có `block_id` không còn trong khối
+        của tài liệu.
 
         Một trang ghi lại lệch version ⇒ `VersionConflictError`; trang thiếu (khối hay ghi lại) ⇒
         `RecordNotFoundError`; cả hai trường hợp KHÔNG ghi gì. File ảnh không còn hàng nào trỏ tới bị xoá SAU commit.
@@ -765,6 +819,7 @@ class AppStore(
     DocumentRepository,
     VaultRepository,
     SubjectRepository,
+    PracticeAttemptRepository,
     AiCacheRepository,
     Protocol,
 ):

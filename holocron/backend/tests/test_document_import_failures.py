@@ -243,7 +243,7 @@ def test_invalid_ocr_config_gives_a_reader_without_ocr(
     config = PdfReaderConfig(max_bytes=1234)
     runtime = ImportRuntime(files=OriginalFileStore(tmp_path), queue=SynchronousImportQueue(), reader_config=config)
     with caplog.at_level(logging.WARNING, logger=documents.__name__):
-        reader = documents.get_pdf_reader(runtime)
+        reader = documents.get_pdf_reader(documents.get_request_readers(runtime))
     assert isinstance(reader, WorkerPdfReader) and reader.ocr is None and reader.config is config
     messages = " ".join(record.getMessage() for record in caplog.records)
     assert ENV_PDF_OCR_PRIMARY in messages and BAD_OCR_VALUE not in messages

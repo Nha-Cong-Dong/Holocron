@@ -22,9 +22,17 @@ from uuid import uuid4
 
 from pydantic import Field, field_validator, model_validator
 
-from .blocks import Block, BlockType, Section
+from .blocks import Block, BlockType, ExtractionLedger, Section
 from .limits import MAX_LINE_CHARS
-from .schemas import TOPIC_KEY_PATTERN, ChunkCategory, KnowledgeChunk, StrictModel, normalize_quote, quote_in_text
+from .schemas import (
+    TOPIC_KEY_PATTERN,
+    ChunkCategory,
+    KnowledgeChunk,
+    SourceKind,
+    StrictModel,
+    normalize_quote,
+    quote_in_text,
+)
 from .search_text import TOKEN_RE, fold_text
 
 SUBJECT_CODE_PATTERN = r"^[A-Z]{2,6}[0-9]{2,4}$"
@@ -334,6 +342,72 @@ class ProposalJob(StrictModel):
         if self.pre_selected_count > self.proposed_count:
             raise ValueError("pre_selected_count không vượt proposed_count")
         return self
+
+
+# --------------------------------------------------------------------------- #
+# Cây mục, khối của mục, khối của trang (SPECIFICATION §6.10; ADR-010 mục 4, 13; X09)
+# --------------------------------------------------------------------------- #
+
+
+def _ascending_unique(value: list[int]) -> list[int]:
+    if value != sorted(set(value)):
+        raise ValueError("danh sách trang phải tăng dần, không trùng")
+    return value
+
+
+class SectionNode(StrictModel):
+    """Một nút của cây mục của MỘT tài liệu (§6.10): Section đã lưu và các con theo `ordinal`."""
+
+    section: Section
+    children: list[SectionNode] = Field(default_factory=list)
+
+
+class SourceNode(StrictModel):
+    """ "Nguồn" = một tài liệu ĐÃ ĐÓNG của môn (ADR-010 mục 4; §6.10). Mọi field do backend chép hoặc đếm (I1)."""
+
+    document_id: str = Field(pattern=r"^doc_[0-9a-f]{16}$")
+    title: str
+    source_kind: SourceKind
+    chapter_code: str | None = Field(default=None, pattern=CHAPTER_CODE_PATTERN)
+    chapter_title: str | None = None
+    layout_version: int | None = Field(default=None, ge=1)
+    chunks_from_lines: bool = False
+    chapter_shared_with: list[str] = Field(default_factory=list)
+    root: SectionNode | None = None
+    layout_failed_pages: list[int] = Field(default_factory=list)
+    pages_without_blocks: list[int] = Field(default_factory=list)
+    pages_unconfirmable_with_blocks: list[int] = Field(default_factory=list)
+
+    @field_validator("layout_failed_pages", "pages_without_blocks", "pages_unconfirmable_with_blocks")
+    @classmethod
+    def _pages_ascending(cls, value: list[int]) -> list[int]:
+        return _ascending_unique(value)
+
+
+class SubjectTree(StrictModel):
+    """ "Môn" (§5.14) và các Nguồn đã đóng của nó (§6.10), sắp theo số chương, `uploaded_at`, `document_id`."""
+
+    subject_code: str = Field(pattern=SUBJECT_CODE_PATTERN)
+    display_name: str
+    sources: list[SourceNode] = Field(default_factory=list)
+
+
+class SectionBlocks(StrictModel):
+    """Khối đủ điều kiện của một mục (tài liệu đã đóng), theo (trang, `reading_order`); `total` = số khối của mục."""
+
+    section: Section
+    total: int = Field(ge=0)
+    blocks: list[Block] = Field(default_factory=list)
+
+
+class PageBlockList(StrictModel):
+    """MỌI khối của một trang (kể cả chưa đủ điều kiện) và ledger của trang, cho màn xem lại (§6.10)."""
+
+    document_id: str = Field(pattern=r"^doc_[0-9a-f]{16}$")
+    page_number: int = Field(ge=1)
+    layout_version: int | None = Field(default=None, ge=1)
+    blocks: list[Block] = Field(default_factory=list)
+    ledger: ExtractionLedger | None = None
 
 
 # --------------------------------------------------------------------------- #

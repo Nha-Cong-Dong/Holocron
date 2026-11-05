@@ -332,6 +332,77 @@ export interface TheoryTwin {
 /** Phần tử của `TwinBatch.twins`: `question_kind === "theory"` ⇒ `TheoryTwin`, không có `question_kind` ⇒ `TwinQuestion`. */
 export type BatchTwin = TwinQuestion | TheoryTwin;
 
+// ---------------------------------------------------------------- domain/practice.py
+
+/** Kết quả một câu của lượt làm bài (§5.17); do backend tính, frontend chỉ hiển thị (I1). */
+export type AnswerOutcome = "correct" | "incorrect" | "skipped";
+
+export type PracticeMode = "batch" | "review";
+
+/** Một câu trong request ghi lượt; KHÔNG có đúng/sai, điểm hay `correct_key` (I1). `chosen_key` null = bỏ qua. */
+export interface PracticeAnswerIn {
+  twin_id: string;
+  chosen_key?: OptionKey | null;
+}
+
+/** Body của `POST /v1/practice/attempts` (§6.12): `batch_id` bắt buộc khi `mode = "batch"`, null khi `"review"`. */
+export interface PracticeAttemptCreate {
+  mode: PracticeMode;
+  batch_id?: string | null;
+  answers: PracticeAnswerIn[];
+}
+
+/** Một câu đã ghi; mọi field trừ `twin_id`, `chosen_key` do backend điền từ twin đã lưu. */
+export interface PracticeAnswer {
+  ordinal: number;
+  twin_id: string;
+  batch_id: string;
+  slot_index: number;
+  chosen_key: OptionKey | null;
+  correct_key: OptionKey;
+  outcome: AnswerOutcome;
+}
+
+/** Tóm tắt một lượt; số đếm do backend đếm trên các câu còn lưu. */
+export interface PracticeAttemptSummary {
+  attempt_id: string;
+  subject_code: string;
+  mode: PracticeMode;
+  batch_id: string | null;
+  blueprint_id: string | null;
+  submitted_at: string;
+  total_count: number;
+  correct_count: number;
+  incorrect_count: number;
+  skipped_count: number;
+}
+
+/** Chi tiết lượt (`POST`/`GET /v1/practice/attempts/{id}`); `answers` sắp theo `ordinal`. */
+export interface PracticeAttempt extends PracticeAttemptSummary {
+  answers: PracticeAnswer[];
+}
+
+/** `GET /v1/practice/attempts`: mới nhất trước. */
+export interface PracticeAttemptPage {
+  total: number;
+  attempts: PracticeAttemptSummary[];
+}
+
+/** Một câu cần ôn: bản chụp twin đã lưu, nguyên đáp án và trích dẫn (I2, I3). */
+export interface ReviewQuestion {
+  twin: BatchTwin;
+  batch_id: string;
+  last_attempt_id: string;
+  last_answered_at: string;
+  last_chosen_key: OptionKey;
+}
+
+/** `GET /v1/practice/review-questions`. */
+export interface ReviewQuestionPage {
+  total: number;
+  questions: ReviewQuestion[];
+}
+
 // ---------------------------------------------------------- services/ingestion_gate.py
 
 export type Severity = "info" | "warning" | "blocking";
@@ -463,7 +534,8 @@ export type ReviewReason =
   | "FONT_ENCODING_SUSPECT"
   | "IMAGE_NEEDS_READING"
   | "PAGE_ROLE_UNCERTAIN"
-  | "DENOISE_UNAVAILABLE";
+  | "DENOISE_UNAVAILABLE"
+  | "LAYOUT_FAILED";
 
 export type FailureReason = "PAGE_TIMEOUT" | "PAGE_ERROR" | "OCR_ENGINE_MISSING" | "TOO_MANY_LINES";
 
@@ -610,6 +682,12 @@ export interface DocumentImport {
   proposal_job: ProposalJob | null;
   /** T1e: lý do không có `proposal_job`; null ⇔ `proposal_job` khác null. */
   proposal_job_absent_reason: ProposalJobAbsentReason | null;
+  /** X09 (ADR-010 mục 15): `LAYOUT_VERSION` của code đã dựng khối; null với tài liệu cũ hoặc đọc không có hình học. */
+  layout_version: number | null;
+  /** sha256 cấu hình bộ dựng khối; null ⇔ `layout_version` null. */
+  layout_settings_sha256: string | null;
+  /** Khối được lưu SAU khi tài liệu đã đóng bằng chunk dòng (chunk của tài liệu là chunk dòng; backend đặt). */
+  blocks_after_close: boolean;
 }
 
 /** Số trang "cần xem" mang một lý do (T1e, §5.7); `count` = số phần tử của `pages` (tăng dần, không trùng). */
@@ -1017,8 +1095,9 @@ export interface ValidationErrorItem {
   type: string;
 }
 
-// -------------------------------------------------------------- tra cứu khối (domain/blocks.py, domain/vault.py; §6.10)
+// ------------------------------------------------------------------------------------------ khối, mục (§5.15, §6.10)
 
+/** Loại khối (ADR-010 mục 2), thứ tự khai báo của `BlockType`. */
 export type BlockType =
   | "heading"
   | "paragraph"
@@ -1031,6 +1110,7 @@ export type BlockType =
   | "header_footer"
   | "page_number";
 
+/** Cờ của khối (ADR-010 mục 3), sắp theo thứ tự khai báo, không trùng. */
 export type BlockFlag =
   | "crop_pending"
   | "crop_failed"
@@ -1055,9 +1135,10 @@ export type BlockFlag =
 
 export type SemanticLabel = "definition" | "example" | "exercise";
 
-/** Hộp trong [0, 1]: `[x0, y0, x1, y1]`, `x0 ≤ x1`, `y0 ≤ y1`. */
+/** Hộp chuẩn hoá [x0, y0, x1, y1] ∈ [0, 1], gốc trên-trái. */
 export type UnitBBox = [number, number, number, number];
 
+/** Tham chiếu nguồn của khối, phân biệt theo `kind` (ADR-010 mục 3). */
 export type SourceRef =
   | { kind: "word"; line_idx: number; word_idx: number }
   | { kind: "ocr_word"; line_idx: number; word_idx: number }
@@ -1072,7 +1153,7 @@ export interface TableCell {
   colspan: number;
 }
 
-/** Một khối của trang (§5.15). `text` là null khi và chỉ khi `type` là `table` hoặc `figure`. */
+/** Một khối của trang (§5.15); mọi field do backend dựng, frontend chỉ hiển thị. */
 export interface Block {
   block_id: string;
   document_id: string;
@@ -1093,6 +1174,106 @@ export interface Block {
   source: "text_layer" | "ocr" | "vlm";
   ocr_text: string | null;
   reading_order: number;
+}
+
+export type SectionFlag = "untitled" | "continued_across_pages" | "level_uncertain";
+
+/** Một nút của cây theo từng tài liệu (§5.15): gốc `chapter` (`level` 0), mục `section` (`level` 1–6). */
+export interface Section {
+  section_id: string;
+  document_id: string;
+  parent_id: string | null;
+  kind: "chapter" | "section";
+  level: number;
+  chapter_code: string | null;
+  title: string | null;
+  heading_block_ids: string[];
+  block_ids: string[];
+  ordinal: number;
+  page_start: number;
+  page_end: number;
+  flags: SectionFlag[];
+}
+
+export type LedgerBasis = "pdfium" | "confirmed_lines" | "ocr";
+
+export interface LedgerDrop {
+  reason: "hidden";
+  count: number;
+}
+
+export interface LedgerBasisCount {
+  ledger_basis: LedgerBasis;
+  source_count: number;
+  assigned_count: number;
+  dropped: LedgerDrop[];
+}
+
+export interface LedgerTypeCount {
+  type: BlockType;
+  count: number;
+}
+
+export interface LedgerFlagCount {
+  reason: "occluded" | "low_contrast";
+  count: number;
+}
+
+/** Sổ bảo toàn của một trang (ADR-010 mục 6); số đếm do backend tính. */
+export interface ExtractionLedger {
+  document_id: string;
+  page_number: number;
+  unit: "nonws_nfc_codepoint";
+  bases: LedgerBasisCount[];
+  by_type: LedgerTypeCount[];
+  flagged: LedgerFlagCount[];
+  page_drop_reason: "cover_or_course_nav" | "chapter_nav" | "build_step" | null;
+  balanced: boolean;
+}
+
+/** Nút cây mục của `GET /v1/vault/tree` (§6.10): Section và các con theo `ordinal`. */
+export interface SectionNode {
+  section: Section;
+  children: SectionNode[];
+}
+
+/** "Nguồn" = một tài liệu đã đóng (§6.10); danh sách trang do backend đếm (tăng dần), frontend chỉ hiển thị. */
+export interface SourceNode {
+  document_id: string;
+  title: string;
+  source_kind: SourceKind;
+  chapter_code: string | null;
+  chapter_title: string | null;
+  layout_version: number | null;
+  chunks_from_lines: boolean;
+  chapter_shared_with: string[];
+  root: SectionNode | null;
+  layout_failed_pages: number[];
+  pages_without_blocks: number[];
+  pages_unconfirmable_with_blocks: number[];
+}
+
+/** `GET /v1/vault/tree` (§6.10): môn và các nguồn đã đóng, sắp theo số chương, `uploaded_at`, `document_id`. */
+export interface SubjectTree {
+  subject_code: string;
+  display_name: string;
+  sources: SourceNode[];
+}
+
+/** `GET /v1/documents/{id}/sections/{section_id}/blocks` (§6.10): khối đủ điều kiện của mục; `total` do backend đếm. */
+export interface SectionBlocks {
+  section: Section;
+  total: number;
+  blocks: Block[];
+}
+
+/** `GET /v1/documents/{id}/pages/{n}/blocks` (§6.10): mọi khối của trang và ledger (null khi chưa có). */
+export interface PageBlockList {
+  document_id: string;
+  page_number: number;
+  layout_version: number | null;
+  blocks: Block[];
+  ledger: ExtractionLedger | null;
 }
 
 export interface SectionPathItem {

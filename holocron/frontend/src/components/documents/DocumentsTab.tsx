@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { DocumentExplorer } from "@/components/blocks/DocumentExplorer";
 import { HolocronMark } from "@/components/brand/HolocronMark";
 import { CapabilityNotice } from "@/components/common/CapabilityNotice";
 import { useShell } from "@/components/shell/ShellContext";
@@ -249,6 +250,7 @@ function DocumentsHome({ subjectCode, hrefFor }: { subjectCode: string; hrefFor:
       {snapshot !== null && !empty && (
         <ReadingList rows={reading} reviewHref={(docId) => hrefFor({ subject: subjectCode, doc: docId, page: null })} />
       )}
+      {snapshot !== null && snapshot.documents.length > 0 && <DocumentExplorer subjectCode={subjectCode} />}
       {snapshot !== null && snapshot.documents.length > 0 && (
         <DocumentList snapshot={snapshot} onChanged={reload} hrefFor={hrefFor} />
       )}

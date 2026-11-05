@@ -124,6 +124,16 @@ export function resolveShortcut(input: KeyInput, context: ShortcutContext): Shor
   return null;
 }
 
+/**
+ * Phím `/` nhảy tới ô tra cứu của màn Tài liệu. Tách khỏi `resolveShortcut` để không thêm hành động cho các màn không
+ * có ô tra cứu: chỉ ở ngữ cảnh toàn cục, không khi đang gõ, không khi có hộp thoại, không kèm Ctrl/Alt/Cmd.
+ */
+export function isSearchShortcut(input: KeyInput, context: ShortcutContext): boolean {
+  if (input.key !== "/" || input.ctrlKey || input.metaKey || input.altKey) return false;
+  if (context.overlayOpen || context.scope.kind !== "global") return false;
+  return input.target !== "editable";
+}
+
 export interface ShortcutHelpEntry {
   keys: string[];
   context: string;
@@ -134,6 +144,7 @@ export interface ShortcutHelpEntry {
 export const SHORTCUT_HELP: readonly ShortcutHelpEntry[] = [
   { keys: ["Ctrl+K"], context: "Mọi nơi", action: "Mở hộp lệnh: đi tới màn hình khác" },
   { keys: ["?"], context: "Mọi nơi, trừ khi đang gõ trong ô nhập", action: "Mở bảng phím tắt này" },
+  { keys: ["/"], context: "Màn Tài liệu của môn, trừ khi đang gõ trong ô nhập", action: "Nhảy tới ô tra cứu" },
   { keys: ["Esc"], context: "Hộp thoại, hộp lệnh, ô đang sửa", action: "Đóng hoặc huỷ sửa" },
   { keys: ["1–4", "A–D"], context: "Câu trắc nghiệm chưa trả lời", action: "Chọn phương án tương ứng (khoá ngay)" },
   { keys: ["Enter"], context: "Câu đã trả lời hoặc đã chấm", action: "Sang câu tiếp; câu cuối thì xem kết quả" },

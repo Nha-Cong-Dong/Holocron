@@ -61,6 +61,7 @@ export const REVIEW_REASON_LABEL_VI: Record<ReviewReasonPending, string> = {
   IMAGE_NEEDS_READING: "Trang ít chữ mà có hình lớn; nội dung trong hình cần được đọc",
   PAGE_ROLE_UNCERTAIN: "Trang gần giống trang kế tiếp nhưng hình hơi khác; hãy xem có phải bước trình chiếu trùng lặp",
   DENOISE_UNAVAILABLE: "Chưa lọc được phần khung lặp của tài liệu nên trang có hình cần xem kỹ",
+  LAYOUT_FAILED: "Chưa tách được trang thành các khối nội dung; trang dùng văn bản theo dòng và cần xem kỹ",
 };
 
 export const UNKNOWN_REVIEW_REASON_VI = "Trang cần xem kỹ vì một lý do giao diện này chưa nhận ra";

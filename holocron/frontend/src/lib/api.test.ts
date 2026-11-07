@@ -506,3 +506,15 @@ describe("bật dữ liệu mẫu: chỉ bản ghi mẫu dùng fixture", () => {
     );
   });
 });
+
+describe("patchPageLines: chỗ lệch VLM (ADR-009 mục 3.4)", () => {
+  it("gửi kept_mismatches / rejected_vlm_blocks khi có, bỏ khi rỗng", async () => {
+    const calls = stubFetch(() => Promise.resolve(jsonResponse(200, pageBody())));
+    await realApi.patchPageLines(REAL_DOC_ID, 2, 3, [], [], ["m1"], []);
+    await realApi.patchPageLines(REAL_DOC_ID, 2, 3, [], [], [], ["b1"]);
+    expect(jsonBody(calls[0])).toMatchObject({ expected_version: 3, kept_mismatches: ["m1"] });
+    expect(jsonBody(calls[0])).not.toHaveProperty("rejected_vlm_blocks");
+    expect(jsonBody(calls[1])).toMatchObject({ rejected_vlm_blocks: ["b1"] });
+    expect(jsonBody(calls[1])).not.toHaveProperty("kept_mismatches");
+  });
+});

@@ -145,6 +145,35 @@ const PAGE_2: PageExtractionPending = {
 };
 
 /**
+ * Trang riêng cho chỗ lệch bảng do AI đọc (ADR-009 mục 3.4; không nằm trong `INITIAL_PAGES`): có
+ * `TABLE_TOKEN_MISMATCH` và hai chỗ lệch cùng một khối VLM `mock-blk-vlm-1`.
+ */
+export const VLM_MISMATCH_PAGE: PageExtractionPending = {
+  ...PAGE_2,
+  review_reasons: ["TABLE_TOKEN_MISMATCH"],
+  vlm_mismatches: [
+    {
+      mismatch_id: "mock-mm-1",
+      block_id: "mock-blk-vlm-1",
+      token_kind: "number",
+      row: 2,
+      col: 3,
+      vlm_value: "7",
+      ocr_value: "1",
+    },
+    {
+      mismatch_id: "mock-mm-2",
+      block_id: "mock-blk-vlm-1",
+      token_kind: "number",
+      row: null,
+      col: null,
+      vlm_value: null,
+      ocr_value: "30",
+    },
+  ],
+};
+
+/**
  * Trang 2 "sau khi sửa" dựng sẵn theo quy tắc 26/10 của §6.5: hai dòng có cờ đã được người dùng sửa
  * (`edited_by_human`, xoá `flags`), token lệch của dòng đó bị bỏ; backend tính lại lý do và trạng thái (ở đây là bản
  * dựng sẵn của kết quả đó), `version` tăng 1.

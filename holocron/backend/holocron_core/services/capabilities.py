@@ -57,15 +57,16 @@ REASON_DETAILS_VI: dict[CapabilityReason, str] = {
 
 def _reason(
     name: CapabilityName,
-    config: RuntimeConfig,
+    configured: tuple[bool, bool],
     implemented: Collection[CapabilityName],
     local_failures: Mapping[CapabilityName, CapabilityReason],
 ) -> CapabilityReason | None:
+    llm_configured, vlm_configured = configured
     if name not in implemented:
         return "not_implemented"
-    if name in LLM_CAPABILITIES and not config.llm_configured:
+    if name in LLM_CAPABILITIES and not llm_configured:
         return "llm_not_configured"
-    if name in VLM_CAPABILITIES and config.vlm is None:
+    if name in VLM_CAPABILITIES and not vlm_configured:
         return "vlm_not_configured"
     return local_failures.get(name)
 
@@ -75,16 +76,24 @@ def compute_capabilities(
     *,
     implemented: Collection[CapabilityName] = IMPLEMENTED_CAPABILITIES,
     local_failures: Mapping[CapabilityName, CapabilityReason] | None = None,
+    llm_configured: bool | None = None,
+    vlm_configured: bool | None = None,
 ) -> list[Capability]:
     """Đủ mọi khả năng, theo thứ tự khai báo của `CapabilityName`.
 
     `local_failures`: lý do không khả dụng mà tầng gọi đã kiểm cục bộ lúc khởi động (ví dụ `"ocr"` →
     `"ocr_engine_missing"`); chỉ dùng khi khả năng đã có code và đủ cấu hình.
+    `llm_configured` / `vlm_configured`: cấu hình theo nguồn hợp nhất env + nhà cung cấp người dùng (ADR-009 mục
+    12.11), do `GET /v1/runtime` tính; `None` ⇒ chỉ theo biến môi trường trong `config`.
     """
     failures = local_failures or {}
+    configured = (
+        config.llm_configured if llm_configured is None else llm_configured,
+        config.vlm is not None if vlm_configured is None else vlm_configured,
+    )
     capabilities: list[Capability] = []
     for name in CAPABILITY_NAMES:
-        reason = _reason(name, config, implemented, failures)
+        reason = _reason(name, configured, implemented, failures)
         capabilities.append(
             Capability(
                 name=name,

@@ -101,6 +101,17 @@ export interface RoleEvidenceView {
   relatedPages: PageRefView[];
 }
 
+/** Chỗ lệch ô bảng VLM chưa giải quyết (§5.7 `VlmTokenMismatch`); chuỗi giữ nguyên như backend trả. */
+export interface VlmMismatchView {
+  mismatchId: string;
+  blockId: string;
+  tokenKind: "number" | "code";
+  row: number | null;
+  col: number | null;
+  vlmValue: string | null;
+  ocrValue: string | null;
+}
+
 /** `PageExtraction` (§5.7). */
 export interface PageView {
   docId: string;
@@ -130,6 +141,8 @@ export interface PageView {
   dropped: boolean;
   /** Đã khôi phục sau khi bị bỏ mềm. */
   restored: boolean;
+  /** ADR-009 mục 3.4: chỗ lệch bảng VLM chưa giải quyết; không rỗng ⇔ trang có `TABLE_TOKEN_MISMATCH`. */
+  vlmMismatches: VlmMismatchView[];
 }
 
 /** Kết quả của `POST /v1/documents`: `created = false` khi backend trả 200 (cùng nội dung đã nhập cho cùng môn). */
@@ -174,6 +187,26 @@ function codeList(value: unknown): string[] {
     if (isText(item) && !codes.includes(item)) codes.push(item);
   }
   return codes;
+}
+
+function parseVlmMismatches(value: unknown): VlmMismatchView[] {
+  if (!Array.isArray(value)) return [];
+  const result: VlmMismatchView[] = [];
+  for (const raw of value) {
+    if (!isRecord(raw) || !isText(raw.mismatch_id) || !isText(raw.block_id)) continue;
+    if (raw.token_kind !== "number" && raw.token_kind !== "code") continue;
+    if (result.some((item) => item.mismatchId === raw.mismatch_id)) continue;
+    result.push({
+      mismatchId: raw.mismatch_id,
+      blockId: raw.block_id,
+      tokenKind: raw.token_kind,
+      row: typeof raw.row === "number" ? raw.row : null,
+      col: typeof raw.col === "number" ? raw.col : null,
+      vlmValue: typeof raw.vlm_value === "string" ? raw.vlm_value : null,
+      ocrValue: typeof raw.ocr_value === "string" ? raw.ocr_value : null,
+    });
+  }
+  return result;
 }
 
 function textOrNull(value: unknown): string | null {
@@ -365,5 +398,6 @@ export function parsePageExtraction(value: unknown): PageView | null {
     roleEvidence: parseRoleEvidence(value.role_evidence),
     dropped: value.dropped === true,
     restored: value.restored === true,
+    vlmMismatches: parseVlmMismatches(value.vlm_mismatches),
   };
 }

@@ -136,6 +136,32 @@ def allow_testserver_host() -> Iterator[None]:
         yield
 
 
+_MACHINE_AI_ENV_VARS = (
+    "HOLOCRON_AI_CONSENT",
+    "HOLOCRON_VLM_MODE",
+    "HOLOCRON_VLM_TEMPLATE",
+    "HOLOCRON_VLM_BUDGET_USD",
+    "HOLOCRON_VLM_PRICE_IN_PER_1K",
+    "HOLOCRON_VLM_PRICE_OUT_PER_1K",
+    "HOLOCRON_VLM_PRICE_PER_IMAGE",
+    "HOLOCRON_DATA_DIR",
+)
+
+
+@pytest.fixture(autouse=True)
+def isolate_machine_ai_env() -> Iterator[None]:
+    """Xoá biến môi trường AI của máy dev (đồng ý AI, chế độ VLM, ngân sách, thư mục dữ liệu) khỏi mọi test.
+
+    CI không có các biến này; máy dev đặt chúng cho demo sẽ làm lệch giá trị mặc định mà test kỳ vọng. Test tự
+    `setenv` vẫn chạy như cũ. Dùng `MonkeyPatch` riêng (không dùng fixture `monkeypatch`) để test gọi
+    `monkeypatch.undo()` giữa chừng không khôi phục biến của máy. Không đọc hay in giá trị biến.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        for name in _MACHINE_AI_ENV_VARS:
+            patch.delenv(name, raising=False)
+        yield
+
+
 def _no_local_failures(config: PdfReaderConfig, /) -> dict[CapabilityName, CapabilityReason]:
     """Bộ kiểm cục bộ giả: máy có Tesseract, có `vie`, lượt đọc thứ hai bật và nạp được."""
     return {}

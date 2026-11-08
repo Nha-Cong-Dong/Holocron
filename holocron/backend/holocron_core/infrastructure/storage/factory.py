@@ -1,6 +1,7 @@
 """Chọn kho khi chạy theo `HOLOCRON_DATA_DIR`.
 
-- Có đặt (khác rỗng sau khi bỏ khoảng trắng): SQLite tại `HOLOCRON_DATA_DIR/holocron.sqlite3`.
+- Có đặt (khác rỗng sau khi bỏ khoảng trắng): SQLite tại `HOLOCRON_DATA_DIR/holocron.sqlite3`, ảnh cắt ở
+  `HOLOCRON_DATA_DIR/crops/` (nơi DUY NHẤT truyền thư mục ảnh cho kho).
 - Không đặt: kho in-memory như trước.
 
 Lệch có chủ đích so với SPECIFICATION §5.13 (mặc định `%LOCALAPPDATA%\\Holocron` hoặc `$XDG_DATA_HOME/holocron`):
@@ -19,6 +20,7 @@ from .sqlite_store import SQLiteStore
 
 DATA_DIR_ENV = "HOLOCRON_DATA_DIR"
 DATABASE_FILENAME = "holocron.sqlite3"
+CROPS_DIRNAME = "crops"  # file PNG của ảnh cắt: `HOLOCRON_DATA_DIR/crops/<document_id>/<crop_ref>.png` (§5.13)
 
 
 def data_dir_from_env(env: Mapping[str, str] | None = None) -> Path | None:
@@ -34,4 +36,4 @@ def open_store_from_env(env: Mapping[str, str] | None = None) -> AppStore:
     if data_dir is None:
         return IngestionStore()
     data_dir.mkdir(parents=True, exist_ok=True)
-    return SQLiteStore.open(data_dir / DATABASE_FILENAME)
+    return SQLiteStore.open(data_dir / DATABASE_FILENAME, crops_dir=data_dir / CROPS_DIRNAME)

@@ -6,8 +6,79 @@ Năm nhóm cố định: 🚀 Tính năng mới · 🛠️ Cải tiến & Tối 
 ## [Unreleased]
 
 ### 🚀 Tính năng mới
-- Bộ nhập PDF đọc metadata font (ADR-010 mục 3, 5, 15; spec §5.7, §5.15; không thêm dependency): bảng font mỗi trang (`RawFont`: tên đã làm sạch, đậm/nghiêng/đơn cách kèm nguồn weight/cờ/tên), cỡ chữ hiệu dụng theo ma trận, số đếm độc lập (`pdfium_nonws_total`, `hidden_nonws_dropped`) và `PageGeometry` kèm `reader_settings_sha256` (sha256 của toàn bộ `PdfReaderConfig`, gồm cả ba tập token tên font).
-- Bộ dựng khối cho trang có lớp chữ, thuần hình học (ADR-010 mục 2, 3, 5, 6, 7, 11, 12, 13, 15; spec §5.15; không thêm dependency; chưa nối vào luồng nhập — X09): model `Block`/`PageBlocks`/`ExtractionLedger` ở `domain/blocks.py` (`LAYOUT_VERSION = 1`, `LAYOUT_HASH_REGISTRY`); dòng → khối theo cỡ/đậm, thụt lề, khoảng cách dọc, glyph bullet; XY-cut tất định có trần độ sâu/số nút; sổ bảo toàn ký tự (basis `pdfium` và `confirmed_lines`), lệch ⇒ `layout_failed`; số trang hai bước cấp tài liệu (ứng viên phải khớp mẫu số trang của ngôn ngữ); mẫu ngôn ngữ ở `infrastructure/lang/{vi,en}.toml`; trần tất định số phép so cặp chồng lấn mỗi trang; `scripts/export_blocks.py` xuất định dạng `--pred` của bộ đo X03.
+- Giao diện mới "Chòm sao" (PR #89, #91, #93, #95, #100, #101, #102): nền thiết kế (token màu sáng/tối, 16 animation CSS, font Lexend/Newsreader đóng gói sẵn, logo khối Holocron, đổi theme Theo Windows/Sáng/Tối); thanh trên và breadcrumb thay thanh bên; bộ thành phần dùng chung đủ chế độ giảm chuyển động; trang chủ "Bầu trời của bạn" với màn chào, thẻ môn và hộp thoại Thêm môn chỉ cần tên (mã môn tự sinh).
+- Trang môn ba phần Tài liệu · Khái niệm · Ôn tập (PR #91, #100, #101, #102): tab Tài liệu nhập nhiều file (hàng đợi gửi lần lượt) và màn xem lại theo trang; tab Khái niệm có thẻ đề xuất kèm trích dẫn nguyên văn (Nhận, Sửa tên, Bỏ, Nhận tất cả, Nhận lại, tự tạo khái niệm bằng bôi đoạn hoặc chip câu); tab Ôn tập có phần thiết lập đề, màn Làm bài một câu một màn (khung Nguồn có trích dẫn và số trang, không có điểm tổng, tự luận hiện "Khớp x/y ý") và màn Kết quả; trang Cài đặt đầy đủ. `/pairs`, `/practice`, `/vault` chỉ còn chuyển hướng phía client.
+- Job nền đề xuất cặp khái niệm `/v1/vault/concept-pairs/jobs` (lô ≤ 20, song song ≤ 2, FIFO, huỷ, lỗi cô lập theo lô) theo giao thức con trỏ: code cắt trích dẫn nguyên văn theo con trỏ của LLM; `ConceptPair.pre_selected`/`failed_gates`, `KnowledgeChunk.is_exercise` (PR #106).
+- Chương tự động khi nhập PDF; `PATCH /v1/documents/{id}/chapter` sửa mã và tên chương (PR #108).
+- Bộ nhập PDF khử nhiễu trang (template, header/footer, chữ ẩn hoặc bị che, ký tự rời) và gán vai trò trang, có bỏ mềm và khôi phục trang (PR #109).
+- `GET /v1/runtime` trả 12 khả năng (3 tên mới đề xuất, chờ duyệt, luôn `not_implemented`); `ocr` và `ocr_cross_check` báo đúng trạng thái máy (Tesseract, ngôn ngữ `vie`, bộ chữ tiếng Việt, RapidOCR), kiểm chạy nền sau khi mở cổng, trong lúc kiểm báo `local_check_pending` (PR #103).
+- Bộ nhập PDF đọc metadata font (ADR-010 mục 3, 5, 15; spec §5.7, §5.15; không thêm dependency): bảng font mỗi trang (`RawFont`: tên đã làm sạch, đậm/nghiêng/đơn cách kèm nguồn weight/cờ/tên), cỡ chữ hiệu dụng theo ma trận, số đếm độc lập (`pdfium_nonws_total`, `hidden_nonws_dropped`) và `PageGeometry` kèm `reader_settings_sha256` (sha256 của toàn bộ `PdfReaderConfig`, gồm cả ba tập token tên font) (PR #120).
+- Bộ dựng khối cho trang có lớp chữ, thuần hình học (ADR-010 mục 2, 3, 5, 6, 7, 11, 12, 13, 15; spec §5.15; không thêm dependency; chưa nối vào luồng nhập — X09): model `Block`/`PageBlocks`/`ExtractionLedger` ở `domain/blocks.py` (`LAYOUT_VERSION` (1 khi ra mắt, nay 2 — xem dòng đăng ký stage), `LAYOUT_HASH_REGISTRY`); dòng → khối theo cỡ/đậm, thụt lề, khoảng cách dọc, glyph bullet; XY-cut tất định có trần độ sâu/số nút; sổ bảo toàn ký tự (basis `pdfium` và `confirmed_lines`), lệch ⇒ `layout_failed`; số trang hai bước cấp tài liệu (ứng viên phải khớp mẫu số trang của ngôn ngữ); mẫu ngôn ngữ ở `infrastructure/lang/{vi,en}.toml`; trần tất định số phép so cặp chồng lấn mỗi trang; `scripts/export_blocks.py` xuất định dạng `--pred` của bộ đo X03 (PR #122).
+- Cây tiêu đề theo tài liệu (`build_section_tree`, ADR-010 mục 4, 15; spec §5.15; chưa bật trong pipeline): cấp tiêu đề từ phân cụm cỡ chữ/độ đậm toàn tài liệu kết hợp đánh số đa cấp và từ khoá tiêu đề theo ngôn ngữ; nối trang theo tiêu đề lặp và hậu tố "(tiếp)"/"(cont.)"; `section_id` tất định theo ADR-010; cờ `untitled`, `level_uncertain`, `continued_across_pages` thay vì đoán (PR #125, #126).
+- Khối `code` đơn cách (`services/code_blocks.py`, ADR-010 mục 7, 13; spec §5.15; không thêm dependency): thụt lề và căn cột dựng lại từ toạ độ x theo bề rộng ký tự (trung vị bước x của font đơn cách), khoảng trắng dựng lại không vào sổ bảo toàn; từ không có bbox ⇒ `reading_order_uncertain`, lẫn font hoặc dòng chồng ⇒ `code_layout_uncertain`; hai listing cạnh nhau tách khi khoảng trống ngang > `merge_x_factor` × chiều cao từ — `merge_x_factor` đổi nghĩa so với bản nháp và mặc định 12 → 6; trần `max_merge_candidates` = 200; ô C `build_code_block` cho V03 (PR #123).
+- Tự xác nhận cấp trang (`page_clean_v1`) và `POST …/pages/{n}/unconfirm` (PR #110).
+- ADR-010: bóc tách tài liệu theo khối/mục với sổ bảo toàn (mọi ký tự thuộc đúng một khối hoặc nằm trong sổ loại bỏ) (PR #119).
+- Chấp nhận tài liệu tự tạo job đề xuất cặp khái niệm khi có LLM; kết quả nhập có số trang lỗi, số trang theo lý do xem lại và theo vai trò bị ẩn, cùng trạng thái job đề xuất (PR #116).
+- Màn xem lại hiện trang ẩn tự động kèm lý do và nút "Khôi phục trang" (PR #112).
+- Màn kết quả nhập tài liệu: tóm tắt sau khi đọc xong, nút Chấp nhận và tiến độ job đề xuất cặp khái niệm (PR #113).
+- Màn khái niệm: chọn nhiều cặp đề xuất, "Chấp nhận & ôn tập", tô sáng định nghĩa trên đoạn gốc (PR #114).
+- Tài liệu nhập mới có khối, ledger và `layout_version`; trang lỗi bố cục báo `LAYOUT_FAILED`; sửa dòng sẽ dựng lại khối. Endpoint cây mục, khối theo mục/trang và ảnh cắt (SPEC §6.10) (PR #145).
+- Job cắt ảnh nền cho khối bảng/hình/công thức sau khi đọc, sau sửa dòng và khi khởi động (PR #148).
+- Mục lục và tra cứu khối trong tab Tài liệu của môn; kết quả hiện chữ cạnh ảnh cắt trang gốc (PR #147).
+- API lượt làm bài và ôn câu sai (`/v1/practice/attempts`, `/v1/practice/review-questions`), migration 0008 (PR #146).
+- Ôn tập: ghi lịch sử làm bài; thêm màn "Lịch sử làm bài" và "Ôn câu sai" (có đáp án và trích dẫn nguyên văn) (PR #144).
+- Cài đặt kết nối AI: công tắc đồng ý gửi tự động, thêm nhà cung cấp kèm khoá (DPAPI), `ai_status` trong `/v1/runtime`; đề xuất cặp khái niệm chạy được với nhà cung cấp LLM người dùng tự thêm (PR #149).
+- Đọc lại bằng AI theo yêu cầu cho khối có cờ (bảng chưa dựng được, mã chưa chắc, chữ tương phản thấp): xem trước, Nhận hoặc Bỏ, báo trước nơi nhận ảnh; `PATCH …/lines` nhận `kept_mismatches` và `rejected_vlm_blocks`, trang có ô bảng VLM lệch xác nhận được sau khi giữ hết chỗ lệch hoặc bỏ khối (PR #150).
+
+### 🛠️ Cải tiến & Tối ưu
+- Spec: contract nhập một chạm cho khử nhiễu trang PDF, vai trò trang, chương tự động, tự xác nhận cấp trang và job đề xuất cặp kiểu con trỏ (ADR-006/007/008; PR #105).
+- Màn Xem lại: xác nhận xong không tự chuyển trang, có nút "Sang trang cần xem kế tiếp" và focus vào tiêu đề khi đổi trang (PR #100). Bỏ chữ kỹ thuật khỏi thông điệp lỗi và gợi ý; trích dẫn không còn hiện mã tài liệu (PR #101, #102).
+- Bộ nhập PDF: worker quét ảnh template của cả tài liệu một lần trước trang đầu; script opt-in `eval_pdf_tiers.py` so luật chọn tầng cũ và mới, `eval_pdf_ocr.py` kẹp lỗi chữ số theo trang (PR #104); script opt-in `eval_pages` và test biên cho các ngưỡng GĐ0 (PR #109).
+- OCR: chỉ kiểm `vie.traineddata` ở đúng thư mục lần gọi OCR sẽ dùng; app không đọc `TESSDATA_PREFIX` (PR #103).
+- Migration `0004_document_chapter_title.sql` (PR #108) và `0005_concept_pair_preselect.sql`; `eval_concept_proposal --mode legacy|pointer` (PR #106).
+- Gom giới hạn độ dài dòng (2000 ký tự) về hằng `MAX_LINE_CHARS` ở `domain/limits.py`, có test khoá (PR #99).
+- Test đối chiếu chéo trên trang đối kháng so tỉ lệ thời gian giữa 500 và 5000 dòng (ngưỡng ×5) thay vì ngưỡng 1 s tuyệt đối (PR #94).
+- Thêm script merge PR vào `develop` có kiểm điều kiện (`.claude/scripts/merge-to-develop.sh`; PR #92).
+- Đăng ký stage bố cục (ADR-010 mục 6, 13, 15): `PAGE_STAGES` = `base_blocks` → `code_blocks` → `reading_order`, `section_tree` là bước cấp tài liệu sau `page_numbers`; `LAYOUT_VERSION` = 2, `LAYOUT_HASH_REGISTRY` thêm hash v2 (giữ v1). Tài liệu đã nhập với layout v1 không tự nhập lại. `section_tree` có trong hash v2 nhưng luồng nhập chưa chạy tới X09. Cờ `code_layout_uncertain` thêm nghĩa: trang vượt `max_merge_candidates` ⇒ cờ nằm trên khối `paragraph`/`list_item` có thể là code chưa gộp, không BLOCKING, không đẩy trang vào hàng duyệt (spec §5.15). Đo X03 trước/sau không đổi trên bộ dev và bộ mù (bộ eval gần như không có font đơn cách); không trang nào vượt `max_merge_candidates` (PR #134).
+- Script opt-in `eval_pairs_export` (xuất mẫu chấm tay, precision của `pre_selected`) và `eval_layout` (chỉ số bố cục GĐ2) (PR #107); `eval_layout` thêm chỉ số cấu trúc (F1 loại khối, F1 cây tiêu đề, khớp dòng code, CER trang, sai không báo, độ phủ ledger, bảng đúng ô) với đường nền theo dòng và cột offline/ai (PR #118).
+- Script opt-in `scripts/probe_providers.py` đo nhà cung cấp tương thích OpenAI (nhận ảnh, độ trễ, token, giới hạn ảnh) để chọn model VLM/LLM; mặc định dry-run, trần request, che khoá (PR #117).
+- Script opt-in `scripts/eval_ocr_selfsup.py` đo nền OCR tự sinh từ lớp chữ (CER, WER, giữ dấu tiếng Việt, chữ số) theo engine Tesseract/RapidOCR, DPI và PSM (PR #121).
+- SPEC/ADR: ngưỡng template 0.40, cờ `CHAPTER_NUMBER_SHARED`, lô đề xuất mặc định 5, contract màn kết quả nhập (PR #111); SPEC §5/§6: contract Block/Section/ExtractionLedger, migration và endpoint cây/tra cứu (PR #119).
+- Số chương trong tên file trùng chương đã có được giữ, kèm cờ thông tin `CHAPTER_NUMBER_SHARED`; lô đề xuất khái niệm mặc định 5 chunk (PR #115).
+- Danh sách tài liệu hiện số trang cần xem lại và đã ẩn do backend đếm; trang ẩn không vào hàng đợi xem lại (PR #112).
+- Tự xác nhận trang dựa trên cờ khối; `crop_*` không chặn (PR #145).
+- SPEC §6.10a: contract đọc lại khối có cờ bằng AI theo yêu cầu (PR #143).
+- LLM adapter đánh dấu HTTP 429 cuối cùng (`LlmRateLimitedError`), endpoint trả 503 `VLM_RATE_LIMITED` (PR #150).
+
+### 🐛 Sửa lỗi
+- Màn Xem lại: bỏ phím Enter xác nhận trang, nút bỏ qua kích hoạt trong 0,6 s đầu và khoá khi đang gửi; nháp không mất khi lưu dòng khác hay đổi trang; xung đột 409 báo tại dòng kèm "Sửa lại từ bản mới" và "Bỏ chữ đã gõ" (PR #100). Sửa focus và câu báo ở tab Khái niệm (PR #102).
+- Màn chào: khối Holocron không còn lệch vị trí; trang môn với mã chưa có không còn kẹt "Đang tải", hết giờ 15 s thì báo lỗi (PR #95).
+- Bộ nhập PDF: slide ít chữ mà lớp chữ sạch giữ tầng lớp chữ; ảnh template không còn tính vào độ phủ ảnh; độ phủ ảnh tính bằng diện tích hợp cắt theo khung trang; heuristic TCVN3/VNI không bắt nhầm `®`/`©` (PR #104).
+- Trang OCR thoả luật (e) mang `IMAGE_NEEDS_READING` bất kể luật đưa đi OCR (PR #109).
+- Nhập đồng thời cùng môn cho kết quả như tuần tự; file hỏng không chiếm số chương (PR #108).
+- OCR: `vie.traineddata` thiếu chữ tiếng Việt thì trang scan thành `failed` với `OCR_ENGINE_MISSING`; lần kiểm nền gặp lỗi không treo ở pending; `HOLOCRON_TESSDATA_DIR`/`HOLOCRON_TESSERACT_CMD` tương đối đổi sang tuyệt đối; thăm dò RapidOCR chạy trong thư mục tạm riêng; lỗi kiểm ở request đầu báo `ocr_engine_missing` thay vì 500; đường dẫn Tesseract bắt đầu bằng `\` trên Linux/macOS hiểu là tương đối; một lần hỏi lại runtime lỗi mạng không còn đẩy ô trạng thái sang lỗi (PR #103).
+- Bản zip ghi license OFL-1.1 của hai font Lexend, Newsreader (`THIRD_PARTY_NOTICES`, `licenses/`); bước kiểm license khi build chỉ cho phép OFL cho đúng hai gói font này (PR #96).
+- Lỗi cắt ảnh hoặc ghi ảnh chỉ đánh `crop_failed` khối đó; trần số ảnh tính cả ảnh đã có (PR #148).
+- Cảnh báo trang chưa tra cứu được (lỗi bố cục, chưa có khối, chưa xác nhận) (PR #147).
+- Cây tiêu đề: La Mã chuẩn 1-39 nên `C. Kết luận`, `Part C` không bị coi là đánh số La Mã; `_strip_suffix` tuyến tính và đúng ranh giới ký tự khi casefold đổi độ dài; thêm test khoá luật cấp (từ khoá + số ⇒ cấp theo đánh số, không cờ; chỉ tiêu đề không đánh số trong cụm cỡ quá gần mới `level_uncertain`); `SECTION_TREE_STAGE_VERSION` = 2 (PR #126).
+
+### 🔒 Bảo mật Sandbox
+- `HOLOCRON_REQUIRE_TOKEN`: không đặt hoặc rỗng thì không yêu cầu token; có giá trị toàn khoảng trắng hoặc sai dạng là cấu hình hỏng, app từ chối khởi động (bản zip thoát 2 trước khi mở cổng; uvicorn thoát 3), thông điệp chỉ nêu tên biến; lúc chạy vẫn 403 fail-closed. Launcher thoát 2 (thay vì 0) khi server không khởi động xong (PR #97).
+- Màn Xem lại khoá nút xác nhận trang và "Xác nhận các trang đọc tốt" khi còn dòng chưa lưu, không tự lưu hộ (I5; PR #100).
+- Bìa tự xác nhận của tài liệu còn mở bị bỏ tự xác nhận và bỏ mềm khi tài liệu sau lộ ra trùng bìa (PR #110).
+- Ghi ảnh cắt dưới khoá tài liệu kèm khoá thế hệ nhập; không đổi trạng thái xác nhận trang (PR #148).
+- Ảnh cắt tải qua header token rồi object URL, không có token trong URL (PR #147).
+- Client VLM/LLM tới nhà cung cấp người dùng đi qua transport chặn địa chỉ nội bộ, kèm trần chi tiêu (PR #149).
+- Cài đặt và sổ chi tiêu AI fail-closed khi file không đọc được; không ghi đè (PR #149).
+- Job đề xuất tự tạo tôn trọng công tắc đồng ý với nhà cung cấp người dùng (PR #149).
+- Chữ VLM chỉ vào kho sau `vision_gate` và sau khi người dùng Nhận; trang có khối AI không tự xác nhận (I1, I3, I5; PR #150).
+
+### ⚠️ Thay đổi không tương thích
+- `PdfReaderConfig` bỏ `text_full_chars` (truyền vào sẽ báo `ValidationError`), thêm `text_sparse_chars`, `text_sparse_image_min`, `text_full_image_min`, `text_full_image_max_chars` và các field `template_*`; `text_score` đã lưu của tài liệu nhập trước 2026-10-29 theo công thức cũ, không so trực tiếp được với điểm mới. Hệ quả tạm: slide có khung template vẽ bằng vector trên ảnh nền template vẫn bị gắn cờ hình cho tới khi xử lý nợ BE-007 (PR #104).
+- `CapabilityReason` thêm `secondary_ocr_unavailable` và `local_check_pending` ở cuối danh sách (PR #103).
+- `PAIR_PRESELECT_ENABLED` mặc định tắt vì chưa đo precision (PR #106).
+- Route cũ `/practice` dùng phần thiết lập mới cho tới khi chuyển hướng (PR #101).
+- Field form `auto_confirm` (mặc định bật) nay có tác dụng; gửi `auto_confirm=false` để giữ luồng thủ công (PR #110).
 
 ## [0.2.0-alpha] - 2026-10-28
 

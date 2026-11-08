@@ -94,6 +94,9 @@ const PAGE_1: PageExtractionPending = {
   confirmed_by: null,
   confirm_rule: null,
   auto_confirm_undone: false,
+  vlm_mismatches: [],
+  kept_vlm_mismatch_ids: [],
+  vlm_rejected_block_ids: [],
 };
 
 const PAGE_2: PageExtractionPending = {
@@ -136,6 +139,38 @@ const PAGE_2: PageExtractionPending = {
   confirmed_by: null,
   confirm_rule: null,
   auto_confirm_undone: false,
+  vlm_mismatches: [],
+  kept_vlm_mismatch_ids: [],
+  vlm_rejected_block_ids: [],
+};
+
+/**
+ * Trang riêng cho chỗ lệch bảng do AI đọc (ADR-009 mục 3.4; không nằm trong `INITIAL_PAGES`): có
+ * `TABLE_TOKEN_MISMATCH` và hai chỗ lệch cùng một khối VLM `mock-blk-vlm-1`.
+ */
+export const VLM_MISMATCH_PAGE: PageExtractionPending = {
+  ...PAGE_2,
+  review_reasons: ["TABLE_TOKEN_MISMATCH"],
+  vlm_mismatches: [
+    {
+      mismatch_id: "mock-mm-1",
+      block_id: "mock-blk-vlm-1",
+      token_kind: "number",
+      row: 2,
+      col: 3,
+      vlm_value: "7",
+      ocr_value: "1",
+    },
+    {
+      mismatch_id: "mock-mm-2",
+      block_id: "mock-blk-vlm-1",
+      token_kind: "number",
+      row: null,
+      col: null,
+      vlm_value: null,
+      ocr_value: "30",
+    },
+  ],
 };
 
 /**
@@ -192,6 +227,9 @@ const PAGE_3: PageExtractionPending = {
   confirmed_by: "user",
   confirm_rule: null,
   auto_confirm_undone: false,
+  vlm_mismatches: [],
+  kept_vlm_mismatch_ids: [],
+  vlm_rejected_block_ids: [],
 };
 
 const PAGE_4: PageExtractionPending = {
@@ -226,6 +264,9 @@ const PAGE_4: PageExtractionPending = {
   confirmed_by: null,
   confirm_rule: null,
   auto_confirm_undone: false,
+  vlm_mismatches: [],
+  kept_vlm_mismatch_ids: [],
+  vlm_rejected_block_ids: [],
 };
 
 export const INITIAL_PAGES: readonly PageExtractionPending[] = [PAGE_1, PAGE_2, PAGE_3, PAGE_4];
@@ -307,6 +348,9 @@ export function mockDocumentImport(
     chapter_source: { code: "user", title: "file_name" },
     chapter_flags: [],
     auto_confirm: true,
+    layout_version: null,
+    layout_settings_sha256: null,
+    blocks_after_close: false,
   };
 }
 

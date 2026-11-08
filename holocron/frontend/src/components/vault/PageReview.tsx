@@ -87,11 +87,14 @@ import {
   reviewSessionFor,
 } from "@/lib/review-session";
 import type { VaultHrefFor } from "@/lib/vault";
+import { mismatchDoneMessage, writeMismatchPatch } from "@/lib/vlm-mismatch";
 
+import { AiRereadSection } from "./AiReread";
 import { DeleteDialog } from "./DocumentList";
 import { DroppedPageNav, DroppedPagePanel } from "./DroppedPages";
 import pageStyles from "./PageReview.module.css";
 import styles from "./Vault.module.css";
+import { VlmMismatchPanel } from "./VlmMismatchPanel";
 
 type Loadable<T> = { kind: "loading" } | { kind: "error"; error: UiError } | { kind: "ready"; value: T };
 
@@ -319,6 +322,21 @@ export function PageReview({
         writes.current.leave();
         setBusy(false);
       }
+    },
+    [fetchDocument],
+  );
+
+  /**
+   * Đã nhận chữ AI (§6.10a): backend ghi khối `vlm` và trả trang mới (không tự xác nhận). Áp trang như một thao tác ghi
+   * thành công rồi đọc lại tài liệu để cập nhật danh sách trang.
+   */
+  const applyAiAccepted = useCallback(
+    (updated: PageView) => {
+      pageCalls.current.invalidate();
+      setPage({ kind: "ready", value: updated });
+      setActionError(null);
+      setNotice("Đã nhận chữ AI vào trang. Trang chưa được xác nhận: xem lại rồi xác nhận bằng nút.");
+      void fetchDocument();
     },
     [fetchDocument],
   );
@@ -623,6 +641,36 @@ export function PageReview({
                   () => setConfirmedHere(current),
                 );
               }}
+            />
+          )}
+          {page.kind === "ready" && !page.value.dropped && (
+            <VlmMismatchPanel
+              key={`vlm:${page.value.pageNumber}:${page.value.version}`}
+              page={page.value}
+              busy={busy}
+              onPatch={(patch) =>
+                runWrite(
+                  () =>
+                    writeMismatchPatch(
+                      api.patchPageLines,
+                      documentId,
+                      page.value.pageNumber,
+                      page.value.version,
+                      patch,
+                    ),
+                  mismatchDoneMessage(patch),
+                )
+              }
+            />
+          )}
+          {page.kind === "ready" && !page.value.dropped && page.value.status !== "pending" && (
+            <AiRereadSection
+              key={`ai:${page.value.pageNumber}:${page.value.version}`}
+              documentId={documentId}
+              page={page.value}
+              busy={busy}
+              onAccepted={applyAiAccepted}
+              onReload={reloadAll}
             />
           )}
           {pageNumber !== null && <PageSteps doc={doc} pageNumber={pageNumber} hrefFor={hrefFor} />}

@@ -19,11 +19,14 @@ giới hạn OS) rồi RapidOCR, và gửi kết quả trong `RawPdfPage.ocr`. M
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import functools
+import hashlib
 import io
 import math
 import sys
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Protocol
@@ -31,9 +34,15 @@ from typing import Protocol
 from pydantic import BaseModel
 
 from ...sandbox.os_limits import apply_limits
-from .config import OcrSettings, PdfReaderConfig
+from .config import DEFAULT_RENDER_SHRINK_FACTOR, OcrSettings, PdfReaderConfig
 from .pdfium_adapter import PdfiumBackend, PdfiumDocument, warm_up
 from .protocol import (
+    STDIN_REQUEST,
+    CropBatchMessage,
+    CropError,
+    CropErrorCode,
+    CropPng,
+    CropRequest,
     OcrStartedMessage,
     OpenedMessage,
     OpenFailedMessage,
@@ -52,7 +61,16 @@ from .protocol import (
     encode_message,
 )
 from .rapidocr_adapter import RapidOcrBackend
-from .raster import GrayImage, PixelBox, encode_png_gray, ink_outside_text_ratio
+from .raster import (
+    POINTS_PER_INCH,
+    GrayImage,
+    PixelBox,
+    crop_pixels,
+    encode_png_gray,
+    expand_box,
+    fit_long_edge,
+    ink_outside_text_ratio,
+)
 from .template_images import READ_ERRORS, TemplateFilter, scan_template_images
 from .tesseract import Runner, TesseractEngine, check_vie_charset, run_bounded
 from .text_layer import needs_ocr_page
@@ -132,10 +150,10 @@ def _emit_stdout(message: BaseModel) -> None:
     sys.stdout.flush()
 
 
-def _stdin_page_requests() -> Iterable[PageRequest]:
+def _stdin_page_requests() -> Iterable[PageRequest | CropRequest]:
     for line in sys.stdin:
         if line.strip():
-            yield PageRequest.model_validate_json(line)
+            yield STDIN_REQUEST.validate_json(line)
 
 
 def _read_bounded(path: str, max_bytes: int) -> bytes | None:
@@ -220,6 +238,165 @@ def _fit_message(message: PageMessage | PageErrorMessage, max_message_bytes: int
     return PageErrorMessage(page_index=message.page.page_index, message="MessageTooLarge")
 
 
+# --------------------------------------------------------------------------- #
+# Ảnh cắt vùng (ADR-010 mục 9, t'; ADR-009 mục 5)
+# --------------------------------------------------------------------------- #
+
+# Byte dự phòng cho mỗi vùng còn lại trong danh sách `errors` (JSON `{"region_id":…,"code":"over_message_bytes"}`),
+# để thông điệp cuối cùng không vượt `max_message_bytes` khi các vùng sau bị báo lỗi.
+CROP_ERROR_RESERVE_BYTES = 64
+CROP_SIZE_PROBE_DPI = 72
+
+
+class GrayPageRenderer(Protocol):
+    """Phần của `PdfiumDocument` mà việc cắt ảnh cần (render trang ra ảnh xám); test cấp tài liệu giả."""
+
+    def render_gray(
+        self, index: int, dpi: int, max_pixels: int, *, shrink_factor: float = DEFAULT_RENDER_SHRINK_FACTOR
+    ) -> GrayImage: ...
+
+
+class _CropRenderer:
+    """Render vùng của một `CropRequest`; giữ ảnh trang đã render theo `(trang, dpi)` trong phạm vi một lượt."""
+
+    def __init__(self, document: GrayPageRenderer, page_count: int, config: PdfReaderConfig) -> None:
+        self._document = document
+        self._page_count = page_count
+        self._config = config
+        self._sizes: dict[int, tuple[float, float]] = {}
+        self._pages: dict[tuple[int, int], GrayImage] = {}
+
+    def _page_points(self, index: int) -> tuple[float, float]:
+        """Khổ trang (point, theo hướng hiển thị) đo bằng một lần render ở 72 dpi."""
+        if index not in self._sizes:
+            probe = self._document.render_gray(index, CROP_SIZE_PROBE_DPI, self._config.ocr_max_pixels)
+            ratio = POINTS_PER_INCH / probe.dpi
+            self._sizes[index] = (probe.width * ratio, probe.height * ratio)
+        return self._sizes[index]
+
+    def render(self, page_index: int, bbox: tuple[float, float, float, float], max_edge_px: int) -> GrayImage | None:
+        """Ảnh xám của vùng, cạnh dài ≤ `max_edge_px`; vùng suy biến hay ngoài tài liệu ⇒ None (`bad_region`)."""
+        box = expand_box(bbox, self._config.crop_margin)
+        if box is None or page_index >= self._page_count:
+            return None
+        width_pt, height_pt = self._page_points(page_index)
+        long_pt = max((box[2] - box[0]) * width_pt, (box[3] - box[1]) * height_pt)
+        if long_pt <= 0:
+            return None
+        dpi = max(1, min(self._config.crop_max_dpi, math.floor(max_edge_px * POINTS_PER_INCH / long_pt)))
+        key = (page_index, dpi)
+        if key not in self._pages:
+            self._pages[key] = self._document.render_gray(
+                page_index, dpi, self._config.ocr_max_pixels, shrink_factor=self._config.render_shrink_factor
+            )
+        cropped = crop_pixels(self._pages[key], box)
+        return None if cropped is None else fit_long_edge(cropped, max_edge_px)
+
+
+class _BatchSize:
+    """Byte của thông điệp `crop_batch` đã mã hoá (kèm `\\r\\n`), cộng dồn theo từng phần tử: mỗi lần thêm chỉ mã
+    hoá phần tử mới (tuyến tính theo số vùng). Thông điệp mã hoá gọn (không khoảng trắng) nên kích thước bằng phần
+    rỗng cộng các phần tử và dấu phẩy ngăn cách."""
+
+    def __init__(self) -> None:
+        self._empty = len(encode_message(CropBatchMessage()).encode("utf-8")) + 2
+        self._crops = 0
+        self._crop_bytes = 0
+        self._errors = 0
+        self._error_bytes = 0
+
+    @staticmethod
+    def _item(item: CropPng | CropError) -> int:
+        return len(item.model_dump_json().encode("utf-8"))
+
+    def add_crop(self, crop: CropPng) -> None:
+        self._crop_bytes += self._item(crop)
+        self._crops += 1
+
+    def add_error(self, error: CropError) -> None:
+        self._error_bytes += self._item(error)
+        self._errors += 1
+
+    def total_with(self, crop: CropPng, pending: int) -> int:
+        """Byte của thông điệp nếu thêm `crop`, cộng phần dự phòng cho `pending` vùng còn lại."""
+        crops = self._crops + 1
+        separators = (crops - 1) + max(0, self._errors - 1)
+        body = self._crop_bytes + self._item(crop) + self._error_bytes + separators
+        return self._empty + body + pending * CROP_ERROR_RESERVE_BYTES
+
+
+def render_crop_batch(
+    document: GrayPageRenderer,
+    page_count: int,
+    request: CropRequest,
+    config: PdfReaderConfig,
+    *,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> CropBatchMessage:
+    """Render từng vùng của `request` (ADR-010 mục 9): nới lề, thu cạnh dài về `max_edge_px` (≤ `crop_max_edge_px`),
+    mã PNG xám. Ảnh vượt `crop_max_image_bytes` ⇒ `over_image_bytes`; ảnh kế tiếp làm thông điệp vượt
+    `max_message_bytes` (tính trên thông điệp ĐÃ mã hoá) ⇒ vùng đó và mọi vùng sau `over_message_bytes`; hết
+    `crop_request_timeout_s` ⇒ vùng còn lại `over_budget`; vùng vượt `crop_max_regions_per_request` ⇒ `over_budget`.
+    Lỗi render một vùng không làm hỏng các vùng khác."""
+    deadline = monotonic() + config.crop_request_timeout_s
+    max_edge_px = min(request.max_edge_px, config.crop_max_edge_px)
+    renderer = _CropRenderer(document, page_count, config)
+    crops: list[CropPng] = []
+    errors: list[CropError] = []
+    size = _BatchSize()
+
+    def fail(region_id: int, code: CropErrorCode) -> None:
+        error = CropError(region_id=region_id, code=code)
+        errors.append(error)
+        size.add_error(error)
+
+    full = False
+    regions = request.regions
+    for position, region in enumerate(regions):
+        pending = len(regions) - position - 1
+        if full:
+            fail(region.region_id, "over_message_bytes")
+            continue
+        if position >= config.crop_max_regions_per_request or monotonic() >= deadline:
+            fail(region.region_id, "over_budget")
+            continue
+        try:
+            image = renderer.render(region.page_index, region.bbox, max_edge_px)
+        except PAGE_ERRORS:
+            fail(region.region_id, "render_error")
+            continue
+        if image is None:
+            fail(region.region_id, "bad_region")
+            continue
+        png = encode_png_gray(image)
+        if len(png) > config.crop_max_image_bytes:
+            fail(region.region_id, "over_image_bytes")
+            continue
+        crop = CropPng(
+            region_id=region.region_id,
+            width_px=image.width,
+            height_px=image.height,
+            size_bytes=len(png),
+            sha256=hashlib.sha256(png).hexdigest(),
+            png_base64=base64.b64encode(png).decode("ascii"),
+        )
+        if size.total_with(crop, pending) > config.max_message_bytes:
+            full = True
+            fail(region.region_id, "over_message_bytes")
+            continue
+        crops.append(crop)
+        size.add_crop(crop)
+    return CropBatchMessage(crops=crops, errors=errors)
+
+
+def crop_cpu_seconds(request: WorkerRequest) -> int:
+    """Giây CPU cộng thêm cho worker cắt ảnh: `ceil(crop_request_timeout_s)` cho mỗi lượt tối đa `crop_budget` vùng."""
+    if request.crop_budget < 1:
+        return 0
+    batches = math.ceil(request.crop_budget / request.config.crop_max_regions_per_request)
+    return math.ceil(request.config.crop_request_timeout_s) * batches
+
+
 def template_scan_for(request: WorkerRequest, document: PdfiumDocument, page_count: int, emit: Emit) -> TemplateScan:
     """Kết quả quét ảnh template mà worker dùng cho mọi trang của tài liệu.
 
@@ -247,11 +424,12 @@ def scan_cpu_seconds(request: WorkerRequest) -> int:
 def run(
     request: WorkerRequest,
     backend: PdfiumBackend,
-    requests: Iterable[PageRequest],
+    requests: Iterable[PageRequest | CropRequest],
     emit: Emit,
     ocr: OcrRunner | None = None,
 ) -> None:
-    """Mở tài liệu, báo số trang, quét ảnh template (khi được yêu cầu), rồi đọc tối đa `page_budget` trang."""
+    """Mở tài liệu, báo số trang, quét ảnh template (khi được yêu cầu), rồi đọc tối đa `page_budget` trang và render
+    tối đa `crop_budget` vùng (mỗi `CropRequest` trả đúng một `crop_batch`; vượt `crop_budget` ⇒ worker thoát)."""
     data = _read_bounded(request.path, request.config.max_bytes)
     if data is None:
         emit(OpenFailedMessage(code="OPEN_FAILED"))
@@ -270,10 +448,19 @@ def run(
         # Lượt quét không xong (`over_cap`, `timeout`, `error`) ⇒ khử nhiễu không đầy đủ (GĐ0 0C, `DENOISE_UNAVAILABLE`);
         # `skipped` là worker không được yêu cầu quét (cùng cách phân loại với cảnh báo của `pdf_reader`).
         scan_ok = scan.status in ("ok", "skipped")
-        for served, page_request in enumerate(requests):
+        served = 0
+        cropped = 0
+        for item in requests:
+            if isinstance(item, CropRequest):
+                if cropped + len(item.regions) > request.crop_budget:
+                    return
+                cropped += len(item.regions)
+                emit(render_crop_batch(opened, page_count, item, request.config))
+                continue
             if served >= request.page_budget:
                 return
-            page = _read_one(opened, page_request.page_index, page_count, request.config, ocr, emit, templates, scan_ok)
+            served += 1
+            page = _read_one(opened, item.page_index, page_count, request.config, ocr, emit, templates, scan_ok)
             emit(_fit_message(page, request.config.max_message_bytes))
 
 
@@ -298,7 +485,8 @@ def start(
             warm(backend)
     ocr = build_ocr(request.ocr, config) if request.ocr is not None else None
     cpu_per_page = config.ocr_cpu_seconds_per_page if ocr is not None else config.worker_cpu_seconds_per_page
-    limit(config.worker_mem_bytes, cpu_per_page * (request.page_budget + 1) + scan_cpu_seconds(request))
+    cpu_seconds = cpu_per_page * (request.page_budget + 1) + scan_cpu_seconds(request) + crop_cpu_seconds(request)
+    limit(config.worker_mem_bytes, cpu_seconds)
     emit(ReadyMessage())
     return backend, ocr
 

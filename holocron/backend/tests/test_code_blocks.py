@@ -210,10 +210,11 @@ def test_spaces_capped_and_flagged() -> None:
     assert capped is not None and capped.text == "a bb   cc dd" and "code_layout_uncertain" in capped.flags
 
 
-def test_default_pipeline_does_not_register_code_stage() -> None:
-    assert [stage.name for stage in PAGE_STAGES] == ["base_blocks", "reading_order"]
+def test_default_pipeline_registers_code_stage_before_reading_order() -> None:
+    assert [stage.name for stage in PAGE_STAGES] == ["base_blocks", "code_blocks", "reading_order"]
+    assert PAGE_STAGES[-1].name == "reading_order"
     result = _run(_geo(PROGRAM), PAGE_STAGES)
-    assert "code" not in {b.type for b in result.blocks}
+    assert "code" in {b.type for b in result.blocks}
 
 
 def test_two_separate_listings_stay_two_blocks() -> None:
@@ -241,9 +242,11 @@ def test_code_stage_fingerprint_and_hash_change() -> None:
     default = layout_settings_sha256(numbers)
     assert default == default_layout_settings_sha256(LANG)
     with_code = layout_settings_sha256(numbers, STAGES)
-    assert with_code != default
+    assert with_code == default
+    without_code = (BaseBlockStage(), ReadingOrderStage())
+    assert layout_settings_sha256(numbers, without_code) != default
     tweaked = (BaseBlockStage(), CodeBlockStage(CodeBlockSettings(min_monospace_ratio=0.7)), ReadingOrderStage())
-    assert layout_settings_sha256(numbers, tweaked) != with_code
+    assert layout_settings_sha256(numbers, tweaked) != default
     assert layout_settings_sha256(numbers, STAGES) == with_code
 
 

@@ -9,8 +9,10 @@
  * - Thân `/v1/runtime` được kiểm dạng ở đây (`normalizeRuntimeInfo`) trước khi tới component.
  */
 
+import { isCropRef, type PageBlockView, parseAiRereadProposal, parsePageBlocks } from "@/lib/ai-reread";
+import { parseAiStatus, parseConsentState, parseProvider, parseProviderList, parseTestResult } from "@/lib/ai-settings";
 import { parseProposalJobList } from "@/lib/concept-proposals";
-import { apiBase, authHeaders, USE_MOCKS } from "@/lib/config";
+import { apiBase, authHeaders, TOKEN_HEADER, USE_MOCKS } from "@/lib/config";
 import {
   type DocumentImportOutcome,
   type DocumentSummaryView,
@@ -39,6 +41,13 @@ import {
   parseEssayGradeResult,
   parsePracticeBatch,
 } from "@/lib/practice-data";
+import {
+  type AttemptPageView,
+  parseAttempt,
+  parseAttemptPage,
+  parseReviewPage,
+  type ReviewPageView,
+} from "@/lib/practice-history";
 import { normalizeRuntimeInfo, type RuntimeView } from "@/lib/runtime";
 import { parseSubject, parseSubjectList } from "@/lib/subjects";
 import {
@@ -60,6 +69,13 @@ import { isImportResultMock, mockImportResultApi } from "@/mocks/import-result";
 import { isMockDocument } from "@/mocks/store";
 import type { EssayGradeRequest, ProposalJobCreate } from "@/types/contract-pending";
 import type {
+  AiConsentState,
+  AiConsentUpdate,
+  AiRereadAcceptRequest,
+  AiRereadProposal,
+  AiStatus,
+  BlockSearchPage,
+  BlockType,
   BlueprintCreate,
   CellPatch,
   ChunkLabelsPatch,
@@ -75,8 +91,18 @@ import type {
   PageConfirmRequest,
   PageLinesPatch,
   PageRestoreRequest,
+  PracticeAttempt,
+  PracticeAttemptCreate,
+  ProviderConfig,
+  ProviderCreate,
+  ProviderList,
+  ProviderTestRequest,
+  ProviderTestResult,
+  ProviderUpdate,
+  SectionBlocks,
   Subject,
   SubjectCreate,
+  SubjectTree,
   TablePatchRequest,
   TwinBatch,
   TwinBatchRequest,
@@ -89,8 +115,29 @@ export const LOCAL_EDITOR_ID = "local_user";
 // `ApiError` và `toUiError` nằm ở `lib/errors.ts` để dữ liệu mẫu dựng được lỗi đã phân loại mà không import vòng.
 export { ApiError, toUiError } from "@/lib/errors";
 
+/**
+ * Mã truy cập người dùng nhập ở Cài đặt › Kết nối AI: chỉ giữ trong RAM (biến module), không ghi localStorage, cookie
+ * hay URL; mất khi tải lại trang. Mã do vỏ desktop cấp (`authHeaders`) luôn thắng.
+ */
+let sessionAccessToken: string | null = null;
+
+/** Đặt (hoặc xoá bằng `null`/rỗng) mã truy cập của phiên này. */
+export function setAccessToken(token: string | null): void {
+  const trimmed = token === null ? "" : token.trim();
+  sessionAccessToken = trimmed === "" ? null : trimmed;
+}
+
+/** Đã có mã truy cập trong phiên (không lộ giá trị). */
+export function hasAccessToken(): boolean {
+  return sessionAccessToken !== null;
+}
+
+function sessionTokenHeaders(): Record<string, string> {
+  return sessionAccessToken === null ? {} : { [TOKEN_HEADER]: sessionAccessToken };
+}
+
 interface RequestSpec {
-  method: "GET" | "POST" | "PATCH" | "DELETE";
+  method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
   body?: BodyInit;
   headers?: Record<string, string>;
 }
@@ -99,7 +146,10 @@ interface RequestSpec {
 async function send(path: string, spec: RequestSpec, options: ClassifyOptions = {}): Promise<Response> {
   const base = apiBase();
   // Header xác thực gộp sau cùng để header riêng của request không ghi đè được token.
-  const init: RequestInit = { method: spec.method, headers: { ...spec.headers, ...authHeaders() } };
+  const init: RequestInit = {
+    method: spec.method,
+    headers: { ...spec.headers, ...sessionTokenHeaders(), ...authHeaders() },
+  };
   if (spec.body !== undefined) {
     init.body = spec.body;
   }
@@ -135,7 +185,11 @@ async function request<T>(path: string, spec: RequestSpec, options: ClassifyOpti
   return (await readJson(await send(path, spec, options))) as T;
 }
 
-function jsonSpec(method: "POST" | "PATCH", payload: unknown, headers: Record<string, string> = {}): RequestSpec {
+function jsonSpec(
+  method: "POST" | "PATCH" | "PUT",
+  payload: unknown,
+  headers: Record<string, string> = {},
+): RequestSpec {
   return { method, headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(payload) };
 }
 
@@ -171,6 +225,16 @@ export interface ConceptPairEdits {
   definitionQuote?: string;
 }
 
+/** Tham số của `GET /v1/vault/blocks/search` (§6.10). */
+export interface BlockSearchQuery {
+  q: string;
+  subjectCode: string;
+  /** Rỗng là không lọc theo loại. */
+  types: readonly BlockType[];
+  offset: number;
+  limit: number;
+}
+
 /** Dữ liệu của form nhập tài liệu, đã kiểm ở `lib/documents.ts`. */
 export interface DocumentImportInput {
   file: File;
@@ -183,6 +247,41 @@ export interface DocumentImportInput {
 
 /** Mọi hàm gọi backend. Mock chỉ được thay phần tử của endpoint chưa có ở backend. */
 export interface HolocronApi {
+  /** `RuntimeInfo.ai_status` (§5.12) từ `GET /v1/runtime`; luôn gọi backend, không dữ liệu mẫu. */
+  getAiStatus: () => Promise<AiStatus>;
+  /** `GET /v1/settings/ai-consent` (§6.11). */
+  getAiConsent: () => Promise<AiConsentState>;
+  /** `PUT /v1/settings/ai-consent`; 403/409 mang mã đã phân loại ở `ai_settings`. */
+  setAiConsent: (enabled: boolean) => Promise<AiConsentState>;
+  /** `GET /v1/settings/providers` (§6.11). */
+  listProviders: () => Promise<ProviderList>;
+  /** `POST /v1/settings/providers`; khoá trong `body.api_key` không bao giờ được trả lại. */
+  createProvider: (body: ProviderCreate) => Promise<ProviderConfig>;
+  /** `PATCH /v1/settings/providers/{id}`. */
+  updateProvider: (id: string, body: ProviderUpdate) => Promise<ProviderConfig>;
+  /** `DELETE /v1/settings/providers/{id}` (204): xoá cả khoá đã lưu. */
+  deleteProvider: (id: string) => Promise<void>;
+  /** `POST /v1/settings/providers/{id}/test`. */
+  testProvider: (id: string, body: ProviderTestRequest) => Promise<ProviderTestResult>;
+  /** `GET /v1/documents/{document_id}/pages/{page_number}/blocks` (§6.10): khối của trang cho màn xem lại. */
+  getPageBlocks: (documentId: string, pageNumber: number) => Promise<PageBlockView[]>;
+  /**
+   * `GET /v1/documents/{document_id}/crops/{crop_ref}` (§6.10): byte PNG của ảnh cắt, tải qua `fetch` có header xác thực
+   * (không đặt token vào URL). Nơi gọi tự tạo và thu hồi object URL.
+   */
+  getCropImage: (documentId: string, cropRef: string) => Promise<Blob>;
+  /** `POST …/blocks/{block_id}/ai-reread` (§6.10a): gửi ảnh vùng tới nhà cung cấp AI; không ghi trang. */
+  requestAiReread: (documentId: string, pageNumber: number, blockId: string) => Promise<AiRereadProposal>;
+  /** `POST …/ai-reread/{proposal_id}/accept` (§6.10a): ghi khối `vlm`, trả trang mới. */
+  acceptAiReread: (
+    documentId: string,
+    pageNumber: number,
+    blockId: string,
+    proposalId: string,
+    expectedVersion: number,
+  ) => Promise<PageView>;
+  /** `POST …/ai-reread/{proposal_id}/reject` (§6.10a): 204. */
+  rejectAiReread: (documentId: string, pageNumber: number, blockId: string, proposalId: string) => Promise<void>;
   /** `GET /v1/runtime` (§5.12), đã kiểm dạng. */
   getRuntime: () => Promise<RuntimeView>;
   /** `GET /v1/subjects` (§6.8), đã kiểm dạng từng phần tử. */
@@ -219,6 +318,12 @@ export interface HolocronApi {
   ) => Promise<PracticeBatch>;
   /** `POST /v1/twins/{twin_id}/essay-grade` (§6.9; chưa có ở backend), đã kiểm dạng. */
   gradeEssay: (twinId: string, answerText: string) => Promise<EssayGradeView>;
+  /** `POST /v1/practice/attempts` (§6.12): ghi lượt làm bài; đúng/sai và số đếm do backend trả, đã kiểm dạng. */
+  recordPracticeAttempt: (payload: PracticeAttemptCreate) => Promise<PracticeAttempt>;
+  /** `GET /v1/practice/attempts` (§6.12): lượt của môn, mới nhất trước, phân trang theo `offset`/`limit`. */
+  listPracticeAttempts: (subjectCode: string, offset: number, limit: number) => Promise<AttemptPageView>;
+  /** `GET /v1/practice/review-questions` (§6.12): câu sai còn mở của môn, theo luật của backend. */
+  listReviewQuestions: (subjectCode: string, offset: number, limit: number) => Promise<ReviewPageView>;
   /** `GET /v1/vault/chunks` (§6.6) cho màn luyện tập (tìm văn bản nguồn của trích dẫn), đã kiểm dạng. */
   listVaultChunks: (query: ChunkQuery) => Promise<ChunkPageView>;
   /** `POST /v1/subjects` (§6.8): 201 `Subject`, đã kiểm dạng. */
@@ -231,6 +336,12 @@ export interface HolocronApi {
   getDocument: (documentId: string) => Promise<DocumentView>;
   /** `GET /v1/documents/{document_id}/pages/{page_number}` (§6.5). */
   getDocumentPage: (documentId: string, pageNumber: number) => Promise<PageView>;
+  /** `GET /v1/vault/tree` (§6.10): cây Môn → Nguồn → Chương → Mục. */
+  getSubjectTree: (subjectCode: string) => Promise<SubjectTree>;
+  /** `GET /v1/documents/{id}/sections/{section_id}/blocks` (§6.10). */
+  getSectionBlocks: (documentId: string, sectionId: string, offset: number, limit: number) => Promise<SectionBlocks>;
+  /** `GET /v1/vault/blocks/search` (§6.10). */
+  searchBlocks: (query: BlockSearchQuery) => Promise<BlockSearchPage>;
   /** `PATCH /v1/documents/{document_id}/pages/{page_number}/lines` (§6.5; chưa có ở backend của nhánh). */
   patchPageLines: (
     documentId: string,
@@ -238,6 +349,9 @@ export interface HolocronApi {
     expectedVersion: number,
     edits: LineEdit[],
     appendedLines: string[],
+    /** ADR-009 mục 3.4: `mismatch_id` "Giữ giá trị này" và `block_id` khối VLM bỏ (tuỳ chọn). */
+    keptMismatches?: string[],
+    rejectedVlmBlocks?: string[],
   ) => Promise<PageView>;
   /** `POST /v1/documents/{document_id}/pages/{page_number}/confirm` (§6.5; chưa có ở backend của nhánh). */
   confirmPage: (documentId: string, pageNumber: number, expectedVersion: number) => Promise<PageView>;
@@ -296,8 +410,97 @@ async function loadRuntime(transform: (raw: unknown) => unknown): Promise<Runtim
   return runtime;
 }
 
+const AI_SETTINGS: ClassifyOptions = { context: "ai_settings" };
+
 export const realApi: HolocronApi = {
   getRuntime: () => loadRuntime((raw) => raw),
+
+  getPageBlocks: async (documentId, pageNumber) => {
+    const raw = await request<unknown>(
+      `/v1/documents/${segment(documentId)}/pages/${pageNumber}/blocks`,
+      { method: "GET" },
+      { context: "document_review" },
+    );
+    return validated(parsePageBlocks(raw));
+  },
+
+  getCropImage: async (documentId, cropRef) => {
+    if (!isCropRef(cropRef)) throw new ApiError(200, invalidResponseError());
+    const response = await send(
+      `/v1/documents/${segment(documentId)}/crops/${cropRef}`,
+      { method: "GET" },
+      { context: "document_review" },
+    );
+    try {
+      return await response.blob();
+    } catch {
+      throw new ApiError(response.status, invalidResponseError());
+    }
+  },
+
+  requestAiReread: async (documentId, pageNumber, blockId) => {
+    const raw = await request<unknown>(
+      `/v1/documents/${segment(documentId)}/pages/${pageNumber}/blocks/${segment(blockId)}/ai-reread`,
+      { method: "POST" },
+      { context: "ai_reread" },
+    );
+    return validated(parseAiRereadProposal(raw));
+  },
+
+  acceptAiReread: async (documentId, pageNumber, blockId, proposalId, expectedVersion) => {
+    const payload: AiRereadAcceptRequest = { editor_id: LOCAL_EDITOR_ID, expected_version: expectedVersion };
+    const raw = await request<unknown>(
+      `/v1/documents/${segment(documentId)}/pages/${pageNumber}/blocks/${segment(blockId)}/ai-reread/${segment(proposalId)}/accept`,
+      jsonSpec("POST", payload),
+      { versioned: true, context: "ai_reread" },
+    );
+    return validated(parsePageExtraction(raw));
+  },
+
+  rejectAiReread: async (documentId, pageNumber, blockId, proposalId) => {
+    await send(
+      `/v1/documents/${segment(documentId)}/pages/${pageNumber}/blocks/${segment(blockId)}/ai-reread/${segment(proposalId)}/reject`,
+      { method: "POST" },
+      { context: "ai_reread" },
+    );
+  },
+
+  getAiStatus: async () =>
+    validated(parseAiStatus(await request<unknown>("/v1/runtime", { method: "GET" }, { context: "runtime" }))),
+
+  getAiConsent: async () =>
+    validated(parseConsentState(await request<unknown>("/v1/settings/ai-consent", { method: "GET" }, AI_SETTINGS))),
+
+  setAiConsent: async (enabled) => {
+    const payload: AiConsentUpdate = { enabled };
+    return validated(
+      parseConsentState(await request<unknown>("/v1/settings/ai-consent", jsonSpec("PUT", payload), AI_SETTINGS)),
+    );
+  },
+
+  listProviders: async () =>
+    validated(parseProviderList(await request<unknown>("/v1/settings/providers", { method: "GET" }, AI_SETTINGS))),
+
+  createProvider: async (body) =>
+    validated(parseProvider(await request<unknown>("/v1/settings/providers", jsonSpec("POST", body), AI_SETTINGS))),
+
+  updateProvider: async (id, body) =>
+    validated(
+      parseProvider(
+        await request<unknown>(`/v1/settings/providers/${segment(id)}`, jsonSpec("PATCH", body), AI_SETTINGS),
+      ),
+    ),
+
+  deleteProvider: async (id) => {
+    await send(`/v1/settings/providers/${segment(id)}`, { method: "DELETE" }, AI_SETTINGS);
+  },
+
+  testProvider: async (id, body) =>
+    validated(
+      parseTestResult(
+        await request<unknown>(`/v1/settings/providers/${segment(id)}/test`, jsonSpec("POST", body), AI_SETTINGS),
+      ),
+    ),
 
   listSubjects: async () => {
     const subjects = parseSubjectList(await request<unknown>("/v1/subjects", { method: "GET" }));
@@ -371,6 +574,23 @@ export const realApi: HolocronApi = {
     return validated(parseEssayGradeResult(raw));
   },
 
+  recordPracticeAttempt: async (payload) => {
+    const raw = await request<unknown>("/v1/practice/attempts", jsonSpec("POST", payload));
+    return validated(parseAttempt(raw));
+  },
+
+  listPracticeAttempts: async (subjectCode, offset, limit) => {
+    const params = new URLSearchParams({ subject_code: subjectCode, offset: String(offset), limit: String(limit) });
+    const raw = await request<unknown>(`/v1/practice/attempts?${params.toString()}`, { method: "GET" });
+    return validated(parseAttemptPage(raw));
+  },
+
+  listReviewQuestions: async (subjectCode, offset, limit) => {
+    const params = new URLSearchParams({ subject_code: subjectCode, offset: String(offset), limit: String(limit) });
+    const raw = await request<unknown>(`/v1/practice/review-questions?${params.toString()}`, { method: "GET" });
+    return validated(parseReviewPage(raw));
+  },
+
   listVaultChunks: async (query) => {
     const params = new URLSearchParams({
       subject_code: query.subjectCode,
@@ -422,6 +642,23 @@ export const realApi: HolocronApi = {
     return validated(parseDocumentImport(raw));
   },
 
+  getSubjectTree: (subjectCode) =>
+    request<SubjectTree>(`/v1/vault/tree?subject_code=${segment(subjectCode)}`, { method: "GET" }),
+
+  getSectionBlocks: (documentId, sectionId, offset, limit) =>
+    request<SectionBlocks>(
+      `/v1/documents/${segment(documentId)}/sections/${segment(sectionId)}/blocks?offset=${offset}&limit=${limit}`,
+      { method: "GET" },
+    ),
+
+  searchBlocks: (query) => {
+    const params = new URLSearchParams({ q: query.q, subject_code: query.subjectCode });
+    for (const type of query.types) params.append("type", type);
+    params.set("offset", String(query.offset));
+    params.set("limit", String(query.limit));
+    return request<BlockSearchPage>(`/v1/vault/blocks/search?${params.toString()}`, { method: "GET" });
+  },
+
   getDocumentPage: async (documentId, pageNumber) => {
     const raw = await request<unknown>(
       `/v1/documents/${segment(documentId)}/pages/${pageNumber}`,
@@ -431,12 +668,24 @@ export const realApi: HolocronApi = {
     return validated(parsePageExtraction(raw));
   },
 
-  patchPageLines: async (documentId, pageNumber, expectedVersion, edits, appendedLines) => {
+  patchPageLines: async (
+    documentId,
+    pageNumber,
+    expectedVersion,
+    edits,
+    appendedLines,
+    keptMismatches,
+    rejectedVlmBlocks,
+  ) => {
     const payload: PageLinesPatch = {
       editor_id: LOCAL_EDITOR_ID,
       expected_version: expectedVersion,
       edits,
       appended_lines: appendedLines,
+      ...(keptMismatches !== undefined && keptMismatches.length > 0 ? { kept_mismatches: keptMismatches } : {}),
+      ...(rejectedVlmBlocks !== undefined && rejectedVlmBlocks.length > 0
+        ? { rejected_vlm_blocks: rejectedVlmBlocks }
+        : {}),
     };
     const raw = await request<unknown>(
       `/v1/documents/${segment(documentId)}/pages/${pageNumber}/lines`,
@@ -620,6 +869,9 @@ export function createApi(useMocks: boolean): HolocronApi {
         : isMockDocument(id)
           ? documents.getDocumentPage(id, page)
           : realApi.getDocumentPage(id, page),
+    // Tài liệu mẫu không có khối thật ở backend: không có khối nào để đọc lại bằng AI.
+    getPageBlocks: (id, page) =>
+      isImportResultMock(id) || isMockDocument(id) ? Promise.resolve([]) : realApi.getPageBlocks(id, page),
     deleteDocument: (id) =>
       isImportResultMock(id)
         ? result.deleteDocument(id)
@@ -628,12 +880,12 @@ export function createApi(useMocks: boolean): HolocronApi {
           : realApi.deleteDocument(id),
     // Sửa dòng và xác nhận (§6.5) chưa có ở backend của nhánh: tài liệu mẫu dùng fixture; tài liệu thật vẫn gọi
     // backend (backend chưa có endpoint thì trả 404 và giao diện báo backend chưa hỗ trợ).
-    patchPageLines: (id, page, version, edits, appended) =>
+    patchPageLines: (id, page, version, edits, appended, kept, rejected) =>
       isImportResultMock(id)
         ? result.patchPageLines(id, page)
         : isMockDocument(id)
           ? documents.patchPageLines(id, page, version)
-          : realApi.patchPageLines(id, page, version, edits, appended),
+          : realApi.patchPageLines(id, page, version, edits, appended, kept, rejected),
     confirmPage: (id, page, version) =>
       isImportResultMock(id)
         ? result.confirmPage(id, page, version)

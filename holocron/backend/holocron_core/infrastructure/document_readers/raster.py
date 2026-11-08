@@ -123,3 +123,61 @@ def ink_outside_text_ratio(image: GrayImage, boxes: Sequence[PixelBox], threshol
         offset = row * image.width
         inside += sum(ink.count(1, offset + start, offset + end) for start, end in _merge(intervals))
     return min(1.0, max(0.0, (total - inside) / total))
+
+
+# --------------------------------------------------------------------------- #
+# Ảnh cắt vùng (ADR-010 mục 9; ADR-009 mục 5)
+# --------------------------------------------------------------------------- #
+
+UnitBox = tuple[float, float, float, float]  # (x0, y0, x1, y1) ∈ [0, 1], gốc trên-trái của trang đã xoay
+_IHDR_END = 8 + 8 + 13  # chữ ký + (độ dài, loại) + 13 byte dữ liệu IHDR
+
+
+def expand_box(box: UnitBox, margin: float) -> UnitBox | None:
+    """Hộp nới `margin` mỗi phía, kẹp trong [0, 1]; hộp suy biến (rỗng, đảo, không hữu hạn) ⇒ None."""
+    x0, y0, x1, y1 = box
+    if not all(math.isfinite(value) for value in box) or x1 <= x0 or y1 <= y0:
+        return None
+    return (max(0.0, x0 - margin), max(0.0, y0 - margin), min(1.0, x1 + margin), min(1.0, y1 + margin))
+
+
+def crop_pixels(image: GrayImage, box: UnitBox) -> GrayImage | None:
+    """Phần ảnh nằm trong `box` (toạ độ chuẩn hoá); vùng không phủ trọn một điểm ảnh nào ⇒ None."""
+    left = math.floor(box[0] * image.width)
+    top = math.floor(box[1] * image.height)
+    right = min(image.width, math.ceil(box[2] * image.width))
+    bottom = min(image.height, math.ceil(box[3] * image.height))
+    if right <= left or bottom <= top:
+        return None
+    width = right - left
+    pixels = b"".join(image.pixels[row * image.width + left : row * image.width + right] for row in range(top, bottom))
+    return GrayImage(pixels=pixels, width=width, height=bottom - top, dpi=image.dpi)
+
+
+def fit_long_edge(image: GrayImage, max_edge_px: int) -> GrayImage:
+    """Thu ảnh (láng giềng gần nhất) để cạnh dài ≤ `max_edge_px`; ảnh đã vừa thì giữ nguyên."""
+    long_edge = max(image.width, image.height)
+    if long_edge <= max_edge_px:
+        return image
+    ratio = max_edge_px / long_edge
+    width = max(1, min(max_edge_px, math.floor(image.width * ratio)))
+    height = max(1, min(max_edge_px, math.floor(image.height * ratio)))
+    columns = [min(image.width - 1, (x * image.width) // width) for x in range(width)]
+    rows: list[bytes] = []
+    for y in range(height):
+        source = (y * image.height) // height
+        line = image.pixels[source * image.width : (source + 1) * image.width]
+        rows.append(bytes(line[column] for column in columns))
+    return GrayImage(pixels=b"".join(rows), width=width, height=height, dpi=image.dpi * ratio)
+
+
+def png_dimensions(data: bytes) -> tuple[int, int] | None:
+    """`(width, height)` đọc từ IHDR của PNG; sai chữ ký hay IHDR không đứng đầu ⇒ None."""
+    if len(data) < _IHDR_END or not data.startswith(PNG_SIGNATURE) or data[12:16] != b"IHDR":
+        return None
+    if struct.unpack(">I", data[8:12])[0] != 13:
+        return None
+    width, height = struct.unpack(">II", data[16:24])
+    if width < 1 or height < 1:
+        return None
+    return int(width), int(height)
